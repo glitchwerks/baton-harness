@@ -1,0 +1,14 @@
+# Git worktrees (feature isolation per CLAUDE.md)
+.worktrees/
+
+# Local scratch / transient files
+.tmp/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Logs
+*.log
