@@ -128,7 +128,7 @@ agent:
   max_concurrent: 2          # tuned to subscription rate limit, not container count
   max_turns: 5               # bounded retries per issue
   command: claude
-  permission_mode: acceptEdits
+  permission_mode: bypassPermissions
 mcp_servers:
   - name: github
     command: npx @modelcontextprotocol/server-github

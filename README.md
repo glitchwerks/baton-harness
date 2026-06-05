@@ -23,7 +23,7 @@ Baton runs project-local (from the project repo directory) but its config lives 
 is pointed at via `baton start -w <absolute-path>`:
 
 ```
-cd <project-repo> && baton start -w /path/to/baton-harness/config/<project>/WORKFLOW.md
+cd <project-repo> && baton start -w /path/to/baton-harness/config/WORKFLOW.md
 ```
 
 `bin/run.sh` encapsulates this invocation so it isn't retyped. It also exports
@@ -48,8 +48,7 @@ baton-harness/
 │   ├── test_smoke.py            # package import + version checks
 │   └── test_cli.py              # unit tests for _cli helpers
 ├── config/
-│   └── <project-name>/
-│       └── WORKFLOW.md          # per-project Baton config + agent prompt (issue #5)
+│   └── WORKFLOW.md              # generic Baton config + agent prompt
 ├── templates/
 │   └── CLAUDE.md.template       # source for each project's committed CLAUDE.md (issue #5)
 └── docs/                        # design docs, spike findings
@@ -124,26 +123,25 @@ directory name must follow the `<prefix>-<issue>[-<slug>]` convention
 ## Prerequisites (runtime)
 
 - [Baton](https://github.com/mraza007/baton) installed and on `$PATH`
-- A project config directory at `config/<project-name>/WORKFLOW.md` in this repo
+- `config/WORKFLOW.md` present in this repo (already committed — see `config/`)
 - The target project repo checked out locally
 
 ## Usage
 
 ```
-bin/run.sh <project-name> <project-repo-path>
+bin/run.sh <project-repo-path>
 ```
 
 **Arguments:**
 
 | Argument | Description |
 |---|---|
-| `project-name` | Name of the config dir under `config/` — expects `config/<project-name>/WORKFLOW.md` |
 | `project-repo-path` | Path to the target project repo (Baton runs inside it) |
 
 **Example:**
 
 ```bash
-bin/run.sh my-api /home/chris/projects/my-api
+bin/run.sh /home/chris/projects/my-api
 ```
 
 **Help:**
@@ -157,6 +155,24 @@ bin/run.sh --help
 | Variable | Value |
 |---|---|
 | `BATON_HARNESS_DIR` | Absolute path to this harness repo root — available to all hook scripts |
+
+## CLAUDE.md for the pilot project
+
+Each target project must have a committed `CLAUDE.md` so Claude Code can
+discover repo-local context. The harness owns the source template at
+`templates/CLAUDE.md.template`; the live file is committed to the project repo
+(it is irreducibly project-local — Claude Code discovers it from the worktree).
+
+**For the pilot (one project):** copy the template manually, fill in the
+`<!-- FILL: ... -->` markers, and commit the result as `CLAUDE.md` in the
+project repo. A generate step is not warranted for a single project; add one
+when project #2 appears.
+
+```bash
+cp /path/to/baton-harness/templates/CLAUDE.md.template /path/to/project/CLAUDE.md
+# edit CLAUDE.md to fill in all markers, then:
+git -C /path/to/project add CLAUDE.md && git -C /path/to/project commit -m "Add CLAUDE.md from harness template"
+```
 
 ## Design documentation
 

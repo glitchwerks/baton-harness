@@ -37,7 +37,7 @@ Decision D2: this is its own repo, **not** a Baton fork. Fork only as a last res
 Validated against Baton's docs (see spike-findings F11). Baton runs project-local — launched from the project directory — but its config can live elsewhere and be pointed at:
 
 ```bash
-cd <project-repo> && baton start -w /agent-harness/config/<project>/WORKFLOW.md
+cd <project-repo> && baton start -w /agent-harness/config/WORKFLOW.md
 ```
 
 - The harness repo owns the **hook entry points** (invoked by the WORKFLOW.md hooks configuration via absolute path) and the **WORKFLOW.md** (passed via `-w`).
@@ -67,8 +67,7 @@ agent-harness/
 ├── tests/                      # pytest suite
 │   └── test_after_run.py
 ├── config/
-│   └── <pilot-project>/
-│       └── WORKFLOW.md          # hooks → Python entry points; the agent prompt
+│   └── WORKFLOW.md              # hooks → Python entry points; the agent prompt
 ├── templates/
 │   └── CLAUDE.md.template       # source for each project's committed CLAUDE.md
 └── docs/                        # references to spec, findings
@@ -78,7 +77,7 @@ agent-harness/
 
 **CI gate:** ruff (lint + format), mypy (type checks), pytest — enforced via `.github/workflows/ci.yml`. Replaces shellcheck from the spike approach.
 
-**Evolution path (not built for the pilot):** project #2 turns `config/<pilot-project>/` into multiple `config/<name>/` dirs and extracts a WORKFLOW.md template; containerization adds a `Dockerfile`; the comms layer adds `bot/`; the async CI handling adds a `triggers/` component.
+**Evolution path (not built for the pilot):** project #2 introduces `config/<name>/` per-project subdirectories (currently a single flat `config/WORKFLOW.md` — YAGNI until a second project appears); containerization adds a `Dockerfile`; the comms layer adds `bot/`; the async CI handling adds a `triggers/` component.
 
 ---
 
@@ -96,8 +95,8 @@ Standalone, independently testable Python modules (spike F8 confirmed the testab
 
 Each module is covered by pytest and passes ruff and mypy before merge.
 
-### 4.3 Config — `config/<project>/WORKFLOW.md`
-Per-project Baton config: tracker labels, concurrency, `max_turns`, `permission_mode: bypassPermissions` (F11/F4), the `after_create`/`before_run`/`after_run` hook wiring (entry points in `src/baton_harness/`), and the agent prompt body. The prompt uses the mechanical, numbered closing-steps pattern proven necessary in the spike (F4) and the explicit confidence/block rule (F6/F9).
+### 4.3 Config — `config/WORKFLOW.md`
+Single generic Baton config (flattened from `config/<project>/` — YAGNI per issue #5): tracker labels, concurrency, `max_turns`, `permission_mode: bypassPermissions` (F11/F4), the `after_create`/`before_run`/`after_run` hook wiring (entry points in `src/baton_harness/`), and the agent prompt body. The prompt uses the mechanical, numbered closing-steps pattern proven necessary in the spike (F4) and the explicit confidence/block rule (F6/F9). Per-project `config/<name>/` subdirectories are introduced when a second project appears.
 
 ### 4.4 Context template — `templates/CLAUDE.md.template`
 Source for each project's `CLAUDE.md`. Because CLAUDE.md is irreducibly project-local (F11), the live file is committed to the project repo; this template is the harness-owned source it's generated from. Should encode the conventions the agent needs plus the boundaries from the problem statement (e.g. no infra changes, no design decisions, implementation only).

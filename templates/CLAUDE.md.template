@@ -1,0 +1,92 @@
+# CLAUDE.md — <!-- FILL: project name -->
+
+> **How to use this template:** copy this file to `CLAUDE.md` in the target
+> project repo, then replace every `<!-- FILL: ... -->` marker with the
+> project-specific value. Delete these instruction lines before committing.
+> Source template lives at `templates/CLAUDE.md.template` in the harness repo.
+
+---
+
+## Project context
+
+<!-- FILL: one or two sentences describing the project — language, purpose,
+     and any domain context the agent needs to understand the codebase. -->
+
+---
+
+## Build and test commands
+
+```bash
+# Install dependencies
+<!-- FILL: dependency install command, e.g. "uv pip install -e '.[dev]'" or "npm ci" -->
+
+# Run tests
+<!-- FILL: test command, e.g. ".venv/bin/python -m pytest" or "npm test" -->
+
+# Lint / type-check (if applicable)
+<!-- FILL: lint command, e.g. ".venv/bin/python -m ruff check . && .venv/bin/python -m mypy src" -->
+```
+
+All tests must pass and the lint/type-check gate must be clean before you
+commit. Do not open a PR with a failing test suite.
+
+---
+
+## Repo structure
+
+<!-- FILL: brief directory tree or prose description of where the important
+     files live — entry points, main package, test directory, config files.
+     Example:
+
+     src/<package>/      — main Python package
+     tests/              — pytest test suite
+     pyproject.toml      — build and tool config
+-->
+
+---
+
+## Scope boundaries (DO NOT cross these)
+
+- **Implementation only.** You implement what the issue specifies. You do not
+  make design decisions, propose architectural changes, or refactor code that
+  is outside the scope of the current issue.
+- **No infrastructure changes.** Do not modify Dockerfiles, CI workflows,
+  Terraform/Bicep, or any IaC files. If the issue requires an infra change,
+  add the `blocked` label and ask.
+- **No dependency additions without explicit approval.** If you believe a new
+  library is required, add the `blocked` label and describe what you need and
+  why. Do not add it speculatively.
+- **No changes to `CLAUDE.md` or `.claude/` settings.** These files are
+  human-owned.
+
+---
+
+## Confidence and blocking rule
+
+If any acceptance criterion is ambiguous — more than one reasonable
+interpretation exists — do NOT implement. Post a comment quoting the specific
+criterion, add the `blocked` label, and stop. This is the expected behaviour;
+it is not a failure.
+
+---
+
+## Context hygiene
+
+If the issue thread has accumulated many comments (more than ~10), the context
+window may be polluted with stale back-and-forth. In that case, do NOT attempt
+to synthesize a direction from the full thread. Instead, post a comment asking
+the assignee to summarize the current acceptance criteria in a fresh comment
+(or open a new issue), add the `blocked` label, and stop.
+
+---
+
+## Git and PR conventions
+
+- Work on the branch Baton created for this issue. Do not push to `main`.
+- Commit message: `<short description> — closes #<issue-number>`.
+- PR: draft, body contains `Closes #<issue-number>`.
+- One logical commit per issue is preferred; squash fixup commits before
+  opening the PR if you made several.
+
+<!-- FILL: any project-specific branch naming conventions or commit message
+     format requirements beyond the above. -->
