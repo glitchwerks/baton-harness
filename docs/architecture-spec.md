@@ -136,7 +136,7 @@ hooks:
   before_run: |
     git fetch origin main && git rebase origin/main
   after_run: |
-    /opt/harness/route-outcome.sh "$ISSUE_NUMBER"
+    /opt/harness/route-outcome.sh "$ISSUE_NUMBER"  # illustrative; implemented as Python entry point
 ---
 You are working on issue #{{ issue.number }}: {{ issue.title }}
 
@@ -149,7 +149,7 @@ add the `blocked` label, and stop.
 When done: commit, push, and open a draft PR linking to #{{ issue.number }}.
 ```
 
-**`after_run` outcome router** — a shell script that inspects what the run produced and decides what to do next. Pseudocode:
+**`after_run` outcome router** — inspects what the run produced and decides what to do next. Implemented as a Python module (`after_run.py`) in the `baton_harness` package; see the implementation-language decision in [harness-design.md](./harness-design.md). Pseudocode:
 
 ```
 if PR opened and CI green       → label agent-done; notify #activity (already covered by GitHub app)
@@ -244,7 +244,7 @@ Single Docker container running Baton, Claude Code, and supporting tools. The bo
 - Base: `node:22-slim` (or equivalent; Claude Code is npm-distributed)
 - `@anthropic-ai/claude-code` (pinned version)
 - `git`, `gh` CLI
-- `baton` (pip install)
+- `baton` (pip install) — brings a Python interpreter, which the harness lifecycle hooks (`baton_harness` package) also use; see the implementation-language decision in [harness-design.md](./harness-design.md)
 - Non-root user `agent` (required — Claude Code refuses `--dangerously-skip-permissions` under root)
 - No `ANTHROPIC_API_KEY` — strictly OAuth via mounted credentials volume
 

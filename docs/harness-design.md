@@ -6,6 +6,24 @@
 
 ---
 
+## Decision — Implementation language: Python (2026-06-04, closes #11)
+
+The harness implementation language is **Python**. This supersedes the shell-script approach used in the spike. `bin/run.sh` (the launcher, issue #1, already merged) **stays shell** — it only resolves the harness root and `exec`s Baton. Everything else — the lifecycle hooks (`after_create`, `before_run`, `after_run`) and all future stateful components — is Python.
+
+**Rationale:**
+
+1. **Python is already in the runtime.** Baton is `pip`-installed (architecture-spec.md §5 — container image contents), so the container has a Python interpreter regardless. A Python harness adds zero new dependency.
+
+2. **Matches the project's toolchain and standards.** The project's Python standards (PEP 8, type hints, Google docstrings, `uv`, pytest) apply directly. No equivalent tooling exists for shell here.
+
+3. **The load-bearing components are error-prone in bash.** The outcome router parses `gh --json` output; the spike's closed shell implementation (PR #9) grepped JSON rather than parsing it. The router is explicitly "production code, not glue" (open-questions.md S2.1), and the future async CI-trigger carries the C1/C2/C3 concerns (spike-findings.md — "design it as a real component, not a webhook one-liner"). Proper JSON parsing, data structures, and pytest coverage matter there.
+
+4. **Aids the D2 "contribute upstream to Baton" path.** Baton is itself Python.
+
+**Continuity note:** spike finding F8 — "hooks call standalone, independently testable script files taking the issue number as an argument" — still holds in spirit. The scripts are now Python modules/entry points rather than `.sh` files, but the testability principle is unchanged.
+
+---
+
 ## 1. What the harness is
 
 A standalone, version-controlled repo that holds the *reusable policy and tooling* around the orchestrator: the agent prompt, the lifecycle hook scripts, per-project config, context templates, and the launcher. Baton (the orchestrator) is installed as a dependency; the harness is what makes it do the right thing.
@@ -22,7 +40,7 @@ Validated against Baton's docs (see spike-findings F11). Baton runs project-loca
 cd <project-repo> && baton start -w /agent-harness/config/<project>/WORKFLOW.md
 ```
 
-- The harness repo owns the **scripts** (hooks call them by absolute path) and the **WORKFLOW.md** (passed via `-w`).
+- The harness repo owns the **hook entry points** (invoked by the WORKFLOW.md hooks configuration via absolute path) and the **WORKFLOW.md** (passed via `-w`).
 - The **project repo** carries only its own committed `CLAUDE.md` (Claude Code discovers it from the worktree; not relocatable — F11) and its CI workflow (a precondition, not the harness's job).
 - A launcher in the harness encapsulates the `cd` + `-w` invocation per project.
 
@@ -32,20 +50,25 @@ This keeps the harness as the single source of truth for everything shareable, w
 
 ## 3. Repo structure (pilot scope)
 
-Deliberately minimal. Grows without restructuring as later phases are added.
+Deliberately minimal. Grows without restructuring as later phases are added. The Python package foundation is tracked in issue #10.
 
 ```
 agent-harness/
 ├── README.md
+├── pyproject.toml               # package metadata, dependencies, ruff/mypy config
 ├── bin/
-│   └── run.sh                  # launcher: cd into project, baton start -w <config>
-├── scripts/
-│   ├── after-create.sh         # per-worktree dependency install (npm/pip) — Baton after_create hook
-│   ├── before-run.sh           # branch sync onto main
-│   └── after-run.sh            # outcome classification + label reconciliation
+│   └── run.sh                  # launcher (shell): resolve harness root, exec baton — stays shell
+├── src/
+│   └── baton_harness/          # installable Python package
+│       ├── __init__.py
+│       ├── after_create.py     # per-worktree dependency install (npm/pip) — Baton after_create hook
+│       ├── before_run.py       # branch sync onto main
+│       └── after_run.py        # outcome classification + label reconciliation
+├── tests/                      # pytest suite
+│   └── test_after_run.py
 ├── config/
 │   └── <pilot-project>/
-│       └── WORKFLOW.md          # hooks → absolute paths into scripts/; the agent prompt
+│       └── WORKFLOW.md          # hooks → Python entry points; the agent prompt
 ├── templates/
 │   └── CLAUDE.md.template       # source for each project's committed CLAUDE.md
 └── docs/                        # references to spec, findings
@@ -53,24 +76,28 @@ agent-harness/
 
 **Project repo carries:** its own committed `CLAUDE.md` (sourced from the template) and the CI workflow.
 
+**CI gate:** ruff (lint + format), mypy (type checks), pytest — enforced via `.github/workflows/ci.yml`. Replaces shellcheck from the spike approach.
+
 **Evolution path (not built for the pilot):** project #2 turns `config/<pilot-project>/` into multiple `config/<name>/` dirs and extracts a WORKFLOW.md template; containerization adds a `Dockerfile`; the comms layer adds `bot/`; the async CI handling adds a `triggers/` component.
 
 ---
 
 ## 4. Components
 
-### 4.1 Launcher — `bin/run.sh`
-Encapsulates the project-local invocation so it isn't retyped or misremembered. Resolves the harness directory, `cd`s into the target project, and starts Baton pointed at that project's config. Exports the harness path so hooks can resolve script locations if they don't hardcode them.
+### 4.1 Launcher — `bin/run.sh` (shell — stays shell)
+Encapsulates the project-local invocation so it isn't retyped or misremembered. Resolves the harness directory, `cd`s into the target project, and starts Baton pointed at that project's config. Exports `BATON_HARNESS_DIR` so hook entry points can locate the package without hardcoding a path. This launcher is a thin shell wrapper (`exec baton …`) and is not part of the Python package — it was implemented in issue #1 and is already merged.
 
-### 4.2 Hooks — `scripts/`
-Standalone, independently testable shell scripts (spike F8 confirmed this pattern), each taking the issue number as an argument derived from the worktree path (`basename "$PWD"` — F2: Baton passes no env-var context to hooks).
+### 4.2 Hooks — `src/baton_harness/` (Python)
+Standalone, independently testable Python modules (spike F8 confirmed the testability pattern), each invoked as an entry point and taking the issue number as an argument derived from the worktree path (`basename "$PWD"` — F2: Baton passes no env-var context to hooks). Issue number parsing, GitHub API calls, and JSON handling are all done in Python — no shell grepping of JSON output.
 
-- **`after-create.sh`** — runs once after worktree creation. Per-worktree dependency setup (`npm install` / `pip install`). Partial mitigation for the worktree-isolation limits (S2.4); does not solve shared ports/services.
-- **`before-run.sh`** — syncs the worktree branch onto latest `main` before the agent runs.
-- **`after-run.sh`** — the outcome router. Classifies what the run produced (the states from F5: `uncommitted-changes`, `no-commits`, `committed-no-pr`, `pr-opened`) and reconciles GitHub labels to a single state. Must finish under the 60s hook timeout (F11).
+- **`after_create.py`** — runs once after worktree creation. Per-worktree dependency setup (`npm install` / `pip install`). Partial mitigation for the worktree-isolation limits (S2.4); does not solve shared ports/services.
+- **`before_run.py`** — syncs the worktree branch onto latest `main` before the agent runs.
+- **`after_run.py`** — the outcome router. Classifies what the run produced (the states from F5: `uncommitted-changes`, `no-commits`, `committed-no-pr`, `pr-opened`) and reconciles GitHub labels to a single state. Must finish under the 60s hook timeout (F11). Parses `gh --json` output via Python's `json` module rather than grepping (addresses the pattern in PR #9's spike implementation).
+
+Each module is covered by pytest and passes ruff and mypy before merge.
 
 ### 4.3 Config — `config/<project>/WORKFLOW.md`
-Per-project Baton config: tracker labels, concurrency, `max_turns`, `permission_mode: bypassPermissions` (F11/F4), the `after_create`/`before_run`/`after_run` hook wiring (absolute paths into `scripts/`), and the agent prompt body. The prompt uses the mechanical, numbered closing-steps pattern proven necessary in the spike (F4) and the explicit confidence/block rule (F6/F9).
+Per-project Baton config: tracker labels, concurrency, `max_turns`, `permission_mode: bypassPermissions` (F11/F4), the `after_create`/`before_run`/`after_run` hook wiring (entry points in `src/baton_harness/`), and the agent prompt body. The prompt uses the mechanical, numbered closing-steps pattern proven necessary in the spike (F4) and the explicit confidence/block rule (F6/F9).
 
 ### 4.4 Context template — `templates/CLAUDE.md.template`
 Source for each project's `CLAUDE.md`. Because CLAUDE.md is irreducibly project-local (F11), the live file is committed to the project repo; this template is the harness-owned source it's generated from. Should encode the conventions the agent needs plus the boundaries from the problem statement (e.g. no infra changes, no design decisions, implementation only).
@@ -87,7 +114,7 @@ agent-ready ──▶ (run) ──▶ agent-done       (PR opened; pilot: human 
                       └──▶ agent-ready      (retryable failure; left for Baton's own retry)
 ```
 
-Reconciliation is enforced in `after-run.sh` to maintain a single state label (the H1 bug — both `agent-ready` and `blocked` present — is the open implementation issue to fix here).
+Reconciliation is enforced in `after_run.py` to maintain a single state label (the H1 bug — both `agent-ready` and `blocked` present — is the open implementation issue to fix here).
 
 ---
 
@@ -121,7 +148,7 @@ Two are docs-can't-answer test targets; the rest are design decisions to make as
 
 - **[test] Absolute `-w` path:** confirm `baton start -w <absolute-path-outside-project>` works (docs show only a relative example). ~2 min.
 - **[test] Block cost:** does Baton's continuation retry respect `exclude_labels: ["blocked"]` and stop after the first blocked turn, or burn all `max_turns`? Determines per-block cost. (H-note.)
-- **[design] Script path resolution:** do hooks hardcode the harness path, or read it from an env var exported by the launcher? Lean env var for portability.
+- **[design] Script path resolution:** ~~do hooks hardcode the harness path, or read it from an env var exported by the launcher?~~ **Resolved.** The launcher (`bin/run.sh`, issue #1) exports `BATON_HARNESS_DIR`; hook entry points read it from the environment. Hardcoding is no longer needed.
 - **[design] CLAUDE.md sync:** how does the template become the project's committed CLAUDE.md — manual copy for the pilot, or a small generate step? Manual is fine for one project.
 - **[design] H1 fix:** make a block terminal (stop the continuation retry) rather than only reconciling labels — depends on the block-cost test outcome.
 
