@@ -1,0 +1,91 @@
+[build-system]
+# hatchling chosen over setuptools because it has zero config for src/ layout
+# (src layout is autodetected), integrates with uv cleanly, and produces
+# correct editable installs without legacy shims. No hatch.toml needed for a
+# package this small.
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "baton-harness"
+version = "0.1.0"
+description = "Policy and tooling layer wrapping Baton for autonomous Claude Code agent runs."
+requires-python = ">=3.10"
+# Runtime dependencies: none. All three hooks shell out to git/gh via
+# subprocess and parse JSON with the stdlib json module. Baton itself is
+# pip-installed in the container environment (harness-design.md §Decision).
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+
+# Console entry points — one per hook.
+# These are the invocation form that WORKFLOW.md hook lines should call:
+#   after_create: bh-after-create
+#   before_run:   bh-before-run
+#   after_run:    bh-after-run
+#
+# Example WORKFLOW.md hook line (issue #5):
+#   after_create: bh-after-create
+#   before_run:   bh-before-run
+#   after_run:    bh-after-run
+#
+# After `pip install -e .` or `uv pip install -e .`, these commands are on
+# PATH inside the venv. The launcher (bin/run.sh) activates the venv or
+# ensures they are resolvable before starting Baton.
+[project.scripts]
+bh-after-create = "baton_harness.after_create:main"
+bh-before-run = "baton_harness.before_run:main"
+bh-after-run = "baton_harness.after_run:main"
+
+# ---------------------------------------------------------------------------
+# Tool configuration
+# ---------------------------------------------------------------------------
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/baton_harness"]
+
+[tool.ruff]
+line-length = 79
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "N",   # pep8-naming
+    "ANN", # flake8-annotations (type hints)
+    "D",   # pydocstyle (docstring rules)
+]
+ignore = [
+    "D203", # one-blank-line-before-class (conflicts with D211)
+    "D213", # multi-line-summary-second-line (conflicts with D212)
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+# stdlib subprocess/json are typed; no third-party stubs needed.
+warn_unused_ignores = true
+warn_return_any = true
+show_error_codes = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"
