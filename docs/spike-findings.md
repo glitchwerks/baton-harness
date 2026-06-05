@@ -79,6 +79,7 @@ Hitting the cap produced fresh restarts of the whole run, not continued reasonin
 ### F8 — Hooks can call external script files (confirmed pattern)
 Hooks invoke standalone scripts (`~/baton-harness/*.sh`) that take the issue number as an argument and are independently testable (`after-run.sh 2` against a worktree, no orchestrator needed). Scripts live outside the repo so the agent can't touch its own harness and they aren't duplicated per-project.
 **Spec implication:** the outcome router is a real, testable, version-controlled script — not inline hook logic. This is the harness layer beginning to take shape (ties to D2).
+**Forward note (2026-06-04):** the shell-script convenience established here was superseded by the implementation-language decision: hooks are now Python modules in the `baton_harness` package. The testability principle holds; the language does not. See harness-design.md — "Decision — Implementation language: Python."
 
 ### F9 — Agent funnels underspecified/impossible work to BLOCK, not FAIL
 Scenario C used an untestable, contradictory issue (`lucky_number()` with no verifiable contract) expecting a genuine failure. The agent instead **blocked** — correctly — identifying the specific contradictions (determinism unspecified, "for today" vs "value doesn't matter," no testable assertion possible) and asking for the contract. Identical outcome class to Scenario B.
