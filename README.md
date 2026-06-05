@@ -7,10 +7,15 @@ launcher (decision D2: own repo, not a Baton fork).
 
 ## What this is
 
-The harness owns everything *shareable* across projects: the hook scripts that run before
-and after each agent turn, per-project workflow config (passed to Baton via `-w`), a
-CLAUDE.md template, and the `bin/run.sh` launcher. Each target project carries only its
+The harness owns everything *shareable* across projects: the Python hook modules that run
+before and after each agent turn, per-project workflow config (passed to Baton via `-w`),
+a CLAUDE.md template, and the `bin/run.sh` launcher. Each target project carries only its
 own committed `CLAUDE.md` and CI workflow.
+
+The hooks are shipped as a proper Python package (`baton_harness`) with console entry
+points (`bh-after-create`, `bh-before-run`, `bh-after-run`) so they are on `PATH` after
+`pip install` and can be wired directly into WORKFLOW.md hook lines without path
+gymnastics.
 
 ## Integration model
 
@@ -22,19 +27,26 @@ cd <project-repo> && baton start -w /path/to/baton-harness/config/<project>/WORK
 ```
 
 `bin/run.sh` encapsulates this invocation so it isn't retyped. It also exports
-`BATON_HARNESS_DIR` so hook scripts can resolve `scripts/` without hardcoding paths.
+`BATON_HARNESS_DIR` so hook scripts can locate the harness root without hardcoding paths.
 
 ## Repo structure
 
 ```
 baton-harness/
 ├── README.md
+├── pyproject.toml               # package metadata, dev dependencies, ruff/mypy config
 ├── bin/
-│   └── run.sh                   # launcher: resolve harness root, cd into project, baton start -w <config>
-├── scripts/                     # lifecycle hook scripts (populated by issues #2/#3)
-│   ├── after-create.sh          # per-worktree dependency install
-│   ├── before-run.sh            # branch sync onto main
-│   └── after-run.sh             # outcome classification + label reconciliation
+│   └── run.sh                   # launcher (shell): resolve harness root, baton start -w <config>
+├── src/
+│   └── baton_harness/           # installable Python package (issue #10)
+│       ├── __init__.py          # __version__
+│       ├── _cli.py              # shared log/err helpers and issue-number resolver
+│       ├── after_create.py      # bh-after-create hook entry point (implemented in #2)
+│       ├── before_run.py        # bh-before-run hook entry point (implemented in #2)
+│       └── after_run.py         # bh-after-run hook entry point (implemented in #3)
+├── tests/                       # pytest suite
+│   ├── test_smoke.py            # package import + version checks
+│   └── test_cli.py              # unit tests for _cli helpers
 ├── config/
 │   └── <project-name>/
 │       └── WORKFLOW.md          # per-project Baton config + agent prompt (issue #5)
@@ -45,7 +57,71 @@ baton-harness/
     └── spike-findings.md
 ```
 
-## Prerequisites
+## Python development
+
+### Prerequisites
+
+- Python 3.10+
+- [uv](https://docs.astral.sh/uv/) (recommended) or pip
+
+### Setup
+
+```bash
+# Create and populate the virtual environment
+uv venv .venv
+uv pip install -e ".[dev]"
+```
+
+### Running the quality gate
+
+These three commands mirror the CI checks exactly — all must be clean before
+pushing:
+
+```bash
+# Lint
+.venv/Scripts/python.exe -m ruff check .         # Windows
+.venv/bin/python        -m ruff check .         # macOS/Linux
+
+# Format check
+.venv/Scripts/python.exe -m ruff format --check .
+.venv/bin/python        -m ruff format --check .
+
+# Type check
+.venv/Scripts/python.exe -m mypy src
+.venv/bin/python        -m mypy src
+
+# Tests
+.venv/Scripts/python.exe -m pytest               # Windows
+.venv/bin/python        -m pytest               # macOS/Linux
+```
+
+### Hook entry-point convention
+
+The three lifecycle hooks are installed as console scripts by `pyproject.toml`:
+
+| Script | Entry point | Module |
+|---|---|---|
+| `bh-after-create` | `baton_harness.after_create:main` | `src/baton_harness/after_create.py` |
+| `bh-before-run` | `baton_harness.before_run:main` | `src/baton_harness/before_run.py` |
+| `bh-after-run` | `baton_harness.after_run:main` | `src/baton_harness/after_run.py` |
+
+After `uv pip install -e ".[dev]"`, these commands are on `PATH` inside the
+venv.  Issue #5 (WORKFLOW.md authoring) should wire them exactly as shown in
+the WORKFLOW.md hook section:
+
+```yaml
+# Example WORKFLOW.md hook lines (issue #5)
+hooks:
+  after_create: bh-after-create
+  before_run:   bh-before-run
+  after_run:    bh-after-run
+```
+
+The hooks derive the issue number from `basename($PWD)` — the worktree
+directory name must follow the `<prefix>-<issue>[-<slug>]` convention
+(e.g. `feat-10-python-scaffold`) for issue-number resolution to work.
+
+## Prerequisites (runtime)
 
 - [Baton](https://github.com/mraza007/baton) installed and on `$PATH`
 - A project config directory at `config/<project-name>/WORKFLOW.md` in this repo
