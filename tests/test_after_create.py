@@ -61,9 +61,7 @@ class TestAfterCreateNpm:
         worktree = tmp_path / "feat-2-test"
         worktree.mkdir()
         (worktree / "package.json").write_text("{}", encoding="utf-8")
-        (worktree / "package-lock.json").write_text(
-            "{}", encoding="utf-8"
-        )
+        (worktree / "package-lock.json").write_text("{}", encoding="utf-8")
         monkeypatch.chdir(worktree)
 
         calls: list[list[str]] = []
@@ -114,9 +112,7 @@ class TestAfterCreateNpm:
         (worktree / "package.json").write_text("{}", encoding="utf-8")
         monkeypatch.chdir(worktree)
 
-        monkeypatch.setattr(
-            after_create_mod, "_run", lambda _cmd: _fail()
-        )
+        monkeypatch.setattr(after_create_mod, "_run", lambda _cmd: _fail())
 
         result = main()
 
@@ -156,9 +152,7 @@ class TestAfterCreateRequirements:
             result = main()
 
         assert result == 0
-        assert calls == [
-            ["uv", "pip", "install", "-r", "requirements.txt"]
-        ]
+        assert calls == [["uv", "pip", "install", "-r", "requirements.txt"]]
 
     def test_pip_fallback_when_uv_not_available(
         self,
@@ -185,9 +179,7 @@ class TestAfterCreateRequirements:
             result = main()
 
         assert result == 0
-        assert calls == [
-            ["pip", "install", "-r", "requirements.txt"]
-        ]
+        assert calls == [["pip", "install", "-r", "requirements.txt"]]
 
     def test_requirements_failure_returns_nonzero(
         self,
@@ -202,9 +194,7 @@ class TestAfterCreateRequirements:
         )
         monkeypatch.chdir(worktree)
 
-        monkeypatch.setattr(
-            after_create_mod, "_run", lambda _cmd: _fail()
-        )
+        monkeypatch.setattr(after_create_mod, "_run", lambda _cmd: _fail())
 
         with patch("shutil.which", return_value=None):
             result = main()
@@ -292,9 +282,7 @@ class TestAfterCreatePyproject:
         )
         monkeypatch.chdir(worktree)
 
-        monkeypatch.setattr(
-            after_create_mod, "_run", lambda _cmd: _fail()
-        )
+        monkeypatch.setattr(after_create_mod, "_run", lambda _cmd: _fail())
 
         result = main()
 
