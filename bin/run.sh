@@ -140,11 +140,15 @@ _REQUIRED_LABELS=(
 )
 
 echo "baton-harness: checking required labels in ${PROJECT_REPO_ABS}..."
+_REPO_SLUG="$(git -C "${PROJECT_REPO_ABS}" remote get-url origin 2>/dev/null \
+    | sed -E 's#.*github\.com[:/]([^/]+)/([^/]+?)(\.git)?$#\1/\2#')"
+if [[ -z "${_REPO_SLUG}" ]]; then
+    echo "error: could not determine GitHub repo slug for ${PROJECT_REPO_ABS}" >&2
+    exit 1
+fi
+
 _missing_labels=()
-_existing_labels="$(gh -C "${PROJECT_REPO_ABS}" label list --limit 200 --json name \
-    2>/dev/null | python3 -c \
-    'import json,sys; print("\n".join(l["name"] for l in json.load(sys.stdin)))'
-)"
+_existing_labels="$(gh label list -R "${_REPO_SLUG}" --limit 200 --json name --jq '.[].name')"
 
 for _label in "${_REQUIRED_LABELS[@]}"; do
     if ! echo "${_existing_labels}" | grep -qxF "${_label}"; then
@@ -158,7 +162,7 @@ if [[ ${#_missing_labels[@]} -gt 0 ]]; then
     echo >&2
     for _label in "${_missing_labels[@]}"; do
         echo "  missing: ${_label}" >&2
-        echo "  fix:     gh -C \"${PROJECT_REPO_ABS}\" label create \"${_label}\" --color \"#0075ca\"" >&2
+        echo "  fix:     gh label create \"${_label}\" -R \"${_REPO_SLUG}\" --color 0075ca" >&2
         echo >&2
     done
     echo "Create the missing label(s) above, then re-run bin/run.sh." >&2
