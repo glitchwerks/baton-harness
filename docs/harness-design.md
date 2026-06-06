@@ -124,7 +124,7 @@ These come from the spike and must be honoured by the harness as it grows. They 
 - **C1 — single-writer claim authority.** When the async CI/review layer is added, exactly one component may mutate claim/state. (Deferred — not in pilot.)
 - **C2 — provenance allowlist.** The harness acts only on agent-authored branches/PRs and owner-labeled issues; never on arbitrary-author content. (Deferred — not in pilot, since the pilot has no event-driven trigger.)
 - **C3 — bounded rework with escalation.** Every autonomous retry loop needs a budget and a human-escalation exit. (Deferred — pilot reviews PRs manually.)
-- **Cost note (H-note).** A block is retried as a continuation up to `max_turns`, so a block can cost up to `max_turns` full runs. Keep `max_turns` modest until the open question in §8 is answered.
+- **Cost note (H-note).** A block costs up to `max_turns` full agent runs. The #6 dry run (T2) confirmed that Baton does not re-check `exclude_labels` between turns, so a blocked issue burns through its remaining turns before settling. Keep `max_turns` modest. The terminal-block fix is deferred as upstream-dependent (issue #23); see §8 for the full decision record.
 - **Outcome ≠ green CI (F10).** "PR opened" is not "correct." In the pilot, the human is the CI gate at review; automating this is a later phase.
 
 ---
@@ -146,10 +146,16 @@ Explicitly deferred so the pilot stays minimal:
 Two are docs-can't-answer test targets; the rest are design decisions to make as the harness evolves.
 
 - **[test] Absolute `-w` path:** confirm `baton start -w <absolute-path-outside-project>` works (docs show only a relative example). ~2 min.
-- **[test] Block cost:** does Baton's continuation retry respect `exclude_labels: ["blocked"]` and stop after the first blocked turn, or burn all `max_turns`? Determines per-block cost. (H-note.)
+- ~~**[test] Block cost:** does Baton's continuation retry respect `exclude_labels: ["blocked"]` and stop after the first blocked turn, or burn all `max_turns`?~~ **Resolved — #6 dry run (T2).** `exclude_labels` is checked at poll time only; Baton does not halt an in-flight run. Block costs up to `max_turns`. See §8 terminal-block decision and pilot-validation-findings.md finding 5.
 - **[design] Script path resolution:** ~~do hooks hardcode the harness path, or read it from an env var exported by the launcher?~~ **Resolved.** The launcher (`bin/run.sh`, issue #1) exports `BATON_HARNESS_DIR`; hook entry points read it from the environment. Hardcoding is no longer needed.
 - **[design] CLAUDE.md sync:** how does the template become the project's committed CLAUDE.md — manual copy for the pilot, or a small generate step? Manual is fine for one project.
-- **[design] H1 fix:** make a block terminal (stop the continuation retry) rather than only reconciling labels — depends on the block-cost test outcome.
+- **[design] H1 fix — terminal-block decision (2026-06-06, closes AC3 of #4):** The block path is implemented: `after_run` enforces the single-state invariant (Priority 1 in `_reconcile_labels` — removes `agent-ready`, leaves `blocked`). This was validated live in the #6 dry run (T2, pilot-validation-findings.md finding 5).
+
+  **The block is not terminal at the Baton level.** The #6 dry run established that `exclude_labels` is evaluated at poll time only; Baton does not re-check it between turns within an active run, and `before_run` fires once per run, not per turn. A blocked issue therefore consumes up to `max_turns` full agent invocations before settling — not one (pilot-validation-findings.md §Finding 5, T2 log timestamps).
+
+  **The harness cannot make the block terminal on its own.** Doing so requires either an upstream Baton change (post-turn re-check of `exclude_labels`, or a per-turn hook point) or a harness-side mitigation (a `before_run` no-op guard that exits early when `blocked` is already present — cheap, but depends on `before_run` firing per turn, which it does not in current Baton). Neither path is currently available without an upstream change.
+
+  **Pilot decision:** accept the block-cost ≈ `max_turns` as a known, bounded cost. `max_turns` is already kept modest for this reason (§6 cost note). The terminal-block fix is deferred as upstream-dependent and tracked in issue #23.
 
 ---
 

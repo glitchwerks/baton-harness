@@ -102,7 +102,14 @@ Authoritative facts from the README, relevant to the harness:
 → Design implications (integration model, repo structure) live in `harness-design.md`, not here.
 
 ### H-note (cost) — a block costs up to `max_turns` runs
-State machine: "Normal exit (no PR): 1s retry delay (continuation check)." A block produces no PR, so Baton retries it as a continuation up to `max_turns`. A blocked issue therefore consumes up to `max_turns` full Claude runs before settling — a cost-model factor, not just the H1 label bug. **Open sub-question (docs silent → test target):** does the continuation check re-read labels and respect `exclude_labels: ["blocked"]`, stopping after the first blocked turn? If yes, a block costs ~1 run; if no, it costs `max_turns`. Materially affects cost.
+
+**Sub-question resolved — #6 dry run (T2); decision recorded in harness-design.md §8.**
+
+A block produces no PR, so Baton retries it as a continuation up to `max_turns`. A blocked issue therefore consumes up to `max_turns` full Claude runs before settling — a cost-model factor, not just the H1 label bug.
+
+The open sub-question (does the continuation check re-read labels and respect `exclude_labels: ["blocked"]`?) was answered by the #6 dry run: **no**. Baton evaluates `exclude_labels` at poll time only. Once a run is dispatched, it is not halted between turns. Block costs `max_turns`, not ~1 run.
+
+The terminal-block fix is deferred as upstream-dependent (requires a post-turn `exclude_labels` re-check or per-turn hook in Baton) and tracked in issue #23. Pilot decision: accept the `max_turns` cost as a known bound; keep `max_turns` modest. Full decision record: harness-design.md §8 — "[design] H1 fix — terminal-block decision."
 
 ---
 

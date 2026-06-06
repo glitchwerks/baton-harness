@@ -217,8 +217,11 @@ def _reconcile_labels(issue: int, outcome: RunOutcome) -> int:
         1. If ``blocked`` is already on the issue (applied mid-run by the
            agent), remove ``agent-ready`` and leave ``blocked``.  Do NOT add
            ``agent-done`` — the block overrides the F5 classification.
-           Note: TODO(#4) — making a block terminal (stopping Baton's own
-           continuation retry) depends on the block-cost test result.
+           Note: block is not terminal at the Baton level — Baton
+           re-dispatches blocked issues across continuation turns.  The
+           harness enforces the single-state label invariant here but
+           cannot stop the re-dispatch; the upstream-dependent terminal-
+           block fix is tracked in #23.
         2. If outcome is ``PR_OPENED``, add ``agent-done`` and remove
            ``agent-ready``.  Log the F10 caveat: CI status is NOT checked
            (human verifies at review — pilot scope).
@@ -241,14 +244,14 @@ def _reconcile_labels(issue: int, outcome: RunOutcome) -> int:
 
     # Priority 1: blocked label wins regardless of F5 outcome.
     if LABEL_BLOCKED in labels:
+        # Block is not terminal at the Baton level — see #23 for the
+        # upstream-dependent terminal-block fix; the harness only enforces
+        # the single-state label invariant here.
         log(
             _HOOK,
             issue,
             f"blocked label present — removing {LABEL_AGENT_READY!r}; "
             "leaving 'blocked' in place.",
-            # TODO(#4): make block terminal — stop Baton's continuation retry.
-            # Implement once block-cost test (harness-design.md §8) confirms
-            # whether `exclude_labels: ['blocked']` halts the retry loop.
         )
         if LABEL_AGENT_READY in labels:
             result = _run(
