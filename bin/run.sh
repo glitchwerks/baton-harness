@@ -122,6 +122,52 @@ fi
 PROJECT_REPO_ABS="$(cd "${PROJECT_REPO_PATH}" && pwd)"
 
 # ---------------------------------------------------------------------------
+# Label preflight — verify all three harness state labels exist in the target
+# repo before starting Baton.  after_run reconciliation uses gh issue edit
+# --add-label / --remove-label for these labels; if any are missing from the
+# repo, gh will error and reconciliation breaks (pilot: observed missing
+# 'agent-done' causing an unbounded dispatch loop via issue #21).
+#
+# Fail-clear: we never auto-create labels.  Mutating the target repo silently
+# is outside this harness's scope and could hide misconfiguration.  The
+# operator must create missing labels explicitly.
+# ---------------------------------------------------------------------------
+
+_REQUIRED_LABELS=(
+    "agent-ready"
+    "agent-done"
+    "blocked"
+)
+
+echo "baton-harness: checking required labels in ${PROJECT_REPO_ABS}..."
+_missing_labels=()
+_existing_labels="$(gh -C "${PROJECT_REPO_ABS}" label list --limit 200 --json name \
+    2>/dev/null | python3 -c \
+    'import json,sys; print("\n".join(l["name"] for l in json.load(sys.stdin)))'
+)"
+
+for _label in "${_REQUIRED_LABELS[@]}"; do
+    if ! echo "${_existing_labels}" | grep -qxF "${_label}"; then
+        _missing_labels+=("${_label}")
+    fi
+done
+
+if [[ ${#_missing_labels[@]} -gt 0 ]]; then
+    echo "error: the following required labels are missing from the target repo:" >&2
+    echo "       ${PROJECT_REPO_ABS}" >&2
+    echo >&2
+    for _label in "${_missing_labels[@]}"; do
+        echo "  missing: ${_label}" >&2
+        echo "  fix:     gh -C \"${PROJECT_REPO_ABS}\" label create \"${_label}\" --color \"#0075ca\"" >&2
+        echo >&2
+    done
+    echo "Create the missing label(s) above, then re-run bin/run.sh." >&2
+    exit 1
+fi
+
+echo "baton-harness: all required labels present (agent-ready, agent-done, blocked)"
+
+# ---------------------------------------------------------------------------
 # Launch Baton
 # ---------------------------------------------------------------------------
 
