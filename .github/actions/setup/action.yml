@@ -1,0 +1,27 @@
+name: Setup Python + uv
+description: >
+  Checkout, install uv, pin Python 3.10, create a venv, and install the
+  package with dev extras (ruff, mypy, pytest). Each parallel CI job calls
+  this composite action to keep setup consistent and avoid copy-paste drift.
+
+runs:
+  using: composite
+  steps:
+    # Install uv — not provided by the ubuntu-latest runner.
+    - uses: astral-sh/setup-uv@v3
+      with:
+        version: "latest"
+
+    # Pin to the Python version floor declared in pyproject.toml.
+    - name: Set up Python
+      run: uv python install 3.10
+      shell: bash
+
+    # Create venv and install the package + dev extras (ruff, mypy, pytest).
+    # Using the dev extras pins ensures CI uses the same tool versions as
+    # local development — avoids the "uv run <tool> resolves latest" footgun.
+    - name: Install package and dev dependencies
+      run: |
+        uv venv .venv
+        uv pip install -e ".[dev]"
+      shell: bash

@@ -6,40 +6,45 @@ on:
   pull_request:
     branches: [main]
 
+# Three independent jobs run in parallel so a failure in one still runs
+# and reports the others — each surfaces its own named check in the PR UI.
+
 jobs:
-  gate:
-    name: Lint, type-check, and test
+  lint:
+    name: Lint (ruff)
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      # Install uv — not provided by the ubuntu-latest runner.
-      - uses: astral-sh/setup-uv@v3
-        with:
-          version: "latest"
+      - uses: ./.github/actions/setup
 
-      # Pin to the Python version floor declared in pyproject.toml.
-      - name: Set up Python
-        run: uv python install 3.10
-
-      # Create venv and install the package + dev extras (ruff, mypy, pytest).
-      # Using the dev extras pins ensures CI uses the same tool versions as
-      # local development — avoids the "uv run <tool> resolves latest" footgun.
-      - name: Install package and dev dependencies
-        run: |
-          uv venv .venv
-          uv pip install -e ".[dev]"
-
-      # Run all gate steps via the venv's Python to guarantee pinned versions.
       - name: Lint (ruff check)
         run: .venv/bin/python -m ruff check .
 
       - name: Format check (ruff format)
         run: .venv/bin/python -m ruff format --check .
 
+  type-check:
+    name: Type check (mypy)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup
+
       - name: Type check (mypy)
         run: .venv/bin/python -m mypy src
+
+  test:
+    name: Test (pytest)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup
 
       - name: Test (pytest)
         run: .venv/bin/python -m pytest
