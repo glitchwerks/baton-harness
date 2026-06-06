@@ -8,6 +8,11 @@
 # BATON_HARNESS_DIR so hook scripts can resolve scripts/ without hardcoding
 # a path (harness-design.md §8 design decision: env var over hardcoded path).
 #
+# Also derives the venv root from baton's own location and exports BH_VENV.
+# Hook lines in WORKFLOW.md use this to self-activate the venv before calling
+# bh-*, making them work under Baton's login-shell runner (which re-derives
+# PATH from the user's profile and does not inherit an activated venv).
+#
 # Usage:
 #   bin/run.sh <project-repo-path>
 #
@@ -21,6 +26,8 @@
 # Environment exported:
 #   BATON_HARNESS_DIR  Absolute path to this harness repo root. Available to
 #                      all Baton hook scripts so they can resolve scripts/.
+#   BH_VENV            Absolute path to the venv that contains baton and the
+#                      bh-* console scripts.
 
 set -euo pipefail
 
@@ -40,6 +47,7 @@ Example:
 
 Environment exported to hooks:
   BATON_HARNESS_DIR  Absolute path to this harness repo root
+  BH_VENV            Absolute path to the venv containing baton and bh-*
 EOF
 }
 
@@ -47,6 +55,24 @@ if [[ "${1-}" == "--help" || "${1-}" == "-h" ]]; then
     usage
     exit 0
 fi
+
+# ---------------------------------------------------------------------------
+# Locate baton and derive the venv root
+#
+# baton and the bh-* console scripts all live in the same venv bin/.  By
+# deriving the venv root from baton's own location we export BH_VENV without
+# hard-coding any path.  Hook lines in WORKFLOW.md activate the venv before
+# calling bh-* so they resolve correctly under Baton's login-shell runner
+# (which re-derives PATH from the user's profile and does not inherit the
+# caller's activated venv).
+# ---------------------------------------------------------------------------
+
+BATON_BIN="$(command -v baton)" || {
+    echo "error: baton not found on PATH — install it first" >&2
+    exit 1
+}
+BH_VENV="$(cd "$(dirname "${BATON_BIN}")/.." && pwd)"
+export BH_VENV
 
 # ---------------------------------------------------------------------------
 # Argument validation

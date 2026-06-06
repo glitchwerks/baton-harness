@@ -24,6 +24,9 @@ Context:
     The hook runs with ``$PWD`` set to the worktree directory.  The issue
     number is inferred from ``basename($PWD)`` via
     ``baton_harness._cli.resolve_issue_number`` (spike finding F2).
+    Baton names worktrees ``<repo>/.symphony/worktrees/<issue>`` (a bare
+    integer); the harness's own convention is ``<repo>/.worktrees/<branch>``
+    (``<prefix>-<issue>[-<slug>]``).  Both forms are accepted.
 
     GitHub API calls use ``gh --json`` output parsed via ``json.loads``,
     never shell-grepped (addresses the pattern flagged in PR #9; see the
@@ -353,7 +356,8 @@ def main(argv: list[str] | None = None) -> int:
     if issue is None:
         print(
             f"[{_HOOK}] error: could not derive issue number from cwd — "
-            "worktree name must match <prefix>-<issue>[-<slug>]",
+            "expected a bare integer (Baton: .symphony/worktrees/<issue>) "
+            "or <prefix>-<issue>[-<slug>] (harness: .worktrees/<branch>)",
             file=sys.stderr,
             flush=True,
         )
