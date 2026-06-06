@@ -7,7 +7,7 @@ polling:
   interval_ms: 30000
 agent:
   max_concurrent: 2
-  max_turns: 3
+  max_turns: 2  # bounds worst-case cost of a blocked issue: Baton re-dispatches blocked issues across continuation turns up to max_turns; 2 preserves one legit retry (see #23)
   command: claude
   permission_mode: bypassPermissions
 hooks:

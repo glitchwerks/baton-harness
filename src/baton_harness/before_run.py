@@ -1,6 +1,6 @@
 """Hook: before_run — sync the worktree branch onto ``main``.
 
-Invoked by Baton before each agent run turn.  Fetches the latest
+Invoked by Baton once, before the first turn of each run.  Fetches the latest
 ``origin/main`` and rebases the current worktree branch onto it so the
 agent always operates on a fresh baseline.
 
