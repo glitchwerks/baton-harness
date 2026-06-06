@@ -305,6 +305,125 @@ class TestReconcileBlocked:
         assert add_done is None
 
 
+class TestReconcilePrOpenedLoopResilience:
+    """Regression tests for Finding B — loop-resilience on PR_OPENED path.
+
+    Before the fix, ``_reconcile_labels`` added ``agent-done`` first, then
+    removed ``agent-ready``.  If the add succeeded but the remove failed, the
+    issue was left with both labels and remained eligible for re-dispatch,
+    causing an unbounded agent-run loop.
+
+    After the fix the order is reversed: remove ``agent-ready`` first (exit
+    the eligible set), then add ``agent-done``.  A failure on the add step
+    returns non-zero but the issue is no longer eligible.
+    """
+
+    def test_remove_agent_ready_called_before_add_agent_done(self) -> None:
+        """remove-agent-ready must precede add-agent-done on PR_OPENED path.
+
+        Asserts the operation order so that a partial failure never leaves
+        the issue eligible for re-dispatch.
+        """
+        call_order: list[str] = []
+
+        def _side_effect(
+            cmd: list[str],
+        ) -> subprocess.CompletedProcess[str]:
+            if "--add-label" in cmd and "agent-done" in cmd:
+                call_order.append("add-agent-done")
+            elif "--remove-label" in cmd and "agent-ready" in cmd:
+                call_order.append("remove-agent-ready")
+            return _completed(
+                stdout=json.dumps({"labels": [{"name": "agent-ready"}]})
+                if "--json" in cmd
+                else ""
+            )
+
+        with patch("baton_harness.after_run._run") as mock_run:
+            mock_run.side_effect = [
+                _completed(
+                    stdout=json.dumps({"labels": [{"name": "agent-ready"}]})
+                ),  # gh issue view
+                _completed(),  # first label op
+                _completed(),  # second label op
+            ]
+            # Intercept after the initial issue-view call
+            mock_run.side_effect = None
+            mock_run.return_value = _completed(
+                stdout=json.dumps({"labels": [{"name": "agent-ready"}]})
+            )
+
+            # Replace side_effect with our ordering tracker
+            mock_run.side_effect = _side_effect
+            _reconcile_labels(42, RunOutcome.PR_OPENED)
+
+        assert call_order == [
+            "remove-agent-ready",
+            "add-agent-done",
+        ], (
+            f"Expected remove-agent-ready before add-agent-done, "
+            f"got: {call_order}"
+        )
+
+    def test_add_agent_done_fails_agent_ready_already_removed(self) -> None:
+        """When add-agent-done fails, agent-ready must already be removed.
+
+        Verifies Finding B: even on failure, the issue must not remain
+        eligible (agent-ready absent) so baton cannot re-dispatch.
+        """
+        remove_called = False
+
+        def _side_effect(
+            cmd: list[str],
+        ) -> subprocess.CompletedProcess[str]:
+            nonlocal remove_called
+            if "--json" in cmd:
+                return _completed(
+                    stdout=json.dumps({"labels": [{"name": "agent-ready"}]})
+                )
+            if "--remove-label" in cmd and "agent-ready" in cmd:
+                remove_called = True
+                return _completed()  # remove succeeds
+            if "--add-label" in cmd and "agent-done" in cmd:
+                # add fails — but remove already happened above
+                return _completed(returncode=1, stdout="")
+            return _completed()
+
+        with patch("baton_harness.after_run._run") as mock_run:
+            mock_run.side_effect = _side_effect
+            exit_code = _reconcile_labels(42, RunOutcome.PR_OPENED)
+
+        # Non-zero because add-agent-done failed
+        assert exit_code != 0
+        # But remove-agent-ready was already called (issue not left eligible)
+        assert remove_called, (
+            "remove-agent-ready must be called even when add-agent-done fails"
+        )
+
+    def test_happy_path_both_ops_succeed_returns_zero(self) -> None:
+        """Happy path: remove-agent-ready then add-agent-done, exit 0.
+
+        Confirms the reordered implementation still completes successfully.
+        """
+        with patch("baton_harness.after_run._run") as mock_run:
+            mock_run.side_effect = [
+                _completed(
+                    stdout=json.dumps({"labels": [{"name": "agent-ready"}]})
+                ),  # gh issue view
+                _completed(),  # remove-agent-ready
+                _completed(),  # add-agent-done
+            ]
+            exit_code = _reconcile_labels(42, RunOutcome.PR_OPENED)
+        assert exit_code == 0
+        all_args = [c[0][0] for c in mock_run.call_args_list]
+        # remove-agent-ready is the second call (index 1)
+        assert "--remove-label" in all_args[1]
+        assert "agent-ready" in all_args[1]
+        # add-agent-done is the third call (index 2)
+        assert "--add-label" in all_args[2]
+        assert "agent-done" in all_args[2]
+
+
 class TestReconcileRetryable:
     """Retryable outcomes → leave agent-ready; no label changes."""
 
@@ -368,8 +487,8 @@ class TestMain:
                 _completed(
                     stdout=json.dumps({"labels": [{"name": "agent-ready"}]})
                 ),
+                _completed(),  # remove agent-ready (first — loop-resilience)
                 _completed(),  # add agent-done
-                _completed(),  # remove agent-ready
             ]
             result = after_run.main()
         assert result == 0
@@ -391,7 +510,9 @@ class TestMain:
                 _completed(
                     stdout=json.dumps({"labels": [{"name": "agent-ready"}]})
                 ),
-                _completed(returncode=1),  # add agent-done fails
+                _completed(
+                    returncode=1
+                ),  # remove agent-ready fails (first op)
             ]
             result = after_run.main()
         assert result != 0

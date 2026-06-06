@@ -2,9 +2,14 @@
 
 Tests cover:
 - ``resolve_issue_number``: derives the GitHub issue number from a worktree
-  directory path whose basename matches the ``<prefix>-<issue>-<slug>`` or
-  ``<prefix><issue>-<slug>`` conventions used by the harness worktree naming
-  scheme (e.g. ``feat-10-python-scaffold``, ``fix-42-auth-bug``).
+  directory path.  Accepted forms:
+
+  * Baton bare-number: ``.symphony/worktrees/<issue>`` — the directory name
+    is a plain integer (e.g. ``"2"``).
+  * Harness prefixed form (with or without trailing slug):
+    ``<prefix>-<issue>[-<slug>]`` (e.g. ``feat-10-python-scaffold``,
+    ``chore-7``).
+
 - ``log`` / ``err``: write correctly-prefixed lines to stdout/stderr.
 """
 
@@ -44,14 +49,29 @@ class TestResolveIssueNumber:
         path = Path("/repo/.worktrees/feat-123-big-feature")
         assert resolve_issue_number(path) == 123
 
-    def test_bare_numeric_suffix_not_matched(self) -> None:
-        """A directory whose name is purely numeric returns None."""
-        path = Path("/repo/.worktrees/12345")
-        assert resolve_issue_number(path) is None
+    def test_baton_bare_issue_number_single_digit(self) -> None:
+        """Baton bare worktree name "2" → 2 (e.g. .symphony/worktrees/2)."""
+        path = Path("/repo/.symphony/worktrees/2")
+        assert resolve_issue_number(path) == 2
+
+    def test_baton_bare_issue_number_multi_digit(self) -> None:
+        """Baton bare worktree name "12345" → 12345."""
+        path = Path("/repo/.symphony/worktrees/12345")
+        assert resolve_issue_number(path) == 12345
+
+    def test_prefixed_no_slug(self) -> None:
+        """chore-7 (prefix + issue, no trailing slug) → 7."""
+        path = Path("/repo/.worktrees/chore-7")
+        assert resolve_issue_number(path) == 7
 
     def test_no_issue_number_in_name(self) -> None:
         """A directory name with no embedded number returns None."""
         path = Path("/repo/.worktrees/feat-python-scaffold")
+        assert resolve_issue_number(path) is None
+
+    def test_non_matching_name_returns_none(self) -> None:
+        """A directory name that matches no known form returns None."""
+        path = Path("/repo/.worktrees/not-a-worktree-name!")
         assert resolve_issue_number(path) is None
 
     def test_cwd_fallback(

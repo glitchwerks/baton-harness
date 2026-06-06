@@ -24,6 +24,9 @@ Context:
     The hook runs with ``$PWD`` set to the worktree directory.  The issue
     number is inferred from ``basename($PWD)`` via
     ``baton_harness._cli.resolve_issue_number`` (spike finding F2).
+    Baton names worktrees ``<repo>/.symphony/worktrees/<issue>`` (a bare
+    integer); the harness's own convention is ``<repo>/.worktrees/<branch>``
+    (``<prefix>-<issue>[-<slug>]``).  Both forms are accepted.
 
     GitHub API calls use ``gh --json`` output parsed via ``json.loads``,
     never shell-grepped (addresses the pattern flagged in PR #9; see the
@@ -273,31 +276,21 @@ def _reconcile_labels(issue: int, outcome: RunOutcome) -> int:
         # F10 caveat: 'agent-done' means a PR exists, NOT that CI is green.
         # The human is the CI gate at review (pilot scope). Do NOT query or
         # gate on CI status here.
+        #
+        # Loop-resilience (Finding B / issue #21): remove 'agent-ready' FIRST
+        # to exit the eligible set before adding 'agent-done'.  This ensures
+        # a partial failure (add succeeds, remove fails — or vice versa) never
+        # leaves the issue eligible for re-dispatch.  Even if add-agent-done
+        # subsequently fails we return non-zero and log loudly, but the issue
+        # is already ineligible.
         log(
             _HOOK,
             issue,
-            "outcome=pr-opened: adding 'agent-done', removing 'agent-ready'. "
+            "outcome=pr-opened: removing 'agent-ready' first, then adding "
+            "'agent-done'. "
             "CAVEAT(F10): agent-done means a PR exists, NOT that CI is green"
             " — human verifies at review.",
         )
-        add_result = _run(
-            [
-                "gh",
-                "issue",
-                "edit",
-                str(issue),
-                "--add-label",
-                LABEL_AGENT_DONE,
-            ]
-        )
-        if add_result.returncode != 0:
-            err(
-                _HOOK,
-                issue,
-                f"failed to add {LABEL_AGENT_DONE!r}: "
-                f"{add_result.stderr.strip()}",
-            )
-            return 1
         remove_result = _run(
             [
                 "gh",
@@ -314,6 +307,24 @@ def _reconcile_labels(issue: int, outcome: RunOutcome) -> int:
                 issue,
                 f"failed to remove {LABEL_AGENT_READY!r}: "
                 f"{remove_result.stderr.strip()}",
+            )
+            return 1
+        add_result = _run(
+            [
+                "gh",
+                "issue",
+                "edit",
+                str(issue),
+                "--add-label",
+                LABEL_AGENT_DONE,
+            ]
+        )
+        if add_result.returncode != 0:
+            err(
+                _HOOK,
+                issue,
+                f"failed to add {LABEL_AGENT_DONE!r}: "
+                f"{add_result.stderr.strip()}",
             )
             return 1
         return 0
@@ -353,7 +364,8 @@ def main(argv: list[str] | None = None) -> int:
     if issue is None:
         print(
             f"[{_HOOK}] error: could not derive issue number from cwd — "
-            "worktree name must match <prefix>-<issue>[-<slug>]",
+            "expected a bare integer (Baton: .symphony/worktrees/<issue>) "
+            "or <prefix>-<issue>[-<slug>] (harness: .worktrees/<branch>)",
             file=sys.stderr,
             flush=True,
         )

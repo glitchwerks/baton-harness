@@ -11,9 +11,9 @@ agent:
   command: claude
   permission_mode: bypassPermissions
 hooks:
-  after_create: bh-after-create
-  before_run: bh-before-run
-  after_run: bh-after-run
+  after_create: . "$BH_VENV/bin/activate" && bh-after-create
+  before_run: . "$BH_VENV/bin/activate" && bh-before-run
+  after_run: . "$BH_VENV/bin/activate" && bh-after-run
 ---
 You are working on issue #{{ issue.number }}: {{ issue.title }}
 

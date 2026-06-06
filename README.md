@@ -125,6 +125,37 @@ directory name must follow the `<prefix>-<issue>[-<slug>]` convention
 - [Baton](https://github.com/mraza007/baton) installed and on `$PATH`
 - `config/WORKFLOW.md` present in this repo (already committed — see `config/`)
 - The target project repo checked out locally
+- The target project repo must have all three harness state labels (see
+  [Required GitHub labels](#required-github-labels) below)
+
+## Required GitHub labels
+
+The target project repo **must** have all three harness state labels before
+running `bin/run.sh`. The `after_run` hook uses `gh issue edit --add-label`
+and `--remove-label` to reconcile these labels after each agent turn; if any
+are missing, `gh` will error and reconciliation breaks — which in the worst
+case causes an unbounded agent re-dispatch loop (pilot finding, issue #21).
+
+`bin/run.sh` runs a preflight check for all three labels and exits non-zero
+with actionable instructions if any are absent. It **does not auto-create
+labels** — label creation is an operator action.
+
+| Label | Purpose |
+|---|---|
+| `agent-ready` | Issue is eligible for an agent run |
+| `agent-done` | Agent has opened a PR (human reviews) |
+| `blocked` | Agent needs human input mid-run |
+
+To create a missing label in the target repo:
+
+```bash
+gh -C /path/to/target-repo label create "agent-ready" --color "#0075ca"
+gh -C /path/to/target-repo label create "agent-done"  --color "#0e8a16"
+gh -C /path/to/target-repo label create "blocked"     --color "#e4e669"
+```
+
+Or follow the exact `gh label create` commands printed by `bin/run.sh` when it
+detects a missing label.
 
 ## Usage
 
