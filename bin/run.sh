@@ -2,23 +2,21 @@
 # bin/run.sh — Baton harness launcher
 #
 # Encapsulates the point-at-path Baton invocation (harness-design.md §2, §4.1)
-# so it isn't retyped or misremembered for each project.
+# so it isn't retyped or misremembered.
 #
 # Resolves the harness root from the script's own location and exports it as
 # BATON_HARNESS_DIR so hook scripts can resolve scripts/ without hardcoding
 # a path (harness-design.md §8 design decision: env var over hardcoded path).
 #
 # Usage:
-#   bin/run.sh <project-name> <project-repo-path>
+#   bin/run.sh <project-repo-path>
 #
 # Arguments:
-#   project-name       Name of the project config dir under config/
-#                      (expects config/<project-name>/WORKFLOW.md to exist)
 #   project-repo-path  Absolute or relative path to the target project repo
 #                      (the directory baton runs inside)
 #
 # Example:
-#   bin/run.sh my-api /home/chris/projects/my-api
+#   bin/run.sh /home/chris/projects/my-api
 #
 # Environment exported:
 #   BATON_HARNESS_DIR  Absolute path to this harness repo root. Available to
@@ -32,15 +30,13 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: bin/run.sh <project-name> <project-repo-path>
+Usage: bin/run.sh <project-repo-path>
 
 Arguments:
-  project-name       Name of the project config dir under config/
-                     (expects config/<project-name>/WORKFLOW.md to exist)
   project-repo-path  Path to the target project repo (baton runs inside it)
 
 Example:
-  bin/run.sh my-api /home/chris/projects/my-api
+  bin/run.sh /home/chris/projects/my-api
 
 Environment exported to hooks:
   BATON_HARNESS_DIR  Absolute path to this harness repo root
@@ -56,15 +52,14 @@ fi
 # Argument validation
 # ---------------------------------------------------------------------------
 
-if [[ $# -ne 2 ]]; then
-    echo "error: expected 2 arguments, got $#" >&2
+if [[ $# -ne 1 ]]; then
+    echo "error: expected 1 argument, got $#" >&2
     echo >&2
     usage >&2
     exit 1
 fi
 
-PROJECT_NAME="$1"
-PROJECT_REPO_PATH="$2"
+PROJECT_REPO_PATH="$1"
 
 # ---------------------------------------------------------------------------
 # Resolve harness root from the script's own location (works regardless of cwd)
@@ -80,11 +75,11 @@ export BATON_HARNESS_DIR
 # Validate config file exists
 # ---------------------------------------------------------------------------
 
-WORKFLOW_FILE="${BATON_HARNESS_DIR}/config/${PROJECT_NAME}/WORKFLOW.md"
+WORKFLOW_FILE="${BATON_HARNESS_DIR}/config/WORKFLOW.md"
 
 if [[ ! -f "${WORKFLOW_FILE}" ]]; then
     echo "error: workflow config not found: ${WORKFLOW_FILE}" >&2
-    echo "       Create config/${PROJECT_NAME}/WORKFLOW.md in the harness repo." >&2
+    echo "       Create config/WORKFLOW.md in the harness repo." >&2
     exit 1
 fi
 
@@ -104,7 +99,6 @@ PROJECT_REPO_ABS="$(cd "${PROJECT_REPO_PATH}" && pwd)"
 # Launch Baton
 # ---------------------------------------------------------------------------
 
-echo "baton-harness: project=${PROJECT_NAME}"
 echo "baton-harness: harness=${BATON_HARNESS_DIR}"
 echo "baton-harness: workflow=${WORKFLOW_FILE}"
 echo "baton-harness: repo=${PROJECT_REPO_ABS}"
