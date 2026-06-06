@@ -305,6 +305,130 @@ class TestReconcileBlocked:
         assert add_done is None
 
 
+class TestReconcileBlockedSingleStateInvariant:
+    """Regression tests for the block-path single-state label invariant (#4).
+
+    Validates that when ``blocked`` is present:
+
+    - ``agent-ready`` is removed (single-state: only ``blocked`` remains).
+    - ``agent-done`` is NEVER added (block overrides F5 classification).
+    - Label-edit failures are surfaced via non-zero exit, not swallowed.
+    - The block wins regardless of F5 outcome (even ``PR_OPENED``).
+
+    These tests were validated against the dry-run in issue #6 (T2).
+    The upstream-dependent terminal-block fix is tracked in #23.
+    """
+
+    def test_blocked_and_agent_ready_removes_agent_ready_not_agent_done(
+        self,
+    ) -> None:
+        """blocked+agent-ready: removes agent-ready, does NOT add agent-done.
+
+        Single-state invariant: after reconciliation only ``blocked``
+        remains.  ``agent-done`` must never be added on the block path.
+        """
+        with patch("baton_harness.after_run._run") as mock_run:
+            mock_run.side_effect = [
+                _completed(stdout=_LABEL_BLOCKED),  # issue has both labels
+                _completed(),  # --remove-label agent-ready
+            ]
+            exit_code = _reconcile_labels(7, RunOutcome.COMMITTED_NO_PR)
+        assert exit_code == 0
+        all_args = [c[0][0] for c in mock_run.call_args_list]
+        # --remove-label agent-ready must have been called
+        remove_call = next(
+            (
+                a
+                for a in all_args
+                if "--remove-label" in a and "agent-ready" in a
+            ),
+            None,
+        )
+        assert remove_call is not None, (
+            "--remove-label agent-ready was not called"
+        )
+        # --add-label agent-done must NOT have been called
+        add_done = next(
+            (a for a in all_args if "--add-label" in a and "agent-done" in a),
+            None,
+        )
+        assert add_done is None, (
+            "--add-label agent-done must not be called on the block path"
+        )
+
+    def test_blocked_without_agent_ready_no_remove_attempted(self) -> None:
+        """Blocked present, agent-ready absent: no remove call, returns 0.
+
+        When ``agent-ready`` is already absent there is nothing to remove;
+        the harness must not attempt a redundant label edit.
+        """
+        blocked_only = json.dumps({"labels": [{"name": "blocked"}]})
+        with patch("baton_harness.after_run._run") as mock_run:
+            mock_run.side_effect = [
+                _completed(
+                    stdout=blocked_only
+                ),  # only blocked, no agent-ready
+            ]
+            exit_code = _reconcile_labels(7, RunOutcome.NO_COMMITS)
+        assert exit_code == 0
+        # Only the issue-view call — no label-edit calls
+        assert mock_run.call_count == 1, (
+            "No gh issue edit should be attempted when agent-ready is absent"
+        )
+
+    def test_blocked_remove_label_failure_returns_nonzero(self) -> None:
+        """Block path: --remove-label failure surfaces as non-zero exit.
+
+        Label-edit failures must never be swallowed (H1 root cause was
+        ``|| true`` silencing).  A non-zero returncode from the remove
+        call must propagate to the caller.
+        """
+        with patch("baton_harness.after_run._run") as mock_run:
+            mock_run.side_effect = [
+                _completed(stdout=_LABEL_BLOCKED),  # both labels present
+                _completed(returncode=1),  # --remove-label fails
+            ]
+            exit_code = _reconcile_labels(7, RunOutcome.COMMITTED_NO_PR)
+        assert exit_code == 1
+
+    def test_blocked_wins_over_pr_opened_outcome(self) -> None:
+        """Block path takes priority over PR_OPENED F5 classification.
+
+        Even when the agent opened a PR (``PR_OPENED``), the presence of
+        ``blocked`` must override the outcome: ``agent-ready`` is removed,
+        ``agent-done`` is NOT added, and the function returns ``0``.
+        """
+        with patch("baton_harness.after_run._run") as mock_run:
+            mock_run.side_effect = [
+                _completed(stdout=_LABEL_BLOCKED),  # both labels present
+                _completed(),  # --remove-label agent-ready
+            ]
+            exit_code = _reconcile_labels(7, RunOutcome.PR_OPENED)
+        assert exit_code == 0
+        all_args = [c[0][0] for c in mock_run.call_args_list]
+        # --remove-label agent-ready must be called
+        remove_call = next(
+            (
+                a
+                for a in all_args
+                if "--remove-label" in a and "agent-ready" in a
+            ),
+            None,
+        )
+        assert remove_call is not None, (
+            "--remove-label agent-ready must be called on the block path"
+        )
+        # --add-label agent-done must NOT be called (block overrides PR_OPENED)
+        add_done = next(
+            (a for a in all_args if "--add-label" in a and "agent-done" in a),
+            None,
+        )
+        assert add_done is None, (
+            "--add-label agent-done must not be called even with PR_OPENED "
+            "when blocked is present"
+        )
+
+
 class TestReconcilePrOpenedLoopResilience:
     """Regression tests for Finding B — loop-resilience on PR_OPENED path.
 
