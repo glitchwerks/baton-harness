@@ -7,8 +7,6 @@ description: >
 runs:
   using: composite
   steps:
-    - uses: actions/checkout@v4
-
     # Install uv — not provided by the ubuntu-latest runner.
     - uses: astral-sh/setup-uv@v3
       with:
