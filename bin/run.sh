@@ -140,8 +140,9 @@ _REQUIRED_LABELS=(
 )
 
 echo "baton-harness: checking required labels in ${PROJECT_REPO_ABS}..."
-_REPO_SLUG="$(git -C "${PROJECT_REPO_ABS}" remote get-url origin 2>/dev/null \
-    | sed -E 's#.*github\.com[:/]([^/]+)/([^/]+?)(\.git)?$#\1/\2#')"
+_REPO_URL="$(git -C "${PROJECT_REPO_ABS}" remote get-url origin 2>/dev/null)"
+_REPO_URL="${_REPO_URL%.git}"                       # strip trailing .git (any URL form)
+_REPO_SLUG="$(printf '%s\n' "${_REPO_URL}" | sed -E 's#.*github\.com[:/]##')"
 if [[ -z "${_REPO_SLUG}" ]]; then
     echo "error: could not determine GitHub repo slug for ${PROJECT_REPO_ABS}" >&2
     exit 1
