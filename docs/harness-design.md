@@ -1,6 +1,8 @@
 # Harness design
 
-**Status:** Living design document. Starts at pilot scope; evolves as the harness grows. This is the design of the harness *itself* — the policy layer that drives Baton. Baton is an upstream dependency, not part of this repo (decision D2).
+**Status:** Living design document. Starts at pilot scope; evolves as the harness grows. This is the design of the harness *itself* — the policy layer built around the vendored `symphony` orchestrator.
+
+**Vendoring status [decided — not yet built]:** `symphony/` (the `mraza007/baton` Python package) will be copied into `src/baton_harness/vendor/symphony/` and called directly as a library. The current pilot runs the existing external-process model; §1 and §2 record the decided target and tag it accordingly.
 
 **Companion docs:** [architecture-spec.md](./architecture-spec.md) (overall system), [spike-findings.md](./spike-findings.md) (what the spike established — referenced here, not restated), [problem-statement.md](./problem-statement.md) (constraints).
 
@@ -18,7 +20,7 @@ The harness implementation language is **Python**. This supersedes the shell-scr
 
 3. **The load-bearing components are error-prone in bash.** The outcome router parses `gh --json` output; the spike's closed shell implementation (PR #9) grepped JSON rather than parsing it. The router is explicitly "production code, not glue" (open-questions.md S2.1), and the future async CI-trigger carries the C1/C2/C3 concerns (spike-findings.md — "design it as a real component, not a webhook one-liner"). Proper JSON parsing, data structures, and pytest coverage matter there.
 
-4. **Aids the D2 "contribute upstream to Baton" path.** Baton is itself Python.
+4. **Matches the vendored `symphony` source language.** `symphony` is Python; shared tooling (ruff, mypy, pytest) applies uniformly across harness and vendor tree. (The original rationale was "aids the D2 contribute-upstream path" — superseded by the vendoring decision; see §1.)
 
 **Continuity note:** spike finding F8 — "hooks call standalone, independently testable script files taking the issue number as an argument" — still holds in spirit. The scripts are now Python modules/entry points rather than `.sh` files, but the testability principle is unchanged.
 
@@ -26,25 +28,40 @@ The harness implementation language is **Python**. This supersedes the shell-scr
 
 ## 1. What the harness is
 
-A standalone, version-controlled repo that holds the *reusable policy and tooling* around the orchestrator: the agent prompt, the lifecycle hook scripts, per-project config, context templates, and the launcher. Baton (the orchestrator) is installed as a dependency; the harness is what makes it do the right thing.
+A standalone, version-controlled repo that holds the *reusable policy and tooling* around the orchestrator: the agent prompt, the lifecycle hook scripts, per-project config, context templates, and the launcher. The orchestration engine (`symphony`) is vendored into the repo and called directly as a library; the harness is what makes it do the right thing.
 
-Decision D2: this is its own repo, **not** a Baton fork. Fork only as a last resort, after "work around it" and "contribute upstream" are exhausted.
+**Vendoring decision [decided — not yet built]:** `symphony/` (the `mraza007/baton` Python package, MIT licensed, ~1120 lines) will be copied into `src/baton_harness/vendor/symphony/`. The harness calls `Orchestrator._run_worker(issue)` directly — no subprocess, no `baton start` invocation. Upstream `mraza007/baton` is frozen/dormant (3 commits, Mar 2026, zero external PRs ever merged); vendoring makes the harness the de facto maintainer of the orchestrator source.
+
+**Relationship to D2:** Decision D2 ("harness is its own repo, not a Baton fork") is not violated — the harness repo remains independent. D2's "fork only as a last resort" framing is superseded: vendoring the source into a subdirectory of the harness package is the selected path, chosen over both external-dependency management and a full fork. D2 as a historical decision record is preserved in [spike-findings.md](./spike-findings.md) with a supersession note.
+
+**Two fixes vendoring unlocks [decided — not yet built]:**
+1. Thread `env=` through `run_hook` — fixes the `before_run` rebase-onto-main bug (workaround currently in place in `before_run.py`).
+2. Re-check `exclude_labels` inside the `_run_worker` turn loop — makes a block terminal, retiring the `max_turns: 2` workaround (see §6 cost note, §8, and `config/WORKFLOW.md`).
+
+Issue #23 (terminal-block / upstream-dependency framing) is **closed**: the workaround merged in PR #26; the root-cause fix is harness-internal post-vendoring, with no remaining upstream dependency.
 
 ---
 
-## 2. Integration model — point-at-path
+## 2. Integration model
 
-Validated against Baton's docs (see spike-findings F11). Baton runs project-local — launched from the project directory — but its config can live elsewhere and be pointed at:
+**Current pilot [implemented]:** The external-process model (validated in the spike and pilot — see spike-findings F11 and pilot-validation-findings.md). Baton runs project-local; the harness config lives here and is pointed at via `baton start -w`:
 
 ```bash
 cd <project-repo> && baton start -w /agent-harness/config/WORKFLOW.md
 ```
 
-- The harness repo owns the **hook entry points** (invoked by the WORKFLOW.md hooks configuration via absolute path) and the **WORKFLOW.md** (passed via `-w`).
+- The harness repo owns the **hook entry points** and the **WORKFLOW.md** (passed via `-w`).
 - The **project repo** carries only its own committed `CLAUDE.md` (Claude Code discovers it from the worktree; not relocatable — F11) and its CI workflow (a precondition, not the harness's job).
-- A launcher in the harness encapsulates the `cd` + `-w` invocation per project.
+- `bin/run.sh` encapsulates the `cd` + `-w` invocation per project.
 
-This keeps the harness as the single source of truth for everything shareable, with the smallest possible footprint in each project repo.
+**Decided target [decided — not yet built]:** The `baton start -w` subprocess seam is deleted by vendoring. The integration model becomes:
+
+```python
+from baton_harness.vendor.symphony.orchestrator import Orchestrator
+result = await orchestrator._run_worker(issue)  # returns "pr_created" | "no_pr"
+```
+
+The harness (or chain driver) calls `Orchestrator._run_worker(issue)` directly — no global singletons, no poller loop, no subprocess. The `WORKFLOW.md` YAML front-matter is no longer parsed by an external process; its agent prompt body content continues to serve as the instruction template. The `BH_VENV` activation workaround in hooks becomes retireable once the vendored `run_hook` passes `env=` directly. The per-project `CLAUDE.md` constraint is unchanged (F11 still holds).
 
 ---
 
@@ -83,11 +100,15 @@ agent-harness/
 
 ## 4. Components
 
-### 4.1 Launcher — `bin/run.sh` (shell — stays shell)
+### 4.1 Launcher — `bin/run.sh` (shell — stays shell) [implemented]
 Encapsulates the project-local invocation so it isn't retyped or misremembered. Resolves the harness directory, `cd`s into the target project, and starts Baton pointed at that project's config. Exports `BATON_HARNESS_DIR` so hook entry points can locate the package without hardcoding a path. This launcher is a thin shell wrapper (`exec baton …`) and is not part of the Python package — it was implemented in issue #1 and is already merged.
 
+> **Post-vendoring [decided — not yet built]:** `bin/run.sh` in its current `baton start -w` form becomes obsolete. The entry point for the chain driver or direct harness invocation will replace it; the `BATON_HARNESS_DIR` export pattern may be retained for backward compatibility with existing per-project `CLAUDE.md` setups.
+
 ### 4.2 Hooks — `src/baton_harness/` (Python)
-Standalone, independently testable Python modules (spike F8 confirmed the testability pattern), each invoked as an entry point and taking the issue number as an argument derived from the worktree path (`basename "$PWD"` — F2: Baton passes no env-var context to hooks). Issue number parsing, GitHub API calls, and JSON handling are all done in Python — no shell grepping of JSON output.
+Standalone, independently testable Python modules (spike F8 confirmed the testability pattern), each invoked as an entry point and taking the issue number as an argument derived from the worktree path (`basename "$PWD"` — F2: Baton passes no env-var context to hooks) [implemented]. Issue number parsing, GitHub API calls, and JSON handling are all done in Python — no shell grepping of JSON output.
+
+> **Post-vendoring [decided — not yet built]:** The `basename "$PWD"` workaround is retireable once the vendored `run_hook` is patched to thread `env=` through to hook calls — at which point `ISSUE_NUMBER` can be passed directly. The workaround remains in place until then.
 
 - **`after_create.py`** — runs once after worktree creation. Per-worktree dependency setup (`npm install` / `pip install`). Partial mitigation for the worktree-isolation limits (S2.4); does not solve shared ports/services.
 - **`before_run.py`** — syncs the worktree branch onto latest `main` before the agent runs.
@@ -124,7 +145,7 @@ These come from the spike and must be honoured by the harness as it grows. They 
 - **C1 — single-writer claim authority.** When the async CI/review layer is added, exactly one component may mutate claim/state. (Deferred — not in pilot.)
 - **C2 — provenance allowlist.** The harness acts only on agent-authored branches/PRs and owner-labeled issues; never on arbitrary-author content. (Deferred — not in pilot, since the pilot has no event-driven trigger.)
 - **C3 — bounded rework with escalation.** Every autonomous retry loop needs a budget and a human-escalation exit. (Deferred — pilot reviews PRs manually.)
-- **Cost note (H-note).** A block costs up to `max_turns` full agent runs. The #6 dry run (T2) confirmed that Baton does not re-check `exclude_labels` between turns, so a blocked issue burns through its remaining turns before settling. Keep `max_turns` modest. The terminal-block fix is deferred as upstream-dependent (issue #23); see §8 for the full decision record.
+- **Cost note (H-note).** A block costs up to `max_turns` full agent runs [implemented with `max_turns: 2` workaround]. The #6 dry run (T2) confirmed that the external-process Baton does not re-check `exclude_labels` between turns, so a blocked issue burns through its remaining turns before settling. Keep `max_turns` modest in the current pilot. Under vendoring [decided — not yet built], the `_run_worker` turn-loop patch makes a block terminal — retiring the `max_turns: 2` cost workaround. Issue #23 (tracking this fix) is closed; the upstream-dependency framing that was its premise no longer applies. See §8 for the full terminal-block decision record.
 - **Outcome ≠ green CI (F10).** "PR opened" is not "correct." In the pilot, the human is the CI gate at review; automating this is a later phase.
 
 ---
@@ -151,59 +172,49 @@ Two are docs-can't-answer test targets; the rest are design decisions to make as
 - **[design] CLAUDE.md sync:** how does the template become the project's committed CLAUDE.md — manual copy for the pilot, or a small generate step? Manual is fine for one project.
 - **[design] H1 fix — terminal-block decision (2026-06-06, closes AC3 of #4):** The block path is implemented: `after_run` enforces the single-state invariant (Priority 1 in `_reconcile_labels` — removes `agent-ready`, leaves `blocked`). This was validated live in the #6 dry run (T2, pilot-validation-findings.md finding 5).
 
-  **The block is not terminal at the Baton level.** The #6 dry run established that `exclude_labels` is evaluated at poll time only; Baton does not re-check it between turns within an active run, and `before_run` fires once per run, not per turn. A blocked issue therefore consumes up to `max_turns` full agent invocations before settling — not one (pilot-validation-findings.md §Finding 5, T2 log timestamps).
+  **The block is not terminal at the external-process Baton level [implemented state].** The #6 dry run established that `exclude_labels` is evaluated at poll time only; Baton does not re-check it between turns within an active run, and `before_run` fires once per run, not per turn. A blocked issue therefore consumes up to `max_turns` full agent invocations before settling — not one (pilot-validation-findings.md §Finding 5, T2 log timestamps).
 
-  **The harness cannot make the block terminal on its own.** Doing so requires either an upstream Baton change (post-turn re-check of `exclude_labels`, or a per-turn hook point) or a harness-side mitigation (a `before_run` no-op guard that exits early when `blocked` is already present — cheap, but depends on `before_run` firing per turn, which it does not in current Baton). Neither path is currently available without an upstream change.
+  **Pilot decision [implemented]:** accept the block-cost ≈ `max_turns` as a known, bounded cost. `max_turns: 2` in `config/WORKFLOW.md` is the workaround. Issue #23 tracked this fix; it was closed (PR #26) on the workaround.
 
-  **Pilot decision:** accept the block-cost ≈ `max_turns` as a known, bounded cost. `max_turns` is already kept modest for this reason (§6 cost note). The terminal-block fix is deferred as upstream-dependent and tracked in issue #23.
+  **Post-vendoring resolution [decided — not yet built]:** under vendoring, the terminal-block fix is ~10 lines inside the vendored `_run_worker` turn loop — a harness-internal change with no upstream dependency. Once applied, `max_turns: 2` can be raised to a value reflecting real work complexity. The "upstream-dependent" framing in older passages is obsolete; do not propagate it.
 
 ---
 
 ## 9. Relationship to the architecture spec
 
-The architecture spec (§3.4) described the orchestration layer abstractly. This document is the concrete, Baton-specific realization of that layer for the pilot. Where they diverge, the spike findings are the tiebreaker — several spec assumptions were corrected by the spike (notably F3 label ownership, F5 outcome states, F9 block-vs-fail). The spec should eventually be updated to match; until then, this design doc reflects current ground truth for the harness.
+The architecture spec (§3.4) described the orchestration layer abstractly. This document is the concrete realization of that layer. Where they diverge, the spike findings are the tiebreaker — several spec assumptions were corrected by the spike (notably F3 label ownership, F5 outcome states, F9 block-vs-fail). For new-model decisions (vendoring, chain driver), the session-context 2026-06-06 supersedes both spike findings and architecture-spec as the tiebreaker.
 
 ---
 
-## 10. Future exploration: sequential / dependency-ordered milestones
+## 10. Chain-driver orchestration: dependency-ordered milestones
 
-**Status:** Pathfinding item for a later phase. Not pilot scope. Captured because it materially shapes the harness and interacts with the human-merge checkpoint in a non-obvious way.
+**Status [decided — not yet built]:** The design is decided and being implemented as issue #27. This section records the decided shape. For the full spec, see [docs/superpowers/specs/dependency-chain-orchestration.md](../docs/superpowers/specs/dependency-chain-orchestration.md).
 
-### The problem
-A milestone is usually a dependency graph, not a flat bag of independent issues. Example decomposition:
+### The problem (unchanged)
+A milestone is a dependency graph, not a flat bag of independent issues. The flat `agent-ready` model cannot express ordering: mark all issues ready and the agent may attempt N before N-1 exists; mark only issue 1 ready and you are the manual scheduler, defeating the unattended premise.
 
-```
-1 → 2 → 3 → [4, 5, 6 parallel] → 7
-```
+### The decided design — chain driver (#27)
 
-The flat `agent-ready` model can't express this. If you mark all of 1–7 ready, the agent may attempt 3 before 1 and 2 exist. If you mark only 1 ready (the safe choice), 2–7 never run until something promotes them. Today that "something" is you, manually, which defeats the unattended premise for any multi-step milestone.
+A **chain driver** component owns a `feature/<slug>` branch. Per-issue branches are cut off the feature branch (not `main`). The driver:
 
-### The enabler — GitHub-native issue dependencies
-GitHub issue dependencies are GA: mark issues `blocked by` / `blocking` (up to 50 each), with REST API and webhook support. This means the DAG can be expressed natively in GitHub — set by you during planning (consistent with "human plans, harness executes" — decomposition stays human-driven; only the *reading and scheduling* is automated). The harness never infers dependencies; it reads the ones you declared.
+1. Reads the DAG from GitHub's native `blocked_by` / `blocking` dependency API (`gh api` — same-repo only; not exposed by MCP).
+2. Schedules execution using `graphlib.TopologicalSorter` (stdlib — zero new dependencies; free cycle detection).
+3. Calls `Orchestrator._run_worker(issue)` directly for each ready issue (vendored `symphony` — no Baton poller to hand off to).
+4. Merges completed per-issue branches back into the feature branch with `--no-ff` (not squash — avoids ghost diffs in dependent branches). "Dependency satisfied" = **merged into the feature branch**, not "PR opened" and not "merged to main."
+5. Halts the affected sub-tree on block or failure; continues independent branches; escalates via summary.
+6. When all issues complete: opens one draft `feature/<slug> → main` PR for human review. The harness never merges to `main`.
 
-### Architectural shape (to explore)
-A harness-layer **promoter/scheduler** component, separate from Baton:
-- Reads each issue's `blocked_by` relationships via the GitHub API.
-- Watches for dependency satisfaction; promotes newly-eligible issues (the "ready frontier" of the DAG) to `agent-ready`.
-- Baton stays flat — it just runs whatever is `agent-ready`. The DAG logic lives entirely in the harness (consistent with D2).
+**Serial in v1** (cleanest C1 mitigation). `before_run`'s rebase target is the feature branch, not `main`, for chain branches.
 
-This keeps Baton unchanged and puts ordering policy where policy belongs.
+### Why this resolves the merge-gating tension
 
-### The non-obvious tension — merge-gating × DAG depth bounds throughput
-"Dependency satisfied" should mean **merged to main**, not just "PR opened": issue N's worktree branches from `main`, so it needs issue N-1's code actually merged to build on it. But merges happen at the **human evening checkpoint** (the endpoint the human owns).
+The earlier analysis in this section identified "milestone latency ≈ critical-path depth × review cadence" as the key design tension. The chain driver collapses this: intra-chain merges happen at agent + CI speed; the human reviews exactly once (the final `feature → main` PR). The ~7-evenings latency estimate for a linear 7-issue milestone was the cost of the old "merge to main at each step" model — it does not apply to the chain driver design.
 
-Consequence: a sequential chain advances at most one level per review cycle. A mostly-linear 7-issue milestone could take ~7 evenings, because each step waits for you to merge the previous one. Parallelism within a level (4,5,6) collapses that level to one cycle but does nothing for chain *depth*. **Milestone latency ≈ critical-path depth × review cadence — bounded by your review rhythm, not agent speed.** This is the key thing to design around, and it's easy to miss.
+### What the pilot workaround looked like
+For the pilot (pre-chain driver): manual scheduling — apply `agent-ready` to the next eligible issue(s) as their blockers merge. That workaround is superseded by the chain driver.
 
-### Exploration directions for that tension (not decisions)
-- **Stacked branches:** issue N branches off issue N-1's *branch* rather than `main`, so N can start when N-1's PR is *open* (not merged). Decouples chain progress from merge timing; cost is stacked-PR rebase/conflict complexity and reviewing a stack.
-- **Scoped auto-merge:** auto-merge on green CI for low-risk intra-milestone issues, so the chain advances unattended. Conflicts with "human owns merge" — would need careful risk-scoping and is a real trust decision.
-- **Per-level batch review:** you review/merge a whole ready level in one sitting, making cadence per-level rather than per-issue. Cheapest, purely a workflow habit.
-
-### Other sub-problems to handle
-- **Failure/block propagation:** if a blocker blocks or fails, its dependents must *not* be promoted; surface the stalled sub-tree and escalate, rather than silently stalling.
-- **Cycle detection:** reject mis-specified cyclic dependency graphs at promotion time.
-- **C1 interaction:** the promoter is another writer of `agent-ready` labels — it compounds the single-writer-claim concern (C1). The promoter and any other claim-mutating component must coordinate.
-- **C2 interaction:** dependencies must be trusted-owner-set only (provenance), same as issues.
-
-### Pilot workaround (keeps this out of pilot scope)
-For the pilot, **you are the scheduler**: manually add `agent-ready` to the next eligible issue(s) as their blockers merge. Functional, fully manual, and defers the entire promoter component — while the merge-gating tension above is still worth being aware of even when promoting by hand.
+### Sub-problems addressed in the design
+- **Failure/block propagation:** halt the sub-tree, continue independent branches, escalate via summary. Block path preserved via `after_run` still firing inside `_run_worker` (Dial 2 intact).
+- **Cycle detection:** `graphlib.TopologicalSorter` raises on cycles at construction time.
+- **C1 interaction:** chain driver is the sole promoter during a chain run; serial execution eliminates concurrent claim races.
+- **CI trigger:** currently fires only on `main`; must be extended to feature branches before chain branches can have CI-gated merges. (This is the one BLOCKING that survives option (c) — see project-reviewer findings on issue #27.)

@@ -29,6 +29,8 @@ Reviewed the current Claude Code / consumer terms. No explicit verbiage was foun
 ### D2 — Harness is its own repo, not a Baton fork
 The policy layer (outcome router, hooks, prompts, templates, eventual Slack bot + Dockerfile) lives in a standalone version-controlled repo with the orchestrator as an upstream dependency. Fork only as a last resort, after "work around it" and "contribute upstream" are exhausted. *Detailed harness architecture deferred until the spike completes.*
 
+> **[SUPERSEDED 2026-06-06 by option-(c) vendoring — see harness-design.md §1]** D2's "own repo, not a Baton fork" framing is not violated, but its "upstream dependency" and "contribute upstream" premises are superseded: `symphony/` is vendored into `src/baton_harness/vendor/symphony/` and called directly. The harness remains its own repo; D2 as a historical decision record is preserved here.
+
 ---
 
 ## Scenario status
@@ -54,6 +56,8 @@ The README confirms it: "inspired by OpenAI's Symphony spec, rebuilt from scratc
 **Workaround:** derive issue number from `basename "$PWD"` (worktree dir is named by issue number); use shell `$?` for exit status.
 **Spec implication:** don't assume hook env vars; derive context from the worktree path. If this proves fragile, it's a candidate for an upstream contribution.
 **Docs confirm:** the README documents no env-var contract for hooks — hooks are raw shell run in the worktree cwd. So `basename "$PWD"` isn't a workaround around a bug, it's the intended way to get issue context in a hook. Prompt template variables (`{{ issue.number }}` etc.) are Jinja2 for the *prompt*, not hook env. Resolved.
+
+> **Forward state [decided — not yet built]:** Under vendoring, the `env=` threading fix inside `run_hook` allows `ISSUE_NUMBER` to be passed directly. The `basename "$PWD"` workaround is retireable once that patch is applied to the vendored source.
 
 ### F3 — Orchestrator does NOT manage GitHub labels for run state
 It tracks run state internally (the `.symphony` state machine), and does not mutate GitHub labels on dispatch. Confirmed by observing `agent-ready` persist (not transition to `agent-in-progress`) during a run.
@@ -109,7 +113,9 @@ A block produces no PR, so Baton retries it as a continuation up to `max_turns`.
 
 The open sub-question (does the continuation check re-read labels and respect `exclude_labels: ["blocked"]`?) was answered by the #6 dry run: **no**. Baton evaluates `exclude_labels` at poll time only. Once a run is dispatched, it is not halted between turns. Block costs `max_turns`, not ~1 run.
 
-The terminal-block fix is deferred as upstream-dependent (requires a post-turn `exclude_labels` re-check or per-turn hook in Baton) and tracked in issue #23. Pilot decision: accept the `max_turns` cost as a known bound; keep `max_turns` modest. Full decision record: harness-design.md §8 — "[design] H1 fix — terminal-block decision."
+Pilot decision: accept the `max_turns` cost as a known bound; keep `max_turns` modest. Full decision record: harness-design.md §8 — "[design] H1 fix — terminal-block decision."
+
+> **[SUPERSEDED 2026-06-06 by option-(c) vendoring — see harness-design.md §1]** The terminal-block fix was described here as "deferred as upstream-dependent (requires a post-turn `exclude_labels` re-check or per-turn hook in Baton)." Under vendoring, this fix is ~10 lines inside the vendored `_run_worker` turn loop — a harness-internal change with no upstream dependency. The `max_turns: 2` workaround is retireable post-vendoring. Issue #23 is closed.
 
 ---
 

@@ -19,8 +19,8 @@ The architecture is bounded by two human checkpoints (morning approval, evening 
 |---|---|---|
 | Source of truth | **GitHub** (issues, PRs, milestones, labels) | Already where work lives; avoids parallel tracking |
 | Executor | **Claude Code** (`claude` CLI, first-party binary) | Only ToS-compliant path on subscription cost model |
-| Orchestrator | **Baton** (mraza007/baton) | Purpose-built poller/dispatcher/reconciler; off-the-shelf |
-| Isolation | **Single Docker container** running Baton + Claude Code | Restores host boundary lost by worktree-only isolation |
+| Orchestrator | **vendored `symphony`** (from mraza007/baton, MIT) [decided — not yet built] | Called directly via `Orchestrator._run_worker(issue)`; no external process; upstream frozen/dormant; vendoring removes subprocess seam |
+| Isolation | **Single Docker container** running baton-harness (vendored symphony) + Claude Code | Restores host boundary lost by worktree-only isolation |
 | Comms | **Slack Bolt bot (Socket Mode)** + official GitHub→Slack app | Two channels, two purposes — active decisions + passive activity |
 | CI | **GitHub Actions** (per-project precondition) | Verification is the project's responsibility, not the pipeline's |
 | Auth (Claude) | **OAuth via mounted volume** — no `ANTHROPIC_API_KEY` | Subscription-only; prevents accidental per-token billing |
@@ -53,9 +53,9 @@ The architecture is bounded by two human checkpoints (morning approval, evening 
 └─────────────────────────────────────────────────────────┘
                               │
 ┌─────────────────────────────────────────────────────────┐
-│  Layer 4 — Orchestration (Baton, the broker)            │
-│  Poller · Dispatcher · Reconciler · after_run router    │
-│  config: single WORKFLOW.md                             │
+│  Layer 4 — Orchestration (vendored symphony + harness)  │
+│  chain driver [decided] · Orchestrator._run_worker      │
+│  after_run router · config: WORKFLOW.md (prompt body)   │
 └─────────────────────────────────────────────────────────┘
                               │
 ┌─────────────────────────────────────────────────────────┐
@@ -106,50 +106,17 @@ Transitions are owned by the orchestrator (Layer 4); the human owns initial `age
 
 **CI:** GitHub Actions, configured per-project before the project enters the workflow. Runs on every PR; the agent does not own test execution.
 
-### 3.4 Layer 4 — Orchestration (Baton)
+### 3.4 Layer 4 — Orchestration
 
-Baton runs as a single long-lived process inside the container. Its three internal components map exactly to the broker role:
+**Current pilot [implemented]:** The external-process Baton model. Baton runs as a single long-lived process; its three internal components (Poller, Dispatcher, Reconciler) handle issue polling and dispatch. Config lives in `WORKFLOW.md`, passed via `baton start -w`. The `after_run` hook fires after each run and drives label reconciliation.
 
-- **Poller** — every 30s, runs `gh issue list` to find issues labelled `agent-ready` (excluding `blocked`).
-- **Dispatcher** — enforces `max_concurrent`, transitions the label to `agent-in-progress`, creates a git worktree per issue, and runs the configured agent command.
-- **Reconciler** — detects stale runs (no progress past a timeout) and releases their slots.
+**Decided target [decided — not yet built]:** `symphony/` is vendored into `src/baton_harness/vendor/symphony/`. `Orchestrator._run_worker(issue)` is called directly per issue — no global singletons, no poller loop, no subprocess seam. The chain driver (see below) owns the outer scheduling loop for chain runs; standalone flat runs call `_run_worker` directly from the harness entry point.
 
-All configuration in `WORKFLOW.md`:
+**Chain driver [decided — not yet built]:** A new harness component that owns a `feature/<slug>` branch, reads the dependency DAG from GitHub's native `blocked_by`/`blocking` API (same-repo only; `gh api` — not in MCP), schedules execution via `graphlib.TopologicalSorter`, calls `_run_worker(issue)` for each ready issue, and merges completed branches into the feature branch with `--no-ff`. See [harness-design.md §10](./harness-design.md) and [docs/superpowers/specs/dependency-chain-orchestration.md](../docs/superpowers/specs/dependency-chain-orchestration.md).
 
-```yaml
----
-tracker:
-  kind: github
-  labels: ["agent-ready"]
-  exclude_labels: ["blocked"]
-polling:
-  interval_ms: 30000
-agent:
-  max_concurrent: 2          # tuned to subscription rate limit, not container count
-  max_turns: 5               # bounded retries per issue
-  command: claude
-  permission_mode: bypassPermissions
-mcp_servers:
-  - name: github
-    command: npx @modelcontextprotocol/server-github
-hooks:
-  before_run: |
-    git fetch origin main && git rebase origin/main
-  after_run: |
-    /opt/harness/route-outcome.sh "$ISSUE_NUMBER"  # illustrative; implemented as Python entry point
----
-You are working on issue #{{ issue.number }}: {{ issue.title }}
+**`before_run` rebase target:** `origin/main` for flat runs [implemented]. For chain branches [decided — not yet built], the rebase target is the feature branch, not `main`.
 
-{{ issue.body }}
-
-Confidence rule: if any acceptance criterion has more than one reasonable
-interpretation, do NOT implement. Post a comment with your specific question,
-add the `blocked` label, and stop.
-
-When done: commit, push, and open a draft PR linking to #{{ issue.number }}.
-```
-
-**`after_run` outcome router** — inspects what the run produced and decides what to do next. Implemented as a Python module (`after_run.py`) in the `baton_harness` package; see the implementation-language decision in [harness-design.md](./harness-design.md). Pseudocode:
+**`after_run` outcome router** [implemented] — inspects what the run produced and decides what to do next. Implemented as a Python module (`after_run.py`) in the `baton_harness` package; see the implementation-language decision in [harness-design.md](./harness-design.md). Pseudocode:
 
 ```
 if PR opened and CI green       → label agent-done; notify #activity (already covered by GitHub app)
@@ -159,7 +126,7 @@ elif no PR, no comment           → increment retry counter; if exceeded, label
 else                             → label agent-failed; notify
 ```
 
-This script is the **Dial 2 of the confidence model** (see §4).
+This script is the **Dial 2 of the confidence model** (see §4). It fires inside `_run_worker` under the vendored model — the Slack clarification path is preserved.
 
 ### 3.5 Layer 5 — Execution (Claude Code)
 
@@ -225,7 +192,7 @@ Single Docker container running Baton, Claude Code, and supporting tools. The bo
 │  │     └─ .git/worktrees/issue-NNN/  (per-issue isolation)   │    │
 │  │                                                           │    │
 │  │   processes:                                              │    │
-│  │     - baton (poller + dispatcher + reconciler)            │    │
+│  │     - baton-harness (vendored symphony orchestrator)      │    │
 │  │     - one `claude -p` per concurrent issue                │    │
 │  │                                                           │    │
 │  │   env: ANTHROPIC_API_KEY MUST NOT BE SET                  │    │
@@ -240,11 +207,11 @@ Single Docker container running Baton, Claude Code, and supporting tools. The bo
 └───────────────────────────────────────────────────────────────────┘
 ```
 
-**Container image contents:**
+**Container image contents [decided — not yet built for vendored model]:**
 - Base: `node:22-slim` (or equivalent; Claude Code is npm-distributed)
 - `@anthropic-ai/claude-code` (pinned version)
 - `git`, `gh` CLI
-- `baton` (pip install) — brings a Python interpreter, which the harness lifecycle hooks (`baton_harness` package) also use; see the implementation-language decision in [harness-design.md](./harness-design.md)
+- `baton_harness` package (pip install) — includes vendored `symphony/` source; no separate `baton` pip install required under the vendored model
 - Non-root user `agent` (required — Claude Code refuses `--dangerously-skip-permissions` under root)
 - No `ANTHROPIC_API_KEY` — strictly OAuth via mounted credentials volume
 
@@ -258,22 +225,38 @@ Single Docker container running Baton, Claude Code, and supporting tools. The bo
 
 ## 6. Lifecycle of an issue
 
-End-to-end flow for a single well-scoped issue:
+### 6.1 Flat issue lifecycle [implemented]
+
+End-to-end flow for a single well-scoped issue (no dependency chain):
 
 | Step | Layer | What happens |
 |---|---|---|
 | 1. Morning | Human | I label issue `agent-ready` |
-| 2. ≤30s later | Baton poller | Sees the label, checks concurrency cap |
-| 3. Dispatch | Baton dispatcher | Transitions label to `agent-in-progress`, creates worktree, runs `before_run` hook (rebase on main) |
+| 2. ≤30s later | Harness / Baton poller | Sees the label, checks concurrency cap [implemented: external Baton poller; decided target: harness entry point calls `_run_worker` directly] |
+| 3. Dispatch | Harness orchestrator | Transitions label to `agent-in-progress`, creates worktree, runs `before_run` hook (rebase on `origin/main`) |
 | 4. Run | Claude Code | Loads CLAUDE.md + skills + issue context, reads issue body, plans, writes code, runs tests, commits, opens draft PR |
-| 5. Exit | Baton | Run terminates; `after_run` hook fires |
+| 5. Exit | Harness | Run terminates; `after_run` hook fires |
 | 6. Route | Outcome router | Inspects state of PR + issue → done / blocked / failed / retry |
 | 7. Notify | Bolt bot | If blocked or failed, posts a decision card to `#agent-decisions` |
 | 8. Respond | Human | Tap button or reply in thread → bot writes back to GitHub issue (label change or comment) |
-| 9. Re-queue | Baton poller | If issue is back to `agent-ready` (with new comment as guidance), it picks it up again |
+| 9. Re-queue | Harness poller | If issue is back to `agent-ready` (with new comment as guidance), it picks it up again |
 | 10. Evening | Human | Review PRs, merge approved ones, triage any remaining failed/blocked |
 
 **Note on interaction model:** the agent does not pause mid-run waiting for my reply. Each run is one-shot: read → work → exit. My guidance arrives as the *next* issue comment, picked up on the *next* run. This is intentional — it keeps containers stateless and disposable, and uses GitHub as the durable record of the conversation.
+
+### 6.2 Chain issue lifecycle [decided — not yet built]
+
+For dependency-chained issues inside a milestone, the chain driver owns the outer loop. Key lifecycle differences from the flat path:
+
+| Phase | What happens |
+|---|---|
+| Morning kickoff | Human approves the chain by labelling the root issue (or the milestone); chain driver reads the DAG |
+| Per-issue dispatch | Chain driver calls `_run_worker(issue)` for each ready issue (topological order); creates worktrees off the feature branch |
+| Merge | Driver merges completed per-issue branches into the feature branch (`--no-ff`); this is the dependency-satisfied signal |
+| Block / fail | Sub-tree halts; independent branches continue; escalation summary posted to `#agent-decisions`; driver exits and awaits human resolution |
+| Completion | Driver opens one draft `feature/<slug> → main` PR; human reviews and merges the whole chain in one review pass |
+
+See [harness-design.md §10](./harness-design.md) and [docs/superpowers/specs/dependency-chain-orchestration.md](../docs/superpowers/specs/dependency-chain-orchestration.md) for the full chain spec.
 
 ---
 
@@ -315,7 +298,7 @@ Anthropic's terms have been revised twice in 2026. Running the real `claude` bin
 | Worktree-level isolation isn't enough (port collisions on shared dev services) | Medium | Medium | Container around the whole stack already adds a boundary; per-issue port namespacing in `before_run` if needed |
 | Agent makes wrong design choice on ambiguous issue | Medium | High | Two-dial model; deterministic hooks; explicit confidence rule in prompt |
 | Anthropic ToS changes break the supported path | Low | High | First-party binary stays compliant; track terms updates; willingness to add API-key fallback if subscription path is closed |
-| Silent failure — Baton dies, no notifications fire | Low | High | Systemd auto-restart on container; daily health-check Slack message; reconciler catches stuck runs |
+| Silent failure — harness process dies, no notifications fire | Low | High | Systemd auto-restart on container; daily health-check Slack message; reconciler catches stuck runs |
 | Slack bot WebSocket disconnects, decision cards never arrive | Medium | High | Bolt SDK auto-reconnects; second channel via GitHub→Slack app provides a fallback signal route |
 | Accidental `ANTHROPIC_API_KEY` set on host, leaks into container, bills per-token | Low | High | Explicit env validation at container startup; refuse to start if set |
 | OAuth credentials in volume get corrupted or rotated | Low | Medium | Re-auth flow is one-time and documented; back up `~/.claude/.credentials.json` after first auth |
@@ -326,7 +309,7 @@ Anthropic's terms have been revised twice in 2026. Running the real `claude` bin
 
 - **Infrastructure/IaC work** (Azure, Terraform, etc.) — per problem statement
 - **Design decisions** (UI/UX choices) — per problem statement; only implementation
-- **Cross-repo work** — Baton runs project-local; one orchestrator instance per repo
+- **Cross-repo work** — one harness instance per repo; the GitHub dependency API (`blocked_by`/`blocking`) is same-repo only, which is the binding constraint for chain orchestration
 - **Planning/decomposition** (milestone → issues) — human-driven, upstream of this system
 - **Test execution authoring** — GitHub Actions is a precondition, not built by the agent
 - **Multi-user / team workflows** — solo developer, personal projects
@@ -339,7 +322,7 @@ Anthropic's terms have been revised twice in 2026. Running the real `claude` bin
 2. Build the Docker image (Dockerfile + entrypoint)
 3. Authenticate once interactively, capture the credentials volume
 4. Author `CLAUDE.md` and initial PreToolUse hooks for one pilot repo
-5. Configure Baton's `WORKFLOW.md` for that repo
+5. Configure the harness `config/WORKFLOW.md` for that repo
 6. Set up the Slack app (BotFather-equivalent), enable Socket Mode, capture tokens
 7. Build the minimal Bolt bot (decision card post + button handler + thread reply handler)
 8. Write the `after_run` outcome router script
@@ -347,4 +330,4 @@ Anthropic's terms have been revised twice in 2026. Running the real `claude` bin
 
 ---
 
-**Document status:** First draft. Expected iteration on §3.4 (outcome router details), §5 (container image contents), §7 (open items). Decisions in §2 are locked unless a new constraint surfaces.
+**Document status:** Reformed 2026-06-07 (issue #28) to reflect the vendored-symphony model and chain-driver architecture. Sections tagged `[implemented]` describe the current pilot state; sections tagged `[decided — not yet built]` describe the agreed target (issue #27). Decisions in §2 are updated to the vendored model.

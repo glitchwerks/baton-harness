@@ -1,26 +1,31 @@
 # baton-harness
 
-A reusable policy and tooling layer that drives [Baton](https://github.com/mraza007/baton)
-for autonomous Claude Code agent runs. Baton is an upstream dependency — this repo
-wraps it with project-specific config, lifecycle hook scripts, context templates, and a
-launcher (decision D2: own repo, not a Baton fork).
+A reusable policy and tooling layer for autonomous Claude Code agent runs. The harness
+owns the lifecycle hook modules, per-project workflow config, context templates, and the
+launcher. The orchestration engine (`symphony`, from [mraza007/baton](https://github.com/mraza007/baton))
+is vendored into the package and called directly as a library.
+
+**Current pilot state [implemented]:** the harness drives Baton as an external process
+(`baton start -w <config>`). The vendored-library model is the decided target (#27) and
+is not yet built — see [docs/harness-design.md §1](docs/harness-design.md) for the
+decision and rationale.
 
 ## What this is
 
 The harness owns everything *shareable* across projects: the Python hook modules that run
-before and after each agent turn, per-project workflow config (passed to Baton via `-w`),
-a CLAUDE.md template, and the `bin/run.sh` launcher. Each target project carries only its
-own committed `CLAUDE.md` and CI workflow.
+before and after each agent turn, per-project workflow config, a CLAUDE.md template, and
+the `bin/run.sh` launcher. Each target project carries only its own committed `CLAUDE.md`
+and CI workflow.
 
 The hooks are shipped as a proper Python package (`baton_harness`) with console entry
 points (`bh-after-create`, `bh-before-run`, `bh-after-run`) so they are on `PATH` after
 `pip install` and can be wired directly into WORKFLOW.md hook lines without path
 gymnastics.
 
-## Integration model
+## Integration model [implemented]
 
-Baton runs project-local (from the project repo directory) but its config lives here and
-is pointed at via `baton start -w <absolute-path>`:
+The harness runs project-local (from the project repo directory). Its config lives here
+and is pointed at via `baton start -w <absolute-path>`:
 
 ```
 cd <project-repo> && baton start -w /path/to/baton-harness/config/WORKFLOW.md
@@ -36,7 +41,7 @@ baton-harness/
 ├── README.md
 ├── pyproject.toml               # package metadata, dev dependencies, ruff/mypy config
 ├── bin/
-│   └── run.sh                   # launcher (shell): resolve harness root, baton start -w <config>
+│   └── run.sh                   # launcher (shell): resolve harness root, baton start -w <config> [implemented; retireable post-vendoring]
 ├── src/
 │   └── baton_harness/           # installable Python package (issue #10)
 │       ├── __init__.py          # __version__
@@ -116,17 +121,22 @@ hooks:
   after_run:    bh-after-run
 ```
 
-The hooks derive the issue number from `basename($PWD)` — the worktree
-directory name must follow the `<prefix>-<issue>[-<slug>]` convention
-(e.g. `feat-10-python-scaffold`) for issue-number resolution to work.
+The hooks derive the issue number from `basename($PWD)`. The worktree
+directory name must contain the issue number, but the prefix is optional:
+both `feat-10-python-scaffold` and bare `10` (Baton's own `.symphony/worktrees/<N>`
+convention) are valid (PR #20). The prefix-optional regex accepts any of:
+`<prefix>-<issue>`, `<prefix>-<issue>-<slug>`, or bare `<issue>`.
 
 ## Prerequisites (runtime)
 
-- [Baton](https://github.com/mraza007/baton) installed and on `$PATH`
+**Current pilot [implemented]:**
+- [Baton](https://github.com/mraza007/baton) (`pip install baton`) installed and on `$PATH` — required for the external-process model
 - `config/WORKFLOW.md` present in this repo (already committed — see `config/`)
 - The target project repo checked out locally
 - The target project repo must have all three harness state labels (see
   [Required GitHub labels](#required-github-labels) below)
+
+**Post-vendoring [decided — not yet built]:** the separate `baton` pip install is no longer required — `symphony/` is included in the `baton_harness` package.
 
 ## Required GitHub labels
 

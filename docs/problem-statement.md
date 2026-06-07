@@ -37,6 +37,8 @@ I define the milestone or feature scope, write acceptance criteria, and explicit
 **End point — approved by me**
 All PRs are draft until I review and merge. Blocked issues sit idle until I respond. Nothing ships without my sign-off.
 
+> **Note on chain-driver orchestration (decided — not yet built):** When a dependency chain runs under issue #27, the chain driver performs `git merge --no-ff` of completed per-issue branches into the feature branch without per-issue human review. This is an intra-feature-branch operation — analogous to a developer's own local `git merge` while building a feature. The "human owns merge" checkpoint operates at the `feature → main` boundary: the harness opens a single draft `feature → main` PR; the human reviews and merges that. The driver never merges to `main`.
+
 Everything between those two checkpoints is the agent's responsibility.
 
 ## Non-goals
