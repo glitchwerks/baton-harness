@@ -167,6 +167,61 @@ gh -C /path/to/target-repo label create "blocked"     --color "#e4e669"
 Or follow the exact `gh label create` commands printed by `bin/run.sh` when it
 detects a missing label.
 
+## GitHub token: least-privilege setup
+
+**Primary safeguard — use a dedicated bot/machine account.** Run the harness
+under a GitHub account that holds no memberships, no organization roles, and no
+permissions beyond what the table below requires. Structural least-privilege —
+the account literally cannot perform destructive actions — is the real security
+boundary. No software check substitutes for it.
+
+**Defense-in-depth gate (issue #35).** The `validate_github_token()` check in
+`src/baton_harness/_auth.py` runs at the top of the `before_run` hook and
+rejects missing tokens, classic `ghp_` PATs, and tokens that fail a live
+`gh api user` capability probe. This reduces the chance an over-scoped or
+wrong-type token is used by accident. It is not a safety guarantee — it is a
+fast-fail layer that sits in front of the real enforcement, which is the bot
+account's permission configuration.
+
+### Required fine-grained PAT permissions
+
+Mint the token at <https://github.com/settings/personal-access-tokens/new>.
+The harness requires a fine-grained PAT (prefix `github_pat_`) — classic PATs
+(`ghp_`) are explicitly rejected because their account-wide scopes are
+incompatible with per-repo least privilege.
+
+| Operation | Fine-grained permission |
+|---|---|
+| Clone repo, push feature branches | Contents: Read & write |
+| Read issue body, edit labels, post comments | Issues: Read & write |
+| `gh pr list` / `gh pr create` | Pull requests: Read & write |
+| Baseline (granted automatically) | Metadata: Read |
+
+Additional settings:
+
+- **Repository access:** Only select repositories → the pilot repo(s). Do not
+  grant organization-wide access.
+- **Expiry:** set the shortest expiry you can operationally manage; rotate on
+  schedule.
+- **Explicitly not granted:** Workflows, Administration, Secrets, any
+  org-level scope.
+
+Export the token as `GH_TOKEN` before running the harness (the gate also
+accepts `GITHUB_TOKEN` as a fallback, consistent with standard CI conventions):
+
+```bash
+export GH_TOKEN=github_pat_<your-token>
+bin/run.sh /path/to/project
+```
+
+### Known limitation — fine-grained PAT scope introspection
+
+GitHub exposes a classic PAT's granted scopes via the `X-OAuth-Scopes` response
+header. Fine-grained PATs provide no equivalent introspection endpoint as of
+mid-2026. The gate therefore validates token *type* and *reachability* — it
+cannot verify that the exact permission set above was granted. That verification
+is the operator's responsibility at token-mint time.
+
 ## Usage
 
 ```
