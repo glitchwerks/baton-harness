@@ -155,7 +155,7 @@ These come from the spike and must be honoured by the harness as it grows. They 
 Explicitly deferred so the pilot stays minimal:
 
 - **Docker containerization** — pilot runs on the host.
-- **Slack / comms layer** — observe via GitHub directly.
+- **Slack / comms layer** — core to the model (the always-on daemon's threshold-gated Q&A path requires it); implementation is staged: observe via GitHub directly in the pilot, build Slack integration alongside the daemon [decided — not yet built].
 - **Async CI-completion trigger and auto-rework** — human reviews PRs; this is what defers C1/C2/C3 entirely.
 - **Multi-project templating** — single pilot project; templatize when project #2 appears.
 - **Observability tooling (Langfuse etc.)** — basic logs only.
@@ -186,35 +186,74 @@ The architecture spec (§3.4) described the orchestration layer abstractly. This
 
 ---
 
-## 10. Chain-driver orchestration: dependency-ordered milestones
+## 10. Always-on daemon: dependency-ordered work units [decided — not yet built]
 
-**Status [decided — not yet built]:** The design is decided and being implemented as issue #27. This section records the decided shape. For the full spec, see [docs/superpowers/specs/dependency-chain-orchestration.md](../docs/superpowers/specs/dependency-chain-orchestration.md).
+**Status:** The design is decided and being implemented as issue #27. This section records the full decided shape. For the DAG spec, see [docs/superpowers/specs/dependency-chain-orchestration.md](../docs/superpowers/specs/dependency-chain-orchestration.md).
 
 ### The problem (unchanged)
 A milestone is a dependency graph, not a flat bag of independent issues. The flat `agent-ready` model cannot express ordering: mark all issues ready and the agent may attempt N before N-1 exists; mark only issue 1 ready and you are the manual scheduler, defeating the unattended premise.
 
-### The decided design — chain driver (#27)
+### Everything is a DAG — unified execution model
 
-A **chain driver** component owns a `feature/<slug>` branch. Per-issue branches are cut off the feature branch (not `main`). The driver:
+There is **one** execution path, parameterized by the DAG. A **work unit** is:
+- A **milestone** — all its issues = one DAG → one `feature/<slug>` branch → one draft `feature → main` PR.
+- A **single un-milestoned issue** — its own N=1 DAG → its own feature branch → its own PR.
 
-1. Reads the DAG from GitHub's native `blocked_by` / `blocking` dependency API (`gh api` — same-repo only; not exposed by MCP).
-2. Schedules execution using `graphlib.TopologicalSorter` (stdlib — zero new dependencies; free cycle detection).
-3. Calls `Orchestrator._run_worker(issue)` directly for each ready issue (vendored `symphony` — no Baton poller to hand off to).
-4. Merges completed per-issue branches back into the feature branch with `--no-ff` (not squash — avoids ghost diffs in dependent branches). "Dependency satisfied" = **merged into the feature branch**, not "PR opened" and not "merged to main."
-5. Halts the affected sub-tree on block or failure; continues independent branches; escalates via summary.
-6. When all issues complete: opens one draft `feature/<slug> → main` PR for human review. The harness never merges to `main`.
+N=1 is the degenerate DAG. The same logic handles both; there is no separate flat-run entry point.
 
-**Serial in v1** (cleanest C1 mitigation). `before_run`'s rebase target is the feature branch, not `main`, for chain branches.
+**Work-unit membership = milestone** (OQ-2 resolved). Issues not belonging to any milestone each become their own N=1 work unit.
+
+### Orchestrator/worker split
+
+**Orchestrator = custom always-on daemon.** Owns:
+- Poll loop iterating the repo-registry (one entry in v1; repo #2 = append, not rewrite — the multi-repo seam).
+- Work-unit detection (milestone label or un-milestoned `agent-ready` issue).
+- DAG construction and scheduling (`graphlib.TopologicalSorter` — stdlib; cycle detection free).
+- `feature/<slug>` branch creation and lifetime.
+- Calling `_run_worker(issue)` for each DAG-ready issue (checking out `feature/<slug>` as HEAD first).
+- CI-gated `--no-ff` merge of completed per-issue branches into the feature branch. "Dependency satisfied" = **merged into the feature branch**; not "PR opened"; not "merged to main."
+- Sub-tree parking on block or failure; continues independent branches; the daemon never exits on a block.
+- Slack escalation (stall summary to `#agent-decisions`) when a sub-tree is parked.
+- Draft `feature/<slug> → main` PR when all issues in the DAG complete. The harness never merges to `main`.
+
+Symphony's flat poll/dispatch loop (`run`/`_tick`/`_dispatch`/`_on_worker_done`), `cli.start`, and `watchfiles` are **dropped** — the custom daemon replaces them.
+
+**Worker = vendored `symphony._run_worker`.** Called by the daemon as a library function. Owns:
+- Per-issue git worktree creation (`.symphony/worktrees/<N>`, `baton/<slug>-<N>` branches — symphony naming preserved).
+- `before_run` hook (rebase onto feature branch, via `CHAIN_BASE_BRANCH` threaded by VP-1).
+- `claude -p` turn-loop.
+- `after_run` hook (outcome classification, label reconciliation, Dial 2 filtering).
+- PR detection and return value (`"pr_created"` | `"no_pr"`).
+
+### BLOCKING resolutions from the architecture review
+
+**B3 dissolved.** With a single daemon and one execution path, there is no flat-run / chain-run coexistence and no label-writer conflict. One daemon; one path; no lock (OQ-8 moot).
+
+**B1 resolved — outcome protocol (no retry in v1).** A `no_pr` / block / failure → park sub-tree + Slack-escalate, full stop. The vendored `state.py` retry/backoff is unused in v1. C3 (bounded rework with escalation) is satisfied by the park + escalate path.
+
+**B2 / B4 resolved — `run_hook env=` (VP-1, P0).** `run_hook` gains an `env=` parameter (vendor patch VP-1). This threads `CHAIN_BASE_BRANCH` to `before_run` (correct rebase target for feature-branch runs) and `BH_VENV` (hook discovery). Both the `before_run` base-ref fix and the `BH_VENV` activation workaround depend on this single patch — it is the P0 prerequisite.
+
+### Open question resolutions
+
+- **OQ-2 (membership):** milestone defines a work unit; un-milestoned issues are each their own N=1 work unit.
+- **OQ-4 (CI trigger):** must use the `feature/**` glob (per CONCERN-5 from the architecture review); a runtime-parameterized `ci.yml` is incoherent. Extending CI to `feature/**` is a prerequisite for CI-gated merges into the feature branch.
+- **OQ-8 (lock):** moot — single daemon, no concurrent label writers.
 
 ### Why this resolves the merge-gating tension
 
-The earlier analysis in this section identified "milestone latency ≈ critical-path depth × review cadence" as the key design tension. The chain driver collapses this: intra-chain merges happen at agent + CI speed; the human reviews exactly once (the final `feature → main` PR). The ~7-evenings latency estimate for a linear 7-issue milestone was the cost of the old "merge to main at each step" model — it does not apply to the chain driver design.
+The earlier analysis identified "milestone latency ≈ critical-path depth × review cadence" as the key design tension. The always-on daemon collapses this: intra-DAG merges happen at agent + CI speed; the human reviews exactly once (the final `feature → main` PR). The ~7-evenings latency estimate for a linear 7-issue milestone was the cost of the old "merge to main at each step" model — it does not apply here.
 
 ### What the pilot workaround looked like
-For the pilot (pre-chain driver): manual scheduling — apply `agent-ready` to the next eligible issue(s) as their blockers merge. That workaround is superseded by the chain driver.
+For the pilot (pre-daemon): manual scheduling — apply `agent-ready` to the next eligible issue(s) as their blockers merge. That workaround is superseded by the always-on daemon.
+
+### Single-repo gate in v1
+
+One daemon per repo. The binding constraint is the GitHub dependency API (`blocked_by`/`blocking`), which is same-repo only; a work unit cannot span repositories by construction. Multi-repo is deferred with two seams:
+1. The daemon poll loop iterates a one-entry repo-registry rather than closing over a single `project_root`. Repo #2 = registry append; not a loop rewrite.
+2. The concurrency budget (`max_concurrent`) is a documented decision in `WORKFLOW.md`, not an in-daemon code object. A `GlobalBudget` abstraction is a wrong seam here — real enforcement belongs to a future supervising/lease layer. Two daemons each honoring `max_concurrent=2` would allow 4 streams; the seam keeps that honest.
 
 ### Sub-problems addressed in the design
 - **Failure/block propagation:** halt the sub-tree, continue independent branches, escalate via summary. Block path preserved via `after_run` still firing inside `_run_worker` (Dial 2 intact).
 - **Cycle detection:** `graphlib.TopologicalSorter` raises on cycles at construction time.
-- **C1 interaction:** chain driver is the sole promoter during a chain run; serial execution eliminates concurrent claim races.
-- **CI trigger:** currently fires only on `main`; must be extended to feature branches before chain branches can have CI-gated merges. (This is the one BLOCKING that survives option (c) — see project-reviewer findings on issue #27.)
+- **C1 interaction:** daemon is the sole promoter during a run; serial per-DAG execution eliminates concurrent claim races.
+- **CI trigger:** must be extended to `feature/**` glob before CI-gated merges into the feature branch can work. This is a prerequisite before the daemon can complete CI-gated merges — captured as an implementation prerequisite for issue #27.
