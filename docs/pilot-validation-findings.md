@@ -61,7 +61,7 @@ Also confirmed: `before_run` fires once before turn 1, not once per turn. `after
 | 2 | Issue number unresolved from bare-`N` worktree | `resolve_issue_number` assumed `<prefix>-<issue>` names; Baton uses bare `<issue>` (`.symphony/worktrees/2`) | Hook cannot determine which issue it is operating on | Fixed — PR #20 |
 | 3 | Target repo must have all three labels pre-created | A missing `agent-done` causes `after_run`'s `gh issue edit --add-label` to fail | `after_run` fails, leaving `agent-ready` in place and triggering Finding 4 | Open — issue #21 |
 | 4 | `after_run` failure causes infinite re-dispatch loop | When `after_run` fails before removing `agent-ready`, Baton sees the issue as unclaimed on the next poll and re-dispatches it | Unbounded agent runs against the same issue; quota burn | Open — issue #21 |
-| 5 | A block is not terminal within an in-flight run | Baton does not re-check `exclude_labels` between turns; `before_run` fires once, so a block applied mid-run cannot halt subsequent turns | A blocked issue costs up to `max_turns` full agent invocations, not one | Informs issue #4; requires upstream Baton change or `max_turns` tuning |
+| 5 | A block is not terminal within an in-flight run | Baton does not re-check `exclude_labels` between turns; `before_run` fires once, so a block applied mid-run cannot halt subsequent turns | A blocked issue costs up to `max_turns` full agent invocations, not one | **Resolved under vendoring [decided — not yet built]:** fix is a `_run_worker` turn-loop patch (harness-internal, ~10 lines); `max_turns: 2` workaround retireable post-vendoring. Upstream-dependency framing no longer applies. |
 
 ### Finding 1 — Hooks `rc=127`
 
@@ -98,7 +98,9 @@ The log sequence from T2 is the direct evidence:
 
 `exclude_labels` is evaluated at the poll stage. Once Baton has dispatched a run, it does not re-evaluate `exclude_labels` between turns. `before_run` fires once at run start, before turn 1 — there is no per-turn hook point from which a block could be made terminal using the existing hook API.
 
-**Implication for issue #4 (terminal-block design):** the terminal-block behavior requires either an upstream change to Baton (a post-turn re-check of `exclude_labels`, or a per-turn hook), or a harness-side strategy of setting `max_turns: 1` for issue classes where blocking is likely, accepting a one-turn cost model. This constraint should be incorporated into the issue #4 design before implementation begins.
+**Implication for issue #4 (terminal-block design):** at pilot time, the terminal-block behavior required either an upstream change to Baton (a post-turn re-check of `exclude_labels`, or a per-turn hook), or a harness-side strategy of setting `max_turns: 1` for issue classes where blocking is likely, accepting a one-turn cost model.
+
+> **[SUPERSEDED 2026-06-06 by option-(c) vendoring — see harness-design.md §1]** Under the vendored-symphony model, this constraint dissolves. The terminal-block fix is ~10 lines inside the vendored `_run_worker` turn loop — a harness-internal change. The "upstream-dependent" framing no longer applies; `max_turns: 2` is retireable once the vendored fix is applied. Issue #23 is closed.
 
 ---
 

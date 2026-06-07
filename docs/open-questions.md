@@ -22,49 +22,36 @@ If unclear, contact Anthropic support for explicit guidance. **Block all other w
 ---
 
 ### S1.2 — Baton + Claude Code integration behavior is unverified
-**The assumption:** Baton's `command: claude` cleanly invokes the first-party binary; hooks fire; exit codes are meaningful; the reconciler properly kills stuck processes.
+**RESOLVED — spike and pilot validation complete.**
 
-**Why it matters:** Every layer of the architecture sits on top of this integration working as imagined. We have no empirical evidence it does.
+The external-process integration was validated in the smoke-test spike (Scenario A — viability verdict: yes; see spike-findings.md) and the pilot dry run (T1, T2 — see pilot-validation-findings.md). The specific unknowns (`--dangerously-skip-permissions`, hook firing, exit codes) were answered empirically.
 
-**Specific unknowns:**
-- Does `--dangerously-skip-permissions` work through Baton's invocation chain?
-- How does Baton handle `claude` interactive prompts (`/login`, permission prompts) in headless mode?
-- What does Baton see when `claude` exits zero with no output, exits non-zero, or hangs?
-- Does the reconciler kill stuck `claude` processes, or only release the slot in bookkeeping?
-
-**Resolution:** Validate via spike (see [smoke-test-spike.md](./smoke-test-spike.md)).
+Under the vendored-symphony model [decided — not yet built], this concern dissolves: there is no Baton subprocess integration seam. Integration is `Orchestrator._run_worker(issue)` — a direct Python call to vendored source, validated via the deep-dive analysis (`.tmp/baton-deepdive-findings.md`). No integration spike is needed for the subprocess path; the vendored interface is a clean callable.
 
 ---
 
 ### S1.3 — Subscription rate limits are unmeasured
-**The assumption:** Max 20x supports meaningful concurrency for parallel issue runs; `max_concurrent: 2` is a reasonable starting point.
+**STILL OPEN.** Rate limits remain unvalidated under real representative load. The spike ran only at concurrency 1 with trivial issues (spike-findings.md viability caveat). This concern is not affected by vendoring or chain-driver design.
 
-**Why it matters:** If the real concurrency cap is 1, parallelism is theatre. The June 2026 Agent SDK credit bucket may further change the model.
+**Chain-driver context:** the chain driver is serial in v1 (concurrency = 1 during a chain run), which makes this less acute for v1 chain workloads but leaves general concurrency behavior unvalidated.
 
-**Specific unknowns:**
+**Resolution path:** run a handful of representative issues (real repo, substantial codebase, `max_concurrent: 2`) and measure token consumption and throttling behavior. This is a pilot-phase measurement, not a design question.
+
+**Original unknowns remain:**
 - Throttle mechanism: concurrent streams, tokens-per-minute, daily total, or combination?
 - Failure mode when exceeded: clean 429, hang, degraded response?
 - Does headless `claude -p` consume the same bucket as interactive use?
-- How does the June 2026 Agent SDK credit interact with this?
-
-**Resolution:** Measure during spike with two concurrent issues. Document observed behavior. Re-measure after June 2026 Agent SDK changes take effect.
 
 ---
 
 ## Severity 2 — Real problems with known shapes but no defined solutions
 
 ### S2.1 — Outcome router is hand-waved and load-bearing
-**The assumption:** A ~30-line `after_run` script can reliably distinguish done / blocked / failed / retry outcomes from Baton's run results.
+**RESOLVED — `after_run.py` implemented and tested.**
 
-**Why it matters:** This script is Dial 2 of the confidence model. Its decisions determine what reaches Slack and what gets retried. Wrong here = either bothering you constantly or silently dropping signals.
+`after_run.py` is implemented as a full Python module in the `baton_harness` package, with pytest coverage and ruff/mypy compliance (issue #3, merged). It correctly classifies the four outcome states identified by the spike (F5: `uncommitted-changes`, `no-commits`, `committed-no-pr`, `pr-opened`) and reconciles GitHub labels to a single state. The "Dial 2" router that was described as hand-waved is now production code, not glue.
 
-**Specific edge cases not addressed in current spec:**
-- "No PR opened" — was that a failure to act, or running out of turns mid-reasoning? Looks identical after the fact.
-- "PR opened + question comment" — done-with-caveat or blocked? Currently undefined.
-- "Run started but Baton crashed mid-run" — `after_run` never fires; who detects this?
-- Clock drift between Baton timestamps and GitHub comment timestamps when computing "new comments since run start."
-
-**Resolution:** Catalog the actual exit signatures Baton + Claude Code produce (via spike). Then design the router against real data, not imagined cases. Likely 100–150 lines of code with comprehensive logging. Treat as production code, not glue.
+Remaining known gap: `after_run` classifies `pr-opened` as `agent-done` without checking CI status (F10). Draft-PR compliance (pilot finding, Scenario A nit) is a separate pre-existing gap tracked in issue #21. Neither gap is a structural concern about the router's design.
 
 ---
 
@@ -84,17 +71,17 @@ If unclear, contact Anthropic support for explicit guidance. **Block all other w
 ---
 
 ### S2.3 — No failure-recovery story above the container
-**The assumption:** Systemd auto-restart handles container failure.
+**STILL OPEN.** Scenarios E and F (reconciler behavior, mid-run-kill) were never completed in the spike.
 
-**Why it matters:** A restarted Baton has no memory of in-flight runs. Issues labeled `agent-in-progress` at crash time sit stuck until the reconciler timeout (potentially hours).
+**Updated framing under vendored model:** "Baton dies" becomes "the harness process dies." The concern is unchanged in substance: orphan `claude` processes, credentials-file corruption, and issues stuck in `agent-in-progress` at crash time remain unaddressed.
 
 **Specific gaps:**
-- One `claude -p` segfaults — does Baton notice and reclaim the slot, or does it stay "in-progress" forever?
+- One `claude -p` segfaults — does the harness reclaim the slot, or does it stay "in-progress" forever?
 - Container OOMs (multiple Claude sessions, each holding context) → all in-flight work lost, no notification fires.
-- Baton dies between dispatching `claude` and registering it internally → orphan process.
+- Harness exits between dispatching `claude` and registering it internally → orphan process.
 - Credentials file corrupted mid-run → every subsequent run fails silently.
 
-**Resolution:** Design startup reconciliation in Baton wrapper: on container start, query GitHub for any `agent-in-progress` issues, mark them as needing requeue (e.g. comment "previous run interrupted, retrying"). Daily health-check Slack ping as a liveness signal. Validate OOM behavior during spike with deliberately undersized container memory.
+**Resolution:** Startup reconciliation: on harness start, query GitHub for any `agent-in-progress` issues, mark them as needing requeue with an explanatory comment. Daily health-check Slack ping as a liveness signal.
 
 ---
 
