@@ -1,14 +1,19 @@
-"""Unit tests for baton_harness.before_run — branch sync onto main.
+"""Unit tests for baton_harness.before_run — branch sync onto chain base.
 
 All subprocess calls are intercepted by monkeypatching the module-local
 ``_run`` helper so no real git operations are performed.
 
+The hook now performs three steps: fetch, rev-parse (resolve base ref to a
+SHA), and rebase onto the resolved SHA.  CHAIN_BASE_BRANCH controls the
+base ref (default origin/main).
+
 Coverage:
-- success path: fetch + rebase both succeed → exit 0
+- success path: fetch + rev-parse + rebase all succeed → exit 0
 - already-current path: rebase exits 0 with no-op output → exit 0
 - conflict path: rebase fails → abort is called → exit non-zero
 - abort itself fails after rebase failure → still exit non-zero
 - fetch failure → rebase is skipped → exit non-zero
+- rev-parse failure → rebase is skipped → exit non-zero
 - unresolvable issue number → exit 1
 """
 
@@ -27,14 +32,35 @@ from baton_harness.before_run import main
 # ---------------------------------------------------------------------------
 
 
-def _ok() -> subprocess.CompletedProcess[str]:
-    """Return a CompletedProcess that signals success."""
-    return subprocess.CompletedProcess(args=[], returncode=0)
+_FAKE_SHA = "abc1234" * 6  # 42-char fake SHA for rev-parse mocks
 
 
-def _fail() -> subprocess.CompletedProcess[str]:
-    """Return a CompletedProcess that signals failure."""
-    return subprocess.CompletedProcess(args=[], returncode=1)
+def _ok(stdout: str = "") -> subprocess.CompletedProcess[str]:
+    """Return a CompletedProcess that signals success.
+
+    Args:
+        stdout: Simulated standard output (e.g. a SHA from rev-parse).
+
+    Returns:
+        A CompletedProcess with returncode=0.
+    """
+    return subprocess.CompletedProcess(
+        args=[], returncode=0, stdout=stdout, stderr=""
+    )
+
+
+def _fail(stdout: str = "") -> subprocess.CompletedProcess[str]:
+    """Return a CompletedProcess that signals failure.
+
+    Args:
+        stdout: Simulated standard output.
+
+    Returns:
+        A CompletedProcess with returncode=1.
+    """
+    return subprocess.CompletedProcess(
+        args=[], returncode=1, stdout=stdout, stderr=""
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -45,23 +71,27 @@ def _fail() -> subprocess.CompletedProcess[str]:
 class TestBeforeRunSuccess:
     """Tests for the happy-path branch sync."""
 
-    def test_fetch_and_rebase_called_in_order(
+    def test_fetch_revparse_and_rebase_called_in_order(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """``git fetch origin main`` then ``git rebase origin/main`` in order.
+        """Fetch → rev-parse → rebase in order; rebase uses resolved SHA.
 
-        Both commands must appear in sequence in the subprocess call list.
+        The hook now resolves the base ref to a concrete SHA before rebasing
+        (CHAIN_BASE_BRANCH env-awareness, chain spec §3.7).
         """
         worktree = tmp_path / "feat-2-sync"
         worktree.mkdir()
         monkeypatch.chdir(worktree)
+        monkeypatch.delenv("CHAIN_BASE_BRANCH", raising=False)
 
         calls: list[list[str]] = []
 
         def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
             calls.append(cmd)
+            if "rev-parse" in cmd:
+                return _ok(stdout=_FAKE_SHA + "\n")
             return _ok()
 
         monkeypatch.setattr(before_run_mod, "_run", fake_run)
@@ -70,7 +100,9 @@ class TestBeforeRunSuccess:
 
         assert result == 0
         assert calls[0] == ["git", "fetch", "origin", "main"]
-        assert calls[1] == ["git", "rebase", "origin/main"]
+        assert calls[1] == ["git", "rev-parse", "origin/main"]
+        # Rebase uses the resolved SHA, not the string ref
+        assert calls[2] == ["git", "rebase", _FAKE_SHA]
 
     def test_already_current_returns_zero(
         self,
@@ -81,8 +113,14 @@ class TestBeforeRunSuccess:
         worktree = tmp_path / "feat-2-sync"
         worktree.mkdir()
         monkeypatch.chdir(worktree)
+        monkeypatch.delenv("CHAIN_BASE_BRANCH", raising=False)
 
-        monkeypatch.setattr(before_run_mod, "_run", lambda _cmd: _ok())
+        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if "rev-parse" in cmd:
+                return _ok(stdout=_FAKE_SHA + "\n")
+            return _ok()
+
+        monkeypatch.setattr(before_run_mod, "_run", fake_run)
 
         result = main()
 
@@ -106,13 +144,16 @@ class TestBeforeRunConflict:
         worktree = tmp_path / "feat-2-sync"
         worktree.mkdir()
         monkeypatch.chdir(worktree)
+        monkeypatch.delenv("CHAIN_BASE_BRANCH", raising=False)
 
         calls: list[list[str]] = []
 
         def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
             calls.append(cmd)
+            if "rev-parse" in cmd:
+                return _ok(stdout=_FAKE_SHA + "\n")
             # fetch succeeds; rebase fails; abort succeeds
-            if cmd == ["git", "rebase", "origin/main"]:
+            if "rebase" in cmd and "--abort" not in cmd:
                 return _fail()
             return _ok()
 
@@ -132,9 +173,12 @@ class TestBeforeRunConflict:
         worktree = tmp_path / "feat-2-sync"
         worktree.mkdir()
         monkeypatch.chdir(worktree)
+        monkeypatch.delenv("CHAIN_BASE_BRANCH", raising=False)
 
         def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-            if cmd == ["git", "rebase", "origin/main"]:
+            if "rev-parse" in cmd:
+                return _ok(stdout=_FAKE_SHA + "\n")
+            if "rebase" in cmd and "--abort" not in cmd:
                 return _fail()
             return _ok()
 
@@ -153,13 +197,13 @@ class TestBeforeRunConflict:
         worktree = tmp_path / "feat-2-sync"
         worktree.mkdir()
         monkeypatch.chdir(worktree)
+        monkeypatch.delenv("CHAIN_BASE_BRANCH", raising=False)
 
         def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-            # Both rebase and abort fail.
-            if cmd in (
-                ["git", "rebase", "origin/main"],
-                ["git", "rebase", "--abort"],
-            ):
+            if "rev-parse" in cmd:
+                return _ok(stdout=_FAKE_SHA + "\n")
+            # Both rebase (non-abort) and abort fail.
+            if "rebase" in cmd:
                 return _fail()
             return _ok()
 
@@ -178,6 +222,7 @@ class TestBeforeRunConflict:
         worktree = tmp_path / "feat-2-sync"
         worktree.mkdir()
         monkeypatch.chdir(worktree)
+        monkeypatch.delenv("CHAIN_BASE_BRANCH", raising=False)
 
         calls: list[list[str]] = []
 
@@ -191,7 +236,35 @@ class TestBeforeRunConflict:
 
         assert result != 0
         # Rebase should not run if fetch failed.
-        assert ["git", "rebase", "origin/main"] not in calls
+        rebase_calls = [c for c in calls if "rebase" in c]
+        assert not rebase_calls, "Rebase must not run if fetch failed"
+
+    def test_rev_parse_failure_returns_nonzero(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A failing git rev-parse returns non-zero without rebasing."""
+        worktree = tmp_path / "feat-2-sync"
+        worktree.mkdir()
+        monkeypatch.chdir(worktree)
+        monkeypatch.delenv("CHAIN_BASE_BRANCH", raising=False)
+
+        calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            calls.append(cmd)
+            if "rev-parse" in cmd:
+                return _fail()
+            return _ok()
+
+        monkeypatch.setattr(before_run_mod, "_run", fake_run)
+
+        result = main()
+
+        assert result != 0
+        rebase_calls = [c for c in calls if "rebase" in c]
+        assert not rebase_calls, "Rebase must not run if rev-parse failed"
 
 
 # ---------------------------------------------------------------------------

@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "feature/**"]
   pull_request:
-    branches: [main]
+    branches: [main, "feature/**"]
 
 # Three independent jobs run in parallel so a failure in one still runs
 # and reports the others — each surfaces its own named check in the PR UI.

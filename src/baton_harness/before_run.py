@@ -1,8 +1,15 @@
-"""Hook: before_run — sync the worktree branch onto ``main``.
+"""Hook: before_run — sync the worktree branch onto the chain base.
 
 Invoked by Baton once, before the first turn of each run.  Fetches the latest
-``origin/main`` and rebases the current worktree branch onto it so the
-agent always operates on a fresh baseline.
+ref and rebases the current worktree branch onto it so the agent always
+operates on a fresh baseline.
+
+The rebase target is controlled by the ``CHAIN_BASE_BRANCH`` environment
+variable (default ``origin/main``).  The daemon threads this variable when
+running per-issue branches inside a milestone work unit, so that the branch
+rebases onto ``feature/<slug>`` rather than ``main``.  The ref is resolved
+to a concrete SHA at entry (``git rev-parse <ref>``) to avoid moving-target
+problems on ``--no-ff`` feature branches (B-I1, §3.7 of the chain spec).
 
 On rebase conflict the hook calls ``git rebase --abort`` to restore the
 worktree to a clean state before returning non-zero.  Baton sees the
@@ -29,10 +36,17 @@ Context:
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 
 from baton_harness._cli import err, log, resolve_issue_number
+
+#: Environment variable controlling the rebase target.  Set by the daemon
+#: to ``feature/<slug>`` for milestone work units; defaults to
+#: ``origin/main`` for flat (N=1 DAG / un-milestoned) runs.
+_ENV_CHAIN_BASE_BRANCH = "CHAIN_BASE_BRANCH"
+_DEFAULT_BASE = "origin/main"
 
 #: Short name used in log/err prefixes.
 _HOOK = "before-run"
@@ -62,11 +76,15 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
 def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
     """Entry point for the ``bh-before-run`` console script.
 
-    Performs a two-step branch sync:
+    Performs a three-step branch sync:
 
     1. ``git fetch origin main`` — brings the remote ref up to date.
-    2. ``git rebase origin/main`` — fast-forwards or replays the current
-       branch on top of ``origin/main``.
+    2. ``git rev-parse <CHAIN_BASE_BRANCH>`` — resolves the base ref to a
+       concrete SHA at entry.  This prevents moving-target problems on
+       ``--no-ff`` feature branches (B-I1, chain spec §3.7).
+       ``CHAIN_BASE_BRANCH`` defaults to ``origin/main`` when unset.
+    3. ``git rebase <resolved-sha>`` — fast-forwards or replays the current
+       branch on top of the frozen base SHA.
 
     If rebase succeeds (exit 0 — including the already-up-to-date case),
     the hook returns 0.  If rebase fails (conflict or other error),
@@ -77,8 +95,8 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
         argv: Unused; accepted for interface symmetry with other hooks.
 
     Returns:
-        ``0`` on success; ``1`` when the issue number cannot be resolved;
-        non-zero when fetch or rebase fails.
+        ``0`` on success; ``1`` when the issue number cannot be resolved or
+        the base ref cannot be resolved; non-zero when fetch or rebase fails.
     """
     issue = resolve_issue_number()
     if issue is None:
@@ -90,6 +108,10 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
             flush=True,
         )
         return 1
+
+    # Determine the base ref from CHAIN_BASE_BRANCH (default origin/main).
+    base_ref = os.environ.get(_ENV_CHAIN_BASE_BRANCH, _DEFAULT_BASE)
+    log(_HOOK, issue, f"chain base ref: {base_ref!r}")
 
     # Step 1: fetch latest main from remote.
     fetch_cmd = ["git", "fetch", "origin", "main"]
@@ -103,20 +125,41 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
         )
         return fetch_result.returncode
 
-    # Step 2: rebase current branch onto origin/main.
-    rebase_cmd = ["git", "rebase", "origin/main"]
+    # Step 2: resolve base ref to a concrete SHA.
+    rev_parse_cmd = ["git", "rev-parse", base_ref]
+    log(_HOOK, issue, f"running {' '.join(rev_parse_cmd)}")
+    rev_parse_result = _run(rev_parse_cmd)
+    if rev_parse_result.returncode != 0:
+        err(
+            _HOOK,
+            issue,
+            f"git rev-parse {base_ref!r} failed "
+            f"(exit {rev_parse_result.returncode}) — "
+            "ensure CHAIN_BASE_BRANCH names a reachable ref",
+        )
+        return rev_parse_result.returncode
+    base_sha = rev_parse_result.stdout.strip()
+    log(_HOOK, issue, f"resolved {base_ref!r} → {base_sha}")
+
+    # Step 3: rebase current branch onto the resolved (frozen) SHA.
+    rebase_cmd = ["git", "rebase", base_sha]
     log(_HOOK, issue, f"running {' '.join(rebase_cmd)}")
     rebase_result = _run(rebase_cmd)
 
     if rebase_result.returncode == 0:
-        log(_HOOK, issue, "branch is up to date with origin/main")
+        log(
+            _HOOK,
+            issue,
+            f"branch is up to date with {base_ref!r} ({base_sha})",
+        )
         return 0
 
     # Rebase failed — abort to restore clean state, then report.
     err(
         _HOOK,
         issue,
-        f"rebase onto origin/main failed (exit {rebase_result.returncode})"
+        f"rebase onto {base_ref!r} ({base_sha}) failed "
+        f"(exit {rebase_result.returncode})"
         " — aborting to restore clean state",
     )
     abort_cmd = ["git", "rebase", "--abort"]

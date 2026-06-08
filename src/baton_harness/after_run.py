@@ -1,5 +1,21 @@
 """Hook: after_run — outcome classification and GitHub label reconciliation.
 
+.. note::
+
+    **CHAIN_BASE_BRANCH env-awareness (P0):**  The ``CHAIN_BASE_BRANCH``
+    environment variable controls which ref is used as the cherry base for
+    the F5 classifier (default ``origin/main``).  The daemon threads this
+    variable to per-issue hooks so the correct feature-branch base is used
+    rather than ``main``.  The ref is resolved to a concrete SHA at entry
+    (``git rev-parse <ref>``) to freeze the cut-point for the duration of
+    the run window (B-I1 in the chain spec §3.7).
+
+    **Priority-3 carry-forward deleted (P0):**  On ``COMMITTED_NO_PR``,
+    ``NO_COMMITS``, and ``UNCOMMITTED_CHANGES``, the hook now removes
+    ``agent-ready`` and adds ``blocked`` instead of leaving ``agent-ready``
+    for Baton retry.  The always-on daemon is the new retry authority and
+    consults ``blocked`` issues itself.
+
 Invoked by Baton after each agent run turn completes.  Responsible for:
 
 1. Classifying the run outcome into one of the states defined in
@@ -43,6 +59,7 @@ from __future__ import annotations
 
 import enum
 import json
+import os
 import subprocess
 import sys
 
@@ -63,6 +80,12 @@ LABEL_AGENT_DONE = "agent-done"
 
 #: Label applied by the agent mid-run when it needs human input.
 LABEL_BLOCKED = "blocked"
+
+#: Environment variable controlling the cherry base ref.  Set by the daemon
+#: to ``feature/<slug>`` for milestone work units; defaults to
+#: ``origin/main`` for flat (N=1 DAG / un-milestoned) runs.
+_ENV_CHAIN_BASE_BRANCH = "CHAIN_BASE_BRANCH"
+_DEFAULT_BASE = "origin/main"
 
 
 # ---------------------------------------------------------------------------
@@ -132,14 +155,38 @@ def _current_branch() -> str:
     return result.stdout.strip()
 
 
+def _resolve_base_sha() -> str:
+    """Resolve CHAIN_BASE_BRANCH to a concrete SHA at call time.
+
+    Reads the ``CHAIN_BASE_BRANCH`` environment variable (default
+    ``origin/main``) and resolves it to a concrete commit SHA via
+    ``git rev-parse``.  This freezes the cut-point for the duration of the
+    after_run window so the classifier is not confused by a moving
+    ``--no-ff`` feature-branch tip (B-I1, chain spec §3.7).
+
+    Returns:
+        The resolved SHA string, or the bare ref string if resolution fails
+        (allowing the cherry command to fail gracefully with a clear error
+        rather than a confusing Python traceback).
+    """
+    base_ref = os.environ.get(_ENV_CHAIN_BASE_BRANCH, _DEFAULT_BASE)
+    result = _run(["git", "rev-parse", base_ref])
+    if result.returncode == 0 and result.stdout.strip():
+        return result.stdout.strip()
+    # Fallback: return the ref string (git cherry will surface the error).
+    return base_ref
+
+
 def _classify() -> RunOutcome:
     """Classify the outcome of the most recent agent run.
 
     Implements the four-state F5 classification (spike finding F5):
 
     1. ``UNCOMMITTED_CHANGES`` — ``git status --porcelain`` is non-empty.
-    2. ``NO_COMMITS`` — ``git cherry origin/main HEAD`` has no ``+`` lines.
-    3. ``COMMITTED_NO_PR`` — commits exist ahead of main but ``gh pr list``
+    2. ``NO_COMMITS`` — ``git cherry <base-sha> HEAD`` has no ``+`` lines.
+       The base SHA is resolved from ``CHAIN_BASE_BRANCH`` (default
+       ``origin/main``) at entry via ``_resolve_base_sha()``.
+    3. ``COMMITTED_NO_PR`` — commits exist ahead of base but ``gh pr list``
        returns an empty array.
     4. ``PR_OPENED`` — ``gh pr list`` returns a non-empty array.
 
@@ -154,8 +201,11 @@ def _classify() -> RunOutcome:
     if status.stdout.strip():
         return RunOutcome.UNCOMMITTED_CHANGES
 
-    # Step 2: any commits ahead of origin/main?
-    cherry = _run(["git", "cherry", "origin/main", "HEAD"])
+    # Resolve base SHA once here so it is stable for the rest of classify.
+    base_sha = _resolve_base_sha()
+
+    # Step 2: any commits ahead of base?
+    cherry = _run(["git", "cherry", base_sha, "HEAD"])
     ahead_commits = [
         line for line in cherry.stdout.splitlines() if line.startswith("+")
     ]
@@ -217,17 +267,14 @@ def _reconcile_labels(issue: int, outcome: RunOutcome) -> int:
         1. If ``blocked`` is already on the issue (applied mid-run by the
            agent), remove ``agent-ready`` and leave ``blocked``.  Do NOT add
            ``agent-done`` — the block overrides the F5 classification.
-           Note: block is not terminal at the Baton level — Baton
-           re-dispatches blocked issues across continuation turns.  The
-           harness enforces the single-state label invariant here but
-           cannot stop the re-dispatch; the upstream-dependent terminal-
-           block fix is tracked in #23.
         2. If outcome is ``PR_OPENED``, add ``agent-done`` and remove
            ``agent-ready``.  Log the F10 caveat: CI status is NOT checked
            (human verifies at review — pilot scope).
         3. Otherwise (``NO_COMMITS``, ``UNCOMMITTED_CHANGES``,
-           ``COMMITTED_NO_PR``): retryable.  Leave ``agent-ready`` in place
-           for Baton's own retry mechanism; log the classification.
+           ``COMMITTED_NO_PR``): remove ``agent-ready`` and add ``blocked``.
+           The always-on daemon (P3) is the new retry authority — it consults
+           ``blocked`` issues rather than ``agent-ready``.  The old
+           "leave agent-ready for Baton retry" behaviour is deleted (P0).
 
     Label-edit failures are surfaced via non-zero exit codes and ``_cli.err``
     logging — they are never swallowed (H1 root cause was ``|| true``
@@ -332,13 +379,57 @@ def _reconcile_labels(issue: int, outcome: RunOutcome) -> int:
             return 1
         return 0
 
-    # Priority 3: retryable — leave agent-ready for Baton's own retry.
+    # Priority 3 (P0 change): NOT retryable via Baton anymore — the always-on
+    # daemon is the new retry authority.  Remove agent-ready and set blocked so
+    # the daemon can decide when and whether to retry.
+    #
+    # Old behaviour (deleted): leave agent-ready in place for Baton retry.
+    # New behaviour: remove agent-ready + add blocked.
     log(
         _HOOK,
         issue,
-        f"outcome={outcome.value}: retryable — leaving {LABEL_AGENT_READY!r} "
-        "in place for Baton retry.",
+        f"outcome={outcome.value}: removing {LABEL_AGENT_READY!r} and "
+        f"setting {LABEL_BLOCKED!r} — daemon controls retry (Priority-3 "
+        "carry-forward deleted, P0).",
     )
+    # Remove agent-ready if present.
+    if LABEL_AGENT_READY in labels:
+        remove_result = _run(
+            [
+                "gh",
+                "issue",
+                "edit",
+                str(issue),
+                "--remove-label",
+                LABEL_AGENT_READY,
+            ]
+        )
+        if remove_result.returncode != 0:
+            err(
+                _HOOK,
+                issue,
+                f"failed to remove {LABEL_AGENT_READY!r}: "
+                f"{remove_result.stderr.strip()}",
+            )
+            return 1
+    # Add blocked.
+    add_result = _run(
+        [
+            "gh",
+            "issue",
+            "edit",
+            str(issue),
+            "--add-label",
+            LABEL_BLOCKED,
+        ]
+    )
+    if add_result.returncode != 0:
+        err(
+            _HOOK,
+            issue,
+            f"failed to add {LABEL_BLOCKED!r}: {add_result.stderr.strip()}",
+        )
+        return 1
     return 0
 
 
