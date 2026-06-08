@@ -73,10 +73,12 @@ def load_registry() -> list[RepoConfig]:
             " and BH_PROJECT_ROOT environment variables."
         )
 
-    return [
+    registry = [
         RepoConfig(
             owner=owner,
             repo=repo,
             project_root=Path(root_str),
         )
     ]
+    assert len(registry) == 1, "v1 serializes one repo; multi-repo is v2+"
+    return registry

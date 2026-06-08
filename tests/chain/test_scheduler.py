@@ -266,3 +266,78 @@ class TestCycleError:
         """prepare() does not raise on a valid DAG."""
         sched = IssueScheduler({10: [11], 11: [12], 12: []})
         sched.prepare()  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# All-parked-via-single-root-blocker (code-reviewer C2)
+# ---------------------------------------------------------------------------
+
+
+class TestAllParkedViaSingleRootBlocker:
+    """All nodes transitively dependent on a root blocker get parked."""
+
+    def test_park_root_parks_entire_transitive_closure(self) -> None:
+        """Parking the single root blocker parks the entire DAG."""
+        # Chain: 10 blocked by 11; 11 blocked by 12; 12 blocked by 13
+        # 13 is the single root (no blockers)
+        # Parking 13 should park 12, 11, 10 transitively.
+        sched = _make_scheduler({10: [11], 11: [12], 12: [13], 13: []})
+        sched.mark_parked(13)
+        assert sched.parked == {10, 11, 12, 13}
+
+    def test_is_active_false_after_root_parked(self) -> None:
+        """is_active() is False when the root blocker parks the whole DAG."""
+        sched = _make_scheduler({10: [11], 11: [12], 12: [13], 13: []})
+        sched.mark_parked(13)
+        assert not sched.is_active()
+
+    def test_get_ready_empty_after_root_parked(self) -> None:
+        """get_ready() returns empty set after the root blocker is parked."""
+        sched = _make_scheduler({10: [11], 11: [12], 12: [13], 13: []})
+        sched.mark_parked(13)
+        assert sched.get_ready() == set()
+
+
+# ---------------------------------------------------------------------------
+# mark_parked / done invariant (FIX 4)
+# ---------------------------------------------------------------------------
+
+
+class TestMarkParkedDoneInvariant:
+    """A node in _done must not be added to parked by a transitive park."""
+
+    def test_done_node_not_added_to_parked_via_transitive_park(self) -> None:
+        """A node already done stays only in done, not added to parked."""
+        # Graph: 10 blocked by 11; 11 has no blockers.
+        # Sequence: complete 11 (done), then park 11 from outside.
+        # 11 must NOT appear in parked because it is already done.
+        sched = _make_scheduler({10: [11], 11: []})
+        ready = sched.get_ready()
+        assert 11 in ready
+        sched.mark_done(11)
+        # Now trigger a transitive park through 11: park 10 which has no
+        # dependents, then manually call mark_parked(11) to check the guard.
+        sched.mark_parked(11)
+        assert 11 not in sched.parked, (
+            "A done node must not be added to parked"
+        )
+
+    def test_done_node_not_double_stated_via_dependent_park(self) -> None:
+        """Parking a dependent does not pull a done node into parked."""
+        # 10 blocked by 11; 11 blocked by 12
+        # Complete 12 (done), complete 11 (done), then park 10.
+        # 10 gets parked; 11 and 12 (both done) must NOT be in parked.
+        sched = _make_scheduler({10: [11], 11: [12], 12: []})
+        ready = sched.get_ready()
+        assert 12 in ready
+        sched.mark_done(12)
+        ready2 = sched.get_ready()
+        assert 11 in ready2
+        sched.mark_done(11)
+        ready3 = sched.get_ready()
+        assert 10 in ready3
+        # Park 10 directly — 10's dependents (none) are parked.
+        sched.mark_parked(10)
+        assert 10 in sched.parked
+        assert 11 not in sched.parked, "Done node 11 must not be in parked"
+        assert 12 not in sched.parked, "Done node 12 must not be in parked"

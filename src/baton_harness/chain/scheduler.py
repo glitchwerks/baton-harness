@@ -120,6 +120,10 @@ class IssueScheduler:
         A parked issue (and all issues that depend on it, directly or
         indirectly) will never appear in ``get_ready()`` output again.
 
+        A node that is already in ``_done`` is skipped and will not be
+        added to ``parked``; each node has exactly one terminal state
+        (either done or parked, never both).
+
         Args:
             issue: The issue number to park.  May or may not have been
                 returned by ``get_ready()`` yet.
@@ -127,7 +131,7 @@ class IssueScheduler:
         to_park: list[int] = [issue]
         while to_park:
             node = to_park.pop()
-            if node in self.parked:
+            if node in self.parked or node in self._done:
                 continue
             self.parked.add(node)
             to_park.extend(self._dependents.get(node, []))

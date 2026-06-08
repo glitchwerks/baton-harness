@@ -378,3 +378,161 @@ class TestFetchMilestoneMembers:
         assert len(captured) == 1
         joined = " ".join(captured[0])
         assert "7" in joined
+
+    def test_excludes_pull_requests_from_membership(self) -> None:
+        """Items with a 'pull_request' field are excluded from membership."""
+        payload = [
+            {"number": 10, "state": "open"},
+            {"number": 11, "state": "open", "pull_request": {"url": "..."}},
+            {"number": 12, "state": "closed"},
+        ]
+
+        with patch.object(gh_deps_mod, "_run", return_value=_ok(payload)):
+            result = fetch_milestone_members("glitchwerks", "baton-harness", 3)
+
+        assert result == frozenset({10, 12})
+        assert 11 not in result
+
+
+# ---------------------------------------------------------------------------
+# GET-method regression (FIX 1)
+# ---------------------------------------------------------------------------
+
+
+class TestGetMethodRegression:
+    """Assert pagination params are passed via URL query string, not -F flags.
+
+    ``gh api -F`` switches HTTP method from GET to POST.  All fetch_*
+    functions must embed pagination params in the URL string so the
+    request stays a GET.
+    """
+
+    def test_blocked_by_no_dash_f_pagination(self) -> None:
+        """fetch_blocked_by does not pass -F flags for pagination params."""
+        captured: list[list[str]] = []
+
+        def fake_run(
+            cmd: list[str],
+        ) -> subprocess.CompletedProcess[str]:
+            captured.append(cmd)
+            return _ok([])
+
+        with patch.object(gh_deps_mod, "_run", side_effect=fake_run):
+            fetch_blocked_by("glitchwerks", "baton-harness", 5)
+
+        for cmd in captured:
+            assert "-F" not in cmd, f"Found -F in command: {cmd}"
+            assert "-X" not in cmd or "POST" not in " ".join(cmd), (
+                f"Found -X POST in command: {cmd}"
+            )
+            # Per_page and page must be embedded in the URL itself
+            url_arg = cmd[2]  # third element is the endpoint URL
+            assert "per_page" in url_arg, f"per_page not in URL: {url_arg}"
+            assert "page=" in url_arg, f"page= not in URL: {url_arg}"
+
+    def test_blocking_no_dash_f_pagination(self) -> None:
+        """fetch_blocking does not pass -F flags for pagination params."""
+        captured: list[list[str]] = []
+
+        def fake_run(
+            cmd: list[str],
+        ) -> subprocess.CompletedProcess[str]:
+            captured.append(cmd)
+            return _ok([])
+
+        with patch.object(gh_deps_mod, "_run", side_effect=fake_run):
+            fetch_blocking("glitchwerks", "baton-harness", 5)
+
+        for cmd in captured:
+            assert "-F" not in cmd, f"Found -F in command: {cmd}"
+            url_arg = cmd[2]
+            assert "per_page" in url_arg, f"per_page not in URL: {url_arg}"
+            assert "page=" in url_arg, f"page= not in URL: {url_arg}"
+
+    def test_milestone_members_no_dash_f_pagination(self) -> None:
+        """fetch_milestone_members does not pass -F flags for any params."""
+        captured: list[list[str]] = []
+
+        def fake_run(
+            cmd: list[str],
+        ) -> subprocess.CompletedProcess[str]:
+            captured.append(cmd)
+            return _ok([])
+
+        with patch.object(gh_deps_mod, "_run", side_effect=fake_run):
+            fetch_milestone_members("glitchwerks", "baton-harness", 7)
+
+        for cmd in captured:
+            assert "-F" not in cmd, f"Found -F in command: {cmd}"
+            url_arg = cmd[2]
+            assert "per_page" in url_arg, f"per_page not in URL: {url_arg}"
+            assert "page=" in url_arg, f"page= not in URL: {url_arg}"
+            assert "milestone=" in url_arg, f"milestone= not in URL: {url_arg}"
+            assert "state=" in url_arg, f"state= not in URL: {url_arg}"
+
+
+# ---------------------------------------------------------------------------
+# Three-full-pages pagination (code-reviewer W4)
+# ---------------------------------------------------------------------------
+
+
+class TestThreePagePagination:
+    """Verify three-page (100, 100, N<100) pagination collects all items."""
+
+    def _make_full_page(self, start: int) -> list[dict[str, object]]:
+        """Build a full page of 100 issue-shaped dicts starting at start.
+
+        Args:
+            start: The first issue number in the page.
+
+        Returns:
+            A list of 100 issue dicts.
+        """
+        return [
+            {
+                "id": i,
+                "number": i,
+                "state": "open",
+                "title": f"Issue {i}",
+                "milestone": None,
+            }
+            for i in range(start, start + 100)
+        ]
+
+    def test_three_pages_collected_and_loop_stops(self) -> None:
+        """All items from pages of sizes 100, 100, 7 are returned; stops."""
+        page1 = self._make_full_page(1)
+        page2 = self._make_full_page(101)
+        page3 = [
+            {
+                "id": i,
+                "number": i,
+                "state": "open",
+                "title": f"I{i}",
+                "milestone": None,
+            }
+            for i in range(201, 208)
+        ]
+
+        pages = [_ok(page1), _ok(page2), _ok(page3)]
+        call_count = 0
+
+        def fake_run(
+            cmd: list[str],
+        ) -> subprocess.CompletedProcess[str]:
+            nonlocal call_count
+            result = pages[call_count]
+            call_count += 1
+            return result
+
+        with patch.object(gh_deps_mod, "_run", side_effect=fake_run):
+            result = fetch_blocked_by("glitchwerks", "baton-harness", 999)
+
+        assert call_count == 3
+        assert len(result) == 207
+        assert 1 in result
+        assert 100 in result
+        assert 101 in result
+        assert 200 in result
+        assert 201 in result
+        assert 207 in result

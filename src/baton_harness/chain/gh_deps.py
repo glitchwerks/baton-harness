@@ -67,33 +67,35 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
 _PAGE_SIZE = 100
 
 
-def _paginate(base_cmd: list[str]) -> list[dict[str, object]]:
+def _paginate(base_url: str) -> list[dict[str, object]]:
     """Fetch all pages from a paginated ``gh api`` endpoint.
 
     Starts at page 1 and keeps fetching until a page with fewer than
     ``_PAGE_SIZE`` items is returned, then stops.
 
+    Query parameters (``per_page`` and ``page``) are embedded in the URL
+    query string so the request remains an HTTP GET.  Using ``-F`` flags
+    would switch ``gh api`` to POST.
+
     Args:
-        base_cmd: The ``gh api`` command **without** ``--paginate`` flags.
-            This function appends ``-F per_page=100 -F page={n}`` for each
-            request.
+        base_url: The endpoint URL, which may already contain query
+            parameters.  This function appends ``per_page=100`` and
+            ``page={n}`` as additional query string parameters.
 
     Returns:
         The concatenated list of all items across all pages.
 
     Raises:
         RuntimeError: If any ``gh api`` call returns a non-zero exit code.
+        ValueError: If any item in the response is missing the ``number``
+            field.
     """
     results: list[dict[str, object]] = []
     page = 1
+    separator = "&" if "?" in base_url else "?"
     while True:
-        cmd = base_cmd + [
-            "-F",
-            f"per_page={_PAGE_SIZE}",
-            "-F",
-            f"page={page}",
-        ]
-        proc = _run(cmd)
+        url = f"{base_url}{separator}per_page={_PAGE_SIZE}&page={page}"
+        proc = _run(["gh", "api", url])
         if proc.returncode != 0:
             raise RuntimeError(
                 f"gh api call failed (exit {proc.returncode}): {proc.stderr}"
@@ -104,6 +106,23 @@ def _paginate(base_cmd: list[str]) -> list[dict[str, object]]:
             break
         page += 1
     return results
+
+
+def _extract_number(item: dict[str, object]) -> int:
+    """Extract the ``number`` field from a GitHub API issue object.
+
+    Args:
+        item: A dict representing a GitHub issue as returned by the API.
+
+    Returns:
+        The integer issue number.
+
+    Raises:
+        ValueError: If ``item`` does not contain a ``number`` key.
+    """
+    if "number" not in item:
+        raise ValueError(f"Unexpected gh api item without 'number': {item!r}")
+    return cast(int, item["number"])
 
 
 # ---------------------------------------------------------------------------
@@ -135,11 +154,11 @@ def fetch_blocked_by(owner: str, repo: str, issue: int) -> list[int]:
 
     Raises:
         RuntimeError: If the ``gh api`` call returns a non-zero exit code.
+        ValueError: If any API response item lacks a ``number`` field.
     """
-    endpoint = f"repos/{owner}/{repo}/issues/{issue}/dependencies/blocked_by"
-    base_cmd = ["gh", "api", endpoint]
-    items = _paginate(base_cmd)
-    return [cast(int, item["number"]) for item in items]
+    url = f"repos/{owner}/{repo}/issues/{issue}/dependencies/blocked_by"
+    items = _paginate(url)
+    return [_extract_number(item) for item in items]
 
 
 def fetch_blocking(owner: str, repo: str, issue: int) -> list[int]:
@@ -166,11 +185,11 @@ def fetch_blocking(owner: str, repo: str, issue: int) -> list[int]:
 
     Raises:
         RuntimeError: If the ``gh api`` call returns a non-zero exit code.
+        ValueError: If any API response item lacks a ``number`` field.
     """
-    endpoint = f"repos/{owner}/{repo}/issues/{issue}/dependencies/blocking"
-    base_cmd = ["gh", "api", endpoint]
-    items = _paginate(base_cmd)
-    return [cast(int, item["number"]) for item in items]
+    url = f"repos/{owner}/{repo}/issues/{issue}/dependencies/blocking"
+    items = _paginate(url)
+    return [_extract_number(item) for item in items]
 
 
 def fetch_milestone_members(
@@ -181,6 +200,10 @@ def fetch_milestone_members(
     Calls the GitHub REST issues endpoint filtered by milestone number::
 
         GET repos/{owner}/{repo}/issues?milestone={milestone}&state=all
+
+    Pull requests are excluded: GitHub models PRs as issues but items
+    with a ``pull_request`` field are skipped so only real issues enter
+    the membership set.
 
     Same-repo only: all returned numbers are issues in the same
     ``{owner}/{repo}`` repository.
@@ -196,16 +219,10 @@ def fetch_milestone_members(
 
     Raises:
         RuntimeError: If the ``gh api`` call returns a non-zero exit code.
+        ValueError: If any API response item lacks a ``number`` field.
     """
-    endpoint = f"repos/{owner}/{repo}/issues"
-    base_cmd = [
-        "gh",
-        "api",
-        endpoint,
-        "-F",
-        f"milestone={milestone}",
-        "-F",
-        "state=all",
-    ]
-    items = _paginate(base_cmd)
-    return frozenset(cast(int, item["number"]) for item in items)
+    url = f"repos/{owner}/{repo}/issues?milestone={milestone}&state=all"
+    items = _paginate(url)
+    return frozenset(
+        _extract_number(item) for item in items if "pull_request" not in item
+    )
