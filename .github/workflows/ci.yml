@@ -2,6 +2,8 @@ name: CI
 
 on:
   push:
+    # feature/** covers daemon-orchestration chain sub-PRs / per-issue
+    # branches (spec §3.6 / OQ-4); see harness-design.md for branch model.
     branches: [main, "feature/**"]
   pull_request:
     branches: [main, "feature/**"]

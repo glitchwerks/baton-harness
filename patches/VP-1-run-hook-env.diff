@@ -1,5 +1,5 @@
---- /tmp/hooks.py.orig	2026-06-07 21:02:54.719699000 -0400
-+++ I:/ai/claude/baton-harness/.worktrees/daemon-p0/src/baton_harness/vendor/symphony/hooks.py	2026-06-07 21:03:05.855036600 -0400
+--- a/src/baton_harness/vendor/symphony/hooks.py
++++ b/src/baton_harness/vendor/symphony/hooks.py
 @@ -3,6 +3,7 @@
  
  import asyncio
@@ -8,7 +8,7 @@
  
  log = logging.getLogger("symphony")
  
-@@ -12,11 +13,19 @@
+@@ -12,10 +13,18 @@
      script: str | None,
      cwd: str,
      timeout_ms: int = 60000,
@@ -17,17 +17,16 @@
      """Run a shell hook script. Returns True on success, False on failure."""
      if not script or not script.strip():
          return True
- 
++
 +    # VENDOR-PATCH VP-1: run_hook env= threading (merged into os.environ)
 +    # Merge caller-supplied overrides INTO os.environ so that PATH, HOME, and
 +    # every other inherited var remain accessible to git/gh inside the hook.
 +    # NEVER pass an overrides-only dict — that strips PATH/HOME and makes
 +    # git/gh unresolvable (CONCERN-1 in issue #42).
 +    merged_env: dict[str, str] = {**os.environ, **(env or {})}
-+
+ 
      log.info(f"hook:{name} starting in {cwd}")
      try:
-         proc = await asyncio.create_subprocess_exec(
 @@ -24,6 +33,7 @@
              cwd=cwd,
              stdout=asyncio.subprocess.PIPE,

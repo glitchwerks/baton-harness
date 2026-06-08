@@ -146,6 +146,77 @@ class TestBeforeRunChainBaseBranch:
             "before_run must rebase onto the resolved SHA, not the string ref"
         )
 
+    def test_fetch_skipped_when_chain_base_branch_set(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """With CHAIN_BASE_BRANCH set, before_run does NOT fetch origin main.
+
+        The daemon passes a concrete local cut-point (spec §3.7); fetching
+        origin main is both wrong (wrong base) and unnecessary.
+        """
+        worktree = tmp_path / "feat-13-nofetch"
+        worktree.mkdir()
+        monkeypatch.chdir(worktree)
+        monkeypatch.setenv("CHAIN_BASE_BRANCH", "feature/chain-base")
+
+        calls: list[list[str]] = []
+        fake_sha = "cafebabe" * 5
+
+        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            calls.append(cmd)
+            if "rev-parse" in cmd:
+                return _ok(stdout=fake_sha + "\n")
+            return _ok()
+
+        monkeypatch.setattr(before_run_mod, "_run", fake_run)
+
+        result = before_run_main()
+
+        assert result == 0
+        fetch_calls = [
+            c for c in calls if "fetch" in c and "main" in c
+        ]
+        assert fetch_calls == [], (
+            "before_run must NOT call git fetch origin main when "
+            "CHAIN_BASE_BRANCH is set (base is a local cut-point)"
+        )
+
+    def test_fetch_runs_when_chain_base_branch_unset(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """With CHAIN_BASE_BRANCH unset, before_run DOES fetch origin main."""
+        worktree = tmp_path / "feat-14-fetch"
+        worktree.mkdir()
+        monkeypatch.chdir(worktree)
+        monkeypatch.delenv("CHAIN_BASE_BRANCH", raising=False)
+
+        calls: list[list[str]] = []
+        fake_sha = "deadcafe" * 5
+
+        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            calls.append(cmd)
+            if "rev-parse" in cmd:
+                return _ok(stdout=fake_sha + "\n")
+            return _ok()
+
+        monkeypatch.setattr(before_run_mod, "_run", fake_run)
+
+        result = before_run_main()
+
+        assert result == 0
+        fetch_calls = [
+            c for c in calls if "fetch" in c and "main" in c
+        ]
+        assert len(fetch_calls) == 1, (
+            "before_run must call git fetch origin main exactly once "
+            "when CHAIN_BASE_BRANCH is unset (flat run path)"
+        )
+        assert fetch_calls[0] == ["git", "fetch", "origin", "main"]
+
     def test_resolves_ref_before_rebase(
         self,
         tmp_path: Path,
@@ -239,6 +310,40 @@ class TestAfterRunChainBaseBranch:
         assert fake_sha in cherry_calls[0], (
             "after_run must pass the resolved SHA (not the ref string) "
             "as the cherry base when CHAIN_BASE_BRANCH is set"
+        )
+
+    def test_rev_parse_before_cherry_call_order(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """git rev-parse runs BEFORE git cherry (resolve-before-classify).
+
+        An unresolved ref must never reach the cherry classifier — the
+        SHA must be frozen first so the cut-point is stable for the
+        duration of the after_run window (B-I1, chain spec §3.7).
+        """
+        monkeypatch.setenv("CHAIN_BASE_BRANCH", "feature/order-check")
+
+        fake_sha = "c0ffee12345678c0ffee12345678c0ffee123456"
+        call_order: list[str] = []
+
+        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if "rev-parse" in cmd and "--abbrev-ref" not in cmd:
+                call_order.append("rev-parse")
+                return _ok(stdout=fake_sha + "\n")
+            if "cherry" in cmd:
+                call_order.append("cherry")
+                return _ok(stdout="")
+            return _ok()
+
+        with patch("baton_harness.after_run._run", side_effect=fake_run):
+            _classify()
+
+        assert "rev-parse" in call_order, "git rev-parse must be called"
+        assert "cherry" in call_order, "git cherry must be called"
+        assert call_order.index("rev-parse") < call_order.index("cherry"), (
+            "git rev-parse (resolve SHA) must occur before git cherry "
+            "so an unresolved ref never reaches the classifier"
         )
 
 

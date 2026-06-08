@@ -76,9 +76,12 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
 def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
     """Entry point for the ``bh-before-run`` console script.
 
-    Performs a three-step branch sync:
+    Performs a branch sync in up to three steps:
 
     1. ``git fetch origin main`` — brings the remote ref up to date.
+       **Skipped** when ``CHAIN_BASE_BRANCH`` is set: the daemon has already
+       prepared a concrete local cut-point (spec §3.7), so fetching
+       ``main`` is both wrong (it is not the base) and unnecessary.
     2. ``git rev-parse <CHAIN_BASE_BRANCH>`` — resolves the base ref to a
        concrete SHA at entry.  This prevents moving-target problems on
        ``--no-ff`` feature branches (B-I1, chain spec §3.7).
@@ -113,17 +116,34 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
     base_ref = os.environ.get(_ENV_CHAIN_BASE_BRANCH, _DEFAULT_BASE)
     log(_HOOK, issue, f"chain base ref: {base_ref!r}")
 
-    # Step 1: fetch latest main from remote.
-    fetch_cmd = ["git", "fetch", "origin", "main"]
-    log(_HOOK, issue, f"running {' '.join(fetch_cmd)}")
-    fetch_result = _run(fetch_cmd)
-    if fetch_result.returncode != 0:
-        err(
+    # Step 1: fetch latest main from remote — only on the flat path.
+    #
+    # When CHAIN_BASE_BRANCH is UNSET (flat / un-milestoned run, base is
+    # origin/main): fetch so the remote ref is up to date before resolving.
+    #
+    # When CHAIN_BASE_BRANCH IS set (chain path): the daemon has already
+    # prepared a concrete cut-point SHA/ref that is local (spec §3.7).
+    # Fetching origin main is both wrong (it is not the base) and
+    # unnecessary; skip it entirely.
+    chain_base_set = _ENV_CHAIN_BASE_BRANCH in os.environ
+    if not chain_base_set:
+        fetch_cmd = ["git", "fetch", "origin", "main"]
+        log(_HOOK, issue, f"running {' '.join(fetch_cmd)}")
+        fetch_result = _run(fetch_cmd)
+        if fetch_result.returncode != 0:
+            err(
+                _HOOK,
+                issue,
+                f"git fetch failed (exit {fetch_result.returncode})",
+            )
+            return fetch_result.returncode
+    else:
+        log(
             _HOOK,
             issue,
-            f"git fetch failed (exit {fetch_result.returncode})",
+            "CHAIN_BASE_BRANCH is set — skipping git fetch origin main "
+            "(base is a local cut-point SHA prepared by the daemon)",
         )
-        return fetch_result.returncode
 
     # Step 2: resolve base ref to a concrete SHA.
     rev_parse_cmd = ["git", "rev-parse", base_ref]
