@@ -45,7 +45,7 @@ skills_relevant:
 **decided** in the merged design docs (`docs/harness-design.md §10`,
 `docs/architecture-spec.md §2/§3.4/§6/§9`, both reformed 2026-06-07 to the
 vendored model). This Rev 2 folds in all `project-reviewer`
-(`.tmp/spec-review-chain.md`) and `inquisitor` (`.tmp/spec-inquisitor-chain.md`)
+(issue #27 (project-reviewer review)) and `inquisitor` (issue #27 (inquisitor review))
 findings plus the user-decided resolutions for the open questions (OQ-1, OQ-3a,
 OQ-5, OQ-9) and the concurrency contract (B-I3 — serialize all work units in v1).
 Per CLAUDE.md § Issue Tracking, the phasing in §12 is a **proposal** — creating
@@ -62,7 +62,7 @@ to start coding.
 - **B-I3 (concurrency):** the daemon serializes **all** work units in v1 — one
   work unit (one DAG) in flight across the whole repo at a time (§6, §10).
 
-**Source intent:** issue #27 (`.tmp/issue-chaining-feature.md:L1-L49`). Extend the
+**Source intent:** issue #27. Extend the
 harness from running a single `agent-ready` issue to autonomously executing a
 *dependency DAG* of issues end-to-end, leaving one feature branch per work unit
 for human review and **never** merging to `main`.
@@ -78,10 +78,10 @@ for human review and **never** merging to `main`.
   BLOCKING resolutions, OQ resolutions, single-repo gate).
 - `docs/architecture-spec.md:L116-L144` (§3.4 orchestrator/worker + vendor patches),
   `:L241-L278` (§6 work-unit lifecycle + guidance flow), `:L327-L335` (§9 single-repo).
-- `.tmp/baton-deepdive-findings.md` (symphony internals: the `_run_worker` seam
+- `docs/baton-deepdive-findings.md` (symphony internals: the `_run_worker` seam
   §1.2, `run_hook` §1.3, `WorkspaceManager` §1.4, the coordination-seam dissolution
   §2.3, file:line index in the appendix).
-- `.tmp/arch-review-new-model.md` (4 BLOCKINGs + 8 CONCERNs the spec must honor).
+- issue #27 (architecture review) (4 BLOCKINGs + 8 CONCERNs the spec must honor).
 - `docs/research/2026-06-06-issue-dag-orchestration.md` (external prior art:
   dependency API, graphlib, merge-commit finding, novelty).
 
@@ -96,14 +96,14 @@ decided concept. Three facts from the current code shape the work:
 1. **The existing `before_run` rebases onto `main`, hardcoded.**
    `before_run.py:L107` runs `git rebase origin/main`. Per-issue branches under a
    milestone work unit must rebase onto the **feature branch**, not `main`. This
-   is BLOCKING-4 (`.tmp/arch-review-new-model.md:L49-L57`): left unchanged, a
+   is BLOCKING-4 (issue #27 (architecture review)): left unchanged, a
    per-issue branch cut from `feature/<slug>` and rebased onto `origin/main`
    silently loses the commits of earlier issues on the feature branch.
 2. **`after_run`'s F5 classifier compares against `origin/main`, hardcoded.**
    `after_run.py:L158` runs `git cherry origin/main HEAD`. For a feature-branch
    work unit this is the wrong base — it inflates the "ahead" delta with the
    feature branch's own commits. This is BLOCKING-2
-   (`.tmp/arch-review-new-model.md:L23-L33`). The fix is **not** a simple
+   (issue #27 (architecture review)). The fix is **not** a simple
    default-string swap: against a *moving* `--no-ff` feature branch the cherry
    base must be the worker branch's **cut-point merge-base**, frozen for the
    `_run_worker` window, not the live feature tip (B-I1, §3.7).
@@ -117,7 +117,7 @@ changes the orchestration substrate: `symphony` is copied into
 `src/baton_harness/vendor/symphony/` and the daemon calls
 `Orchestrator._run_worker(issue)` directly. Symphony's flat poll/dispatch loop
 (`run`/`_tick`/`_dispatch`/`_on_worker_done`), `cli.start`, and `watchfiles` are
-**dropped** (`harness-design.md:L219`; `.tmp/baton-deepdive-findings.md:L40-L51`
+**dropped** (`harness-design.md:L219`; `docs/baton-deepdive-findings.md:L40-L51`
 for the `_run_worker` seam).
 
 ---
@@ -128,7 +128,7 @@ for the `_run_worker` seam).
 Build a **custom always-on daemon** (the orchestrator) that calls the **vendored
 `symphony._run_worker`** as a per-issue worker library function. There is **one**
 execution path, parameterized by the DAG. This is **option (c)** from the issue #27
-brief (`.tmp/issue-chaining-feature.md:L35`), superseding the option-(a)
+brief (issue #27), superseding the option-(a)
 black-box-wrapper design of the prior revision of this spec.
 
 ### What changed from option (a)
@@ -136,8 +136,8 @@ black-box-wrapper design of the prior revision of this spec.
 | Dimension | Option (a) — wrap Baton as a black box (prior spec) | Option (c) — vendor + daemon (this spec) |
 |---|---|---|
 | Worker invocation | Promote `agent-ready`; Baton's poller picks it up | Daemon calls `_run_worker(issue)` directly as a library |
-| Coordination seam | Label-poll loop: "wait for terminal label on N" | None — the `_run_worker` call returns `"pr_created"`/`"no_pr"` directly (`.tmp/baton-deepdive-findings.md:L51`) |
-| Poller config | `config/WORKFLOW.chain.md` to tame the flat poller | **Dropped** — no poller runs (`.tmp/arch-review-new-model.md:L160-L164`, NIT-2) |
+| Coordination seam | Label-poll loop: "wait for terminal label on N" | None — the `_run_worker` call returns `"pr_created"`/`"no_pr"` directly (`docs/baton-deepdive-findings.md:L51`) |
+| Poller config | `config/WORKFLOW.chain.md` to tame the flat poller | **Dropped** — no poller runs (issue #27 (architecture review), NIT-2) |
 | C1 lock | Lock label / lock file on the feature branch (OQ-8) | **Moot** — single daemon, sole label writer (`harness-design.md:L230`) |
 | `before_run` rebase target | Could not thread env cleanly under wrapper | VP-1 adds `env=` to `run_hook`; daemon threads `CHAIN_BASE_BRANCH` |
 | Process model | Driver subprocess that exits when chain done + `baton start` daemon | One persistent daemon; never exits on a block |
@@ -146,18 +146,18 @@ black-box-wrapper design of the prior revision of this spec.
 ### Rationale (condensed from the merged decision; full reasoning in the deep-dive)
 
 1. **The coordination seam is overhead, not safety.** The deep-dive
-   (`.tmp/baton-deepdive-findings.md:L374-L381`) is explicit: the label-polling
+   (`docs/baton-deepdive-findings.md:L374-L381`) is explicit: the label-polling
    loop, `WORKFLOW.chain.md`, and the C1 lock are all artifacts of treating a
    ~1120-line MIT codebase as an opaque subprocess. A direct
    `await orch._run_worker(issue)` eliminates all three.
 2. **Upstream is frozen — vendoring makes us the de facto maintainer anyway.**
    `mraza007/baton` has 3 commits (Mar 2026), no external PRs ever merged, MIT
-   licensed (`.tmp/baton-deepdive-findings.md:L332`, `:L380-L381`; CLAUDE.md
+   licensed (`docs/baton-deepdive-findings.md:L332`, `:L380-L381`; CLAUDE.md
    § Upstream dependency). The "fork maintenance cost" argument that justified
    option (a) evaporates — we own the source regardless.
 3. **The `before_run`/`after_run` env-threading problem is unsolvable cleanly
    under option (a).** `run_hook` passes no `env=`
-   (`.tmp/baton-deepdive-findings.md:L423`, `hooks.py:L22-L27`). Under vendoring,
+   (`docs/baton-deepdive-findings.md:L423`, `hooks.py:L22-L27`). Under vendoring,
    adding `env=` is a ~5-line patch to a module we own (VP-1).
 
 ### Why not (a) or (b)
@@ -165,12 +165,12 @@ black-box-wrapper design of the prior revision of this spec.
 - **(a) Wrap Baton as a black box** — superseded. Its coordination seam is pure
   overhead; see the table above. Reconsider only if the operational posture ever
   demands a separate exit-on-completion driver subprocess
-  (`.tmp/baton-deepdive-findings.md:L404-L409`) — not the case for the always-on
+  (`docs/baton-deepdive-findings.md:L404-L409`) — not the case for the always-on
   daemon model.
 - **(b) Fork Baton and thread chain logic into its run loop** — rejected: threads
   the most complex new logic into an async loop never designed for cross-issue
   coordination, and the loop is hard to unit-test
-  (`.tmp/baton-deepdive-findings.md:L297-L309`).
+  (`docs/baton-deepdive-findings.md:L297-L309`).
 
 ---
 
@@ -186,7 +186,7 @@ There is **one** execution path, parameterized by the DAG
 
 N=1 is the degenerate DAG handled by the same logic; there is **no separate
 flat-run entry point**. This dissolves BLOCKING-3
-(`.tmp/arch-review-new-model.md:L37-L45`): with one daemon and one path, there is
+(issue #27 (architecture review)): with one daemon and one path, there is
 no flat-run / chain-run coexistence and therefore no multi-writer label race
 (`harness-design.md:L230`).
 
@@ -259,7 +259,7 @@ branch**, not "PR opened", not "merged to main." The daemon marks
 
 "CI green" is the load-bearing predicate of the whole "satisfied = merged with
 green CI" model, so `merge.py` defines it exactly
-(`.tmp/spec-inquisitor-chain.md:L60-L67`). The gate queries the PR's check-runs
+(issue #27 (inquisitor review)). The gate queries the PR's check-runs
 (`gh api .../commits/<sha>/check-runs`, cross-checked with `gh pr checks`) and
 applies these rules:
 
@@ -290,12 +290,12 @@ possibly-garbage-collected check-run.
 The daemon **checks out `feature/<slug>` as HEAD before calling `_run_worker`**
 (`harness-design.md:L213`; `architecture-spec.md:L122`). Symphony's
 `WorkspaceManager.ensure_worktree` does `git worktree add -b <branch> <path> HEAD`
-(`.tmp/baton-deepdive-findings.md:L171-L172`), so HEAD-based worktree creation
+(`docs/baton-deepdive-findings.md:L171-L172`), so HEAD-based worktree creation
 naturally targets the feature branch — **no `WorkspaceManager` naming patch is
-needed** (resolves CONCERN-1, `.tmp/arch-review-new-model.md:L63-L69`).
+needed** (resolves CONCERN-1, issue #27 (architecture review)).
 
 **Symphony naming is kept:** `.symphony/worktrees/<N>` (bare-integer dir) and
-`baton/<slug>-<N>` branches (`.tmp/baton-deepdive-findings.md:L156-L172`). The
+`baton/<slug>-<N>` branches (`docs/baton-deepdive-findings.md:L156-L172`). The
 issue number is resolved from the worktree dir basename, which is the bare
 integer `<N>` — already handled by `resolve_issue_number` (`_cli.py:L37`, the
 "Baton (symphony) form"). The CONCERN-1 worry about `baton/<slug>-<N>` *branch*
@@ -325,10 +325,10 @@ the bound is implicit (zero retries) and the escalation exit is the stall summar
 `blocked`, not failure. The daemon treats both identically for sub-tree
 propagation but distinguishes them in the escalation summary (clarify vs debug).
 
-**Outcome-handling protocol (resolves BLOCKING-1, `.tmp/arch-review-new-model.md:L13-L19`).**
-`_run_worker` returns `"pr_created"` or `"no_pr"` (`.tmp/baton-deepdive-findings.md:L51`).
+**Outcome-handling protocol (resolves BLOCKING-1, issue #27 (architecture review)).**
+`_run_worker` returns `"pr_created"` or `"no_pr"` (`docs/baton-deepdive-findings.md:L51`).
 Because the daemon calls it directly, `_on_worker_done` never fires
-(`.tmp/baton-deepdive-findings.md:L106` — practical blocker 3); the daemon owns
+(`docs/baton-deepdive-findings.md:L106` — practical blocker 3); the daemon owns
 outcome handling itself:
 
 | `_run_worker` return | `blocked` label present? | Daemon action |
@@ -340,12 +340,12 @@ outcome handling itself:
 
 The daemon does **not** retry `"no_pr"`. The missing `_on_worker_done` callback is
 intentionally not replaced: its only jobs were retry scheduling and
-`OrchestratorState` persistence (`.tmp/baton-deepdive-findings.md:L107`), neither
+`OrchestratorState` persistence (`docs/baton-deepdive-findings.md:L107`), neither
 of which v1 uses (no retry; the daemon owns its own scheduler state in-memory +
 the crash-recovery reconstruction in §11.5/OQ-5).
 
 **`after_run` must not leave `agent-ready` on a parked outcome (resolves
-project-reviewer CONCERN-2, `.tmp/spec-review-chain.md:L199-L236`).** Today
+project-reviewer CONCERN-2, issue #27 (project-reviewer review)).** Today
 `after_run.py:L335-L342` (Priority 3) *retains* `agent-ready` on
 `COMMITTED_NO_PR` / `NO_COMMITS` with the comment "retryable — leaving agent-ready
 for Baton retry." Under the daemon, leaving `agent-ready` would cause the outer
@@ -367,7 +367,7 @@ behavior is therefore explicit:**
 This makes the single label authority (`after_run` for terminal state, daemon for
 post-merge `agent-merged`) consistent with the no-retry-v1 policy.
 
-`OrchestratorState` note (CONCERN-4, `.tmp/arch-review-new-model.md:L100-L108`):
+`OrchestratorState` note (CONCERN-4, issue #27 (architecture review)):
 the daemon does not depend on `state.json`. VP-2 should additionally guard the
 `L129` turn-tracking mutation against a missing `running[N]` entry so a stale
 `state.json` cannot corrupt a later run — folded into VP-2 (§7).
@@ -375,7 +375,7 @@ the daemon does not depend on `state.json`. VP-2 should additionally guard the
 ### 3.6 CI trigger must include the feature branch — `feature/**` glob (OQ-4 resolved)
 
 `ci.yml:L4-L7` triggers CI only on `main`. The decided resolution (OQ-4;
-`harness-design.md:L239`; CONCERN-5, `.tmp/arch-review-new-model.md:L112-L118`) is
+`harness-design.md:L239`; CONCERN-5, issue #27 (architecture review)) is
 the **`feature/**` glob** — add it to `pull_request.branches`. The per-run branch
 name option is **rejected as incoherent**: `ci.yml` is a static file in the repo
 and cannot be parameterized at runtime by the daemon. OQ-4 is therefore
@@ -431,7 +431,7 @@ times, never a live `git cherry origin/main`, and resolves the B-I1 charge that 
 `CHAIN_BASE_BRANCH` swap alone does not repair the moving-base defect.
 
 **`before_run` rebase failure under the frozen base (addresses C-I1,
-`.tmp/spec-inquisitor-chain.md:L50-L57`).** Symphony's `before_run` is best-effort
+issue #27 (inquisitor review)).** Symphony's `before_run` is best-effort
 (non-gating: its return is logged, not used to abort the turn loop,
 `orchestrator.py:L115-119`). The C-I1 worry is that a failed rebase leaves the
 agent running on a stale base. Under the freeze invariant this is structurally
@@ -473,8 +473,8 @@ package** holding the daemon. The existing flat hooks gain env-awareness. Each
 
 | Patch | File | Change | Why |
 |---|---|---|---|
-| **VP-1 (P0)** | `vendor/symphony/hooks.py` | `run_hook` gains `env: dict \| None = None`; passed through to `asyncio.create_subprocess_exec`. **The override dict is MERGED into `os.environ` (`env = {**os.environ, **overrides}`), never passed as overrides-only.** Daemon passes overrides `{"CHAIN_BASE_BRANCH": <cut-point SHA>, "BH_VENV": <venv>}`. | Threads the classifier/rebase base to `before_run`/`after_run` (B2/B4) **and** `BH_VENV` for hook discovery. The current `run_hook` passes no `env=` (`.tmp/baton-deepdive-findings.md:L423`); a bare `env=overrides_only` would replace the child environment entirely, stripping `PATH`/`HOME`/etc. so `git`/`gh` silently become unresolvable (CONCERN-1, `.tmp/spec-review-chain.md:L169-L196`). |
-| **VP-2** | `vendor/symphony/orchestrator.py` | Re-check `exclude_labels` inside the `_run_worker` turn loop after `fetch_issue_state` (`.tmp/baton-deepdive-findings.md:L343-L348`); also guard the `L129` turn-tracking mutation against a missing `running[N]` entry (CONCERN-4). | Makes a block terminal (closes the #23 root cause), retiring the `max_turns: 2` workaround; prevents `state.json` corruption. |
+| **VP-1 (P0)** | `vendor/symphony/hooks.py` | `run_hook` gains `env: dict \| None = None`; passed through to `asyncio.create_subprocess_exec`. **The override dict is MERGED into `os.environ` (`env = {**os.environ, **overrides}`), never passed as overrides-only.** Daemon passes overrides `{"CHAIN_BASE_BRANCH": <cut-point SHA>, "BH_VENV": <venv>}`. | Threads the classifier/rebase base to `before_run`/`after_run` (B2/B4) **and** `BH_VENV` for hook discovery. The current `run_hook` passes no `env=` (`docs/baton-deepdive-findings.md:L423`); a bare `env=overrides_only` would replace the child environment entirely, stripping `PATH`/`HOME`/etc. so `git`/`gh` silently become unresolvable (CONCERN-1, issue #27 (project-reviewer review)). |
+| **VP-2** | `vendor/symphony/orchestrator.py` | Re-check `exclude_labels` inside the `_run_worker` turn loop after `fetch_issue_state` (`docs/baton-deepdive-findings.md:L343-L348`); also guard the `L129` turn-tracking mutation against a missing `running[N]` entry (CONCERN-4). | Makes a block terminal (closes the #23 root cause), retiring the `max_turns: 2` workaround; prevents `state.json` corruption. |
 
 **Only these two patches.** No naming patch (§3.4 base-ref approach resolves
 CONCERN-1). No retry wiring (no retry in v1, §3.5).
@@ -484,7 +484,7 @@ CONCERN-1). No retry wiring (no retry in v1, §3.5).
 | File | Change | Why |
 |---|---|---|
 | `before_run.py` | Read `CHAIN_BASE_BRANCH` from env (default `origin/main`); resolve it to a concrete SHA at entry; rebase onto that SHA. | BLOCKING-4 — the hardcoded `git rebase origin/main` (`before_run.py:L107`) corrupts feature-branch runs. The freeze invariant (§3.7) means the resolved SHA is the cut-point base. |
-| `after_run.py` | (1) Read `CHAIN_BASE_BRANCH` from env (default `origin/main`), resolve to the **cut-point SHA** at entry, and use that SHA for the `git cherry` base (`after_run.py:L158`) for the whole run (§3.7, B-I1). (2) **Delete the Priority-3 `agent-ready` carry-forward** (`after_run.py:L335-L342`): on `COMMITTED_NO_PR` / `NO_COMMITS`, remove `agent-ready` and set `blocked` (CONCERN-2) — never leave `agent-ready` for a re-poll re-dispatch. (3) **Must NOT query CI** even in chain contexts (CI gate lives in `merge.py`; CONCERN-7, `.tmp/arch-review-new-model.md:L134-L138`). | BLOCKING-2 + CONCERN-2 — the hardcoded `git cherry origin/main HEAD` mis-classifies feature-branch outcomes and the retry-carry-forward causes silent re-dispatch under the no-retry-v1 policy. `after_run` does **not** know about `agent-in-progress` — the daemon removes that label (C-I4, §8). |
+| `after_run.py` | (1) Read `CHAIN_BASE_BRANCH` from env (default `origin/main`), resolve to the **cut-point SHA** at entry, and use that SHA for the `git cherry` base (`after_run.py:L158`) for the whole run (§3.7, B-I1). (2) **Delete the Priority-3 `agent-ready` carry-forward** (`after_run.py:L335-L342`): on `COMMITTED_NO_PR` / `NO_COMMITS`, remove `agent-ready` and set `blocked` (CONCERN-2) — never leave `agent-ready` for a re-poll re-dispatch. (3) **Must NOT query CI** even in chain contexts (CI gate lives in `merge.py`; CONCERN-7, issue #27 (architecture review)). | BLOCKING-2 + CONCERN-2 — the hardcoded `git cherry origin/main HEAD` mis-classifies feature-branch outcomes and the retry-carry-forward causes silent re-dispatch under the no-retry-v1 policy. `after_run` does **not** know about `agent-in-progress` — the daemon removes that label (C-I4, §8). |
 | `_cli.py` | Optional: add a shared `run()` subprocess helper reused by `chain/` modules (each hook currently has its own `_run`). `resolve_issue_number` is unchanged — the daemon resolves from the bare-integer worktree dir (§3.4). | Consolidation; not load-bearing. |
 
 ### 4.4 Supporting files
@@ -498,7 +498,7 @@ CONCERN-1). No retry wiring (no retry in v1, §3.5).
   removed in the same phase that lands `bin/run-daemon.sh` (P3), not left as a
   dead second entry point. Listed in `touches:` implicitly via the launcher swap.
 - **`patches/` + `vendor/symphony/VENDORING.md` — vendor patch-management story
-  (C-I3, `.tmp/spec-inquisitor-chain.md:L70-L77`).** Because upstream is *dormant,
+  (C-I3, issue #27 (inquisitor review)).** Because upstream is *dormant,
   not dead* (monthly monitoring per the main-checkout CLAUDE.md), a re-vendor is a
   live possibility and the ~5-line VP-1 / ~10-line VP-2 edits must be (a)
   re-applicable and (b) auditable as deliberate harness divergence. The chosen
@@ -517,7 +517,7 @@ CONCERN-1). No retry wiring (no retry in v1, §3.5).
   **When VP-2 lands (P3), update the `max_turns: 2` value + its workaround comment
   (`config/WORKFLOW.md:L10`)** — the terminal-block fix retires the workaround, so
   `max_turns` is raised to reflect real work complexity and the stale comment is
-  removed (NIT-3, `.tmp/spec-review-chain.md:L330-L340`).
+  removed (NIT-3, issue #27 (project-reviewer review)).
 
 ---
 
@@ -592,7 +592,7 @@ LOOP forever:
 ```
 
 **Unblock → re-dispatch mechanism (resolves BLOCKING-2,
-`.tmp/spec-review-chain.md:L100-L163`).** A fully-parked DAG does **not** hold a
+issue #27 (project-reviewer review)).** A fully-parked DAG does **not** hold a
 live coroutine waiting for a label change. Instead:
 
 1. The per-DAG run **exits** at step 2b: it pushes the feature branch, opens (or
@@ -616,7 +616,7 @@ only crash recovery — the two paths share one reconstruction algorithm (§11.5
 
 ## 6. Concurrency — serialize ALL work units in v1 (B-I3 DECIDED)
 
-**Decision (final, B-I3, `.tmp/spec-inquisitor-chain.md:L36-L43`): v1 serializes
+**Decision (final, B-I3, issue #27 (inquisitor review)): v1 serializes
 all work units.** The daemon processes **one work unit (one DAG) at a time across
 the whole repo** — no concurrent feature-branch checkouts. Within that single
 in-flight DAG it also dispatches **one issue at a time**, even where the DAG
@@ -659,12 +659,12 @@ the wrong seam here, and in v1 it is moot — the cap is effectively 1.
 cannot thread `CHAIN_BASE_BRANCH` (so `before_run`/`after_run` rebase/classify
 against the wrong base — BLOCKING-2/4) **or** `BH_VENV` (so `bh-*` hook entry
 points are undiscoverable in the library-call topology — CONCERN-2,
-`.tmp/arch-review-new-model.md:L73-L81`). This patch must land at the **same
-commit as vendoring**. ~5 lines (`.tmp/baton-deepdive-findings.md:L386-L388`).
+issue #27 (architecture review)). This patch must land at the **same
+commit as vendoring**. ~5 lines (`docs/baton-deepdive-findings.md:L386-L388`).
 
 **VP-2 — `exclude_labels` re-check in the `_run_worker` turn loop + `state.json`
 guard.** Re-check `exclude_labels` after `fetch_issue_state` inside the turn loop
-(`.tmp/baton-deepdive-findings.md:L343-L348`) so a mid-run `blocked` label makes
+(`docs/baton-deepdive-findings.md:L343-L348`) so a mid-run `blocked` label makes
 the block terminal — closing the #23 root cause and retiring `max_turns: 2`
 (`config/WORKFLOW.md:L10`; `harness-design.md:L179`). Bundle the `L129` missing-
 `running[N]` guard (CONCERN-4) here. ~10 lines.
@@ -679,7 +679,7 @@ The two behavior patches are surgical edits buried in ~1120 lines of vendored
 third-party code. Without a management story they become indistinguishable from
 formatting churn and unrecoverable across a re-vendor (upstream is *dormant, not
 dead* — monthly monitoring per the main-checkout CLAUDE.md, so a re-pull is a live
-possibility). The approach (`.tmp/spec-inquisitor-chain.md:L70-L77`):
+possibility). The approach (issue #27 (inquisitor review)):
 
 - **Committed patch series in `patches/`.** One `.diff` per patch:
   `patches/VP-1-run-hook-env.diff`, `patches/VP-2-exclude-labels-recheck.diff`,
@@ -722,7 +722,7 @@ The daemon is exactly such a component.
   | `blocked` | `after_run` (block / `COMMITTED_NO_PR` / `NO_COMMITS`) | human (resolve) | parked — needs human guidance/debug |
   | `agent-merged` | **daemon** after CI-gated `--no-ff` merge (OQ-3a) | terminal | merged into feature branch with green CI (provenance recorded, §11.5) |
 
-  **`agent-in-progress` lifecycle (resolves C-I4, `.tmp/spec-inquisitor-chain.md:L80-L87`).**
+  **`agent-in-progress` lifecycle (resolves C-I4, issue #27 (inquisitor review)).**
   The daemon writes `agent-in-progress` at dispatch and **MUST remove it on every
   terminal outcome** (`agent-merged` success, red-CI park, blocked park, no_pr
   fail). `after_run` (firing inside `_run_worker`) does **not** know about
@@ -769,7 +769,7 @@ The agent does not pause mid-run; each `_run_worker` call is one-shot
 | Step | Who | What happens |
 |---|---|---|
 | 1 | Worker | Agent comments its question on the issue; applies `blocked`; `_run_worker` exits returning `"no_pr"` (or `"pr_created"` with doubt). `after_run` (firing inside `_run_worker`) leaves `blocked` and strips `agent-ready` (`after_run.py:L246-L275`). |
-| 2 | Daemon | Detects `blocked` via the outcome protocol (§3.5); **parks the affected sub-tree** (the issue + its transitive dependents); removes `agent-in-progress` (§8 C-I4); posts a stall summary card to `#agent-decisions` on Slack **and posts the same summary as a comment on the issue / the draft PR** so a dropped Slack card never loses the durable record (N-I3, `.tmp/spec-inquisitor-chain.md:L100-L103`). If the whole DAG is now parked, the per-DAG run exits (§5 step 2b); independent sibling work continues only within the *current* work unit (cross-work-unit work is serialized — §6/B-I3). |
+| 2 | Daemon | Detects `blocked` via the outcome protocol (§3.5); **parks the affected sub-tree** (the issue + its transitive dependents); removes `agent-in-progress` (§8 C-I4); posts a stall summary card to `#agent-decisions` on Slack **and posts the same summary as a comment on the issue / the draft PR** so a dropped Slack card never loses the durable record (N-I3, issue #27 (inquisitor review)). If the whole DAG is now parked, the per-DAG run exits (§5 step 2b); independent sibling work continues only within the *current* work unit (cross-work-unit work is serialized — §6/B-I3). |
 | 3 | Human | Reads the card/comment; posts guidance **directly on the GitHub issue**; removes `blocked`; **re-adds `agent-ready`** to re-arm the issue for the daemon (explicit re-dispatch trigger — §5). |
 | 4 | Daemon | Outer poll re-detects the work unit as ready; re-enters a per-DAG run via `recovery.reconstruct()` (rebuilds `done`/`parked` from git-provenance + labels, §11.5); the unblocked issue is **re-cut fresh from the current feature tip** (§3.7.3) and the agent reads the guidance comment on its next run. |
 
@@ -930,7 +930,7 @@ merge into the integration branch; the integration PR merges to `main`.
   **mypy-strict scope** for the vendored tree — recommended path: add a
   `[[tool.mypy.overrides]]` `ignore_errors = true` for `baton_harness.vendor.*`
   (or exclude `vendor/` from `mypy src`), recorded as the separate
-  `patches/mypy-strict-remediation.diff` (CONCERN-3, `.tmp/spec-review-chain.md:L239-L261`)
+  `patches/mypy-strict-remediation.diff` (CONCERN-3, issue #27 (project-reviewer review))
   — full annotation deferred. Declare new runtime deps in `pyproject.toml`
   (**CONCERN-8**: add `pyyaml`, `jinja2`; **exclude `watchfiles`** since the poller
   is dropped — guard any import path referencing it). Update `before_run.py` +
@@ -1029,19 +1029,19 @@ files this session:
 - Decided daemon/worker model, BLOCKING/OQ resolutions, single-repo gate —
   `docs/harness-design.md §10` (`:L189-L260`), `docs/architecture-spec.md §2/§3.4/§6/§9`.
 - Symphony `_run_worker` seam, `run_hook` no-env, `WorkspaceManager` HEAD-based
-  worktree, coordination-seam dissolution — `.tmp/baton-deepdive-findings.md`
+  worktree, coordination-seam dissolution — `docs/baton-deepdive-findings.md`
   (line ranges inline).
-- BLOCKING-1..4 + CONCERN-1..8 + NIT-2 (prior review) — `.tmp/arch-review-new-model.md`
-  (line ranges inline).
+- BLOCKING-1..4 + CONCERN-1..8 + NIT-2 (prior review) — issue #27 (architecture review)
+  (finding codes referenced inline throughout).
 - Dependency API GA, MCP gap, graphlib, merge-commit finding, novelty —
   `docs/research/2026-06-06-issue-dag-orchestration.md` (line ranges inline).
 - C1/C2/C3 — `docs/spike-findings.md:L131-L165`.
 
 **Rev 2 review findings folded in (this revision):**
 - project-reviewer BLOCKING-1/2, CONCERN-1..4, NIT-1..3 —
-  `.tmp/spec-review-chain.md` (line ranges inline at each amendment).
+  issue #27 (project-reviewer review) (finding codes referenced inline throughout).
 - inquisitor B-I1/B-I2/B-I3, C-I1..C-I4, N-I1..N-I3 —
-  `.tmp/spec-inquisitor-chain.md` (line ranges inline at each amendment).
+  issue #27 (inquisitor review) (finding codes referenced inline throughout).
 - C-I1 (`before_run` non-gating / `--untracked-files=no`) is addressed via §3.7
   (the freeze invariant means `before_run`'s rebase onto a frozen cut-point base
   cannot conflict mid-window) and the cut-point-SHA classifier base; the
