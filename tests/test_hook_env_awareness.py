@@ -175,9 +175,7 @@ class TestBeforeRunChainBaseBranch:
         result = before_run_main()
 
         assert result == 0
-        fetch_calls = [
-            c for c in calls if "fetch" in c and "main" in c
-        ]
+        fetch_calls = [c for c in calls if "fetch" in c and "main" in c]
         assert fetch_calls == [], (
             "before_run must NOT call git fetch origin main when "
             "CHAIN_BASE_BRANCH is set (base is a local cut-point)"
@@ -208,9 +206,7 @@ class TestBeforeRunChainBaseBranch:
         result = before_run_main()
 
         assert result == 0
-        fetch_calls = [
-            c for c in calls if "fetch" in c and "main" in c
-        ]
+        fetch_calls = [c for c in calls if "fetch" in c and "main" in c]
         assert len(fetch_calls) == 1, (
             "before_run must call git fetch origin main exactly once "
             "when CHAIN_BASE_BRANCH is unset (flat run path)"
@@ -316,7 +312,7 @@ class TestAfterRunChainBaseBranch:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """git rev-parse runs BEFORE git cherry (resolve-before-classify).
+        """Git rev-parse runs BEFORE git cherry (resolve-before-classify).
 
         An unresolved ref must never reach the cherry classifier — the
         SHA must be frozen first so the cut-point is stable for the
