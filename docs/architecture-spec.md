@@ -305,7 +305,9 @@ Start narrow: only decision cards and reply handling. Resist building activity-f
 
 ### 7.5 ToS posture on headless first-party use
 
-Anthropic's terms have been revised twice in 2026. Running the real `claude` binary containerised on subscription is normal use; running it *headlessly via orchestrator* is a less-explicitly-blessed grey zone. Action: read current Claude Code subscription terms directly before locking the architecture; reconfirm at major terms updates.
+Anthropic's terms have been revised twice in 2026. Running the real `claude` binary containerised on subscription is normal use; running it *headlessly via orchestrator* is a less-explicitly-blessed grey zone. This grey zone cannot be resolved by reading the terms: Anthropic has remained deliberately vague through multiple 2026 revisions and provides no authoritative posture to confirm against.
+
+**Decision (issue #37, 2026-06-07):** Accepted as a known, bounded risk. The first-party `claude` binary is the most-compliant available path on subscription. Terms will be monitored at each major Anthropic revision; if explicit guidance appears, this posture is revisited. Fallback: switch to API-key billing — the executor interface is unchanged, only the auth credential differs.
 
 ---
 
@@ -337,7 +339,7 @@ Anthropic's terms have been revised twice in 2026. Running the real `claude` bin
 
 ## 10. Next steps (post-spec)
 
-1. Read current Claude Code subscription terms and confirm headless use posture
+1. ToS posture: accepted as known risk (issue #37) — monitor terms at major Anthropic updates; fall back to API-key billing if subscription path is ever explicitly closed. No pre-implementation action required.
 2. Build the Docker image (Dockerfile + entrypoint)
 3. Authenticate once interactively, capture the credentials volume
 4. Author `CLAUDE.md` and initial PreToolUse hooks for one pilot repo

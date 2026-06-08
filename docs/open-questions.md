@@ -8,16 +8,20 @@
 
 ## Severity 1 — Load-bearing assumptions that could collapse the design
 
-### S1.1 — ToS compliance for headless first-party use is unverified
-**The assumption:** Running the real `claude` binary in containerised headless mode, driven by Baton, on subscription auth is within Anthropic's terms of service.
+### S1.1 — ToS compliance for headless first-party use
+**RESOLVED — accepted as known risk (2026-06-07, see issue #37).**
 
-**Why it matters:** The entire executor decision (and rejection of OpenHands) hinges on this being compliant. If headless orchestrated use is non-compliant, the system either violates ToS or reverts to API-key per-token billing — breaking the core cost constraint.
+**Background:** The entire executor decision (and rejection of OpenHands) hinges on subscription-auth headless use being compliant. If it is non-compliant, the system either violates ToS or reverts to API-key per-token billing — breaking the core cost constraint.
 
-**Resolution:** Before any implementation, read the current Claude Code subscription terms directly at code.claude.com and confirm posture on:
-- Headless `claude -p` invocation by an external orchestrator
-- Long-running unattended sessions
-- Containerised use on subscription
-If unclear, contact Anthropic support for explicit guidance. **Block all other work until resolved.**
+**Why it cannot be resolved by reading the terms:** Anthropic has revised its terms twice in 2026 and has remained deliberately vague on headless/orchestrator-driven use of the first-party `claude` binary. There is no authoritative posture to confirm against; the original resolution path ("read terms and confirm") cannot be satisfied.
+
+**Decision:** Proceed, accepting the risk as known and bounded.
+
+**Rationale and mitigations:**
+- The first-party `claude` binary is the most-compliant available path for subscription-auth use; third-party executors (e.g. OpenHands) are less aligned with Anthropic's intended use surface.
+- The existing risk table (§8) already includes this as a low-likelihood / high-impact risk with the mitigation: "First-party binary stays compliant; track terms updates; willingness to add API-key fallback if subscription path is closed."
+- A fallback to API-key billing is an implementation-day switch — the executor interface is the same; only the auth credential changes.
+- Terms will be re-examined at each major Anthropic revision; if explicit guidance (permissive or restrictive) appears, this item is revisited.
 
 ---
 
@@ -158,7 +162,7 @@ Langfuse integration with Claude Code isn't turnkey. **Resolution:** Operate on 
 
 Three patterns emerge across the items above:
 
-1. **Empirical gap.** Severity 1 issues all share the same root: we've designed against documented behavior, not observed behavior. Baton + Claude Code rate limits, hook behavior, and exit codes need to be exercised, not assumed.
+1. **Empirical gap.** The remaining open Severity 1 item (S1.3) shares the same root as the closed ones: designed against documented behavior, not observed behavior. Rate limits under representative load need to be exercised, not assumed.
 
 2. **Plumbing carries policy.** The outcome router (S2.1), Slack-to-GitHub round trip (S2.2), and startup reconciliation (S2.3) are treated as glue in the spec but are where most of the system's actual behavior lives. They need to be designed as first-class components, not afterthoughts.
 
@@ -168,6 +172,6 @@ Three patterns emerge across the items above:
 
 ## Process for resolution
 
-The Severity 1 items should be resolved (via the [smoke-test-spike](./smoke-test-spike.md) and direct ToS review) before iterating on the architecture spec. Severity 2 items become design tasks once the spike validates the foundations. Severity 3 and 4 are tracked here but don't block forward progress.
+S1.1 (ToS) is resolved (accepted risk, issue #37). S1.2 (Baton integration) is resolved (spike validated). S1.3 (rate limits) remains open and should be exercised during pilot before increasing concurrency beyond 1. Severity 2 items become design tasks once the spike validates the foundations. Severity 3 and 4 are tracked here but don't block forward progress.
 
 After the spike completes, update the architecture spec to reflect what was learned, and either close items here or convert them into design tasks.
