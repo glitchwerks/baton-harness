@@ -66,10 +66,13 @@ trivially patchable in tests (spike finding F8).
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 import time
 from enum import Enum, auto
 from pathlib import Path
+
+_log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Required-check set (C-I2 resolution)
@@ -117,11 +120,15 @@ class MergeOutcome(Enum):
         MERGED: CI was green; the branch was merged with ``--no-ff``.
         CI_FAILED: CI returned RED; no merge was attempted.
         CI_TIMEOUT: CI never completed within the hard timeout; no merge.
+        MERGE_CONFLICT: The ``git merge --no-ff`` step itself failed (e.g.
+            a content conflict).  ``git merge --abort`` was issued to restore
+            a clean state.  The daemon (P3) should park and escalate.
     """
 
     MERGED = auto()
     CI_FAILED = auto()
     CI_TIMEOUT = auto()
+    MERGE_CONFLICT = auto()
 
 
 # ---------------------------------------------------------------------------
@@ -199,21 +206,32 @@ def _query_check_runs(
     return [dict(r) for r in runs_raw]
 
 
+_PASS_CONCLUSIONS: frozenset[str] = frozenset(
+    {"success", "neutral", "skipped"}
+)
+_FAIL_CONCLUSIONS: frozenset[str] = frozenset(
+    {"failure", "cancelled", "timed_out", "action_required"}
+)
+
+
 def _classify_check_runs(
     runs: list[dict[str, object]],
     required: list[str],
-) -> CiResult:
+) -> CiResult | None:
     """Apply the §3.3.1 green predicate to a check-runs snapshot.
 
     Rules (applied in order):
+
     1. For each required check name, find the corresponding run (by name).
-       If any required check is absent → NOT-YET (return ``None`` to signal
-       the caller to keep polling).
+       If any required check is absent → NOT-YET (return ``None``).
     2. If a required check's ``conclusion`` ∈
        {``failure``, ``cancelled``, ``timed_out``, ``action_required``}
        → RED immediately.
-    3. If a required check's ``status`` ∈ {``queued``, ``in_progress``}
-       → NOT-YET (return ``None``).
+    3. If a required check's ``status`` is not ``completed``, or is
+       ``completed`` but ``conclusion`` is NOT in the pass set
+       {``success``, ``neutral``, ``skipped``} → NOT-YET (return ``None``).
+       This covers unrecognised or null conclusions on completed runs so they
+       never vacuously pass.
     4. If every required check is ``status: completed`` with ``conclusion``
        ∈ {``success``, ``neutral``, ``skipped``} → GREEN.
     5. Non-required checks are ignored (they cannot affect the result).
@@ -224,9 +242,10 @@ def _classify_check_runs(
 
     Returns:
         ``CiResult.GREEN`` if all required checks pass, ``CiResult.RED`` if
-        any required check has a terminal failing conclusion, or ``None`` if
-        the evaluation is NOT-YET (some required check is still pending or
-        absent).
+        any required check has a terminal failing conclusion, or ``None`` to
+        signal NOT-YET (some required check is still pending, absent, or has
+        an unrecognised conclusion).  The deadline-TIMEOUT outcome is
+        determined by ``evaluate_ci``'s polling loop, not here.
     """
     by_name = {str(r.get("name", "")): r for r in runs}
 
@@ -234,24 +253,20 @@ def _classify_check_runs(
         run = by_name.get(check_name)
         if run is None:
             # Required check absent from response → NOT-YET.
-            return CiResult.TIMEOUT  # sentinel: caller checks type
+            return None
 
         status = str(run.get("status", ""))
         conclusion = run.get("conclusion")
         conclusion_str = str(conclusion) if conclusion is not None else ""
 
         # Terminal failing conclusions → RED immediately.
-        if status == "completed" and conclusion_str in {
-            "failure",
-            "cancelled",
-            "timed_out",
-            "action_required",
-        }:
+        if conclusion_str in _FAIL_CONCLUSIONS:
             return CiResult.RED
 
-        # Still running → NOT-YET (signal via special sentinel).
-        if status in {"queued", "in_progress"} or (status != "completed"):
-            return CiResult.TIMEOUT  # sentinel
+        # A completed run is GREEN only if conclusion is in the pass set.
+        # Anything else (unrecognised, null, still running) → NOT-YET.
+        if status != "completed" or conclusion_str not in _PASS_CONCLUSIONS:
+            return None
 
     # All required checks are completed with passing conclusions → GREEN.
     return CiResult.GREEN
@@ -310,8 +325,8 @@ def evaluate_ci(
         if result == CiResult.RED:
             return CiResult.RED
 
-        # NOT-YET: result == CiResult.TIMEOUT (sentinel for pending/absent).
-        # Check deadline BEFORE sleeping to handle timeout=0 in tests.
+        # NOT-YET: result is None (pending, absent, or unrecognised
+        # conclusion).  Check deadline BEFORE sleeping to handle timeout=0.
         if time.monotonic() >= deadline:
             # Hard timeout elapsed — ci-timeout semantics.
             return CiResult.TIMEOUT
@@ -320,9 +335,9 @@ def evaluate_ci(
             time.sleep(poll_interval)
         else:
             # poll_interval=0 with remaining deadline: check deadline again.
-            # With timeout=0, the deadline was already at or past start, so
-            # the check above fires on the second pass.  We need to ensure
-            # the loop exits — check again after the no-sleep pass.
+            # With timeout=0 the deadline was already past at entry, so the
+            # check above fires on the second pass.  Ensure the loop exits by
+            # re-checking immediately after the no-sleep pass.
             if time.monotonic() >= deadline:
                 return CiResult.TIMEOUT
 
@@ -428,13 +443,30 @@ def merge_issue_branch(
         ]
     )
     if merge_proc.returncode != 0:
-        raise RuntimeError(
-            f"git merge --no-ff of {issue_branch!r} into {feature_branch!r}"
-            f" failed (exit {merge_proc.returncode}): {merge_proc.stderr}"
+        # FIX 4: abort the failed merge so the repo is not left mid-merge
+        # (MERGE_HEAD / conflicted index).  Best-effort: ignore abort errors.
+        _run(["git", "-C", str(repo_root), "merge", "--abort"])
+        _log.warning(
+            "git merge --no-ff of %r into %r failed (exit %d);"
+            " merge --abort issued.  stderr: %s",
+            issue_branch,
+            feature_branch,
+            merge_proc.returncode,
+            merge_proc.stderr,
         )
+        return MergeOutcome.MERGE_CONFLICT
 
     # Persist the CI-green-at-merge fact (B-I2 / §11.5).
-    _persist_ci_green(owner, repo, issue, pr_head_sha)
+    provenance_persisted = _persist_ci_green(owner, repo, issue, pr_head_sha)
+    if not provenance_persisted:
+        _log.warning(
+            "Provenance persistence failed for issue #%d sha=%s."
+            " The merge is committed but the agent-merged label / marker"
+            " comment could not be written.  The daemon (P3) should"
+            " retry or escalate.",
+            issue,
+            pr_head_sha,
+        )
 
     return MergeOutcome.MERGED
 
@@ -444,7 +476,7 @@ def _persist_ci_green(
     repo: str,
     issue: int,
     sha: str,
-) -> None:
+) -> bool:
     """Persist the CI-green-at-merge fact for crash recovery.
 
     Adds the ``agent-merged`` label to the issue and posts a marker comment
@@ -452,12 +484,22 @@ def _persist_ci_green(
     signals to reconstruct the ``done`` set without re-querying GC'd
     check-runs.
 
+    Per §11.5/B-I2 the CI-green fact MUST persist for recovery.  Failures
+    are logged loudly (WARNING or higher) so the daemon can detect and retry
+    or escalate.  The caller must NOT undo the merge on a failure here.
+
     Args:
         owner: The GitHub repository owner.
         repo: The repository name.
         issue: The issue number.
         sha: The PR head commit SHA at which CI was green.
+
+    Returns:
+        ``True`` if both the label and comment were persisted successfully,
+        ``False`` if either write failed (a WARNING is logged in that case).
     """
+    persisted = True
+
     # Add agent-merged label.
     label_proc = _run(
         [
@@ -472,9 +514,14 @@ def _persist_ci_green(
         ]
     )
     if label_proc.returncode != 0:
-        # Log but do not raise — provenance write failure should not undo
-        # an already-committed merge.  The recovery algorithm has fallbacks.
-        pass
+        # FIX 5: loud warning — do NOT silently swallow this failure.
+        _log.warning(
+            "Failed to add agent-merged label to issue #%d (exit %d): %s",
+            issue,
+            label_proc.returncode,
+            label_proc.stderr,
+        )
+        persisted = False
 
     # Post marker comment with the CI-green SHA.
     marker = (
@@ -494,8 +541,17 @@ def _persist_ci_green(
         ]
     )
     if comment_proc.returncode != 0:
-        # Same: log, don't raise.
-        pass
+        # FIX 5: loud warning — do NOT silently swallow this failure.
+        _log.warning(
+            "Failed to post CI-green marker comment on issue #%d"
+            " (exit %d): %s",
+            issue,
+            comment_proc.returncode,
+            comment_proc.stderr,
+        )
+        persisted = False
+
+    return persisted
 
 
 def merge_issue_branches(

@@ -37,6 +37,8 @@ Coverage:
 
 from __future__ import annotations
 
+import logging
+import logging.handlers
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -1081,3 +1083,414 @@ class TestDependencyOrderMerge:
         # Issue 42 should merge (green), issue 43 should fail (red)
         assert outcomes[42] == MergeOutcome.MERGED
         assert outcomes[43] == MergeOutcome.CI_FAILED
+
+
+# ---------------------------------------------------------------------------
+# FIX 1 + FIX 2: unrecognized conclusions must not yield GREEN
+# ---------------------------------------------------------------------------
+
+
+class TestUnrecognizedConclusionNotGreen:
+    """Guard FIX 1/FIX 2: completed check with unrecognised conclusion.
+
+    A required check that is ``status: completed`` but whose ``conclusion``
+    is outside both the pass set {success, neutral, skipped} and the known
+    failing set must NEVER yield GREEN.  It must be treated as NOT-YET
+    (polling continues until deadline → non-green on timeout).
+    """
+
+    def test_startup_failure_conclusion_is_not_green(self) -> None:
+        """A required check completed with 'startup_failure' → NOT green.
+
+        'startup_failure' is outside the failing set but also outside the
+        pass set.  The poller must treat it as NOT-YET (no vacuous pass).
+        """
+        checks = [
+            {
+                "name": REQUIRED_CHECKS[0],
+                "status": "completed",
+                "conclusion": "startup_failure",
+            },
+        ] + [
+            {
+                "name": name,
+                "status": "completed",
+                "conclusion": "success",
+            }
+            for name in REQUIRED_CHECKS[1:]
+        ]
+
+        def fake_run(
+            cmd: list[str],
+        ) -> subprocess.CompletedProcess[str]:
+            return _check_runs_response(checks)
+
+        with patch.object(merge_mod, "_run", side_effect=fake_run):
+            result = evaluate_ci(
+                _OWNER,
+                _REPO_NAME,
+                _SHA,
+                poll_interval=0,
+                timeout=0,  # immediate timeout → non-green
+            )
+
+        assert result != CiResult.GREEN, (
+            "conclusion='startup_failure' must NEVER yield GREEN"
+        )
+
+    def test_null_conclusion_on_completed_check_is_not_green(self) -> None:
+        """A required check completed with null conclusion → NOT green.
+
+        A null conclusion on a completed check is unrecognised and must
+        not pass vacuously.
+        """
+        checks = [
+            {
+                "name": REQUIRED_CHECKS[0],
+                "status": "completed",
+                "conclusion": None,
+            },
+        ] + [
+            {
+                "name": name,
+                "status": "completed",
+                "conclusion": "success",
+            }
+            for name in REQUIRED_CHECKS[1:]
+        ]
+
+        def fake_run(
+            cmd: list[str],
+        ) -> subprocess.CompletedProcess[str]:
+            return _check_runs_response(checks)
+
+        with patch.object(merge_mod, "_run", side_effect=fake_run):
+            result = evaluate_ci(
+                _OWNER,
+                _REPO_NAME,
+                _SHA,
+                poll_interval=0,
+                timeout=0,
+            )
+
+        assert result != CiResult.GREEN, (
+            "conclusion=null on a completed check must NEVER yield GREEN"
+        )
+
+    def test_stale_conclusion_is_not_green(self) -> None:
+        """A required check completed with 'stale' → NOT green."""
+        checks = [
+            {
+                "name": REQUIRED_CHECKS[0],
+                "status": "completed",
+                "conclusion": "stale",
+            },
+        ] + [
+            {
+                "name": name,
+                "status": "completed",
+                "conclusion": "success",
+            }
+            for name in REQUIRED_CHECKS[1:]
+        ]
+
+        def fake_run(
+            cmd: list[str],
+        ) -> subprocess.CompletedProcess[str]:
+            return _check_runs_response(checks)
+
+        with patch.object(merge_mod, "_run", side_effect=fake_run):
+            result = evaluate_ci(
+                _OWNER,
+                _REPO_NAME,
+                _SHA,
+                poll_interval=0,
+                timeout=0,
+            )
+
+        assert result != CiResult.GREEN, (
+            "conclusion='stale' must NEVER yield GREEN"
+        )
+
+    def test_unrecognized_conclusion_does_not_merge(self) -> None:
+        """merge_issue_branch does NOT merge when conclusion unrecognised."""
+        calls: list[list[str]] = []
+        checks = [
+            {
+                "name": REQUIRED_CHECKS[0],
+                "status": "completed",
+                "conclusion": "startup_failure",
+            },
+        ] + [
+            {
+                "name": name,
+                "status": "completed",
+                "conclusion": "success",
+            }
+            for name in REQUIRED_CHECKS[1:]
+        ]
+
+        def fake_run(
+            cmd: list[str],
+        ) -> subprocess.CompletedProcess[str]:
+            calls.append(cmd)
+            if "check-runs" in " ".join(cmd):
+                return _check_runs_response(checks)
+            return _ok()
+
+        with patch.object(merge_mod, "_run", side_effect=fake_run):
+            outcome = merge_issue_branch(
+                _REPO,
+                _OWNER,
+                _REPO_NAME,
+                issue=44,
+                pr_head_sha=_SHA,
+                issue_branch="baton/v2-daemon-44",
+                feature_branch=_FEATURE,
+                poll_interval=0,
+                timeout=0,
+            )
+
+        merge_cmds = [c for c in calls if "merge" in c and "git" in c]
+        assert not merge_cmds, "Must NOT merge when conclusion is unrecognised"
+        assert outcome != MergeOutcome.MERGED, (
+            "MergeOutcome must not be MERGED on unrecognised conclusion"
+        )
+
+
+# ---------------------------------------------------------------------------
+# FIX 4: merge conflict aborts cleanly
+# ---------------------------------------------------------------------------
+
+
+class TestMergeConflictAbortsCleanly:
+    """Guard FIX 4: a conflicted merge must abort, not leave repo dirty."""
+
+    def test_merge_abort_issued_on_merge_failure(self) -> None:
+        """On ``git merge --no-ff`` conflict, ``git merge --abort`` is called.
+
+        The repo must NOT be left mid-merge (MERGE_HEAD / conflicted index)
+        after a merge failure.
+        """
+        calls: list[list[str]] = []
+
+        def fake_run(
+            cmd: list[str],
+        ) -> subprocess.CompletedProcess[str]:
+            calls.append(cmd)
+            if "check-runs" in " ".join(cmd):
+                return _check_runs_response(_all_required_success())
+            if "checkout" in cmd:
+                return _ok()
+            if "merge" in cmd and "--no-ff" in cmd:
+                # Simulate a conflict / non-zero merge
+                return subprocess.CompletedProcess(
+                    args=cmd,
+                    returncode=1,
+                    stdout="",
+                    stderr="CONFLICT (content): Merge conflict",
+                )
+            # merge --abort or other
+            return _ok()
+
+        with patch.object(merge_mod, "_run", side_effect=fake_run):
+            outcome = merge_issue_branch(
+                _REPO,
+                _OWNER,
+                _REPO_NAME,
+                issue=44,
+                pr_head_sha=_SHA,
+                issue_branch="baton/v2-daemon-44",
+                feature_branch=_FEATURE,
+                poll_interval=0,
+                timeout=1,
+            )
+
+        abort_cmds = [
+            c for c in calls if "--abort" in c or "abort" in " ".join(c)
+        ]
+        assert abort_cmds, (
+            "git merge --abort must be issued after a merge conflict"
+        )
+        assert outcome != MergeOutcome.MERGED, (
+            "A conflicted merge must NOT return MERGED"
+        )
+
+    def test_non_merged_status_returned_on_conflict(self) -> None:
+        """A non-merged result is returned; no uncaught exception escapes."""
+
+        def fake_run(
+            cmd: list[str],
+        ) -> subprocess.CompletedProcess[str]:
+            if "check-runs" in " ".join(cmd):
+                return _check_runs_response(_all_required_success())
+            if "checkout" in cmd:
+                return _ok()
+            if "merge" in cmd and "--no-ff" in cmd:
+                return subprocess.CompletedProcess(
+                    args=cmd,
+                    returncode=1,
+                    stdout="",
+                    stderr="CONFLICT (content): Merge conflict",
+                )
+            return _ok()
+
+        with patch.object(merge_mod, "_run", side_effect=fake_run):
+            # Must not raise — must return a structured non-merged outcome
+            outcome = merge_issue_branch(
+                _REPO,
+                _OWNER,
+                _REPO_NAME,
+                issue=44,
+                pr_head_sha=_SHA,
+                issue_branch="baton/v2-daemon-44",
+                feature_branch=_FEATURE,
+                poll_interval=0,
+                timeout=1,
+            )
+
+        assert outcome != MergeOutcome.MERGED
+
+
+# ---------------------------------------------------------------------------
+# FIX 5: provenance persistence failure must be surfaced
+# ---------------------------------------------------------------------------
+
+
+class TestProvenancePersistenceFailureSurfaced:
+    """Guard FIX 5: label/comment failure must be surfaced, not swallowed."""
+
+    def test_merge_still_reported_merged_when_label_fails(self) -> None:
+        """The merge commit stands even when the label write fails.
+
+        The merge has already happened — reverting it would be worse.
+        The outcome must still signal MERGED, but provenance_persisted
+        must be False (or a warning must be recorded).
+        """
+
+        def fake_run(
+            cmd: list[str],
+        ) -> subprocess.CompletedProcess[str]:
+            if "check-runs" in " ".join(cmd):
+                return _check_runs_response(_all_required_success())
+            if "edit" in cmd and "agent-merged" in " ".join(cmd):
+                # Label write fails
+                return subprocess.CompletedProcess(
+                    args=cmd,
+                    returncode=1,
+                    stdout="",
+                    stderr="gh: label write failed",
+                )
+            if "comment" in cmd:
+                return subprocess.CompletedProcess(
+                    args=cmd,
+                    returncode=1,
+                    stdout="",
+                    stderr="gh: comment write failed",
+                )
+            return _ok()
+
+        with patch.object(merge_mod, "_run", side_effect=fake_run):
+            result = merge_issue_branch(
+                _REPO,
+                _OWNER,
+                _REPO_NAME,
+                issue=44,
+                pr_head_sha=_SHA,
+                issue_branch="baton/v2-daemon-44",
+                feature_branch=_FEATURE,
+                poll_interval=0,
+                timeout=1,
+            )
+
+        # The result must indicate provenance was not persisted.
+        # Depending on the implementation, this is either a named tuple /
+        # dataclass with provenance_persisted=False, or the outcome itself
+        # has an attribute. We check for the attribute if present.
+        if hasattr(result, "provenance_persisted"):
+            assert result.provenance_persisted is False, (
+                "provenance_persisted must be False when label write fails"
+            )
+        else:
+            # If a plain MergeOutcome enum is returned, it should still be
+            # MERGED (the merge happened). The important check is the warning
+            # path — tested separately via logging below.
+            assert result == MergeOutcome.MERGED, (
+                "Merge committed; outcome must be MERGED"
+            )
+
+    def test_warning_logged_when_provenance_write_fails(self) -> None:
+        """A loud warning is logged when the provenance write fails."""
+        import logging
+
+        def fake_run(
+            cmd: list[str],
+        ) -> subprocess.CompletedProcess[str]:
+            if "check-runs" in " ".join(cmd):
+                return _check_runs_response(_all_required_success())
+            if "edit" in cmd and "agent-merged" in " ".join(cmd):
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=1, stdout="", stderr="label fail"
+                )
+            if "comment" in cmd:
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=1, stdout="", stderr="comment fail"
+                )
+            return _ok()
+
+        with patch.object(merge_mod, "_run", side_effect=fake_run):
+            with self._capture_warnings() as records:
+                merge_issue_branch(
+                    _REPO,
+                    _OWNER,
+                    _REPO_NAME,
+                    issue=44,
+                    pr_head_sha=_SHA,
+                    issue_branch="baton/v2-daemon-44",
+                    feature_branch=_FEATURE,
+                    poll_interval=0,
+                    timeout=1,
+                )
+
+        # At least one WARNING (or higher) must have been emitted from
+        # the baton_harness.chain.merge logger.
+        warning_records = [
+            r
+            for r in records
+            if r.levelno >= logging.WARNING and "baton_harness" in r.name
+        ]
+        assert warning_records, (
+            "A WARNING must be logged when provenance write fails"
+        )
+
+    @staticmethod
+    def _capture_warnings() -> object:
+        """Context manager that captures log records from the module.
+
+        Returns:
+            A context manager yielding a list of ``LogRecord`` instances
+            emitted by the ``baton_harness`` logger during the block.
+        """
+        from collections.abc import Generator
+        from contextlib import contextmanager
+
+        @contextmanager  # type: ignore[misc]
+        def _ctx() -> Generator[list[logging.LogRecord], None, None]:
+            records: list[logging.LogRecord] = []
+
+            class _Collector(logging.Handler):
+                def emit(self, record: logging.LogRecord) -> None:
+                    records.append(record)
+
+            collector = _Collector()
+            root = logging.getLogger("baton_harness")
+            root.addHandler(collector)
+            old_level = root.level
+            root.setLevel(logging.DEBUG)
+            try:
+                yield records
+            finally:
+                root.removeHandler(collector)
+                root.setLevel(old_level)
+
+        return _ctx()

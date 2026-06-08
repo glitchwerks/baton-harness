@@ -388,6 +388,149 @@ class TestRecordCutPoint:
 
 
 # ---------------------------------------------------------------------------
+# FIX 3: resume from remote feature branch (exist_ok + remote tracking)
+# ---------------------------------------------------------------------------
+
+
+class TestResumeFromRemoteFeatureBranch:
+    """Guard FIX 3: resume must reuse an existing remote feature branch.
+
+    On a restart in a fresh clone the local branch may not exist, but
+    ``origin/feature/<slug>`` does.  The current code recreates from
+    ``origin/main``, dropping integration history.  The fix must detect the
+    remote branch and track it instead.
+    """
+
+    def test_tracks_remote_branch_when_local_absent_remote_present(
+        self,
+    ) -> None:
+        """When local branch absent but remote exists, tracks the remote.
+
+        The local branch must be created FROM ``origin/feature/<slug>``
+        (not from ``origin/main``) so integration history is preserved.
+
+        Simulates the restart-in-fresh-clone scenario:
+        - Initial ``git branch <name> origin/main`` → fails with
+          "already exists" (the branch somehow already exists — this path
+          is exercised when we call with exist_ok=True and need to detect
+          the remote).  Actually for the fresh-clone scenario the local
+          branch does NOT exist; we simulate that the branch creation from
+          ``origin/main`` fails with a different error to force the code
+          into the ls-remote probe path, then ls-remote finds the remote.
+        """
+        calls: list[list[str]] = []
+
+        def fake_run(
+            cmd: list[str],
+        ) -> subprocess.CompletedProcess[str]:
+            calls.append(cmd)
+            cmd_str = " ".join(cmd)
+            # fetch succeeds
+            if "fetch" in cmd:
+                return _ok()
+            # ls-remote: branch exists on remote
+            if "ls-remote" in cmd:
+                return _ok("abc123\trefs/heads/feature/my-milestone\n")
+            # local existence check: branch does NOT exist locally
+            if "rev-parse" in cmd and "--verify" in cmd:
+                return _fail("fatal: not a valid ref")
+            if "branch" in cmd:
+                if "origin/feature/my-milestone" in cmd_str:
+                    # Tracking creation from remote succeeds
+                    return _ok()
+            return _ok()
+
+        with patch.object(branches_mod, "_run", side_effect=fake_run):
+            create_feature_branch(_REPO, "feature/my-milestone", exist_ok=True)
+
+        # The branch creation command must reference the remote branch, not
+        # origin/main, when the remote branch exists.
+        branch_cmds = [c for c in calls if "branch" in c and "git" in c]
+        remote_branch_cmds = [
+            c
+            for c in branch_cmds
+            if "origin/feature/my-milestone" in " ".join(c)
+        ]
+        assert remote_branch_cmds, (
+            "Must create local branch FROM origin/feature/<slug> when remote "
+            "exists, not from origin/main"
+        )
+
+    def test_creates_from_origin_main_when_neither_local_nor_remote_exist(
+        self,
+    ) -> None:
+        """When branch exists in neither local nor remote, create from main."""
+        calls: list[list[str]] = []
+
+        def fake_run(
+            cmd: list[str],
+        ) -> subprocess.CompletedProcess[str]:
+            calls.append(cmd)
+            cmd_str = " ".join(cmd)
+            # fetch succeeds
+            if "fetch" in cmd:
+                return _ok()
+            # ls-remote: branch does NOT exist on remote (empty stdout)
+            if "ls-remote" in cmd:
+                return _ok("")
+            # branch creation from origin/main succeeds
+            if "branch" in cmd and "origin/main" in cmd_str:
+                return _ok()
+            return _ok()
+
+        with patch.object(branches_mod, "_run", side_effect=fake_run):
+            create_feature_branch(_REPO, "feature/new-branch", exist_ok=True)
+
+        branch_cmds = [c for c in calls if "branch" in c and "git" in c]
+        origin_main_cmds = [
+            c for c in branch_cmds if "origin/main" in " ".join(c)
+        ]
+        assert origin_main_cmds, (
+            "Must create from origin/main when neither local nor remote exist"
+        )
+
+
+# ---------------------------------------------------------------------------
+# FIX 6: slug validation in feature_branch_name / create_feature_branch
+# ---------------------------------------------------------------------------
+
+
+class TestSlugValidation:
+    """Guard FIX 6: invalid slugs must be rejected before git operations."""
+
+    def test_feature_branch_name_rejects_empty_slug(self) -> None:
+        """An empty slug string raises ValueError."""
+        with pytest.raises(ValueError, match="slug"):
+            feature_branch_name(slug="")
+
+    def test_feature_branch_name_rejects_leading_dash_slug(self) -> None:
+        """A slug starting with '-' raises ValueError."""
+        with pytest.raises(ValueError, match="slug"):
+            feature_branch_name(slug="-bad-start")
+
+    def test_feature_branch_name_rejects_whitespace_slug(self) -> None:
+        """A slug containing whitespace raises ValueError."""
+        with pytest.raises(ValueError, match="slug"):
+            feature_branch_name(slug="bad slug")
+
+    def test_feature_branch_name_rejects_leading_slash_slug(self) -> None:
+        """A slug starting with '/' raises ValueError."""
+        with pytest.raises(ValueError, match="slug"):
+            feature_branch_name(slug="/bad")
+
+    def test_feature_branch_name_accepts_valid_slug(self) -> None:
+        """A valid alphanumeric-dash slug is accepted."""
+        assert (
+            feature_branch_name(slug="valid-slug-123")
+            == "feature/valid-slug-123"
+        )
+
+    def test_feature_branch_name_accepts_slug_with_dots(self) -> None:
+        """A slug with dots is accepted."""
+        assert feature_branch_name(slug="v2.0-daemon") == "feature/v2.0-daemon"
+
+
+# ---------------------------------------------------------------------------
 # End-to-end: checkout before _run_worker (BLOCKING-1 regression guard)
 # ---------------------------------------------------------------------------
 
