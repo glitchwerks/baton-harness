@@ -13,4 +13,10 @@ Modules:
     scheduler: Wrap ``graphlib.TopologicalSorter`` with a ``parked`` set
                for failed/blocked sub-tree exclusion.  No I/O.
     registry:  Single-entry repo registry (owner, repo, project_root).
+    branches:  Feature-branch lifecycle: naming, create off main, HEAD
+               checkout before each ``_run_worker`` call, cut-point SHA
+               recording.
+    merge:     CI-gated ``--no-ff`` merge into ``feature/<slug>``; green
+               predicate (§3.3.1); daemon-provenance trailer; persistence
+               of the CI-green-at-merge fact.
 """
