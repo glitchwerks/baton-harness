@@ -910,7 +910,7 @@ async def run_daemon(
                     escalate(
                         repo_cfg.owner,
                         repo_cfg.repo,
-                        0,
+                        None,  # No valid issue target for repo-level failure.
                         f"Daemon tick failed for {repo_cfg.owner}/"
                         f"{repo_cfg.repo}: {exc}",
                         kind="debug",

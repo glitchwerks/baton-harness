@@ -217,3 +217,102 @@ def test_escalate_kind_parameter_accepted() -> None:
         result = escalate(_OWNER, _REPO, _ISSUE, "debug summary", kind="debug")
 
     assert result is True
+
+
+# ---------------------------------------------------------------------------
+# No-target escalation: issue=None and issue=0 (FIX B)
+# ---------------------------------------------------------------------------
+
+
+def test_escalate_none_issue_skips_gh_comment(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """issue=None skips the gh issue comment entirely and logs WARNING.
+
+    GitHub issue numbers start at 1, so there is no valid issue to comment
+    on for repo-level (tick-level) daemon failures.  The durable record
+    cannot land, so the call is skipped rather than sending ``gh issue
+    comment 0`` which always fails.
+    """
+    import os
+
+    with (
+        patch.object(esc_mod, "_run") as mock_run,
+        patch("urllib.request.urlopen") as mock_urlopen,
+        patch.dict("os.environ", {}, clear=False),
+        caplog.at_level(
+            logging.WARNING,
+            logger="baton_harness.chain.escalation",
+        ),
+    ):
+        os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
+        result = escalate(_OWNER, _REPO, None, "daemon tick error")
+
+    # gh must NOT be called — no valid issue target.
+    mock_run.assert_not_called()
+    # No Slack env set → no Slack call.
+    mock_urlopen.assert_not_called()
+    # Return must signal that no durable record was written.
+    assert result is False
+    # A WARNING must be logged so operators can see the failure.
+    assert any(r.levelno >= logging.WARNING for r in caplog.records), (
+        "Expected a WARNING log when issue=None"
+    )
+
+
+def test_escalate_zero_issue_skips_gh_comment(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """issue=0 is treated as no-target (same as None) and skips gh comment.
+
+    Callers that pass 0 (the previous broken behaviour in daemon.py) must
+    not silently call ``gh issue comment 0``.
+    """
+    import os
+
+    with (
+        patch.object(esc_mod, "_run") as mock_run,
+        patch.dict("os.environ", {}, clear=False),
+        caplog.at_level(
+            logging.WARNING,
+            logger="baton_harness.chain.escalation",
+        ),
+    ):
+        os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
+        result = escalate(_OWNER, _REPO, 0, "daemon tick error")
+
+    mock_run.assert_not_called()
+    assert result is False
+    assert any(r.levelno >= logging.WARNING for r in caplog.records)
+
+
+def test_escalate_none_issue_still_posts_slack_when_env_set(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """When issue=None but BH_SLACK_WEBHOOK_URL is set, Slack is still tried.
+
+    Slack is the best-effort fallback when the durable GitHub record cannot
+    land.  Skipping the gh comment must not suppress the Slack notification.
+    """
+    webhook = "https://hooks.slack.com/test"
+    with (
+        patch.object(esc_mod, "_run") as mock_run,
+        patch("urllib.request.urlopen") as mock_urlopen,
+        patch.dict(
+            "os.environ",
+            {"BH_SLACK_WEBHOOK_URL": webhook},
+            clear=False,
+        ),
+        caplog.at_level(
+            logging.WARNING,
+            logger="baton_harness.chain.escalation",
+        ),
+    ):
+        result = escalate(_OWNER, _REPO, None, "daemon tick error")
+
+    # gh still not called — no valid issue.
+    mock_run.assert_not_called()
+    # But Slack IS attempted.
+    mock_urlopen.assert_called_once()
+    # Return is still False — no durable record was written.
+    assert result is False

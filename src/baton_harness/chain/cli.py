@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -96,7 +97,8 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
-    # Resolve workflow path.
+    # Resolve workflow path to ABSOLUTE before any chdir so the path
+    # survives a working-directory change later in this function.
     workflow_path = (
         Path(args.workflow).resolve()
         if args.workflow
@@ -128,6 +130,18 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
+
+    # Change the process working directory to the managed repo root BEFORE
+    # entering the event loop.  The vendored GitHubTracker calls ``gh``
+    # without ``--repo``, so those calls resolve against the process cwd.
+    # Without this chdir, the tracker's ``fetch_issue_state`` and
+    # ``check_pr_exists`` would hit the harness repo (or wherever the
+    # daemon was launched from) instead of the managed repo.
+    # NOTE: workflow_path was resolved to absolute above, so it is
+    # unaffected by this directory change.
+    project_root = registry[0].project_root
+    _log.info("bh-daemon: chdir to managed repo root: %s", project_root)
+    os.chdir(project_root)
 
     # Run the daemon.
     try:

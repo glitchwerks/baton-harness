@@ -166,4 +166,10 @@ echo "baton-harness: workflow=${WORKFLOW_FILE}"
 echo "baton-harness: repo=${BH_REPO_OWNER}/${BH_REPO_NAME} at ${BH_PROJECT_ROOT}"
 echo "baton-harness: starting bh-daemon..."
 
+# Change into the managed repo root so that any gh calls that rely on cwd
+# for repo resolution (e.g. vendored GitHubTracker) hit the right repo.
+# Belt-and-suspenders with the cli.py os.chdir; also makes the intent
+# obvious to operators reading this script.
+cd "${BH_PROJECT_ROOT}"
+
 exec bh-daemon "$@"

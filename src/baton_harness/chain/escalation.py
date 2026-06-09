@@ -57,7 +57,7 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
 def escalate(
     owner: str,
     repo: str,
-    issue: int,
+    issue: int | None,
     summary: str,
     *,
     kind: str = "block",
@@ -68,22 +68,36 @@ def escalate(
     attempted first.  Slack is a best-effort secondary channel.
 
     GitHub comment semantics:
-        Calls ``gh issue comment <N> --repo <owner>/<repo> --body <summary>``.
-        On failure, logs a loud WARNING.  Returns ``False`` in that case.
-        The caller must NOT treat a failed GitHub comment as a silent no-op
-        — the durable record has not landed.
+        Calls ``gh issue comment <N> --repo <owner>/<repo> --body <summary>``
+        when ``issue`` is a valid positive integer.  On failure, logs a loud
+        WARNING.  Returns ``False`` in that case.  The caller must NOT treat
+        a failed GitHub comment as a silent no-op — the durable record has
+        not landed.
+
+        When ``issue`` is ``None`` or ``<= 0`` (no valid GitHub issue target),
+        the ``gh issue comment`` call is **skipped entirely** — sending
+        ``gh issue comment 0`` always fails because GitHub issue numbers start
+        at 1.  A WARNING is logged so operators can see the failure in the
+        daemon log, and the return value is ``False`` to honestly reflect that
+        no durable record was written.
 
     Slack semantics:
         If ``BH_SLACK_WEBHOOK_URL`` is set in the environment, POSTs a
         small JSON body ``{"text": summary}`` via ``urllib.request`` (stdlib
         only — no new dependencies).  Any failure (HTTP error, network
         error, etc.) is logged at WARNING and does NOT affect the return
-        value.  If the env var is absent, Slack is silently skipped.
+        value.  If the env var is absent, Slack is silently skipped.  Slack
+        is still attempted even when ``issue`` is ``None`` / ``<= 0`` — it
+        is the best-effort fallback channel when the durable record cannot
+        land.
 
     Args:
         owner: The GitHub repository owner (organisation or user login).
         repo: The repository name (without the owner prefix).
-        issue: The issue number to comment on.
+        issue: The issue number to comment on.  Pass ``None`` (or a value
+            ``<= 0``) for repo-level / tick-level escalations where no
+            valid issue target exists.  In that case the GitHub comment is
+            skipped and ``False`` is returned.
         summary: The human-readable escalation summary (the stall card
             body).  Rendered as plain text in both GitHub and Slack.
         kind: Escalation kind hint — ``"block"`` (default, agent applied
@@ -93,52 +107,77 @@ def escalate(
 
     Returns:
         ``True`` if the GitHub comment was posted successfully (the durable
-        record landed).  ``False`` if the GitHub comment failed (a WARNING
-        was logged).  Slack success or failure has no bearing on the return
-        value.
+        record landed).  ``False`` if the GitHub comment failed or was
+        skipped (no valid issue target).  Slack success or failure has no
+        bearing on the return value.
     """
     # ------------------------------------------------------------------
     # 1. GitHub comment — durable record; MUST be attempted first.
     # ------------------------------------------------------------------
-    gh_proc = _run(
-        [
-            "gh",
-            "issue",
-            "comment",
-            str(issue),
-            "--repo",
-            f"{owner}/{repo}",
-            "--body",
-            summary,
-        ]
-    )
-    if gh_proc.returncode != 0:
+    # GitHub issue numbers start at 1.  Passing issue=None or issue<=0
+    # means the caller has no valid issue target (e.g. a repo-level daemon
+    # tick failure).  Skip the gh call entirely to avoid the guaranteed
+    # failure of ``gh issue comment 0``; log a loud WARNING so the failure
+    # is visible in the daemon log.
+    if issue is None or issue <= 0:
         _log.warning(
-            "escalate: failed to post GitHub comment on issue #%d"
-            " (exit %d): %s.  Durable record NOT written."
-            " kind=%s owner=%s repo=%s",
+            "escalate: no valid GitHub issue target (issue=%r);"
+            " durable record NOT written.  kind=%s owner=%s repo=%s"
+            " summary=%r",
             issue,
-            gh_proc.returncode,
-            gh_proc.stderr,
             kind,
             owner,
             repo,
+            summary,
         )
         durable_landed = False
     else:
-        _log.info(
-            "escalate: GitHub comment posted on issue #%d (kind=%s)",
-            issue,
-            kind,
+        gh_proc = _run(
+            [
+                "gh",
+                "issue",
+                "comment",
+                str(issue),
+                "--repo",
+                f"{owner}/{repo}",
+                "--body",
+                summary,
+            ]
         )
-        durable_landed = True
+        if gh_proc.returncode != 0:
+            _log.warning(
+                "escalate: failed to post GitHub comment on issue #%d"
+                " (exit %d): %s.  Durable record NOT written."
+                " kind=%s owner=%s repo=%s",
+                issue,
+                gh_proc.returncode,
+                gh_proc.stderr,
+                kind,
+                owner,
+                repo,
+            )
+            durable_landed = False
+        else:
+            _log.info(
+                "escalate: GitHub comment posted on issue #%d (kind=%s)",
+                issue,
+                kind,
+            )
+            durable_landed = True
 
     # ------------------------------------------------------------------
     # 2. Slack — best-effort channel only.
     # ------------------------------------------------------------------
+    # Attempted even when there is no valid issue target — Slack is the
+    # fallback notification when the durable GitHub record cannot land.
     webhook_url = os.environ.get("BH_SLACK_WEBHOOK_URL", "")
     if webhook_url:
-        _post_slack(webhook_url, summary, issue=issue, kind=kind)
+        _post_slack(
+            webhook_url,
+            summary,
+            issue=issue if issue is not None else 0,
+            kind=kind,
+        )
 
     return durable_landed
 
