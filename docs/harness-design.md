@@ -186,9 +186,12 @@ The architecture spec (§3.4) described the orchestration layer abstractly. This
 
 ---
 
-## 10. Always-on daemon: dependency-ordered work units [decided — not yet built]
+## 10. Always-on daemon: dependency-ordered work units [implemented (v1, serial)]
 
-**Status:** The design is decided and being implemented as issue #27. This section records the full decided shape. For the DAG spec, see [docs/superpowers/specs/dependency-chain-orchestration.md](../docs/superpowers/specs/dependency-chain-orchestration.md).
+**Status:** Implemented as issue #27, P3.  The v1 serial daemon is live in
+`src/baton_harness/chain/daemon.py`.  Launcher: `bin/run-daemon.sh`.  CLI
+entry point: `bh-daemon` (see `pyproject.toml`).  For the DAG spec, see
+[docs/superpowers/specs/dependency-chain-orchestration.md](../docs/superpowers/specs/dependency-chain-orchestration.md).
 
 ### The problem (unchanged)
 A milestone is a dependency graph, not a flat bag of independent issues. The flat `agent-ready` model cannot express ordering: mark all issues ready and the agent may attempt N before N-1 exists; mark only issue 1 ready and you are the manual scheduler, defeating the unattended premise.

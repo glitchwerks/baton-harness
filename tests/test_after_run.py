@@ -109,6 +109,7 @@ class TestClassifyNoCommits:
         with patch("baton_harness.after_run._run") as mock_run:
             mock_run.side_effect = [
                 _completed(stdout=""),  # git status — clean
+                _completed(stdout="abc123\n"),  # git rev-parse — base SHA
                 _completed(stdout=""),  # git cherry — no ahead commits
             ]
             result = _classify()
@@ -119,6 +120,7 @@ class TestClassifyNoCommits:
         with patch("baton_harness.after_run._run") as mock_run:
             mock_run.side_effect = [
                 _completed(stdout=""),  # git status — clean
+                _completed(stdout="abc123\n"),  # git rev-parse — base SHA
                 _completed(stdout="- abc123\n"),  # cherry minus = not ahead
             ]
             result = _classify()
@@ -133,6 +135,7 @@ class TestClassifyCommittedNoPr:
         with patch("baton_harness.after_run._run") as mock_run:
             mock_run.side_effect = [
                 _completed(stdout=""),  # git status — clean
+                _completed(stdout="abc123\n"),  # git rev-parse — base SHA
                 _completed(stdout="+ abc123\n"),  # git cherry — 1 ahead
                 _completed(stdout="my-branch\n"),  # git rev-parse (branch)
                 _completed(stdout="[]"),  # gh pr list — no open PR
@@ -147,6 +150,7 @@ class TestClassifyCommittedNoPr:
             pr_json = json.dumps([{"number": 7}])
             mock_run.side_effect = [
                 _completed(stdout=""),  # git status
+                _completed(stdout="abc123\n"),  # git rev-parse — base SHA
                 _completed(stdout="+ abc\n"),  # git cherry
                 _completed(stdout="my-branch\n"),  # git rev-parse (branch)
                 _completed(stdout=pr_json),  # gh pr list
@@ -165,6 +169,7 @@ class TestClassifyPrOpened:
             pr_json = json.dumps([{"number": 42}])
             mock_run.side_effect = [
                 _completed(stdout=""),  # git status — clean
+                _completed(stdout="abc123\n"),  # git rev-parse — base SHA
                 _completed(stdout="+ abc123\n"),  # git cherry — ahead
                 _completed(stdout="my-branch\n"),  # git rev-parse (branch)
                 _completed(stdout=pr_json),  # gh pr list — PR exists
@@ -178,13 +183,14 @@ class TestClassifyPrOpened:
             pr_json = json.dumps([{"number": 5}])
             mock_run.side_effect = [
                 _completed(stdout=""),
+                _completed(stdout="abc123\n"),  # git rev-parse — base SHA
                 _completed(stdout="+ deadbeef\n"),
-                _completed(stdout="feat-5-thing\n"),  # git rev-parse
+                _completed(stdout="feat-5-thing\n"),  # git rev-parse (branch)
                 _completed(stdout=pr_json),
             ]
             _classify()
-        # The fourth call (index 3) should include --head <branch>
-        gh_call_args = mock_run.call_args_list[3][0][0]
+        # The fifth call (index 4) should include --head <branch>
+        gh_call_args = mock_run.call_args_list[4][0][0]
         assert "gh" in gh_call_args
         assert "--head" in gh_call_args
 
@@ -549,32 +555,63 @@ class TestReconcilePrOpenedLoopResilience:
 
 
 class TestReconcileRetryable:
-    """Retryable outcomes → leave agent-ready; no label changes."""
+    """Retryable outcomes → remove agent-ready and set blocked (P0 change).
 
-    def test_no_commits_leaves_agent_ready(self) -> None:
-        """NO_COMMITS leaves agent-ready in place (no gh edits)."""
+    The old Priority-3 behaviour (leave agent-ready for Baton retry) has been
+    deleted.  The always-on daemon is the new retry authority — it polls for
+    blocked issues.  On retryable F5 outcomes, the hook now removes
+    agent-ready and adds blocked so the daemon can decide retry timing.
+    """
+
+    def test_no_commits_removes_agent_ready_sets_blocked(self) -> None:
+        """NO_COMMITS: removes agent-ready and adds blocked."""
         with patch("baton_harness.after_run._run") as mock_run:
-            mock_run.return_value = _completed(stdout=_LABEL_AGENT_READY)
+            mock_run.side_effect = [
+                _completed(stdout=_LABEL_AGENT_READY),  # gh issue view
+                _completed(),  # remove agent-ready
+                _completed(),  # add blocked
+            ]
             exit_code = _reconcile_labels(3, RunOutcome.NO_COMMITS)
         assert exit_code == 0
-        # Only the issue-view call; no label-edit calls
-        assert mock_run.call_count == 1
+        all_args = [c[0][0] for c in mock_run.call_args_list]
+        assert any(
+            "--remove-label" in a and "agent-ready" in a for a in all_args
+        )
+        assert any("--add-label" in a and "blocked" in a for a in all_args)
 
-    def test_uncommitted_changes_leaves_agent_ready(self) -> None:
-        """UNCOMMITTED_CHANGES leaves agent-ready in place."""
+    def test_uncommitted_changes_removes_agent_ready_sets_blocked(
+        self,
+    ) -> None:
+        """UNCOMMITTED_CHANGES: removes agent-ready and adds blocked."""
         with patch("baton_harness.after_run._run") as mock_run:
-            mock_run.return_value = _completed(stdout=_LABEL_AGENT_READY)
+            mock_run.side_effect = [
+                _completed(stdout=_LABEL_AGENT_READY),
+                _completed(),  # remove agent-ready
+                _completed(),  # add blocked
+            ]
             exit_code = _reconcile_labels(3, RunOutcome.UNCOMMITTED_CHANGES)
         assert exit_code == 0
-        assert mock_run.call_count == 1
+        all_args = [c[0][0] for c in mock_run.call_args_list]
+        assert any(
+            "--remove-label" in a and "agent-ready" in a for a in all_args
+        )
+        assert any("--add-label" in a and "blocked" in a for a in all_args)
 
-    def test_committed_no_pr_leaves_agent_ready(self) -> None:
-        """COMMITTED_NO_PR leaves agent-ready in place."""
+    def test_committed_no_pr_removes_agent_ready_sets_blocked(self) -> None:
+        """COMMITTED_NO_PR: removes agent-ready and adds blocked."""
         with patch("baton_harness.after_run._run") as mock_run:
-            mock_run.return_value = _completed(stdout=_LABEL_AGENT_READY)
+            mock_run.side_effect = [
+                _completed(stdout=_LABEL_AGENT_READY),
+                _completed(),  # remove agent-ready
+                _completed(),  # add blocked
+            ]
             exit_code = _reconcile_labels(3, RunOutcome.COMMITTED_NO_PR)
         assert exit_code == 0
-        assert mock_run.call_count == 1
+        all_args = [c[0][0] for c in mock_run.call_args_list]
+        assert any(
+            "--remove-label" in a and "agent-ready" in a for a in all_args
+        )
+        assert any("--add-label" in a and "blocked" in a for a in all_args)
 
 
 # ---------------------------------------------------------------------------
@@ -601,10 +638,12 @@ class TestMain:
         worktree = tmp_path / "feat-99-my-feature"
         worktree.mkdir()
         monkeypatch.chdir(worktree)
+        monkeypatch.delenv("CHAIN_BASE_BRANCH", raising=False)
         pr_json = json.dumps([{"number": 99}])
         with patch("baton_harness.after_run._run") as mock_run:
             mock_run.side_effect = [
                 _completed(stdout=""),  # git status — clean
+                _completed(stdout="abc123\n"),  # git rev-parse — base SHA
                 _completed(stdout="+ abc\n"),  # git cherry — ahead
                 _completed(stdout="feat-99\n"),  # git rev-parse (branch)
                 _completed(stdout=pr_json),  # gh pr list — PR open
@@ -624,10 +663,12 @@ class TestMain:
         worktree = tmp_path / "feat-12-fail-case"
         worktree.mkdir()
         monkeypatch.chdir(worktree)
+        monkeypatch.delenv("CHAIN_BASE_BRANCH", raising=False)
         pr_json = json.dumps([{"number": 12}])
         with patch("baton_harness.after_run._run") as mock_run:
             mock_run.side_effect = [
                 _completed(stdout=""),  # git status — clean
+                _completed(stdout="abc123\n"),  # git rev-parse — base SHA
                 _completed(stdout="+ abc\n"),  # git cherry — ahead
                 _completed(stdout="feat-12\n"),  # git rev-parse (branch)
                 _completed(stdout=pr_json),  # gh pr list — PR open
