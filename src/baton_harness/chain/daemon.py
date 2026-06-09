@@ -43,6 +43,7 @@ import json
 import logging
 import os
 import subprocess
+import sys
 from typing import Any
 
 from baton_harness.chain import branches
@@ -297,6 +298,75 @@ def _fetch_issue_obj(
         return None
 
 
+def _fetch_full_milestone_members(
+    owner: str,
+    repo: str,
+    milestone_number: int,
+    milestone_title: str,
+) -> frozenset[int]:
+    """Fetch all OPEN issues for a milestone — the full DAG membership set.
+
+    Uses ``gh issue list --milestone <title> --state open`` (the CLI
+    matches by title string, not by number).  Closed milestone issues are
+    intentionally excluded: a closed blocker is a satisfied blocker, so
+    its dependents correctly become ready.
+
+    This is distinct from the ``agent-ready`` subset returned by the poll
+    query.  The full set is required so that ``build_dag`` sees all
+    blocker edges — if a non-ready member A blocks a ready member B and A
+    is excluded from membership, the edge A→B is dropped and B is
+    incorrectly dispatched before A completes.
+
+    Args:
+        owner: The GitHub repository owner.
+        repo: The repository name.
+        milestone_number: The milestone integer ID (used as fallback only).
+        milestone_title: The milestone title string (used for the CLI
+            ``--milestone`` filter).
+
+    Returns:
+        A ``frozenset`` of all open issue numbers in the milestone.
+        Falls back to an empty frozenset on error.
+    """
+    proc = _run(
+        [
+            "gh",
+            "issue",
+            "list",
+            "--repo",
+            f"{owner}/{repo}",
+            "--milestone",
+            milestone_title,
+            "--state",
+            "open",
+            "--json",
+            "number,title,state,body,url,labels,milestone,assignees",
+            "--limit",
+            "200",
+        ]
+    )
+    if proc.returncode != 0:
+        _log.warning(
+            "daemon: gh issue list --milestone %r failed (exit %d): %s; "
+            "falling back to agent-ready subset",
+            milestone_title,
+            proc.returncode,
+            proc.stderr,
+        )
+        return frozenset()
+    try:
+        issues_raw = json.loads(proc.stdout)
+        return frozenset(i["number"] for i in issues_raw)
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        _log.warning(
+            "daemon: milestone member parse error for %r: %s; "
+            "falling back to agent-ready subset",
+            milestone_title,
+            exc,
+        )
+        return frozenset()
+
+
 def _open_draft_pr(
     owner: str,
     repo: str,
@@ -363,6 +433,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
     slug: str,
     membership: frozenset[int],
     *,
+    agent_ready_issues: frozenset[int] | None = None,
     ci_poll_interval: float = _DEFAULT_CI_POLL_INTERVAL,
     ci_timeout: float = _DEFAULT_CI_TIMEOUT,
 ) -> None:
@@ -376,13 +447,25 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
         repo_cfg: The repo registry entry.
         branch_name: The feature branch name (``"feature/<slug>"``).
         slug: The bare slug (without ``"feature/"`` prefix).
-        membership: The frozenset of issue numbers in this work unit.
+        membership: The full set of open milestone issue numbers (FIX 1).
+            For un-milestoned single-issue units this is ``{N}``.
+        agent_ready_issues: The subset of ``membership`` that currently
+            carry the ``agent-ready`` label.  Only issues in this set are
+            dispatched to the worker; others are treated as
+            "waiting-for-greenlight" and skipped without escalation.
+            Defaults to ``membership`` when ``None`` (backward-compat for
+            un-milestoned units where membership IS the ready set).
         ci_poll_interval: Seconds between CI polls in the merge gate.
         ci_timeout: Hard ceiling for the CI gate in seconds.
     """
     owner = repo_cfg.owner
     repo = repo_cfg.repo
     repo_root = repo_cfg.project_root
+
+    # FIX 1: default agent_ready_issues to membership when caller did not
+    # supply it (un-milestoned N=1 unit where membership IS the ready set).
+    if agent_ready_issues is None:
+        agent_ready_issues = membership
 
     # --- Step 0: build the DAG and prepare the scheduler. ---
     blocked_by: dict[int, list[int]] = {}
@@ -394,7 +477,9 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
     try:
         sched.prepare()
     except Exception as exc:
-        _log.error(
+        # FIX 4: CycleError is a recoverable escalated condition — warning,
+        # not error.
+        _log.warning(
             "daemon: CycleError in work unit %r: %s; skipping", slug, exc
         )
         escalate(
@@ -415,20 +500,6 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
         repo_root, owner, repo, branch_name, membership
     )
 
-    # Seed the scheduler from recovery.
-    for n in recovery_result.done:
-        if n in dag.graph:
-            # Mark done — consume from sorter first by draining get_ready
-            # if it hasn't been consumed yet.  The scheduler only allows
-            # mark_done on consumed nodes; seed via the parked path is
-            # safer for recovery (avoids graphlib contract violation).
-            # Instead, add done nodes to the parked set filtered view is
-            # wrong — use mark_parked then immediately correct it via
-            # the _done set directly (internal).
-            # SAFE approach: track done as pre-seeded; the loop skips them.
-            # handled in the loop below via `if n in recovery_result.done`
-            pass
-
     # --- Step 2: per-DAG serial loop. ---
     merged_issues: list[int] = []
     parked_reasons: dict[int, str] = {}
@@ -444,6 +515,17 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
         state_path=state_path,
     )
 
+    # FIX 4: set BH_VENV once before the loop.  If it is already set by
+    # the launcher, leave it; if unset, derive from the running interpreter
+    # so hooks can self-activate the venv.
+    if not os.environ.get("BH_VENV"):
+        # sys.executable is e.g. /path/to/.venv/Scripts/python.exe;
+        # the venv root is one level above the bin/Scripts dir.
+        venv_root = str(
+            __import__("pathlib").Path(sys.executable).parent.parent
+        )
+        os.environ["BH_VENV"] = venv_root
+
     while sched.is_active():
         for n in sched.get_ready():
             if n not in seen:
@@ -456,7 +538,46 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
         if not pending:
             break  # Fully parked or nothing ready.
 
+        # FIX 1: partition pending into actionable and non-actionable.
+        # "Actionable" = recovery-case OR currently carries agent-ready.
+        # "Non-actionable" = full milestone member that has NOT been
+        # greenlit yet (agent-ready not set by human).  Non-actionable
+        # issues are skipped silently — they will be picked up in a
+        # future poll tick once the human adds agent-ready.
+        recovery_actionable = {
+            m
+            for m in pending
+            if m in recovery_result.done
+            or m in recovery_result.parked_seed
+            or m in recovery_result.ci_gate_reentry
+            or m in recovery_result.redispatch
+        }
+        dispatch_actionable = {m for m in pending if m in agent_ready_issues}
+        actionable = recovery_actionable | dispatch_actionable
+
+        if not actionable:
+            # Only un-greenlit milestone members remain in the frontier.
+            # Exit the work unit cleanly (open the draft PR below) without
+            # escalating.  The outer poll loop will re-trigger this milestone
+            # on the next tick once the human labels more issues agent-ready.
+            _log.info(
+                "daemon: work unit %r: frontier has only un-greenlit members"
+                " %s; exiting cleanly to wait for human greenlight",
+                slug,
+                sorted(pending),
+            )
+            break
+
         n = pending.pop(0)  # Serial: exactly one issue at a time.
+
+        # FIX 1: if this issue is non-actionable, skip it (leave it
+        # undispatched so the loop can continue processing actionable siblings
+        # that were also in the pending list).
+        if n not in actionable:
+            _log.debug(
+                "daemon: #%d not yet agent-ready; skipping this pass", n
+            )
+            continue
 
         # --- Recovery seeding. ---
         if n in recovery_result.done:
@@ -489,17 +610,40 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 )
                 continue
 
-            outcome = merge_issue_branch(
-                repo_root=repo_root,
-                owner=owner,
-                repo=repo,
-                issue=n,
-                pr_head_sha=pr_head_sha,
-                issue_branch=issue_branch,
-                feature_branch=branch_name,
-                poll_interval=ci_poll_interval,
-                timeout=ci_timeout,
-            )
+            # FIX 2: wrap merge_issue_branch in a per-issue try/except so a
+            # transient git/gh error parks this issue but does not kill the
+            # daemon.
+            try:
+                outcome = merge_issue_branch(
+                    repo_root=repo_root,
+                    owner=owner,
+                    repo=repo,
+                    issue=n,
+                    pr_head_sha=pr_head_sha,
+                    issue_branch=issue_branch,
+                    feature_branch=branch_name,
+                    poll_interval=ci_poll_interval,
+                    timeout=ci_timeout,
+                )
+            except Exception as exc:
+                _log.error(
+                    "daemon: merge_issue_branch raised for #%d (ci_gate"
+                    "_reentry): %s; parking",
+                    n,
+                    exc,
+                )
+                _label_edit(owner, repo, n, remove=["agent-in-progress"])
+                sched.mark_parked(n)
+                parked_reasons[n] = f"merge exception (ci_gate): {exc}"
+                escalate(
+                    owner,
+                    repo,
+                    n,
+                    f"Issue #{n} merge failed (ci_gate_reentry): {exc}",
+                    kind="debug",
+                )
+                continue
+
             if outcome == MergeOutcome.MERGED:
                 _label_edit(
                     owner, repo, n, remove=["agent-in-progress", "agent-done"]
@@ -537,9 +681,6 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
 
         # Thread cut-point base to hooks via env (VP-1 wiring).
         os.environ["CHAIN_BASE_BRANCH"] = cut_point
-        venv_root = os.environ.get("BH_VENV", "")
-        if venv_root:
-            os.environ["BH_VENV"] = venv_root
 
         # Fetch the Issue object.
         issue_obj = _fetch_issue_obj(owner, repo, n)
@@ -599,17 +740,39 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 )
                 continue
 
-            outcome = merge_issue_branch(
-                repo_root=repo_root,
-                owner=owner,
-                repo=repo,
-                issue=n,
-                pr_head_sha=pr_head_sha,
-                issue_branch=issue_branch,
-                feature_branch=branch_name,
-                poll_interval=ci_poll_interval,
-                timeout=ci_timeout,
-            )
+            # FIX 2: wrap merge_issue_branch in a per-issue try/except so a
+            # transient git/gh error parks this issue but does not kill the
+            # daemon.
+            try:
+                outcome = merge_issue_branch(
+                    repo_root=repo_root,
+                    owner=owner,
+                    repo=repo,
+                    issue=n,
+                    pr_head_sha=pr_head_sha,
+                    issue_branch=issue_branch,
+                    feature_branch=branch_name,
+                    poll_interval=ci_poll_interval,
+                    timeout=ci_timeout,
+                )
+            except Exception as exc:
+                _log.error(
+                    "daemon: merge_issue_branch raised for #%d: %s; parking",
+                    n,
+                    exc,
+                )
+                _label_edit(owner, repo, n, remove=["agent-in-progress"])
+                sched.mark_parked(n)
+                parked_reasons[n] = f"merge exception: {exc}"
+                escalate(
+                    owner,
+                    repo,
+                    n,
+                    f"Issue #{n} merge raised an exception: {exc}",
+                    kind="debug",
+                )
+                continue
+
             if outcome == MergeOutcome.MERGED:
                 # merge_issue_branch already added agent-merged + marker.
                 _label_edit(
@@ -724,12 +887,36 @@ async def run_daemon(
 
     while True:
         for repo_cfg in registry:
-            await _poll_and_run(
-                config,
-                repo_cfg,
-                ci_poll_interval=ci_poll_interval,
-                ci_timeout=ci_timeout,
-            )
+            # FIX 2: defensive catch around each per-repo tick.  A failure
+            # building or running one work unit must not kill the always-on
+            # daemon.  Log, escalate if possible, then continue to the next
+            # repo/tick.
+            try:
+                await _poll_and_run(
+                    config,
+                    repo_cfg,
+                    ci_poll_interval=ci_poll_interval,
+                    ci_timeout=ci_timeout,
+                )
+            except Exception as exc:
+                _log.error(
+                    "daemon: unhandled exception for %s/%s: %s; "
+                    "daemon continues",
+                    repo_cfg.owner,
+                    repo_cfg.repo,
+                    exc,
+                )
+                try:
+                    escalate(
+                        repo_cfg.owner,
+                        repo_cfg.repo,
+                        0,
+                        f"Daemon tick failed for {repo_cfg.owner}/"
+                        f"{repo_cfg.repo}: {exc}",
+                        kind="debug",
+                    )
+                except Exception:
+                    pass  # escalation itself may fail; daemon must survive
 
         if once:
             break
@@ -807,7 +994,19 @@ async def _poll_and_run(
     if work_unit is None:
         return
 
-    branch_name, slug, membership = work_unit
+    branch_name, slug, membership, milestone_info = work_unit
+
+    # FIX 1: Expand membership to ALL open milestone members so that
+    # build_dag sees blocker edges from non-ready members.  An agent-ready
+    # subset as membership silently drops A→B edges where A is not yet
+    # greenlit, causing B to be dispatched out of dependency order.
+    if milestone_info is not None:
+        ms_num, ms_title = milestone_info
+        full_members = _fetch_full_milestone_members(
+            owner, repo, ms_num, ms_title
+        )
+        if full_members:
+            membership = full_members
 
     await _run_work_unit(
         config=config,
@@ -815,6 +1014,7 @@ async def _poll_and_run(
         branch_name=branch_name,
         slug=slug,
         membership=membership,
+        agent_ready_issues=frozenset(i["number"] for i in ready_issues),
         ci_poll_interval=ci_poll_interval,
         ci_timeout=ci_timeout,
     )
@@ -822,7 +1022,7 @@ async def _poll_and_run(
 
 def _select_work_unit(
     issues: list[dict[str, Any]],
-) -> tuple[str, str, frozenset[int]] | None:
+) -> tuple[str, str, frozenset[int], tuple[int, str] | None] | None:
     """Select exactly one ready work unit from the list of ready issues.
 
     A milestoned issue represents a milestone work unit (all members of
@@ -836,8 +1036,12 @@ def _select_work_unit(
         issues: List of raw issue dicts from the ``gh issue list`` output.
 
     Returns:
-        A ``(branch_name, slug, membership)`` tuple or ``None`` if no
-        work unit can be determined.
+        A ``(branch_name, slug, membership, milestone_info)`` tuple or
+        ``None`` if no work unit can be determined.  ``milestone_info`` is
+        a ``(milestone_number, milestone_title)`` pair for milestone work
+        units, or ``None`` for un-milestoned single-issue units.  The
+        caller uses ``milestone_info`` to expand ``membership`` to the full
+        set of open milestone issues (FIX 1).
     """
     # Prefer milestoned issues first.
     milestoned = [i for i in issues if i.get("milestone")]
@@ -848,17 +1052,19 @@ def _select_work_unit(
             key=lambda m: m.get("number", 0),
         )
         ms_num = milestone["number"]
-        ms_slug = _slugify(milestone.get("title", f"milestone-{ms_num}"))
+        ms_title = milestone.get("title", f"milestone-{ms_num}")
+        ms_slug = _slugify(ms_title)
         branch_name = f"feature/{ms_slug}"
         slug = ms_slug
-        # Membership: all issues in this milestone that are ready.
-        # recovery.reconstruct adds done/parked members back from history.
+        # Initial membership from the agent-ready subset only.
+        # _poll_and_run expands this to the full open milestone set via
+        # _fetch_full_milestone_members (FIX 1).
         members = frozenset(
             i["number"]
             for i in milestoned
             if i.get("milestone", {}).get("number") == milestone["number"]
         )
-        return branch_name, slug, members
+        return branch_name, slug, members, (ms_num, ms_title)
 
     # Un-milestoned: pick the lowest issue number.
     un_milestoned = sorted(
@@ -871,6 +1077,6 @@ def _select_work_unit(
 
         branch_name = feature_branch_name(issue=n)
         slug = f"issue-{n}"
-        return branch_name, slug, frozenset({n})
+        return branch_name, slug, frozenset({n}), None
 
     return None

@@ -906,3 +906,531 @@ def test_registry_unset_raises_clean_error() -> None:
         for k, v in env_backup.items():
             if v is not None:
                 os.environ[k] = v
+
+
+# ---------------------------------------------------------------------------
+# FIX 1: Membership must be full milestone, not just agent-ready subset
+# ---------------------------------------------------------------------------
+
+
+def _make_milestone_issues(
+    *,
+    ms_number: int = 7,
+    ms_title: str = "Sprint 7",
+    agent_ready: list[int] | None = None,
+    not_ready: list[int] | None = None,
+) -> list[dict[str, Any]]:
+    """Build a list of milestoned issue dicts for polling.
+
+    Args:
+        ms_number: Milestone number.
+        ms_title: Milestone title.
+        agent_ready: Issue numbers that carry agent-ready.
+        not_ready: Issue numbers that are in the milestone but NOT
+            agent-ready (so they do NOT appear in the gh issue list
+            --label agent-ready results).
+
+    Returns:
+        A list of raw issue dicts as returned by ``gh issue list``.
+        Only agent-ready issues appear in this list; not_ready issues
+        represent the *full* milestone members fetched separately.
+    """
+    agent_ready = agent_ready or []
+    result = []
+    ms = {"number": ms_number, "title": ms_title}
+    for n in agent_ready:
+        result.append(
+            {
+                "number": n,
+                "title": f"Issue {n}",
+                "state": "open",
+                "body": "",
+                "url": f"https://github.com/o/r/issues/{n}",
+                "labels": [{"name": "agent-ready"}],
+                "milestone": ms,
+                "assignees": [],
+            }
+        )
+    return result
+
+
+def test_milestone_membership_uses_full_set_not_just_agent_ready() -> None:
+    """Milestone B blocked_by A, only B is agent-ready: no dispatch of B.
+
+    The membership passed to build_dag must include A so the blocker edge
+    A→B is represented and B correctly shows as not-ready.
+    """
+    # A (issue 1) is in milestone but NOT agent-ready.
+    # B (issue 2) is agent-ready AND blocked_by A.
+    # build_dag({1,2}, {2:[1]}) → B has unresolved blocker A, so B is
+    # NOT in the initial ready frontier.
+    # With old membership={2}, blocked_by would see {2:[1]}, build_dag
+    # only gets node 2 and edge 2→1 where 1 is outside membership — the
+    # edge is dropped, and B appears immediately dispatchable.
+    # With correct membership={1,2}, B is correctly gated behind A.
+
+    # Ready issues from poll: only B carries agent-ready.
+    ready_issues_for_poll = _make_milestone_issues(
+        ms_number=7,
+        ms_title="Sprint 7",
+        agent_ready=[2],  # only B
+    )
+
+    # Full milestone membership: both A and B.
+    # _fetch_milestone_members is called with milestone NUMBER.
+    full_membership = frozenset({1, 2})
+
+    worker_calls: list[int] = []
+
+    async def fake_run_worker(issue: Any) -> str:  # noqa: ANN401
+        worker_calls.append(issue.number)
+        return "pr_created"
+
+    def run_side_effect(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        import json as _json
+
+        cmd_str = " ".join(cmd)
+        if (
+            "issue" in cmd_str
+            and "list" in cmd_str
+            and "agent-ready" in cmd_str
+        ):
+            return _ok(_json.dumps(ready_issues_for_poll))
+        if "issue" in cmd_str and "view" in cmd_str and "edit" not in cmd_str:
+            nums = [p for p in cmd if p.isdigit()]
+            n = int(nums[0]) if nums else 2
+            return _ok(
+                _json.dumps(
+                    {
+                        "number": n,
+                        "title": f"Issue {n}",
+                        "state": "open",
+                        "body": "",
+                        "url": f"https://github.com/o/r/issues/{n}",
+                        "labels": [{"name": "agent-done"}],
+                        "assignees": [],
+                    }
+                )
+            )
+        if "issue" in cmd_str and "edit" in cmd_str:
+            return _ok()
+        if "pr" in cmd_str and "list" in cmd_str:
+            return _ok(_json.dumps([]))
+        if "pr" in cmd_str and "create" in cmd_str:
+            return _ok("https://github.com/o/r/pull/99")
+        if "git" in cmd_str and "push" in cmd_str:
+            return _ok()
+        if "ls-remote" in cmd_str:
+            return _ok("")
+        if "rev-parse" in cmd_str:
+            return _ok("abc123\n")
+        return _ok()
+
+    with (
+        patch.object(daemon_mod, "_run", side_effect=run_side_effect),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            side_effect=lambda o, r, n: [1] if n == 2 else [],
+        ),
+        patch(
+            "baton_harness.chain.daemon._fetch_full_milestone_members",
+            return_value=full_membership,
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch("baton_harness.chain.daemon.escalate", return_value=True),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.Orchestrator._run_worker",
+            side_effect=fake_run_worker,
+        ),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    # B must NOT have been dispatched — A was not done yet.
+    assert 2 not in worker_calls, (
+        f"Issue 2 (B) must not be dispatched while A is undone; "
+        f"worker_calls={worker_calls}"
+    )
+
+
+def test_milestone_dispatch_order_a_before_b_when_both_ready() -> None:
+    """Milestone A and B both agent-ready, B blocked_by A.
+
+    A must be dispatched before B (topological order).
+    """
+    ready_issues_for_poll = _make_milestone_issues(
+        ms_number=7,
+        ms_title="Sprint 7",
+        agent_ready=[1, 2],
+    )
+    full_membership = frozenset({1, 2})
+
+    call_order: list[int] = []
+
+    async def fake_run_worker(issue: Any) -> str:  # noqa: ANN401
+        call_order.append(issue.number)
+        return "pr_created"
+
+    def run_side_effect(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        import json as _json
+
+        cmd_str = " ".join(cmd)
+        if (
+            "issue" in cmd_str
+            and "list" in cmd_str
+            and "agent-ready" in cmd_str
+        ):
+            return _ok(_json.dumps(ready_issues_for_poll))
+        if "issue" in cmd_str and "view" in cmd_str and "edit" not in cmd_str:
+            nums = [p for p in cmd if p.isdigit()]
+            n = int(nums[0]) if nums else 1
+            return _ok(
+                _json.dumps(
+                    {
+                        "number": n,
+                        "title": f"Issue {n}",
+                        "state": "open",
+                        "body": "",
+                        "url": f"https://github.com/o/r/issues/{n}",
+                        "labels": [{"name": "agent-done"}],
+                        "assignees": [],
+                    }
+                )
+            )
+        if "issue" in cmd_str and "edit" in cmd_str:
+            return _ok()
+        if "pr" in cmd_str and "list" in cmd_str:
+            prs = [
+                {
+                    "number": i,
+                    "headRefName": f"baton/sprint-7-{n}",
+                    "headRefOid": f"sha{n}",
+                }
+                for i, n in enumerate([1, 2], 1)
+            ]
+            return _ok(_json.dumps(prs))
+        if "pr" in cmd_str and "create" in cmd_str:
+            return _ok("https://github.com/o/r/pull/99")
+        if "git" in cmd_str and "push" in cmd_str:
+            return _ok()
+        if "ls-remote" in cmd_str:
+            return _ok("")
+        if "rev-parse" in cmd_str:
+            return _ok("abc123\n")
+        return _ok()
+
+    with (
+        patch.object(daemon_mod, "_run", side_effect=run_side_effect),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            side_effect=lambda o, r, n: [1] if n == 2 else [],
+        ),
+        patch(
+            "baton_harness.chain.daemon._fetch_full_milestone_members",
+            return_value=full_membership,
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch("baton_harness.chain.daemon.escalate", return_value=True),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.Orchestrator._run_worker",
+            side_effect=fake_run_worker,
+        ),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    assert len(call_order) == 2, (
+        f"Expected both A(1) and B(2) dispatched; got {call_order}"
+    )
+    assert call_order.index(1) < call_order.index(2), (
+        f"A(1) must be dispatched before B(2); got {call_order}"
+    )
+
+
+def test_waiting_for_greenlight_exits_work_unit_without_escalating() -> None:
+    """Milestone has A (not agent-ready) and B (agent-ready, blocked_by A).
+
+    After B is skipped (A not done), the work unit must exit cleanly by
+    opening the draft PR — NOT escalate as a block/park — and the daemon
+    must survive (once=True returns normally).
+    """
+    ready_issues_for_poll = _make_milestone_issues(
+        ms_number=7,
+        ms_title="Sprint 7",
+        agent_ready=[2],  # only B, not A
+    )
+    full_membership = frozenset({1, 2})
+
+    escalate_calls: list[tuple[Any, ...]] = []
+
+    def fake_escalate(*args: Any, **kwargs: Any) -> bool:  # noqa: ANN401
+        escalate_calls.append(args)
+        return True
+
+    def run_side_effect(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        import json as _json
+
+        cmd_str = " ".join(cmd)
+        if (
+            "issue" in cmd_str
+            and "list" in cmd_str
+            and "agent-ready" in cmd_str
+        ):
+            return _ok(_json.dumps(ready_issues_for_poll))
+        if "issue" in cmd_str and "edit" in cmd_str:
+            return _ok()
+        if "pr" in cmd_str and "list" in cmd_str:
+            return _ok(_json.dumps([]))
+        if "pr" in cmd_str and "create" in cmd_str:
+            return _ok("https://github.com/o/r/pull/99")
+        if "git" in cmd_str and "push" in cmd_str:
+            return _ok()
+        if "ls-remote" in cmd_str:
+            return _ok("")
+        if "rev-parse" in cmd_str:
+            return _ok("abc123\n")
+        return _ok()
+
+    with (
+        patch.object(daemon_mod, "_run", side_effect=run_side_effect),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            side_effect=lambda o, r, n: [1] if n == 2 else [],
+        ),
+        patch(
+            "baton_harness.chain.daemon._fetch_full_milestone_members",
+            return_value=full_membership,
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch(
+            "baton_harness.chain.daemon.escalate", side_effect=fake_escalate
+        ),
+    ):
+        # Must NOT raise; daemon stays alive.
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    # No block-kind escalation should have occurred for the "waiting for
+    # greenlight" case (un-greenlighted members are not a block).
+    block_escalations = [
+        a for a in escalate_calls if len(a) >= 4 and a[3] == "block"
+    ]
+    assert not block_escalations, (
+        "Waiting-for-greenlight must NOT escalate as a block; "
+        f"got block escalations: {block_escalations}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# FIX 2: Merge-gate / dispatch exceptions must not kill the daemon
+# ---------------------------------------------------------------------------
+
+
+def test_merge_issue_branch_raises_parks_issue_and_daemon_survives() -> None:
+    """merge_issue_branch raising RuntimeError parks the issue.
+
+    run_daemon with once=True must return normally (not re-raise).
+    """
+    ready_issues = [
+        {
+            "number": 10,
+            "title": "Issue 10",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/10",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        }
+    ]
+
+    label_edits: list[list[str]] = []
+    escalate_calls: list[tuple[Any, ...]] = []
+
+    def recording_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        if "issue" in cmd and "edit" in cmd:
+            label_edits.append(list(cmd))
+        return _make_run_side_effect(
+            ready_issues=ready_issues,
+            pr_head_sha="abc123",
+            issue_branch="baton/issue-10-10",
+            feature_branch_exists=False,
+        )(cmd)
+
+    def fake_escalate(*args: Any, **kwargs: Any) -> bool:  # noqa: ANN401
+        escalate_calls.append(args)
+        return True
+
+    with (
+        patch.object(daemon_mod, "_run", side_effect=recording_run),
+        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            side_effect=RuntimeError("transient git failure"),
+        ),
+        patch(
+            "baton_harness.chain.daemon.escalate", side_effect=fake_escalate
+        ),
+        _patch_run_worker("pr_created"),
+    ):
+        # Must NOT raise — daemon survives the merge failure.
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    # agent-in-progress must have been cleared.
+    remove_calls = [
+        c
+        for c in label_edits
+        if "--remove-label" in c and "agent-in-progress" in c
+    ]
+    assert remove_calls, (
+        "agent-in-progress must be removed even when merge_issue_branch raises"
+    )
+
+    # escalate must have been called (operational failure).
+    assert escalate_calls, (
+        "escalate must be called when merge_issue_branch raises"
+    )
+
+
+def test_work_unit_exception_daemon_survives_and_proceeds() -> None:
+    """An unhandled exception building the work unit must not kill the daemon.
+
+    If the outer tick raises (e.g. _run_work_unit crashes), run_daemon
+    must catch it, log+escalate, and return normally when once=True.
+    """
+    ready_issues = [
+        {
+            "number": 10,
+            "title": "Issue 10",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/10",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        }
+    ]
+
+    def run_side_effect(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        return _make_run_side_effect(
+            ready_issues=ready_issues,
+            pr_head_sha="abc123",
+            issue_branch="baton/issue-10-10",
+            feature_branch_exists=False,
+        )(cmd)
+
+    async def exploding_run_work_unit(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("simulated work-unit explosion")
+
+    with (
+        patch.object(daemon_mod, "_run", side_effect=run_side_effect),
+        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("baton_harness.chain.daemon.escalate", return_value=True),
+        patch(
+            "baton_harness.chain.daemon._run_work_unit",
+            side_effect=exploding_run_work_unit,
+        ),
+    ):
+        # Must NOT raise — once=True, daemon survives.
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )

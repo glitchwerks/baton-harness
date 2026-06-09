@@ -135,17 +135,15 @@ EOF
 # --------------------------------------------------------------------------
 run() {
   activate_venv
-  command -v baton >/dev/null || die "baton not found — run '$0 bootstrap' first (venv missing?)"
-  [[ -x "$HARNESS_DIR/bin/run.sh" ]] || die "run.sh missing — run '$0 bootstrap' first"
-  [[ -d "$PROJECT_DIR" ]]            || die "promptsmith clone missing — run '$0 bootstrap' first"
-  mkdir -p "$LOG_DIR"
-  say "T1 — launching baton with an ABSOLUTE -w path"
-  echo "  run.sh passes -w '$HARNESS_DIR/config/WORKFLOW.md' (absolute) to baton."
-  echo "  T1 PASSES if baton starts and begins polling with NO path error below."
-  echo "  Logs -> $BATON_LOG  (Ctrl-C to stop baton when you're done observing)"
-  echo
-  # Tee everything (stdout+stderr) to the log so Claude can read it back.
-  "$HARNESS_DIR/bin/run.sh" "$PROJECT_DIR" 2>&1 | tee "$BATON_LOG"
+  # NOTE: bin/run.sh was deleted in P3 (replaced by bin/run-daemon.sh).
+  # This 'run' subcommand targeted the retired external-baton / baton-start
+  # invocation path (T1/T2 in the original pilot plan).  The new daemon no
+  # longer accepts a project-path positional argument; it reads repo
+  # coordinates from BH_REPO_OWNER / BH_REPO_NAME / BH_PROJECT_ROOT env vars.
+  # Use bin/run-daemon.sh directly instead.
+  die "The 'run' subcommand is retired (bin/run.sh was deleted in P3). " \
+      "Set BH_REPO_OWNER, BH_REPO_NAME, BH_PROJECT_ROOT and run: " \
+      "$HARNESS_DIR/bin/run-daemon.sh"
 }
 
 # --------------------------------------------------------------------------
