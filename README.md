@@ -215,6 +215,24 @@ cp /path/to/baton-harness/templates/CLAUDE.md.template /path/to/project/CLAUDE.m
 git -C /path/to/project add CLAUDE.md && git -C /path/to/project commit -m "Add CLAUDE.md from harness template"
 ```
 
+## Running the daemon
+
+`bh-daemon` is the always-on poll loop that watches a GitHub repo for `agent-ready` issues, runs Claude Code agents against them in dependency order, CI-gates each agent's PR, and opens a draft `feature/<slug> → main` PR when a work unit completes. It never merges to `main`.
+
+**Quickstart (one tick, then exit):**
+
+```bash
+export BH_REPO_OWNER=<owner>
+export BH_REPO_NAME=<repo>
+export BH_PROJECT_ROOT=/path/to/local/clone
+
+bin/run-daemon.sh --once
+```
+
+The launcher validates `BH_REPO_OWNER`, `BH_REPO_NAME`, and `BH_PROJECT_ROOT` before starting and exits with a clear error if any are unset. It also checks that the five required labels (`agent-ready`, `agent-done`, `blocked`, `agent-in-progress`, `agent-merged`) exist in the target repo.
+
+For the full first-run walkthrough, sandbox setup, required labels, DAG trigger-issue creation, and CI-gate behaviour, see [docs/smoke-test-daemon.md](docs/smoke-test-daemon.md).
+
 ## Design documentation
 
 See `docs/` for the full design:
