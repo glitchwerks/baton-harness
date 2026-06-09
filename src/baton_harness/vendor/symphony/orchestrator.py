@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import json  # VENDOR-PATCH VP-2: needed for exclude_labels re-check label parse
 import logging
 
 from .config import WorkflowConfig, load_workflow  # VENDOR-PATCH: relative import for vendoring
 from .hooks import run_hook  # VENDOR-PATCH: relative import for vendoring
 from .prompt import render_prompt  # VENDOR-PATCH: relative import for vendoring
 from .state import IssueState, OrchestratorState  # VENDOR-PATCH: relative import for vendoring
-from .tracker import GitHubTracker, Issue, parse_issue_skills  # VENDOR-PATCH: relative import for vendoring
+from .tracker import GitHubTracker, Issue, parse_issue_skills, run_gh  # VENDOR-PATCH: relative import for vendoring; run_gh added for VP-2 exclude_labels re-check
 from .worker import Worker  # VENDOR-PATCH: relative import for vendoring
 from .workspace import WorkspaceManager  # VENDOR-PATCH: relative import for vendoring
 
@@ -126,6 +127,11 @@ class Orchestrator:
         # 5. Multi-turn loop
         for turn in range(1, self.config.max_turns + 1):
             # Update state
+            # VENDOR-PATCH VP-2: guard already present — confirmed in vendored
+            # source.  This ``if issue.number in self.state.running:`` check
+            # prevents a stale state.json from causing a KeyError on the turn
+            # mutation (CONCERN-4).  No additional guard is needed; the existing
+            # check satisfies the VP-2 running[N] guard requirement.
             if issue.number in self.state.running:
                 self.state.running[issue.number].turn = turn
 
@@ -167,6 +173,33 @@ class Orchestrator:
             if current_state != "open":
                 log.info(f"CLOSE #{issue.number} — issue is now {current_state}")
                 break
+
+            # VENDOR-PATCH VP-2: re-check exclude_labels after fetch_issue_state.
+            # If any exclude label (e.g. "blocked") is now present, terminate the
+            # turn loop immediately — making a mid-run block terminal and closing
+            # the #23 root cause (external Baton never re-checked between turns).
+            if self.tracker.exclude_labels:
+                try:
+                    label_output = await run_gh([
+                        "issue", "view", str(issue.number),
+                        "--json", "labels",
+                    ])
+                    label_data = json.loads(label_output)
+                    current_labels = {
+                        lbl["name"].lower()
+                        for lbl in label_data.get("labels", [])
+                    }
+                    if current_labels & set(self.tracker.exclude_labels):
+                        log.info(
+                            f"BLOCK #{issue.number} — exclude label detected"
+                            f" mid-turn; terminating loop"
+                        )
+                        break
+                except Exception as _exc:  # best-effort; don't crash the run
+                    log.debug(
+                        f"VP-2 exclude_labels re-check failed for"
+                        f" #{issue.number}: {_exc}"
+                    )
 
         # Run after_run hook
         await run_hook(
