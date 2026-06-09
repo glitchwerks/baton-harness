@@ -30,7 +30,7 @@
 
 The external-process integration was validated in the smoke-test spike (Scenario A — viability verdict: yes; see spike-findings.md) and the pilot dry run (T1, T2 — see pilot-validation-findings.md). The specific unknowns (`--dangerously-skip-permissions`, hook firing, exit codes) were answered empirically.
 
-Under the vendored-symphony model [decided — not yet built], this concern dissolves: there is no Baton subprocess integration seam. Integration is `Orchestrator._run_worker(issue)` — a direct Python call to vendored source, validated via the deep-dive analysis (`.tmp/baton-deepdive-findings.md`). No integration spike is needed for the subprocess path; the vendored interface is a clean callable.
+Under the vendored-symphony model [implemented, issue #27 P0], this concern dissolves: there is no Baton subprocess integration seam. Integration is `Orchestrator._run_worker(issue)` — a direct Python call to vendored source, validated via the deep-dive analysis (`docs/baton-deepdive-findings.md`). No integration spike is needed for the subprocess path; the vendored interface is a clean callable.
 
 ---
 
@@ -150,18 +150,16 @@ Langfuse integration with Claude Code isn't turnkey. **Resolution:** Operate on 
 
 ## Themes in the failures
 
-Three patterns emerge across the items above:
+Three patterns emerged across the items above:
 
-1. **Empirical gap.** The remaining open Severity 1 item (S1.3) shares the same root as the closed ones: designed against documented behavior, not observed behavior. Rate limits under representative load need to be exercised, not assumed.
+1. **Empirical gap.** S1.3 (rate limits) remains the one open Severity 1 item; it requires representative load measurement, not design work. All others were resolved — either empirically (spike/pilot) or by implementation.
 
-2. **Plumbing carries policy.** The outcome router (S2.1) and startup reconciliation (S2.3) are treated as glue in the spec but are where most of the system's actual behavior lives. They need to be designed as first-class components, not afterthoughts. S2.2 (Slack-to-GitHub round trip) is resolved for v1: the human drives the label transition directly on the GitHub issue.
+2. **Plumbing carries policy.** The outcome router (S2.1) and startup reconciliation (S2.3) turned out to be first-class components; both are implemented. S2.2 (Slack-to-GitHub round trip) is resolved for v1: the human drives the label transition directly on the GitHub issue.
 
-3. **Failure recovery above the container.** Inside a single run, hooks and Claude Code's own guardrails handle things. Above the run — orchestrator, bot, credentials, in-flight state — stuck-state recovery is resolved by design (`recovery.py` §11.5); operational hardening (OOM, orphan processes, credential corruption) is tracked in issue #40.
+3. **Failure recovery above the container.** Stuck-state recovery is resolved by design (`recovery.py`, issue #27 §11.5); operational hardening (OOM, orphan processes, credential corruption) remains tracked in issue #40.
 
 ---
 
 ## Process for resolution
 
-S1.1 (ToS) is resolved (accepted risk, issue #37). S1.2 (Baton integration) is resolved (spike validated). S1.3 (rate limits) remains open and is tracked in issue #39; exercise during pilot before increasing concurrency beyond 1. S2.1 (outcome router) is resolved. S2.2 (Slack-to-requeue transition) is resolved for v1 (spec §9 — human drives label transition). S2.3 (failure recovery) is partially resolved: stuck-state recovery is handled by design (spec §11.5); operational hardening tracked in issue #40. S2.4 (worktree isolation) is resolved for v1 by serialization (spec §6). Severity 3 and 4 are tracked here but don't block forward progress.
-
-After the spike completes, update the architecture spec to reflect what was learned, and either close items here or convert them into design tasks.
+**As of 2026-06-09 (post-#27 merge):** S1.1 (ToS) accepted risk (issue #37). S1.2 (Baton integration) dissolved by vendoring (issue #27 P0). S1.3 (rate limits) remains open — tracked in issue #39; measure before raising concurrency above 1. S2.1 (outcome router) implemented. S2.2 (Slack-to-requeue) resolved for v1 (human drives label transition — spec §9). S2.3 (failure recovery): stuck-state recovery implemented (`recovery.py`, issue #27 §11.5); operational hardening (OOM/orphan processes/credential corruption) tracked in issue #40. S2.4 (worktree isolation) resolved for v1 by serialization. Severity 3 and 4 remain valid monitors for rollout.

@@ -61,7 +61,7 @@ Also confirmed: `before_run` fires once before turn 1, not once per turn. `after
 | 2 | Issue number unresolved from bare-`N` worktree | `resolve_issue_number` assumed `<prefix>-<issue>` names; Baton uses bare `<issue>` (`.symphony/worktrees/2`) | Hook cannot determine which issue it is operating on | Fixed — PR #20 |
 | 3 | Target repo must have all three labels pre-created | A missing `agent-done` causes `after_run`'s `gh issue edit --add-label` to fail | `after_run` fails, leaving `agent-ready` in place and triggering Finding 4 | Open — issue #21 |
 | 4 | `after_run` failure causes infinite re-dispatch loop | When `after_run` fails before removing `agent-ready`, Baton sees the issue as unclaimed on the next poll and re-dispatches it | Unbounded agent runs against the same issue; quota burn | Open — issue #21 |
-| 5 | A block is not terminal within an in-flight run | Baton does not re-check `exclude_labels` between turns; `before_run` fires once, so a block applied mid-run cannot halt subsequent turns | A blocked issue costs up to `max_turns` full agent invocations, not one | **Resolved under vendoring [decided — not yet built]:** fix is a `_run_worker` turn-loop patch (harness-internal, ~10 lines); `max_turns: 2` workaround retireable post-vendoring. Upstream-dependency framing no longer applies. |
+| 5 | A block is not terminal within an in-flight run | Baton does not re-check `exclude_labels` between turns; `before_run` fires once, so a block applied mid-run cannot halt subsequent turns | A blocked issue costs up to `max_turns` full agent invocations, not one | **Resolved [implemented, VP-2, issue #27 P3]:** `_run_worker` turn-loop patch applied in the vendored source (~10 lines); `max_turns: 2` workaround retired. Upstream-dependency framing no longer applies. |
 
 ### Finding 1 — Hooks `rc=127`
 
@@ -110,7 +110,7 @@ The following documentation and design gaps were exposed by the dry run and need
 
 **README — required target-repo labels.** The README must specify that the three labels (`agent-ready`, `agent-done`, `blocked`) must be created in the target repository before running the harness. This is a hard prerequisite: absence of any one of them produces the Finding 3/4 failure chain. This is part of issue #21's scope.
 
-**Issue #4 — terminal-block design constrained by Baton's turn model.** The terminal-block design must account for Finding 5: there is no per-turn hook point in the current Baton API from which the harness can halt an in-flight run. Any design that assumes a block applied during turn N halts turn N+1 is not implementable without an upstream change. The issue #4 design should select between: (a) pursuing an upstream Baton contribution, (b) accepting the `max_turns` cost model as a known bound, or (c) setting conservative `max_turns` values for ambiguous-issue classes.
+**Issue #4 — terminal-block design [resolved].** Finding 5's constraint (no per-turn hook) was resolved by vendoring symphony and patching `_run_worker` directly (VP-2, issue #27 P3). A mid-run `blocked` label now terminates the turn loop. The `max_turns: 2` workaround is retired.
 
 **F4 compliance — draft PR verification.** Scenario A's PR #19 was created non-draft despite the closing step using `gh pr create --draft`. The prompt's REQUIRED STEPS section should be verified to confirm it still passes `--draft`, and the `after_run` classifier's `pr-opened` branch should confirm draft status before classifying as `agent-done`. This is a pre-existing gap from spike finding F4 that persisted into the pilot.
 
