@@ -57,7 +57,7 @@ The README confirms it: "inspired by OpenAI's Symphony spec, rebuilt from scratc
 **Spec implication:** don't assume hook env vars; derive context from the worktree path. If this proves fragile, it's a candidate for an upstream contribution.
 **Docs confirm:** the README documents no env-var contract for hooks — hooks are raw shell run in the worktree cwd. So `basename "$PWD"` isn't a workaround around a bug, it's the intended way to get issue context in a hook. Prompt template variables (`{{ issue.number }}` etc.) are Jinja2 for the *prompt*, not hook env. Resolved.
 
-> **Forward state [decided — not yet built]:** Under vendoring, the `env=` threading fix inside `run_hook` allows `ISSUE_NUMBER` to be passed directly. The `basename "$PWD"` workaround is retireable once that patch is applied to the vendored source.
+> **Forward state [implemented, VP-1, issue #27 P0]:** Under vendoring, the `env=` threading fix inside `run_hook` passes `ISSUE_NUMBER` directly. The `basename "$PWD"` workaround is retired.
 
 ### F3 — Orchestrator does NOT manage GitHub labels for run state
 It tracks run state internally (the `.symphony` state machine), and does not mutate GitHub labels on dispatch. Confirmed by observing `agent-ready` persist (not transition to `agent-in-progress`) during a run.
