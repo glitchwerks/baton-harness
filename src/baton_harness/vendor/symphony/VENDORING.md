@@ -17,12 +17,13 @@ library function, apply patches without upstream dependency, and remain
 self-contained. See `CLAUDE.md § Upstream dependency` and
 `docs/harness-design.md §1` for the full decision.
 
-## Status (P0)
+## Status (P3 — LIVE)
 
-The vendored tree is **dormant until P3**. The external `baton` dependency
-and `bin/run.sh` still use the external poller through P2. The vendored tree
-is consumed by the custom always-on daemon in P3. Until then, it is present
-in the source but not called at runtime.
+The vendored tree is **live** as of P3.  The custom always-on daemon
+(`chain/daemon.py`) calls `Orchestrator._run_worker` directly.  VP-2 has
+been applied (see below).  `bin/run.sh` has been deleted; `bin/run-daemon.sh`
+is the new launcher.  The external `baton` dependency is no longer the active
+orchestration path.
 
 ## Applied patches
 
@@ -39,6 +40,23 @@ in the source but not called at runtime.
   issue #42). The default (`env=None`) is unchanged — passing no `env`
   argument uses `os.environ` exactly as before. Marker:
   `# VENDOR-PATCH VP-1: run_hook env= threading (merged into os.environ)`.
+
+### VP-2 — exclude_labels re-check + running[N] guard
+
+- **File:** `orchestrator.py`
+- **Patch file:** `patches/VP-2-exclude-labels-recheck.diff` (relative to repo root)
+- **Description:** After the `fetch_issue_state` / `current_state != "open"`
+  check inside the `_run_worker` turn loop, adds a re-check of
+  `self.tracker.exclude_labels` by fetching the issue's current labels via
+  `run_gh(["issue", "view", ..., "--json", "labels"])`.  If any exclude label
+  (e.g. `"blocked"`) is now present, the loop is terminated immediately — making
+  a mid-run block terminal (closes the #23 root cause; retires the `max_turns: 2`
+  workaround in `config/WORKFLOW.md`).  The fetch is best-effort (wrapped in
+  `try/except`) so a label-API failure cannot crash the run.  Also confirms the
+  existing `if issue.number in self.state.running:` guard at the turn-state
+  mutation site (CONCERN-4 / VP-2 requirement already satisfied in the vendored
+  source — documented with a `# VENDOR-PATCH VP-2` comment).  Marker:
+  `# VENDOR-PATCH VP-2: ...`.
 
 ### Vendoring-mechanics patches (not VP patches; no separate diff files)
 
@@ -78,6 +96,7 @@ When re-vendoring at a new upstream SHA, apply these steps in order:
 3. Re-apply each patch from `patches/` using `git apply` or `patch -p1`:
    ```bash
    git apply patches/VP-1-run-hook-env.diff
+   git apply patches/VP-2-exclude-labels-recheck.diff
    ```
 4. Re-apply the relative-import vendoring-mechanics patches manually (they
    are not in a diff file because they only depend on the module names, which
@@ -89,6 +108,7 @@ When re-vendoring at a new upstream SHA, apply these steps in order:
    ```
    Expected output must include at minimum:
    - `VP-1` in `hooks.py`
+   - `VP-2` in `orchestrator.py`
    - `relative import for vendoring` in `orchestrator.py`, `cli.py`,
      `prompt.py`, `worker.py`
 6. Update the **Pinned SHA** and **Vendor date** fields at the top of this
