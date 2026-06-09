@@ -140,8 +140,31 @@ def main(argv: list[str] | None = None) -> int:
     # NOTE: workflow_path was resolved to absolute above, so it is
     # unaffected by this directory change.
     project_root = registry[0].project_root
+
+    # Validate BH_PROJECT_ROOT before attempting to chdir.
+    if not os.path.isdir(project_root):
+        print(
+            f"bh-daemon: error: BH_PROJECT_ROOT does not exist or is not a"
+            f" directory: {project_root}",
+            file=sys.stderr,
+        )
+        print(
+            "  Set BH_PROJECT_ROOT to the absolute path of the local clone"
+            " of the managed repository.",
+            file=sys.stderr,
+        )
+        return 1
+
     _log.info("bh-daemon: chdir to managed repo root: %s", project_root)
-    os.chdir(project_root)
+    try:
+        os.chdir(project_root)
+    except (FileNotFoundError, NotADirectoryError, OSError) as exc:
+        print(
+            f"bh-daemon: error: BH_PROJECT_ROOT does not exist or is not a"
+            f" directory: {project_root}: {exc}",
+            file=sys.stderr,
+        )
+        return 1
 
     # Run the daemon.
     try:

@@ -90,6 +90,7 @@ def test_main_once_calls_run_daemon_with_once_true() -> None:
             side_effect=fake_run_daemon,
         ),
         patch("baton_harness.chain.cli.os.chdir"),
+        patch("baton_harness.chain.cli.os.path.isdir", return_value=True),
     ):
         result = _run_main("--once")
 
@@ -118,6 +119,7 @@ def test_main_poll_interval_override() -> None:
             side_effect=fake_run_daemon,
         ),
         patch("baton_harness.chain.cli.os.chdir"),
+        patch("baton_harness.chain.cli.os.path.isdir", return_value=True),
     ):
         result = _run_main("--once", "--poll-interval", "5")
 
@@ -166,6 +168,7 @@ def test_main_chdirs_into_project_root_before_run_daemon() -> None:
             "baton_harness.chain.cli.os.chdir",
             side_effect=lambda p: chdir_calls.append(p),
         ),
+        patch("baton_harness.chain.cli.os.path.isdir", return_value=True),
     ):
         result = _run_main("--once")
 
@@ -177,6 +180,45 @@ def test_main_chdirs_into_project_root_before_run_daemon() -> None:
     assert run_daemon_called_after_chdir, (
         "run_daemon was called before os.chdir"
     )
+
+
+def test_main_invalid_project_root_exits_1_no_traceback(
+    tmp_path: Path,
+) -> None:
+    """Non-existent BH_PROJECT_ROOT → clean exit 1, no raised exception.
+
+    Regression guard for the uncaught ``FileNotFoundError`` from
+    ``os.chdir`` when ``BH_PROJECT_ROOT`` points at a path that doesn't
+    exist.
+    """
+    nonexistent_root = tmp_path / "does_not_exist"
+    # Confirm the path really does not exist.
+    assert not nonexistent_root.exists()
+
+    fake_repo_cfg = MagicMock()
+    fake_repo_cfg.project_root = nonexistent_root
+
+    # main() must return 1 without raising any exception.
+    with (
+        patch(
+            "baton_harness.chain.cli.load_workflow",
+            return_value=MagicMock(),
+        ),
+        patch(
+            "baton_harness.chain.cli.load_registry",
+            return_value=[fake_repo_cfg],
+        ),
+    ):
+        result = main(["--once"])
+
+    assert result == 1, (
+        f"Expected exit 1 for invalid project root, got {result}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Workflow path absolute before chdir
+# ---------------------------------------------------------------------------
 
 
 def test_main_workflow_path_resolved_absolute_before_chdir() -> None:
@@ -218,6 +260,7 @@ def test_main_workflow_path_resolved_absolute_before_chdir() -> None:
             side_effect=fake_run_daemon,
         ),
         patch("baton_harness.chain.cli.os.chdir"),
+        patch("baton_harness.chain.cli.os.path.isdir", return_value=True),
     ):
         # Pass a relative path to simulate operator usage.
         result = _run_main("--once", "--workflow", "config/WORKFLOW.md")

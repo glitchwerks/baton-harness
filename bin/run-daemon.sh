@@ -98,15 +98,46 @@ if [[ ${#_missing_env[@]} -gt 0 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Parse --workflow override (without consuming/altering "$@" for bh-daemon)
+# ---------------------------------------------------------------------------
+
+_WORKFLOW_OVERRIDE=""
+_args_remaining=("$@")
+_i=0
+while [[ ${_i} -lt ${#_args_remaining[@]} ]]; do
+    _arg="${_args_remaining[${_i}]}"
+    case "${_arg}" in
+        --workflow=*)
+            _WORKFLOW_OVERRIDE="${_arg#--workflow=}"
+            ;;
+        --workflow)
+            _i=$(( _i + 1 ))
+            if [[ ${_i} -lt ${#_args_remaining[@]} ]]; then
+                _WORKFLOW_OVERRIDE="${_args_remaining[${_i}]}"
+            fi
+            ;;
+    esac
+    _i=$(( _i + 1 ))
+done
+unset _args_remaining _i _arg
+
+# ---------------------------------------------------------------------------
 # Validate config file exists
 # ---------------------------------------------------------------------------
 
-WORKFLOW_FILE="${BATON_HARNESS_DIR}/config/WORKFLOW.md"
-
-if [[ ! -f "${WORKFLOW_FILE}" ]]; then
-    echo "error: workflow config not found: ${WORKFLOW_FILE}" >&2
-    echo "       Create config/WORKFLOW.md in the harness repo." >&2
-    exit 1
+if [[ -n "${_WORKFLOW_OVERRIDE}" ]]; then
+    WORKFLOW_FILE="${_WORKFLOW_OVERRIDE}"
+    if [[ ! -f "${WORKFLOW_FILE}" ]]; then
+        echo "error: workflow config not found (from --workflow override): ${WORKFLOW_FILE}" >&2
+        exit 1
+    fi
+else
+    WORKFLOW_FILE="${BATON_HARNESS_DIR}/config/WORKFLOW.md"
+    if [[ ! -f "${WORKFLOW_FILE}" ]]; then
+        echo "error: workflow config not found: ${WORKFLOW_FILE}" >&2
+        echo "       Create config/WORKFLOW.md in the harness repo." >&2
+        exit 1
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -121,17 +152,8 @@ _REQUIRED_LABELS=(
     "agent-merged"
 )
 
-echo "baton-harness: checking required labels in ${BH_PROJECT_ROOT}..."
-_REPO_URL="$(git -C "${BH_PROJECT_ROOT}" remote get-url origin 2>/dev/null)" || {
-    echo "error: could not determine remote URL for ${BH_PROJECT_ROOT}" >&2
-    exit 1
-}
-_REPO_URL="${_REPO_URL%.git}"
-_REPO_SLUG="$(printf '%s\n' "${_REPO_URL}" | sed -E 's#.*github\.com[:/]##')"
-if [[ -z "${_REPO_SLUG}" ]]; then
-    echo "error: could not determine GitHub repo slug for ${BH_PROJECT_ROOT}" >&2
-    exit 1
-fi
+_REPO_SLUG="${BH_REPO_OWNER}/${BH_REPO_NAME}"
+echo "baton-harness: checking required labels in ${_REPO_SLUG}..."
 
 _missing_labels=()
 _existing_labels="$(gh label list -R "${_REPO_SLUG}" --limit 200 --json name --jq '.[].name')"
@@ -144,7 +166,7 @@ done
 
 if [[ ${#_missing_labels[@]} -gt 0 ]]; then
     echo "error: the following required labels are missing from the target repo:" >&2
-    echo "       ${BH_PROJECT_ROOT}" >&2
+    echo "       ${_REPO_SLUG}" >&2
     echo >&2
     for _label in "${_missing_labels[@]}"; do
         echo "  missing: ${_label}" >&2
