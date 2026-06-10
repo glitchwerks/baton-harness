@@ -22,6 +22,8 @@ Before running:
 
 ## Prerequisites
 
+> **Fast path:** `bin/setup-env.sh` automates the venv creation and package install steps below (run it from the harness repo root; pass `--help` for details). `bin/init-sandbox.sh` automates the sandbox label creation, trigger-issue creation, `hello-feature` DAG, and stub CI workflow — set `BH_REPO_OWNER`, `BH_REPO_NAME`, and `BH_PROJECT_ROOT` first, then run it (pass `--help` for its safety warning and full option list). The manual steps below remain as the explainer and for partial or custom setups.
+
 - `claude` CLI on `PATH` and authenticated (subscription auth — run `claude` once interactively to confirm).
 - `gh` CLI authenticated (`gh auth status`).
 - `git` configured with a user name and email.
