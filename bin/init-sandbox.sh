@@ -197,11 +197,14 @@ echo "baton-harness:   trivial issue created: ${TRIVIAL_ISSUE_URL}"
 
 echo "baton-harness: creating hello-feature milestone ..."
 
-MILESTONE_JSON="$(gh api "repos/${REPO_SLUG}/milestones" \
+MILESTONE_NUMBER="$(gh api "repos/${REPO_SLUG}/milestones" \
     --method POST \
-    -f title="hello-feature")"
-
-MILESTONE_NUMBER="$(echo "${MILESTONE_JSON}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["number"])')"
+    -f title="hello-feature" \
+    --jq '.number')"
+if [[ -z "${MILESTONE_NUMBER}" || ! "${MILESTONE_NUMBER}" =~ ^[0-9]+$ ]]; then
+    echo "baton-harness: error: failed to extract milestone number (got: '${MILESTONE_NUMBER}')" >&2
+    exit 1
+fi
 echo "baton-harness:   milestone number: ${MILESTONE_NUMBER}"
 
 # Issue A (prerequisite — no blocker)
@@ -215,6 +218,10 @@ ISSUE_A_URL="$(gh issue create \
 
 # Extract issue number from URL (last path segment)
 ISSUE_A_NUMBER="${ISSUE_A_URL##*/}"
+if [[ -z "${ISSUE_A_NUMBER}" || ! "${ISSUE_A_NUMBER}" =~ ^[0-9]+$ ]]; then
+    echo "baton-harness: error: failed to extract issue A number from URL (got: '${ISSUE_A_NUMBER}')" >&2
+    exit 1
+fi
 echo "baton-harness:   issue A: #${ISSUE_A_NUMBER} — ${ISSUE_A_URL}"
 
 # Issue B (blocked by A)
@@ -227,13 +234,25 @@ ISSUE_B_URL="$(gh issue create \
     --milestone "${MILESTONE_NUMBER}")"
 
 ISSUE_B_NUMBER="${ISSUE_B_URL##*/}"
+if [[ -z "${ISSUE_B_NUMBER}" || ! "${ISSUE_B_NUMBER}" =~ ^[0-9]+$ ]]; then
+    echo "baton-harness: error: failed to extract issue B number from URL (got: '${ISSUE_B_NUMBER}')" >&2
+    exit 1
+fi
 echo "baton-harness:   issue B: #${ISSUE_B_NUMBER} — ${ISSUE_B_URL}"
 
 # Fetch database IDs (the /dependencies API requires database IDs, not issue numbers)
 echo "baton-harness: fetching database IDs for dependency wiring ..."
 
 ISSUE_A_DB_ID="$(gh api "repos/${REPO_SLUG}/issues/${ISSUE_A_NUMBER}" --jq '.id')"
+if [[ -z "${ISSUE_A_DB_ID}" || ! "${ISSUE_A_DB_ID}" =~ ^[0-9]+$ ]]; then
+    echo "baton-harness: error: failed to extract issue A database ID (got: '${ISSUE_A_DB_ID}')" >&2
+    exit 1
+fi
 ISSUE_B_DB_ID="$(gh api "repos/${REPO_SLUG}/issues/${ISSUE_B_NUMBER}" --jq '.id')"
+if [[ -z "${ISSUE_B_DB_ID}" || ! "${ISSUE_B_DB_ID}" =~ ^[0-9]+$ ]]; then
+    echo "baton-harness: error: failed to extract issue B database ID (got: '${ISSUE_B_DB_ID}')" >&2
+    exit 1
+fi
 
 echo "baton-harness:   issue A database ID: ${ISSUE_A_DB_ID}"
 echo "baton-harness:   issue B database ID: ${ISSUE_B_DB_ID}"
@@ -257,6 +276,17 @@ echo "baton-harness:   dependency wired (B blocked_by A)"
 # ---------------------------------------------------------------------------
 
 echo "baton-harness: writing stub CI workflow to sandbox repo ..."
+
+# Resolve default branch of the sandbox repo
+DEFAULT_BRANCH="$(gh repo view "${REPO_SLUG}" --json defaultBranchRef --jq '.defaultBranchRef.name')"
+
+# Guard: abort if the local clone is in detached-HEAD state
+_CURRENT_BRANCH="$(git -C "${BH_PROJECT_ROOT}" rev-parse --abbrev-ref HEAD)"
+if [[ "${_CURRENT_BRANCH}" == "HEAD" ]]; then
+    echo "baton-harness: error: BH_PROJECT_ROOT is in detached-HEAD state — check out a branch before running this script" >&2
+    echo "  Example: git -C \"${BH_PROJECT_ROOT}\" checkout ${DEFAULT_BRANCH}" >&2
+    exit 1
+fi
 
 WORKFLOW_DIR="${BH_PROJECT_ROOT}/.github/workflows"
 WORKFLOW_FILE="${WORKFLOW_DIR}/ci.yml"
@@ -292,25 +322,15 @@ jobs:
       - run: "true"
 YAML
 
-# Check if the file already exists with identical content (idempotent)
-_needs_commit=true
-if [[ -f "${WORKFLOW_FILE}" ]]; then
-    EXISTING_CONTENT="$(cat "${WORKFLOW_FILE}")"
-    if [[ "${EXISTING_CONTENT}" == "${WORKFLOW_CONTENT}" ]]; then
-        echo "baton-harness:   ci.yml already present and identical, skipping commit"
-        _needs_commit=false
-    else
-        echo "baton-harness:   ci.yml exists but content differs — overwriting"
-    fi
-fi
+mkdir -p "${WORKFLOW_DIR}"
+printf '%s\n' "${WORKFLOW_CONTENT}" > "${WORKFLOW_FILE}"
 
-if [[ "${_needs_commit}" == "true" ]]; then
-    mkdir -p "${WORKFLOW_DIR}"
-    printf '%s\n' "${WORKFLOW_CONTENT}" > "${WORKFLOW_FILE}"
-
-    git -C "${BH_PROJECT_ROOT}" add ".github/workflows/ci.yml"
+git -C "${BH_PROJECT_ROOT}" add ".github/workflows/ci.yml"
+if git -C "${BH_PROJECT_ROOT}" diff --cached --quiet -- ".github/workflows/ci.yml"; then
+    echo "baton-harness:   ci.yml unchanged, skipping commit"
+else
     git -C "${BH_PROJECT_ROOT}" commit -m "chore: add stub CI workflow for bh-daemon smoke test"
-    git -C "${BH_PROJECT_ROOT}" push
+    git -C "${BH_PROJECT_ROOT}" push origin HEAD:"${DEFAULT_BRANCH}"
     echo "baton-harness:   ci.yml committed and pushed to sandbox"
 fi
 

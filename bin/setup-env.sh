@@ -113,8 +113,10 @@ echo "baton-harness: setup complete."
 echo ""
 echo "  Activate the venv before running bh-daemon manually:"
 echo ""
-echo "    source .venv/bin/activate      # Git Bash / macOS / Linux"
-printf '    .venv\\Scripts\\activate         # Windows cmd / PowerShell\n'
+echo "    source .venv/bin/activate        # macOS / Linux"
+echo "    source .venv/Scripts/activate    # Windows Git Bash"
+printf '    .venv\\Scripts\\Activate.ps1      # Windows PowerShell\n'
+printf '    .venv\\Scripts\\activate.bat      # Windows cmd\n'
 echo ""
 echo "  Or run bh-daemon directly via bin/run-daemon.sh (no activation needed)."
 echo ""
