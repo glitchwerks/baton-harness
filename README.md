@@ -70,6 +70,8 @@ baton-harness/
 
 ### Setup
 
+`bin/setup-env.sh` wraps these two steps (idempotent; pass `--help` for details):
+
 ```bash
 # Create and populate the virtual environment
 uv venv .venv
@@ -230,6 +232,8 @@ bin/run-daemon.sh --once
 ```
 
 The launcher validates `BH_REPO_OWNER`, `BH_REPO_NAME`, and `BH_PROJECT_ROOT` before starting and exits with a clear error if any are unset. It also checks that the five required labels (`agent-ready`, `agent-done`, `blocked`, `agent-in-progress`, `agent-merged`) exist in the target repo.
+
+`bin/init-sandbox.sh` provisions a throwaway sandbox repo for a first smoke test — it creates the required labels, a trivial trigger issue, a `hello-feature` DAG milestone, and the stub CI workflow in one step (pass `--help` for the safety warning and required env vars).
 
 For the full first-run walkthrough, sandbox setup, required labels, DAG trigger-issue creation, and CI-gate behaviour, see [docs/smoke-test-daemon.md](docs/smoke-test-daemon.md).
 
