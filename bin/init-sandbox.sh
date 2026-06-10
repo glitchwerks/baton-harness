@@ -62,7 +62,7 @@ Steps performed:
   1. Preflight checks (gh auth, git, BH_PROJECT_ROOT is a git repo)
   2. Create required labels (idempotent — dup errors tolerated)
   3. Create a trivial trigger issue (agent-ready, no milestone)
-  4. Create hello-feature milestone + 2 DAG-ordered issues (A blocked_by B)
+  4. Create hello-feature milestone + 2 DAG-ordered issues (B blocked_by A)
   5. Write stub CI workflow (.github/workflows/ci.yml) to BH_PROJECT_ROOT
      and push to the sandbox default branch (idempotent if unchanged)
 
@@ -178,43 +178,83 @@ _create_label "agent-merged"      "5319e7"
 echo "baton-harness: all required labels present"
 
 # ---------------------------------------------------------------------------
+# Idempotency helpers
+# ---------------------------------------------------------------------------
+
+# Echoes the issue URL for an existing OPEN issue whose title matches exactly,
+# or empty string if no match.  Uses --limit 200 and exact-title jq filter to
+# avoid false positives from gh's substring search.
+# NOTE: we use a process-substitution + read to avoid set -o pipefail tripping
+# on the head -n1 SIGPIPE that can occur when gh outputs multiple lines.
+_find_open_issue_url() {
+    local title="$1"
+    local result
+    result="$(gh issue list -R "${REPO_SLUG}" --state open --limit 200 \
+        --json number,title,url \
+        --jq ".[] | select(.title == \"${title}\") | .url")" || true
+    printf '%s' "${result}" | head -n1 || true
+}
+
+# ---------------------------------------------------------------------------
 # Create trivial trigger issue (single agent-ready, no milestone)
 # ---------------------------------------------------------------------------
 
 echo "baton-harness: creating trivial trigger issue ..."
 
-TRIVIAL_ISSUE_URL="$(gh issue create \
-    --repo "${REPO_SLUG}" \
-    --title "add a hello() function" \
-    --body "Add a Python file with a hello() function that prints 'hello'." \
-    --label "agent-ready")"
-
-echo "baton-harness:   trivial issue created: ${TRIVIAL_ISSUE_URL}"
+_trivial_title="add a hello() function"
+TRIVIAL_ISSUE_URL="$(_find_open_issue_url "${_trivial_title}")" || true
+if [[ -n "${TRIVIAL_ISSUE_URL}" ]]; then
+    echo "baton-harness:   trivial issue exists, reusing: ${TRIVIAL_ISSUE_URL}"
+else
+    TRIVIAL_ISSUE_URL="$(gh issue create \
+        --repo "${REPO_SLUG}" \
+        --title "${_trivial_title}" \
+        --body "Add a Python file with a hello() function that prints 'hello'." \
+        --label "agent-ready")"
+    echo "baton-harness:   trivial issue created: ${TRIVIAL_ISSUE_URL}"
+fi
 
 # ---------------------------------------------------------------------------
 # Create DAG milestone and two linked issues
 # ---------------------------------------------------------------------------
 
+MILESTONE_TITLE="hello-feature"
 echo "baton-harness: creating hello-feature milestone ..."
 
-MILESTONE_NUMBER="$(gh api "repos/${REPO_SLUG}/milestones" \
-    --method POST \
-    -f title="hello-feature" \
-    --jq '.number')"
+# Idempotent: look up existing milestone by title first; create only if absent.
+# Assign via intermediate variable to avoid set -o pipefail + head -n1 SIGPIPE.
+_ms_lookup="$(gh api "repos/${REPO_SLUG}/milestones?state=all" --paginate \
+    --jq ".[] | select(.title == \"${MILESTONE_TITLE}\") | .number")" || true
+MILESTONE_NUMBER="$(printf '%s' "${_ms_lookup}" | head -n1 || true)"
+if [[ -z "${MILESTONE_NUMBER}" ]]; then
+    MILESTONE_NUMBER="$(gh api "repos/${REPO_SLUG}/milestones" \
+        --method POST \
+        -f title="${MILESTONE_TITLE}" \
+        --jq '.number')"
+    echo "baton-harness:   milestone created: ${MILESTONE_TITLE} (#${MILESTONE_NUMBER})"
+else
+    echo "baton-harness:   milestone exists, reusing: ${MILESTONE_TITLE} (#${MILESTONE_NUMBER})"
+fi
 if [[ -z "${MILESTONE_NUMBER}" || ! "${MILESTONE_NUMBER}" =~ ^[0-9]+$ ]]; then
     echo "baton-harness: error: failed to extract milestone number (got: '${MILESTONE_NUMBER}')" >&2
     exit 1
 fi
-echo "baton-harness:   milestone number: ${MILESTONE_NUMBER}"
 
 # Issue A (prerequisite — no blocker)
 echo "baton-harness: creating issue A (add hello() function) ..."
-ISSUE_A_URL="$(gh issue create \
-    --repo "${REPO_SLUG}" \
-    --title "add hello() function" \
-    --body "Add hello.py with a hello() function." \
-    --label "agent-ready" \
-    --milestone "${MILESTONE_NUMBER}")"
+_issue_a_title="add hello() function"
+ISSUE_A_URL="$(_find_open_issue_url "${_issue_a_title}")" || true
+if [[ -n "${ISSUE_A_URL}" ]]; then
+    echo "baton-harness:   issue A exists, reusing: ${ISSUE_A_URL}"
+else
+    ISSUE_A_URL="$(gh issue create \
+        --repo "${REPO_SLUG}" \
+        --title "${_issue_a_title}" \
+        --body "Add hello.py with a hello() function." \
+        --label "agent-ready" \
+        --milestone "${MILESTONE_TITLE}")"
+    echo "baton-harness:   issue A created: ${ISSUE_A_URL}"
+fi
 
 # Extract issue number from URL (last path segment)
 ISSUE_A_NUMBER="${ISSUE_A_URL##*/}"
@@ -226,12 +266,19 @@ echo "baton-harness:   issue A: #${ISSUE_A_NUMBER} — ${ISSUE_A_URL}"
 
 # Issue B (blocked by A)
 echo "baton-harness: creating issue B (add tests for hello()) ..."
-ISSUE_B_URL="$(gh issue create \
-    --repo "${REPO_SLUG}" \
-    --title "add tests for hello()" \
-    --body "Add pytest tests for the hello() function from the prior issue." \
-    --label "agent-ready" \
-    --milestone "${MILESTONE_NUMBER}")"
+_issue_b_title="add tests for hello()"
+ISSUE_B_URL="$(_find_open_issue_url "${_issue_b_title}")" || true
+if [[ -n "${ISSUE_B_URL}" ]]; then
+    echo "baton-harness:   issue B exists, reusing: ${ISSUE_B_URL}"
+else
+    ISSUE_B_URL="$(gh issue create \
+        --repo "${REPO_SLUG}" \
+        --title "${_issue_b_title}" \
+        --body "Add pytest tests for the hello() function from the prior issue." \
+        --label "agent-ready" \
+        --milestone "${MILESTONE_TITLE}")"
+    echo "baton-harness:   issue B created: ${ISSUE_B_URL}"
+fi
 
 ISSUE_B_NUMBER="${ISSUE_B_URL##*/}"
 if [[ -z "${ISSUE_B_NUMBER}" || ! "${ISSUE_B_NUMBER}" =~ ^[0-9]+$ ]]; then
@@ -257,14 +304,24 @@ fi
 echo "baton-harness:   issue A database ID: ${ISSUE_A_DB_ID}"
 echo "baton-harness:   issue B database ID: ${ISSUE_B_DB_ID}"
 
-# Wire B blocked_by A
+# Wire B blocked_by A (idempotent — tolerate 422 if link already exists)
 echo "baton-harness: wiring dependency: issue B blocked_by issue A ..."
-gh api "repos/${REPO_SLUG}/issues/${ISSUE_B_NUMBER}/dependencies/blocked_by" \
+_dep_output=""
+_dep_rc=0
+_dep_output="$(gh api "repos/${REPO_SLUG}/issues/${ISSUE_B_NUMBER}/dependencies/blocked_by" \
     --method POST \
-    -f "issue_id=${ISSUE_A_DB_ID}" \
-    --silent
-
-echo "baton-harness:   dependency wired (B blocked_by A)"
+    -f "issue_id=${ISSUE_A_DB_ID}" 2>&1)" || _dep_rc=$?
+if [[ ${_dep_rc} -ne 0 ]]; then
+    # Tolerate 422 (dependency already exists); any other failure is fatal.
+    if printf '%s' "${_dep_output}" | grep -q "422\|already exists\|already blocked"; then
+        echo "baton-harness:   dependency already present, skipping"
+    else
+        echo "baton-harness: error wiring dependency: ${_dep_output}" >&2
+        exit 1
+    fi
+else
+    echo "baton-harness:   dependency wired (B blocked_by A)"
+fi
 
 # ---------------------------------------------------------------------------
 # Write stub CI workflow to the sandbox repo
