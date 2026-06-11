@@ -58,7 +58,9 @@ baton-harness/
 ├── README.md
 ├── pyproject.toml               # package metadata, dev dependencies, ruff/mypy config
 ├── bin/
-│   └── run-daemon.sh            # launcher: validates env vars + labels, starts bh-daemon
+│   ├── run-daemon.sh            # launcher: validates env vars + labels, starts bh-daemon
+│   ├── setup-env.sh             # idempotent dev-env bootstrap: uv venv + editable install
+│   └── init-sandbox.sh          # provision a throwaway sandbox repo for a first smoke test
 ├── patches/                     # vendor patches (diff format, # VENDOR-PATCH markers)
 │   ├── VP-1-run-hook-env.diff   # thread env= through run_hook (before_run base-ref fix)
 │   ├── VP-2-exclude-labels-recheck.diff  # mid-turn blocked check — makes block terminal
@@ -115,6 +117,8 @@ baton-harness/
 - [uv](https://docs.astral.sh/uv/) (recommended) or pip
 
 ### Setup
+
+`bin/setup-env.sh` wraps these two steps (idempotent; pass `--help` for details):
 
 ```bash
 # Create and populate the virtual environment
@@ -271,6 +275,11 @@ bh-daemon           # continuous
 | Variable | Default | Purpose |
 |---|---|---|
 | `BH_SLACK_WEBHOOK_URL` | (unset) | If set, escalation notices are POSTed to Slack. If unset, Slack is skipped silently and the GitHub issue comment is the only durable escalation record. |
+
+`bin/init-sandbox.sh` provisions a throwaway sandbox repo for a first smoke test — it
+creates the required labels, a trivial trigger issue, a `hello-feature` DAG milestone, and
+the stub CI workflow in one step (pass `--help` for the safety warning and required env
+vars).
 
 For the full first-run walkthrough — sandbox setup, trigger-issue creation, DAG dependency
 wiring, CI-gate behaviour, and expected log output — see
