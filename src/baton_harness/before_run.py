@@ -59,15 +59,44 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
     output in real time.  Always uses ``encoding="utf-8"`` to avoid
     Windows cp1252 mangling of non-ASCII branch or commit names.
 
+    Note: ``.stdout`` is always ``None`` on the returned result because
+    output is not captured — callers must only inspect ``.returncode``.
+    Use :func:`_run_capture` when ``.stdout`` is needed.
+
     Args:
         cmd: The command and arguments to execute.
 
     Returns:
         The :class:`subprocess.CompletedProcess` result with ``returncode``
-        populated.
+        populated and ``.stdout`` always ``None`` (streaming, not captured).
     """
     return subprocess.run(
         cmd,
+        encoding="utf-8",
+        check=False,
+    )
+
+
+def _run_capture(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    """Run a subprocess command with captured stdout/stderr.
+
+    Unlike :func:`_run`, this helper captures stdout so callers can read
+    ``.stdout``.  Used for commands whose output must be consumed by the
+    hook (e.g. ``git rev-parse`` to obtain a SHA).  Always uses
+    ``encoding="utf-8"`` to avoid Windows cp1252 mangling of non-ASCII
+    branch or commit names.
+
+    Args:
+        cmd: The command and arguments to execute.
+
+    Returns:
+        The :class:`subprocess.CompletedProcess` result with
+        ``returncode``, ``stdout``, and ``stderr`` all populated.
+    """
+    return subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
         encoding="utf-8",
         check=False,
     )
@@ -146,9 +175,12 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
         )
 
     # Step 2: resolve base ref to a concrete SHA.
+    # Uses _run_capture (not _run) so that .stdout contains the SHA.
+    # _run streams to terminal and always returns .stdout=None — reading
+    # .stdout from a streaming result yields AttributeError (issue #63).
     rev_parse_cmd = ["git", "rev-parse", base_ref]
     log(_HOOK, issue, f"running {' '.join(rev_parse_cmd)}")
-    rev_parse_result = _run(rev_parse_cmd)
+    rev_parse_result = _run_capture(rev_parse_cmd)
     if rev_parse_result.returncode != 0:
         err(
             _HOOK,

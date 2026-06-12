@@ -78,7 +78,8 @@ class TestBeforeRunChainBaseBranch:
         """When CHAIN_BASE_BRANCH is not set, resolves and rebases origin/main.
 
         The hook resolves origin/main via rev-parse and rebases onto the
-        returned SHA.  The rev-parse call must use origin/main as the ref.
+        returned SHA.  After the capture fix (issue #63), rev-parse is
+        dispatched via ``_run_capture``; both helpers must be patched.
         """
         worktree = tmp_path / "feat-10-thing"
         worktree.mkdir()
@@ -86,26 +87,31 @@ class TestBeforeRunChainBaseBranch:
         monkeypatch.delenv("CHAIN_BASE_BRANCH", raising=False)
 
         fake_sha = "aabbccdd" * 5
-        calls: list[list[str]] = []
+        stream_calls: list[list[str]] = []
+        capture_calls: list[list[str]] = []
 
         def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-            calls.append(cmd)
-            if "rev-parse" in cmd:
-                return _ok(stdout=fake_sha + "\n")
+            stream_calls.append(cmd)
             return _ok()
 
+        def fake_run_capture(
+            cmd: list[str],
+        ) -> subprocess.CompletedProcess[str]:
+            capture_calls.append(cmd)
+            return _ok(stdout=fake_sha + "\n")
+
         monkeypatch.setattr(before_run_mod, "_run", fake_run)
+        monkeypatch.setattr(before_run_mod, "_run_capture", fake_run_capture)
 
         result = before_run_main()
 
         assert result == 0
         # Rev-parse must use origin/main (the default base ref).
-        rev_parse_calls = [c for c in calls if "rev-parse" in c]
-        assert len(rev_parse_calls) == 1
-        assert "origin/main" in rev_parse_calls[0]
+        assert len(capture_calls) == 1
+        assert "origin/main" in capture_calls[0]
         # Rebase must use the resolved SHA.
         rebase_calls = [
-            c for c in calls if "rebase" in c and "--abort" not in c
+            c for c in stream_calls if "rebase" in c and "--abort" not in c
         ]
         assert len(rebase_calls) == 1
         assert fake_sha in rebase_calls[0]
@@ -121,26 +127,31 @@ class TestBeforeRunChainBaseBranch:
         monkeypatch.chdir(worktree)
         monkeypatch.setenv("CHAIN_BASE_BRANCH", "feature/my-work")
 
-        calls: list[list[str]] = []
+        stream_calls: list[list[str]] = []
+        capture_calls: list[list[str]] = []
         fake_sha = "abc1234def5678abc1234def5678abc1234def56"
 
         def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-            calls.append(cmd)
-            if "rev-parse" in cmd:
-                return _ok(stdout=fake_sha + "\n")
+            stream_calls.append(cmd)
             return _ok()
 
+        def fake_run_capture(
+            cmd: list[str],
+        ) -> subprocess.CompletedProcess[str]:
+            capture_calls.append(cmd)
+            return _ok(stdout=fake_sha + "\n")
+
         monkeypatch.setattr(before_run_mod, "_run", fake_run)
+        monkeypatch.setattr(before_run_mod, "_run_capture", fake_run_capture)
 
         result = before_run_main()
 
         assert result == 0
         # Must have resolved the ref to a SHA via git rev-parse
-        rev_parse_calls = [c for c in calls if "rev-parse" in c]
-        assert len(rev_parse_calls) >= 1
+        assert len(capture_calls) >= 1
         # Must have rebased onto the resolved SHA, not the string ref
         rebase_calls = [
-            c for c in calls if "rebase" in c and "--abort" not in c
+            c for c in stream_calls if "rebase" in c and "--abort" not in c
         ]
         assert any(fake_sha in c for c in rebase_calls), (
             "before_run must rebase onto the resolved SHA, not the string ref"
@@ -161,21 +172,25 @@ class TestBeforeRunChainBaseBranch:
         monkeypatch.chdir(worktree)
         monkeypatch.setenv("CHAIN_BASE_BRANCH", "feature/chain-base")
 
-        calls: list[list[str]] = []
+        stream_calls: list[list[str]] = []
         fake_sha = "cafebabe" * 5
 
         def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-            calls.append(cmd)
-            if "rev-parse" in cmd:
-                return _ok(stdout=fake_sha + "\n")
+            stream_calls.append(cmd)
             return _ok()
 
+        def fake_run_capture(
+            cmd: list[str],
+        ) -> subprocess.CompletedProcess[str]:
+            return _ok(stdout=fake_sha + "\n")
+
         monkeypatch.setattr(before_run_mod, "_run", fake_run)
+        monkeypatch.setattr(before_run_mod, "_run_capture", fake_run_capture)
 
         result = before_run_main()
 
         assert result == 0
-        fetch_calls = [c for c in calls if "fetch" in c and "main" in c]
+        fetch_calls = [c for c in stream_calls if "fetch" in c and "main" in c]
         assert fetch_calls == [], (
             "before_run must NOT call git fetch origin main when "
             "CHAIN_BASE_BRANCH is set (base is a local cut-point)"
@@ -192,21 +207,25 @@ class TestBeforeRunChainBaseBranch:
         monkeypatch.chdir(worktree)
         monkeypatch.delenv("CHAIN_BASE_BRANCH", raising=False)
 
-        calls: list[list[str]] = []
+        stream_calls: list[list[str]] = []
         fake_sha = "deadcafe" * 5
 
         def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-            calls.append(cmd)
-            if "rev-parse" in cmd:
-                return _ok(stdout=fake_sha + "\n")
+            stream_calls.append(cmd)
             return _ok()
 
+        def fake_run_capture(
+            cmd: list[str],
+        ) -> subprocess.CompletedProcess[str]:
+            return _ok(stdout=fake_sha + "\n")
+
         monkeypatch.setattr(before_run_mod, "_run", fake_run)
+        monkeypatch.setattr(before_run_mod, "_run_capture", fake_run_capture)
 
         result = before_run_main()
 
         assert result == 0
-        fetch_calls = [c for c in calls if "fetch" in c and "main" in c]
+        fetch_calls = [c for c in stream_calls if "fetch" in c and "main" in c]
         assert len(fetch_calls) == 1, (
             "before_run must call git fetch origin main exactly once "
             "when CHAIN_BASE_BRANCH is unset (flat run path)"
@@ -218,7 +237,13 @@ class TestBeforeRunChainBaseBranch:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Rev-parse is called before rebase (resolve-before-rebase)."""
+        """Rev-parse is called before rebase (resolve-before-rebase).
+
+        After the capture fix (issue #63), rev-parse goes through
+        ``_run_capture``.  We track call order across both helpers to
+        confirm the sequence: rev-parse (via _run_capture) before rebase
+        (via _run).
+        """
         worktree = tmp_path / "feat-12-order"
         worktree.mkdir()
         monkeypatch.chdir(worktree)
@@ -228,14 +253,19 @@ class TestBeforeRunChainBaseBranch:
         fake_sha = "deadbeef" * 5
 
         def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-            if "rev-parse" in cmd:
-                call_order.append("rev-parse")
-                return _ok(stdout=fake_sha + "\n")
             if "rebase" in cmd and "--abort" not in cmd:
                 call_order.append("rebase")
             return _ok()
 
+        def fake_run_capture(
+            cmd: list[str],
+        ) -> subprocess.CompletedProcess[str]:
+            if "rev-parse" in cmd:
+                call_order.append("rev-parse")
+            return _ok(stdout=fake_sha + "\n")
+
         monkeypatch.setattr(before_run_mod, "_run", fake_run)
+        monkeypatch.setattr(before_run_mod, "_run_capture", fake_run_capture)
 
         before_run_main()
 
