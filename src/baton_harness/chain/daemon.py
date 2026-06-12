@@ -494,6 +494,26 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
     # --- Step 1: create or resume the feature branch. ---
     branches.create_feature_branch(repo_root, branch_name, exist_ok=True)
 
+    # Issue #67 / PR #69 (Codex P1): publish the feature branch to origin
+    # NOW, before any worker/agent runs.  The agent's WORKFLOW.md uses
+    #   gh pr create --base "$BH_FEATURE_BRANCH"
+    # which requires the base branch to already exist on the remote.  The
+    # completion push at Step 3 below publishes merge commits at unit end,
+    # but for a fresh work unit `origin/<branch_name>` does not yet exist
+    # when the first _run_worker executes.  An idempotent early push fixes
+    # the ordering: re-runs where the branch is already on origin are no-ops
+    # (git exits 0 for up-to-date / fast-forwardable pushes).
+    early_push = _run(
+        ["git", "-C", str(repo_root), "push", "origin", branch_name]
+    )
+    if early_push.returncode != 0:
+        _log.warning(
+            "daemon: early git push %r to origin failed (exit %d): %s",
+            branch_name,
+            early_push.returncode,
+            early_push.stderr,
+        )
+
     # Determine if we are resuming (branch existed before
     # create_feature_branch).  Recovery is idempotent on a fresh branch.
     recovery_result = reconstruct(

@@ -1919,3 +1919,124 @@ def test_integration_pr_body_contains_closes_keyword_per_issue_multi() -> None:
             f"Expected at least 2 separate 'Closes #N' lines; "
             f"found: {closes_lines}\nbody:\n{body}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Issue #67 / PR #69 (Codex P1): feature branch must be pushed to origin
+# BEFORE _run_worker is called, so gh pr create --base "$BH_FEATURE_BRANCH"
+# references a remote branch that already exists.
+# ---------------------------------------------------------------------------
+
+
+def test_feature_branch_pushed_to_origin_before_run_worker() -> None:
+    """Git push origin <feature_branch> must occur before _run_worker.
+
+    The agent's WORKFLOW.md step uses
+    ``gh pr create --base "$BH_FEATURE_BRANCH"`` during the worker run.
+    For a fresh work unit the feature branch only existed locally until
+    this fix; ``gh pr create --base`` requires the base branch to exist
+    on the remote.  This test verifies the ordering: a
+    ``git push origin feature/...`` _run call must appear in the call
+    sequence BEFORE the first _run_worker invocation.
+    """
+    ready_issues = [
+        {
+            "number": 10,
+            "title": "Issue 10",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/10",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        }
+    ]
+
+    # Capture the sequence of events: _run git commands and _run_worker calls.
+    event_log: list[str] = []  # "push:<branch>" or "worker"
+
+    def recording_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        cmd_str = " ".join(cmd)
+        # Record early-publish push to origin.
+        if (
+            "git" in cmd_str
+            and "push" in cmd_str
+            and "origin" in cmd_str
+            and "feature/" in cmd_str
+        ):
+            # Extract the branch name (last token after "origin").
+            try:
+                origin_idx = cmd.index("origin")
+                branch = cmd[origin_idx + 1]
+            except (ValueError, IndexError):
+                branch = "unknown"
+            event_log.append(f"push:{branch}")
+        return _make_run_side_effect(
+            ready_issues=ready_issues,
+            pr_head_sha="abc123",
+            issue_branch="baton/issue-10-10",
+            feature_branch_exists=False,
+        )(cmd)
+
+    async def fake_run_worker(issue: Any) -> str:  # noqa: ANN401
+        event_log.append("worker")
+        return "pr_created"
+
+    with (
+        patch.object(daemon_mod, "_run", side_effect=recording_run),
+        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch("baton_harness.chain.daemon.escalate", return_value=True),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.Orchestrator._run_worker",
+            side_effect=fake_run_worker,
+        ),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    # Must have seen at least one early push and at least one worker call.
+    push_events = [e for e in event_log if e.startswith("push:")]
+    worker_events = [e for e in event_log if e == "worker"]
+
+    assert push_events, (
+        "Expected a 'git push origin feature/...' call before _run_worker; "
+        f"event_log={event_log}"
+    )
+    assert worker_events, (
+        "Expected _run_worker to be called; event_log={event_log}"
+    )
+
+    # The first push must appear before the first worker call.
+    first_push_idx = event_log.index(push_events[0])
+    first_worker_idx = event_log.index("worker")
+    assert first_push_idx < first_worker_idx, (
+        "git push origin feature/<branch> must happen BEFORE _run_worker; "
+        f"event_log={event_log} "
+        f"(first push at index {first_push_idx}, "
+        f"first worker at index {first_worker_idx})"
+    )
