@@ -335,11 +335,19 @@ fi
 echo "baton-harness: writing stub CI workflow to sandbox repo ..."
 
 # Resolve default branch of the sandbox repo
-DEFAULT_BRANCH="$(gh repo view "${REPO_SLUG}" --json defaultBranchRef --jq '.defaultBranchRef.name')"
+DEFAULT_BRANCH="$(gh repo view "${REPO_SLUG}" --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || true)"
+if [[ -z "${DEFAULT_BRANCH}" || "${DEFAULT_BRANCH}" == "null" ]]; then
+    # Empty repo (no default-branch ref yet) — use the local clone's current (possibly unborn) branch.
+    DEFAULT_BRANCH="$(git -C "${BH_PROJECT_ROOT}" symbolic-ref --short HEAD 2>/dev/null || true)"
+fi
+if [[ -z "${DEFAULT_BRANCH}" ]]; then
+    DEFAULT_BRANCH="main"
+fi
+echo "baton-harness:   target branch: ${DEFAULT_BRANCH}"
 
 # Guard: abort if the local clone is in detached-HEAD state
-_CURRENT_BRANCH="$(git -C "${BH_PROJECT_ROOT}" rev-parse --abbrev-ref HEAD)"
-if [[ "${_CURRENT_BRANCH}" == "HEAD" ]]; then
+# symbolic-ref -q HEAD: exit 0 on a normal OR unborn branch; non-zero only on detached HEAD.
+if ! git -C "${BH_PROJECT_ROOT}" symbolic-ref -q HEAD >/dev/null 2>&1; then
     echo "baton-harness: error: BH_PROJECT_ROOT is in detached-HEAD state — check out a branch before running this script" >&2
     echo "  Example: git -C \"${BH_PROJECT_ROOT}\" checkout ${DEFAULT_BRANCH}" >&2
     exit 1
@@ -387,7 +395,7 @@ if git -C "${BH_PROJECT_ROOT}" diff --cached --quiet -- ".github/workflows/ci.ym
     echo "baton-harness:   ci.yml unchanged, skipping commit"
 else
     git -C "${BH_PROJECT_ROOT}" commit -m "chore: add stub CI workflow for bh-daemon smoke test"
-    git -C "${BH_PROJECT_ROOT}" push origin HEAD:"${DEFAULT_BRANCH}"
+    git -C "${BH_PROJECT_ROOT}" push -u origin HEAD:"${DEFAULT_BRANCH}"
     echo "baton-harness:   ci.yml committed and pushed to sandbox"
 fi
 
