@@ -681,6 +681,9 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
 
         # Thread cut-point base to hooks via env (VP-1 wiring).
         os.environ["CHAIN_BASE_BRANCH"] = cut_point
+        # Thread feature branch name to agent env so WORKFLOW.md step 4 can
+        # use --base "$BH_FEATURE_BRANCH" in gh pr create (issue #67).
+        os.environ["BH_FEATURE_BRANCH"] = branch_name
 
         # Fetch the Issue object.
         issue_obj = _fetch_issue_obj(owner, repo, n)
@@ -832,14 +835,21 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
         )
 
     # Build PR body.
-    merged_refs = ", ".join(f"#{n}" for n in merged_issues) or "(none)"
+    # Each merged issue needs its own ``Closes #N`` keyword so GitHub
+    # auto-closes all of them when the feature → main PR merges.  GitHub
+    # does NOT parse comma-continuation (``closes #100, #101`` only closes
+    # #100), so we emit one keyword per line (issue #67).
+    if merged_issues:
+        merged_section = "\n".join(f"Closes #{n}" for n in merged_issues)
+    else:
+        merged_section = "(none)"
     parked_list = (
         "\n".join(f"- #{n}: {reason}" for n, reason in parked_reasons.items())
         or "(none)"
     )
     pr_body = (
         f"## Work unit: {slug}\n\n"
-        f"### Issues merged\n\n{merged_refs}\n\n"
+        f"### Issues merged\n\n{merged_section}\n\n"
         f"### Issues parked (need human attention)\n\n{parked_list}\n"
         f"{_CLAUDE_ATTRIBUTION}"
     )

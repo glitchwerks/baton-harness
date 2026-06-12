@@ -25,6 +25,7 @@ Coverage:
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -1433,4 +1434,488 @@ def test_work_unit_exception_daemon_survives_and_proceeds() -> None:
                 once=True,
                 poll_interval_s=0,
             )
+        )
+
+
+# ---------------------------------------------------------------------------
+# Issue #67: BH_FEATURE_BRANCH env export + integration PR closing keywords
+# ---------------------------------------------------------------------------
+
+
+def test_bh_feature_branch_exported_before_run_worker() -> None:
+    """BH_FEATURE_BRANCH is set in os.environ before _run_worker is called.
+
+    The env var must equal the feature branch name (e.g. ``feature/issue-10``
+    for an un-milestoned issue 10) so the agent's shell can expand
+    ``$BH_FEATURE_BRANCH`` in ``gh pr create --base "$BH_FEATURE_BRANCH"``.
+    """
+    ready_issues = [
+        {
+            "number": 10,
+            "title": "Issue 10",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/10",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        }
+    ]
+
+    captured_env: dict[str, str] = {}
+
+    async def fake_run_worker(issue: Any) -> str:  # noqa: ANN401
+        # Capture os.environ at the moment _run_worker is called.
+        captured_env.update(os.environ)
+        return "pr_created"
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=_make_run_side_effect(
+                ready_issues=ready_issues,
+                pr_head_sha="abc123",
+                issue_branch="baton/issue-10-10",
+                feature_branch_exists=False,
+            ),
+        ),
+        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch("baton_harness.chain.daemon.escalate", return_value=True),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.Orchestrator._run_worker",
+            side_effect=fake_run_worker,
+        ),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    assert "BH_FEATURE_BRANCH" in captured_env, (
+        "BH_FEATURE_BRANCH must be set in os.environ before _run_worker runs"
+    )
+    # Un-milestoned issue 10 → feature/issue-10.
+    assert captured_env["BH_FEATURE_BRANCH"] == "feature/issue-10", (
+        f"Expected BH_FEATURE_BRANCH='feature/issue-10',"
+        f" got {captured_env['BH_FEATURE_BRANCH']!r}"
+    )
+
+
+def test_bh_feature_branch_exported_for_milestone_work_unit() -> None:
+    """BH_FEATURE_BRANCH equals the milestone feature branch name.
+
+    For a milestoned work unit the feature branch is ``feature/<slug>``;
+    the env var must reflect that slug, not ``feature/issue-<N>``.
+    """
+    ms = {"number": 3, "title": "Sprint 3"}
+    ready_issues = [
+        {
+            "number": 20,
+            "title": "Issue 20",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/20",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": ms,
+            "assignees": [],
+        }
+    ]
+    full_membership = frozenset({20})
+
+    captured_env: dict[str, str] = {}
+
+    async def fake_run_worker(issue: Any) -> str:  # noqa: ANN401
+        captured_env.update(os.environ)
+        return "pr_created"
+
+    def run_side_effect(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        import json as _json
+
+        cmd_str = " ".join(cmd)
+        if (
+            "issue" in cmd_str
+            and "list" in cmd_str
+            and "agent-ready" in cmd_str
+        ):
+            return _ok(_json.dumps(ready_issues))
+        if "issue" in cmd_str and "view" in cmd_str and "edit" not in cmd_str:
+            nums = [p for p in cmd if p.isdigit()]
+            n = int(nums[0]) if nums else 20
+            raw = {
+                "number": n,
+                "title": f"Issue {n}",
+                "state": "open",
+                "body": "",
+                "url": f"https://github.com/o/r/issues/{n}",
+                "labels": [{"name": "agent-done"}],
+                "assignees": [],
+            }
+            return _ok(_json.dumps(raw))
+        if "issue" in cmd_str and "edit" in cmd_str:
+            return _ok()
+        if "pr" in cmd_str and "list" in cmd_str:
+            prs = [
+                {
+                    "number": 5,
+                    "headRefName": "baton/sprint-3-20",
+                    "headRefOid": "abc999",
+                }
+            ]
+            return _ok(_json.dumps(prs))
+        if "pr" in cmd_str and "create" in cmd_str:
+            return _ok("https://github.com/o/r/pull/99")
+        if "git" in cmd_str and "push" in cmd_str:
+            return _ok()
+        if "ls-remote" in cmd_str:
+            return _ok("")
+        if "rev-parse" in cmd_str:
+            return _ok("abc123deadbeef\n")
+        return _ok()
+
+    with (
+        patch.object(daemon_mod, "_run", side_effect=run_side_effect),
+        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch(
+            "baton_harness.chain.daemon._fetch_full_milestone_members",
+            return_value=full_membership,
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch("baton_harness.chain.daemon.escalate", return_value=True),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.Orchestrator._run_worker",
+            side_effect=fake_run_worker,
+        ),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    assert "BH_FEATURE_BRANCH" in captured_env, (
+        "BH_FEATURE_BRANCH must be set in os.environ before _run_worker runs"
+        " for milestone work units"
+    )
+    # Milestone "Sprint 3" → slugified to "sprint-3" → feature/sprint-3.
+    assert captured_env["BH_FEATURE_BRANCH"] == "feature/sprint-3", (
+        f"Expected BH_FEATURE_BRANCH='feature/sprint-3',"
+        f" got {captured_env['BH_FEATURE_BRANCH']!r}"
+    )
+
+
+def test_integration_pr_body_contains_closes_keyword_per_issue() -> None:
+    """Integration PR body emits ``Closes #N`` for each merged issue.
+
+    GitHub only auto-closes an issue when the merge commit (on the default
+    branch) carries a ``closes #N`` keyword.  With a comma-joined bare ref
+    list (``#10, #11``) only the first issue fires.  Each merged issue must
+    have its own ``Closes #N`` line so all issues auto-close on feature → main.
+    """
+    ready_issues = [
+        {
+            "number": 10,
+            "title": "Issue 10",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/10",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        }
+    ]
+
+    pr_create_cmds: list[list[str]] = []
+
+    def recording_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        if "pr" in cmd and "create" in cmd:
+            pr_create_cmds.append(list(cmd))
+        return _make_run_side_effect(
+            ready_issues=ready_issues,
+            pr_head_sha="abc123",
+            issue_branch="baton/issue-10-10",
+            feature_branch_exists=False,
+        )(cmd)
+
+    with (
+        patch.object(daemon_mod, "_run", side_effect=recording_run),
+        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch("baton_harness.chain.daemon.escalate", return_value=True),
+        _patch_run_worker("pr_created"),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    # The integration PR body is the --body argument in the gh pr create call.
+    assert pr_create_cmds, "Expected at least one gh pr create call"
+    # Find the integration PR (opens feature → main, not the agent PR).
+    # The integration PR is opened by _open_draft_pr via _run, so it has
+    # --title with "[daemon]" prefix.
+    integration_pr_cmds = [
+        c for c in pr_create_cmds if any("[daemon]" in arg for arg in c)
+    ]
+    assert integration_pr_cmds, (
+        "Expected a [daemon] integration PR create call; got: "
+        f"{pr_create_cmds}"
+    )
+    # Extract --body value.
+    for cmd in integration_pr_cmds:
+        body_idx = cmd.index("--body") if "--body" in cmd else None
+        assert body_idx is not None, f"--body missing from: {cmd}"
+        body = cmd[body_idx + 1]
+        # Must contain "Closes #10" (keyword form), not just "#10".
+        assert "Closes #10" in body, (
+            f"Integration PR body must contain 'Closes #10' for merged"
+            f" issue 10; got body:\n{body}"
+        )
+        # Must NOT rely on comma-joined bare refs as the ONLY form.
+        # (bare "#10" alone without "Closes" prefix is insufficient)
+        lines_with_closes = [
+            line for line in body.splitlines() if "Closes #10" in line
+        ]
+        assert lines_with_closes, (
+            "Each merged issue needs its own 'Closes #N' line"
+        )
+
+
+def test_integration_pr_body_contains_closes_keyword_per_issue_multi() -> None:
+    """Integration PR body emits ``Closes #N`` per issue (multi-issue case).
+
+    The comma-continuation bug (``closes #10, #11`` only closes #10)
+    only manifests with *multiple* issues.  This test uses a milestone
+    work unit with two issues (10 and 11) that both merge successfully,
+    then asserts:
+
+    - ``Closes #10`` is present as its own keyword.
+    - ``Closes #11`` is present as its own keyword.
+    - The comma-joined form ``#10, #11`` is absent (confirming one-per-line).
+    - The comma-joined form ``#11, #10`` is also absent.
+    """
+    ms = {"number": 5, "title": "Sprint 5"}
+    ready_issues_for_poll = [
+        {
+            "number": 10,
+            "title": "Issue 10",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/10",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": ms,
+            "assignees": [],
+        },
+        {
+            "number": 11,
+            "title": "Issue 11",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/11",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": ms,
+            "assignees": [],
+        },
+    ]
+    full_membership = frozenset({10, 11})
+
+    pr_create_cmds: list[list[str]] = []
+
+    def recording_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        import json as _json
+
+        if "pr" in cmd and "create" in cmd:
+            pr_create_cmds.append(list(cmd))
+        cmd_str = " ".join(cmd)
+        if (
+            "issue" in cmd_str
+            and "list" in cmd_str
+            and "agent-ready" in cmd_str
+        ):
+            return _ok(_json.dumps(ready_issues_for_poll))
+        if "issue" in cmd_str and "view" in cmd_str and "edit" not in cmd_str:
+            nums = [p for p in cmd if p.isdigit()]
+            n = int(nums[0]) if nums else 10
+            return _ok(
+                _json.dumps(
+                    {
+                        "number": n,
+                        "title": f"Issue {n}",
+                        "state": "open",
+                        "body": "",
+                        "url": f"https://github.com/o/r/issues/{n}",
+                        "labels": [{"name": "agent-done"}],
+                        "assignees": [],
+                    }
+                )
+            )
+        if "issue" in cmd_str and "edit" in cmd_str:
+            return _ok()
+        if "pr" in cmd_str and "list" in cmd_str:
+            prs = [
+                {
+                    "number": i,
+                    "headRefName": f"baton/sprint-5-{n}",
+                    "headRefOid": f"sha{n}",
+                }
+                for i, n in enumerate([10, 11], 1)
+            ]
+            return _ok(_json.dumps(prs))
+        if "pr" in cmd_str and "create" in cmd_str:
+            return _ok("https://github.com/o/r/pull/99")
+        if "git" in cmd_str and "push" in cmd_str:
+            return _ok()
+        if "ls-remote" in cmd_str:
+            return _ok("")
+        if "rev-parse" in cmd_str:
+            return _ok("abc123\n")
+        return _ok()
+
+    with (
+        patch.object(daemon_mod, "_run", side_effect=recording_run),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            side_effect=lambda o, r, n: [],
+        ),
+        patch(
+            "baton_harness.chain.daemon._fetch_full_milestone_members",
+            return_value=full_membership,
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch("baton_harness.chain.daemon.escalate", return_value=True),
+        _patch_run_worker("pr_created"),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    assert pr_create_cmds, "Expected at least one gh pr create call"
+    integration_pr_cmds = [
+        c for c in pr_create_cmds if any("[daemon]" in arg for arg in c)
+    ]
+    assert integration_pr_cmds, (
+        "Expected a [daemon] integration PR create call; "
+        f"got: {pr_create_cmds}"
+    )
+    for cmd in integration_pr_cmds:
+        body_idx = cmd.index("--body") if "--body" in cmd else None
+        assert body_idx is not None, f"--body missing from: {cmd}"
+        body = cmd[body_idx + 1]
+
+        # Both issues must have their own ``Closes #N`` keyword.
+        assert "Closes #10" in body, (
+            f"Integration PR body must contain 'Closes #10'; body:\n{body}"
+        )
+        assert "Closes #11" in body, (
+            f"Integration PR body must contain 'Closes #11'; body:\n{body}"
+        )
+
+        # The comma-joined forms must NOT appear — that is the bug being fixed.
+        assert "#10, #11" not in body, (
+            "Comma-joined form '#10, #11' must not appear in integration PR"
+            f" body (only auto-closes the first issue); body:\n{body}"
+        )
+        assert "#11, #10" not in body, (
+            "Comma-joined form '#11, #10' must not appear in integration PR"
+            f" body; body:\n{body}"
+        )
+
+        # Each keyword must be on its own line (one per line rule).
+        closes_lines = [
+            line.strip()
+            for line in body.splitlines()
+            if line.strip().startswith("Closes #")
+        ]
+        assert len(closes_lines) >= 2, (
+            f"Expected at least 2 separate 'Closes #N' lines; "
+            f"found: {closes_lines}\nbody:\n{body}"
         )
