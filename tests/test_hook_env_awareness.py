@@ -30,6 +30,25 @@ from baton_harness.after_run import (
 from baton_harness.before_run import main as before_run_main
 
 # ---------------------------------------------------------------------------
+# Auth bypass — before_run now validates GH PAT as Step 0.
+# All tests that call before_run_main() need validate_github_token no-op'd,
+# or the hook exits 1 immediately with an auth error before any git work.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _bypass_before_run_auth(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No-op ``validate_github_token`` for all tests in this module.
+
+    before_run.py (merged with auth-gate-35) calls ``validate_github_token``
+    as Step 0.  Tests that exercise the CHAIN_BASE_BRANCH / rev-parse flow
+    are not testing auth; they patch ``validate_github_token`` away so the
+    auth gate is transparent and the fetch/rebase logic under test runs.
+    """
+    monkeypatch.setattr(before_run_mod, "validate_github_token", lambda: None)
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

@@ -1,8 +1,9 @@
 """Hook: before_run — sync the worktree branch onto the chain base.
 
-Invoked by Baton once, before the first turn of each run.  Fetches the latest
-ref and rebases the current worktree branch onto it so the agent always
-operates on a fresh baseline.
+Invoked by Baton once, before the first turn of each run.  First validates
+the GitHub PAT via ``_auth.validate_github_token`` (defense-in-depth gate),
+then fetches the latest ref and rebases the current worktree branch onto it
+so the agent always operates on a fresh baseline.
 
 The rebase target is controlled by the ``CHAIN_BASE_BRANCH`` environment
 variable (default ``origin/main``).  The daemon threads this variable when
@@ -40,6 +41,7 @@ import os
 import subprocess
 import sys
 
+from baton_harness._auth import TokenValidationError, validate_github_token
 from baton_harness._cli import err, log, resolve_issue_number
 
 #: Environment variable controlling the rebase target.  Set by the daemon
@@ -105,8 +107,12 @@ def _run_capture(cmd: list[str]) -> subprocess.CompletedProcess[str]:
 def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
     """Entry point for the ``bh-before-run`` console script.
 
-    Performs a branch sync in up to three steps:
+    Performs a branch sync in up to four steps:
 
+    0. **Auth gate** — calls ``validate_github_token()`` to reject
+       missing, classic, or otherwise non-fine-grained PATs before any
+       git work begins.  On failure, logs a clear error and returns
+       non-zero immediately without touching the worktree.
     1. ``git fetch origin main`` — brings the remote ref up to date.
        **Skipped** when ``CHAIN_BASE_BRANCH`` is set: the daemon has already
        prepared a concrete local cut-point (spec §3.7), so fetching
@@ -127,9 +133,25 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
         argv: Unused; accepted for interface symmetry with other hooks.
 
     Returns:
-        ``0`` on success; ``1`` when the issue number cannot be resolved or
-        the base ref cannot be resolved; non-zero when fetch or rebase fails.
+        ``0`` on success; ``1`` when the issue number cannot be resolved,
+        the auth gate fails, or the base ref cannot be resolved; non-zero
+        when fetch or rebase fails.
     """
+    # Step 0: validate the GitHub PAT before touching the worktree.
+    # resolve_issue_number() is called after auth so the error message
+    # always identifies the auth problem first, before any context lookup.
+    try:
+        validate_github_token()
+    except TokenValidationError as exc:
+        # Use a plain print here because we don't yet have an issue number
+        # to construct the [hook #N] prefix.
+        print(
+            f"[{_HOOK}] auth error: {exc.message}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 1
+
     issue = resolve_issue_number()
     if issue is None:
         print(
