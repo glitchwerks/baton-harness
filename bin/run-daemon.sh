@@ -180,6 +180,21 @@ fi
 echo "baton-harness: all required labels present"
 
 # ---------------------------------------------------------------------------
+# Gitignore preflight — verify .symphony/ is gitignored in the target repo
+# ---------------------------------------------------------------------------
+
+echo "baton-harness: checking .symphony/ is gitignored in ${BH_PROJECT_ROOT}..."
+
+if [[ ! -f "${BH_PROJECT_ROOT}/.gitignore" ]] || ! grep -qxF '.symphony/' "${BH_PROJECT_ROOT}/.gitignore"; then
+    echo "error: this repo is not ready for harness work — '.symphony/' is not gitignored in ${BH_PROJECT_ROOT}" >&2
+    echo "  The daemon writes orchestrator state to .symphony/; it must be gitignored or gh pr create warns and the state file pollutes the tree." >&2
+    echo "  fix: add a line '.symphony/' to ${BH_PROJECT_ROOT}/.gitignore and commit it (bin/init-sandbox.sh does this automatically for sandboxes)." >&2
+    exit 1
+fi
+
+echo "baton-harness: .symphony/ is gitignored"
+
+# ---------------------------------------------------------------------------
 # Launch the daemon
 # ---------------------------------------------------------------------------
 
