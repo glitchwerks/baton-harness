@@ -398,7 +398,7 @@ git -C "${BH_PROJECT_ROOT}" add ".github/workflows/ci.yml"
 if git -C "${BH_PROJECT_ROOT}" diff --cached --quiet -- ".github/workflows/ci.yml"; then
     echo "baton-harness:   ci.yml unchanged, skipping commit"
 else
-    git -C "${BH_PROJECT_ROOT}" commit -m "chore: add stub CI workflow for bh-daemon smoke test"
+    git -C "${BH_PROJECT_ROOT}" commit -m "chore: add stub CI workflow for bh-daemon smoke test" -- .github/workflows/ci.yml  # -- <path>: never sweep a pre-staged index into the seed commit
     git -C "${BH_PROJECT_ROOT}" push -u origin HEAD:"${DEFAULT_BRANCH}"
     echo "baton-harness:   ci.yml committed and pushed to sandbox"
 fi
@@ -435,7 +435,7 @@ if [[ "${GITIGNORE_SEEDED}" == 1 ]]; then
     if git -C "${BH_PROJECT_ROOT}" diff --cached --quiet -- ".gitignore"; then
         echo "baton-harness:   .gitignore unchanged, skipping commit"
     else
-        git -C "${BH_PROJECT_ROOT}" commit -m "chore: gitignore .symphony/ daemon state"
+        git -C "${BH_PROJECT_ROOT}" commit -m "chore: gitignore .symphony/ daemon state" -- .gitignore  # -- <path>: never sweep a pre-staged index into the seed commit
         git -C "${BH_PROJECT_ROOT}" push -u origin HEAD:"${DEFAULT_BRANCH}"
         echo "baton-harness:   .gitignore committed and pushed to sandbox"
     fi
