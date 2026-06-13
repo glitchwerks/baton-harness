@@ -413,10 +413,12 @@ fi
 echo "baton-harness: seeding .symphony/ into sandbox .gitignore ..."
 
 GITIGNORE_FILE="${BH_PROJECT_ROOT}/.gitignore"
+GITIGNORE_SEEDED=0
 
 if [[ ! -f "${GITIGNORE_FILE}" ]]; then
     printf '.symphony/\n' > "${GITIGNORE_FILE}"
     echo "baton-harness:   .gitignore created with .symphony/ entry"
+    GITIGNORE_SEEDED=1
 elif grep -qxF '.symphony/' "${GITIGNORE_FILE}"; then
     echo "baton-harness:   .symphony/ already in .gitignore, skipping"
 else
@@ -425,15 +427,18 @@ else
     fi
     printf '%s\n' '.symphony/' >> "${GITIGNORE_FILE}"
     echo "baton-harness:   .symphony/ appended to .gitignore"
+    GITIGNORE_SEEDED=1
 fi
 
-git -C "${BH_PROJECT_ROOT}" add ".gitignore"
-if git -C "${BH_PROJECT_ROOT}" diff --cached --quiet -- ".gitignore"; then
-    echo "baton-harness:   .gitignore unchanged, skipping commit"
-else
-    git -C "${BH_PROJECT_ROOT}" commit -m "chore: gitignore .symphony/ daemon state"
-    git -C "${BH_PROJECT_ROOT}" push -u origin HEAD:"${DEFAULT_BRANCH}"
-    echo "baton-harness:   .gitignore committed and pushed to sandbox"
+if [[ "${GITIGNORE_SEEDED}" == 1 ]]; then
+    git -C "${BH_PROJECT_ROOT}" add ".gitignore"
+    if git -C "${BH_PROJECT_ROOT}" diff --cached --quiet -- ".gitignore"; then
+        echo "baton-harness:   .gitignore unchanged, skipping commit"
+    else
+        git -C "${BH_PROJECT_ROOT}" commit -m "chore: gitignore .symphony/ daemon state"
+        git -C "${BH_PROJECT_ROOT}" push -u origin HEAD:"${DEFAULT_BRANCH}"
+        echo "baton-harness:   .gitignore committed and pushed to sandbox"
+    fi
 fi
 
 # ---------------------------------------------------------------------------
