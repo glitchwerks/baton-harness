@@ -2088,11 +2088,7 @@ def test_zero_commit_branch_skips_draft_pr_and_logs_info(
         # Inject zero-commit count for the rev-list --count check.
         # The implementation will call:
         #   git -C <repo_root> rev-list --count origin/main..<branch>
-        if (
-            "git" in cmd
-            and "rev-list" in cmd
-            and "--count" in cmd
-        ):
+        if "git" in cmd and "rev-list" in cmd and "--count" in cmd:
             return _ok("0\n")
         return _make_run_side_effect(
             ready_issues=ready_issues,
@@ -2140,9 +2136,7 @@ def test_zero_commit_branch_skips_draft_pr_and_logs_info(
 
     # Primary assertion: no gh pr create must have been invoked.
     gh_pr_create_cmds = [
-        c
-        for c in pr_create_cmds
-        if "gh" in c and "pr" in c and "create" in c
+        c for c in pr_create_cmds if "gh" in c and "pr" in c and "create" in c
     ]
     assert not gh_pr_create_cmds, (
         "gh pr create must NOT be called when rev-list --count returns 0;"
@@ -2196,11 +2190,7 @@ def test_nonzero_commit_branch_proceeds_to_draft_pr() -> None:
         if "pr" in cmd and "create" in cmd:
             pr_create_cmds.append(list(cmd))
         # Inject non-zero commit count: 3 commits over main.
-        if (
-            "git" in cmd
-            and "rev-list" in cmd
-            and "--count" in cmd
-        ):
+        if "git" in cmd and "rev-list" in cmd and "--count" in cmd:
             return _ok("3\n")
         return _make_run_side_effect(
             ready_issues=ready_issues,
@@ -2244,9 +2234,7 @@ def test_nonzero_commit_branch_proceeds_to_draft_pr() -> None:
         )
 
     gh_pr_create_cmds = [
-        c
-        for c in pr_create_cmds
-        if "gh" in c and "pr" in c and "create" in c
+        c for c in pr_create_cmds if "gh" in c and "pr" in c and "create" in c
     ]
     assert gh_pr_create_cmds, (
         "gh pr create MUST be called when rev-list --count returns 3"
@@ -2283,11 +2271,7 @@ def test_revlist_count_failure_falls_through_to_draft_pr() -> None:
         if "pr" in cmd and "create" in cmd:
             pr_create_cmds.append(list(cmd))
         # Simulate rev-list failing (unknown ref / network issue).
-        if (
-            "git" in cmd
-            and "rev-list" in cmd
-            and "--count" in cmd
-        ):
+        if "git" in cmd and "rev-list" in cmd and "--count" in cmd:
             return _fail("fatal: unknown revision 'origin/main'")
         return _make_run_side_effect(
             ready_issues=ready_issues,
@@ -2331,9 +2315,7 @@ def test_revlist_count_failure_falls_through_to_draft_pr() -> None:
         )
 
     gh_pr_create_cmds = [
-        c
-        for c in pr_create_cmds
-        if "gh" in c and "pr" in c and "create" in c
+        c for c in pr_create_cmds if "gh" in c and "pr" in c and "create" in c
     ]
     assert gh_pr_create_cmds, (
         "gh pr create MUST be called when rev-list --count fails (fail-open"
