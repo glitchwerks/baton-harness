@@ -1,6 +1,6 @@
 # Architecture spec — autonomous agent development workflow
 
-**Status:** First draft. Captures locked decisions and open items as of the planning phase.
+**Status:** Reformed 2026-06-07 (issue #28); status markers updated 2026-06-09 (issue #53) to reflect #27 shipped (P0–P3). Sections tagged `[implemented]` describe the current state; sections tagged `[deferred to v2]` remain genuinely open.
 **Companion docs:** [problem-statement.md](./problem-statement.md), [research-findings.md](./research-findings.md)
 
 ---
@@ -19,7 +19,7 @@ The architecture is bounded by two human checkpoints (morning approval, evening 
 |---|---|---|
 | Source of truth | **GitHub** (issues, PRs, milestones, labels) | Already where work lives; avoids parallel tracking |
 | Executor | **Claude Code** (`claude` CLI, first-party binary) | Only ToS-compliant path on subscription cost model |
-| Orchestrator | **custom always-on daemon** + **vendored `symphony._run_worker`** (worker) [decided — not yet built] | Daemon owns DAG scheduling, feature-branch lifecycle, Slack escalation, sub-tree parking; worker (`_run_worker`) owns per-issue worktree + turn-loop; symphony's poll/dispatch loop dropped |
+| Orchestrator | **custom always-on daemon** + **vendored `symphony._run_worker`** (worker) [implemented (v1, serial)] | Daemon owns DAG scheduling, feature-branch lifecycle, Slack escalation, sub-tree parking; worker (`_run_worker`) owns per-issue worktree + turn-loop; symphony's poll/dispatch loop dropped |
 | Isolation | **Single Docker container** running baton-harness (vendored symphony) + Claude Code | Restores host boundary lost by worktree-only isolation |
 | Comms | **Slack Bolt bot (Socket Mode)** + official GitHub→Slack app | Two channels, two purposes — active decisions + passive activity |
 | CI | **GitHub Actions** (per-project precondition) | Verification is the project's responsibility, not the pipeline's |
@@ -84,7 +84,7 @@ Two distinct channels, two distinct purposes.
 
 **`#agent-decisions`** — active interaction, fed by a custom Slack Bolt app. Every message in this channel requires action: agent asking a threshold-crossing question, run failed, blocked sub-tree surfaced. Uses Block Kit interactive cards for bounded approvals and thread replies for freeform steering.
 
-**Guidance flow [decided — not yet built]:** this channel is the notification surface for the always-on daemon's escalation path. When the daemon detects a `blocked` label (agent has posted a question on the issue), it posts a stall summary card here. The human posts guidance directly on the GitHub issue and removes `blocked`; the daemon's next poll sees the label gone and resumes the parked sub-tree. Slack is the *channel*; the GitHub issue is the *durable record* the agent reads.
+**Guidance flow [implemented]:** this channel is the notification surface for the always-on daemon's escalation path. When the daemon detects a `blocked` label (agent has posted a question on the issue), it posts a stall summary card here. The human posts guidance directly on the GitHub issue and removes `blocked`; the daemon's next poll sees the label gone and resumes the parked sub-tree. Slack is the *channel*; the GitHub issue is the *durable record* the agent reads.
 
 **Connection method:** Slack **Socket Mode**. The bot opens an outbound WebSocket to Slack; no inbound webhook, no reverse proxy, no public TLS endpoint on the server. Bot runs as a persistent process (systemd or a sidecar container).
 
@@ -111,23 +111,19 @@ Transitions are owned by the orchestrator (Layer 4); the human owns initial `age
 
 ### 3.4 Layer 4 — Orchestration
 
-**Current pilot [implemented]:** The external-process Baton model. Baton runs as a single long-lived process; its three internal components (Poller, Dispatcher, Reconciler) handle issue polling and dispatch. Config lives in `WORKFLOW.md`, passed via `baton start -w`. The `after_run` hook fires after each run and drives label reconciliation.
+**Current model [implemented (v1, serial)]:** The always-on daemon + vendored symphony model. The external-process Baton model (pilot) is superseded. The orchestration layer is split into two components with distinct responsibilities.
 
-**Decided target — orchestrator/worker split [decided — not yet built]:**
+**Orchestrator = custom always-on daemon [implemented].** A persistent harness process that never exits between work units or on a block (`src/baton_harness/chain/daemon.py`). It watches for ready work units, builds and schedules the DAG (`graphlib.TopologicalSorter`), owns the `feature/<slug>` branch lifecycle (creation, CI-gated `--no-ff` merge of per-issue branches, draft `feature → main` PR at completion), drives Slack escalation, and parks/resumes sub-trees. Symphony's flat poll/dispatch loop (`run`/`_tick`/`_dispatch`/`_on_worker_done`), `cli.start`, and `watchfiles` are **dropped** — the custom daemon replaces them entirely.
 
-The orchestration layer is split into two components with distinct responsibilities:
+**Worker = vendored `symphony._run_worker` [implemented].** Called by the daemon as a library function per issue (`src/baton_harness/vendor/symphony/`). Responsible for: creating the per-issue git worktree, firing `before_run` and `after_run` hooks, running the `claude -p` turn-loop, and detecting PR creation. The worker is the boundary between the daemon and Claude Code. Worktrees and branches follow symphony's existing naming: `.symphony/worktrees/<N>` (bare-integer directory) and `baton/<slug>-<N>` branches. The daemon resolves the issue number from the worktree directory basename (works post-PR #20). Base-ref to the feature branch: the daemon checks out `feature/<slug>` as HEAD before calling `_run_worker`, so symphony's HEAD-based worktree creation naturally targets the feature branch.
 
-**Orchestrator = custom always-on daemon.** A persistent harness process that never exits between work units or on a block. It watches for ready work units, builds and schedules the DAG (`graphlib.TopologicalSorter`), owns the `feature/<slug>` branch lifecycle (creation, CI-gated `--no-ff` merge of per-issue branches, draft `feature → main` PR at completion), drives Slack escalation, and parks/resumes sub-trees. Symphony's flat poll/dispatch loop (`run`/`_tick`/`_dispatch`/`_on_worker_done`), `cli.start`, and `watchfiles` are **dropped** — the custom daemon replaces them entirely.
-
-**Worker = vendored `symphony._run_worker`.** Called by the daemon as a library function per issue. Responsible for: creating the per-issue git worktree, firing `before_run` and `after_run` hooks, running the `claude -p` turn-loop, and detecting PR creation. The worker is the boundary between the daemon and Claude Code. Worktrees and branches follow symphony's existing naming: `.symphony/worktrees/<N>` (bare-integer directory) and `baton/<slug>-<N>` branches. The daemon resolves the issue number from the worktree directory basename (works post-PR #20). Base-ref to the feature branch: the daemon checks out `feature/<slug>` as HEAD before calling `_run_worker`, so symphony's HEAD-based worktree creation naturally targets the feature branch.
-
-**Vendor patches (minimal) [decided — not yet built]:**
+**Vendor patches (minimal) [implemented]:**
 - **VP-1 (P0):** `run_hook` gains an `env=` parameter — threads `CHAIN_BASE_BRANCH` (correct `before_run` rebase target for feature-branch runs) and `BH_VENV` (hook discovery) through to hook calls.
 - **VP-2:** Re-check `exclude_labels` inside the `_run_worker` turn loop — makes a block terminal, retiring the `max_turns: 2` workaround (issue #23).
 
 No naming patch (CONCERN-1 resolved by base-ref approach above). No retry wiring (no retry in v1 — see §6).
 
-**`before_run` rebase target [implemented / decided — not yet built]:** `origin/main` for standalone work units [implemented]. For work units under a milestone (feature-branch runs), the rebase target is the feature branch — threaded via `CHAIN_BASE_BRANCH` enabled by VP-1 [decided — not yet built].
+**`before_run` rebase target [implemented]:** `origin/main` for standalone N=1 work units. For work units under a milestone (feature-branch runs), the rebase target is the feature branch — threaded via `CHAIN_BASE_BRANCH` (enabled by VP-1, implemented in P0).
 
 **`after_run` outcome router** [implemented] — inspects what the run produced and decides what to do next. Implemented as a Python module (`after_run.py`) in the `baton_harness` package; see the implementation-language decision in [harness-design.md](./harness-design.md). Pseudocode:
 
@@ -186,7 +182,7 @@ Tuned via:
 - `WORKFLOW.md` — `max_concurrent`, `max_turns`, label filters
 - `after_run` outcome router — branches based on what the run produced
 
-The always-on daemon [decided — not yet built] is the load-bearing mechanism for Dial 2: it is the component that detects a `blocked` signal, evaluates whether it meets the threshold for Slack escalation, and parks the affected sub-tree while allowing independent work units to continue. Transient failures that fall below the threshold are parked and escalated in v1 (no auto-retry); only the sub-tree is halted — the daemon stays alive. This protects daytime attention without forcing the agent itself to be overconfident.
+The always-on daemon [implemented] is the load-bearing mechanism for Dial 2: it is the component that detects a `blocked` signal, evaluates whether it meets the threshold for Slack escalation, and parks the affected sub-tree while allowing independent work units to continue. Transient failures that fall below the threshold are parked and escalated in v1 (no auto-retry); only the sub-tree is halted — the daemon stays alive. This protects daytime attention without forcing the agent itself to be overconfident.
 
 **Why two dials, not one:** if the only knob is the agent's threshold, you trade off between bothering me too much (low threshold, paged constantly) and bad merges (high threshold, agent guesses). Two independent dials let the agent err toward asking (Dial 1 low) while the daemon filters which asks reach Slack (Dial 2 high).
 
@@ -222,7 +218,7 @@ Single Docker container running Baton, Claude Code, and supporting tools. The bo
 └───────────────────────────────────────────────────────────────────┘
 ```
 
-**Container image contents [decided — not yet built for vendored model]:**
+**Container image contents [decided — not yet built]:**
 - Base: `node:22-slim` (or equivalent; Claude Code is npm-distributed)
 - `@anthropic-ai/claude-code` (pinned version)
 - `git`, `gh` CLI
@@ -238,13 +234,11 @@ Single Docker container running Baton, Claude Code, and supporting tools. The bo
 
 ---
 
-## 6. Lifecycle of a work unit [decided — not yet built]
+## 6. Lifecycle of a work unit [implemented (v1, serial)]
 
 There is one execution path, parameterized by the DAG. A **work unit** is either a milestone (all its issues form one DAG → one `feature/<slug>` branch → one draft `feature → main` PR) or a single un-milestoned issue (its own N=1 DAG → its own feature branch → its own PR). N=1 is the degenerate case of the same logic — not a separate code path.
 
 The always-on daemon owns the outer loop and never exits between work units or on a block.
-
-**Current pilot [implemented]:** the flat label-polling model below; the always-on daemon model is decided but not yet built.
 
 ### 6.1 Work-unit dispatch
 
@@ -260,7 +254,7 @@ The always-on daemon owns the outer loop and never exits between work units or o
 | 8. Completion | Daemon | All issues in the DAG complete → daemon opens one draft `feature/<slug> → main` PR; harness never merges to `main` |
 | 9. Evening | Human | Review the draft PR; merge when satisfied; triage any parked blocked/failed issues |
 
-### 6.2 Guidance flow for blocked issues [decided — not yet built]
+### 6.2 Guidance flow for blocked issues [implemented]
 
 The agent does not pause mid-run waiting for a reply. Each run is one-shot: read → work → exit. When the agent hits a threshold-crossing question it cannot resolve, it posts the question as a comment on the issue and applies the `blocked` label before exiting.
 
@@ -275,11 +269,11 @@ The GitHub issue is the durable record (the agent reads the answer from the issu
 
 **No retry in v1:** a `no_pr` / block / failure parks the sub-tree and escalates. The vendored `state.py` retry/backoff is unused.
 
-For the full DAG spec, see [harness-design.md §10](./harness-design.md) and [docs/superpowers/specs/dependency-chain-orchestration.md](../docs/superpowers/specs/dependency-chain-orchestration.md).
+For the full DAG spec (implementation reference), see [harness-design.md §10](./harness-design.md) (issue #27, PR series P0–P3).
 
 ---
 
-## 7. Open items (deferred to phase 2 or implementation)
+## 7. Deferred items (phase 2 or still open)
 
 ### 7.1 Observability — deferred to phase 2
 
@@ -305,7 +299,9 @@ Start narrow: only decision cards and reply handling. Resist building activity-f
 
 ### 7.5 ToS posture on headless first-party use
 
-Anthropic's terms have been revised twice in 2026. Running the real `claude` binary containerised on subscription is normal use; running it *headlessly via orchestrator* is a less-explicitly-blessed grey zone. Action: read current Claude Code subscription terms directly before locking the architecture; reconfirm at major terms updates.
+Anthropic's terms have been revised twice in 2026. Running the real `claude` binary containerised on subscription is normal use; running it *headlessly via orchestrator* is a less-explicitly-blessed grey zone. This grey zone cannot be resolved by reading the terms: Anthropic has remained deliberately vague through multiple 2026 revisions and provides no authoritative posture to confirm against.
+
+**Decision (issue #37, 2026-06-07):** Accepted as a known, bounded risk. The first-party `claude` binary is the most-compliant available path on subscription. Terms will be monitored at each major Anthropic revision; if explicit guidance appears, this posture is revisited. Fallback: switch to API-key billing — the executor interface is unchanged, only the auth credential differs.
 
 ---
 
@@ -335,18 +331,16 @@ Anthropic's terms have been revised twice in 2026. Running the real `claude` bin
 
 ---
 
-## 10. Next steps (post-spec)
+## 10. Next steps (post-daemon-v1)
 
-1. Read current Claude Code subscription terms and confirm headless use posture
-2. Build the Docker image (Dockerfile + entrypoint)
-3. Authenticate once interactively, capture the credentials volume
-4. Author `CLAUDE.md` and initial PreToolUse hooks for one pilot repo
-5. Configure the harness `config/WORKFLOW.md` for that repo
-6. Set up the Slack app (BotFather-equivalent), enable Socket Mode, capture tokens
-7. Build the minimal Bolt bot (decision card post + button handler + thread reply handler)
-8. Write the `after_run` outcome router script
-9. Dry run with a non-critical issue end-to-end before locking it for daily use
+Items 1–9 from the original post-spec checklist are complete. Remaining phase-2 work:
+
+1. Docker containerization (Dockerfile + entrypoint, credentials volume) — not yet started.
+2. Full Slack Bolt bot (Block Kit decision cards, button handler, thread reply handler) — minimal webhook escalation implemented; interactive bot deferred.
+3. Subscription rate-limit measurement under real representative load (issue #39) — gates raising concurrency above 1.
+4. Operational hardening: OOM recovery, orphan process cleanup, credential corruption (issue #40).
+5. ToS posture: monitor terms at major Anthropic updates; fall back to API-key billing if subscription path is ever explicitly closed (issue #37 — ongoing, no action required now).
 
 ---
 
-**Document status:** Reformed 2026-06-07 (issue #28) to reflect the vendored-symphony model and chain-driver architecture. Sections tagged `[implemented]` describe the current pilot state; sections tagged `[decided — not yet built]` describe the agreed target (issue #27). Decisions in §2 are updated to the vendored model.
+**Document status:** Reformed 2026-06-07 (issue #28) to reflect the vendored-symphony model and chain-driver architecture. Updated 2026-06-09 (issue #53) to reconcile status markers after issue #27 shipped (P0–P3). Sections tagged `[implemented]` reflect the current live state. Sections tagged `[decided — not yet built]` indicate containerization (not yet started). Decisions in §2 are on the vendored model.

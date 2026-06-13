@@ -8,16 +8,20 @@
 
 ## Severity 1 — Load-bearing assumptions that could collapse the design
 
-### S1.1 — ToS compliance for headless first-party use is unverified
-**The assumption:** Running the real `claude` binary in containerised headless mode, driven by Baton, on subscription auth is within Anthropic's terms of service.
+### S1.1 — ToS compliance for headless first-party use
+**RESOLVED — accepted as known risk (2026-06-07, see issue #37).**
 
-**Why it matters:** The entire executor decision (and rejection of OpenHands) hinges on this being compliant. If headless orchestrated use is non-compliant, the system either violates ToS or reverts to API-key per-token billing — breaking the core cost constraint.
+**Background:** The entire executor decision (and rejection of OpenHands) hinges on subscription-auth headless use being compliant. If it is non-compliant, the system either violates ToS or reverts to API-key per-token billing — breaking the core cost constraint.
 
-**Resolution:** Before any implementation, read the current Claude Code subscription terms directly at code.claude.com and confirm posture on:
-- Headless `claude -p` invocation by an external orchestrator
-- Long-running unattended sessions
-- Containerised use on subscription
-If unclear, contact Anthropic support for explicit guidance. **Block all other work until resolved.**
+**Why it cannot be resolved by reading the terms:** Anthropic has revised its terms twice in 2026 and has remained deliberately vague on headless/orchestrator-driven use of the first-party `claude` binary. There is no authoritative posture to confirm against; the original resolution path ("read terms and confirm") cannot be satisfied.
+
+**Decision:** Proceed, accepting the risk as known and bounded.
+
+**Rationale and mitigations:**
+- The first-party `claude` binary is the most-compliant available path for subscription-auth use; third-party executors (e.g. OpenHands) are less aligned with Anthropic's intended use surface.
+- The existing risk table (§8) already includes this as a low-likelihood / high-impact risk with the mitigation: "First-party binary stays compliant; track terms updates; willingness to add API-key fallback if subscription path is closed."
+- A fallback to API-key billing is an implementation-day switch — the executor interface is the same; only the auth credential changes.
+- Terms will be re-examined at each major Anthropic revision; if explicit guidance (permissive or restrictive) appears, this item is revisited.
 
 ---
 
@@ -26,12 +30,12 @@ If unclear, contact Anthropic support for explicit guidance. **Block all other w
 
 The external-process integration was validated in the smoke-test spike (Scenario A — viability verdict: yes; see spike-findings.md) and the pilot dry run (T1, T2 — see pilot-validation-findings.md). The specific unknowns (`--dangerously-skip-permissions`, hook firing, exit codes) were answered empirically.
 
-Under the vendored-symphony model [decided — not yet built], this concern dissolves: there is no Baton subprocess integration seam. Integration is `Orchestrator._run_worker(issue)` — a direct Python call to vendored source, validated via the deep-dive analysis (`.tmp/baton-deepdive-findings.md`). No integration spike is needed for the subprocess path; the vendored interface is a clean callable.
+Under the vendored-symphony model [implemented, issue #27 P0], this concern dissolves: there is no Baton subprocess integration seam. Integration is `Orchestrator._run_worker(issue)` — a direct Python call to vendored source, validated via the deep-dive analysis (`docs/baton-deepdive-findings.md`). No integration spike is needed for the subprocess path; the vendored interface is a clean callable.
 
 ---
 
 ### S1.3 — Subscription rate limits are unmeasured
-**STILL OPEN.** Rate limits remain unvalidated under real representative load. The spike ran only at concurrency 1 with trivial issues (spike-findings.md viability caveat). This concern is not affected by vendoring or chain-driver design.
+**STILL OPEN.** Now tracked in **issue #39** (pilot-phase measurement; gates raising concurrency above 1; non-acute for serial v1). Rate limits remain unvalidated under real representative load. The spike ran only at concurrency 1 with trivial issues (spike-findings.md viability caveat). This concern is not affected by vendoring or chain-driver design.
 
 **Chain-driver context:** the chain driver is serial in v1 (concurrency = 1 during a chain run), which makes this less acute for v1 chain workloads but leaves general concurrency behavior unvalidated.
 
@@ -56,47 +60,37 @@ Remaining known gap: `after_run` classifies `pr-opened` as `agent-done` without 
 ---
 
 ### S2.2 — The Slack-reply-to-requeue loop has an unspecified transition
-**The assumption:** When you reply in Slack to an `agent-blocked` issue, the next Baton poll picks it up automatically.
+**RESOLVED (v1) — see spec §9.**
 
-**Why it matters:** This is the entire two-way interaction promise. If the issue stays labeled `blocked`, the poller's `exclude_labels: ["blocked"]` filter skips it forever.
-
-**Specific gap:** Who removes the `blocked` label and re-applies `agent-ready` after the Slack reply? Options:
-- Bot does it automatically on any reply → risk of premature requeue on partial/incidental replies
-- Bot exposes a "requeue" button in addition to reply → another action, more friction
-- Reply syntax determines action (e.g. `/requeue` prefix) → discoverability burden
-- Human manually changes label → breaks the "respond from Slack" promise
-
-**Resolution:** Decide the policy explicitly. Recommended: bot exposes a `Requeue with this reply` button alongside the reply box; tapping it both posts the comment and transitions labels. Updates spec §3.2 and §6 step 9.
+The merged #27 spec resolves the transition. On a parked/blocked issue, the **human** posts guidance directly on the GitHub issue, removes the `blocked` label, and **re-adds `agent-ready`** — this is the explicit re-dispatch trigger the daemon's outer poll loop detects (spec §5 / §9, step 3). The GitHub issue is the durable record; Slack is the channel only. The bot-automated "Requeue with this reply" button (the option this item floated) is **deferred to the Slack/comms layer (v2)**, not needed for v1's manual flow.
 
 ---
 
 ### S2.3 — No failure-recovery story above the container
-**STILL OPEN.** Scenarios E and F (reconciler behavior, mid-run-kill) were never completed in the spike.
+**PARTIALLY RESOLVED.**
 
-**Updated framing under vendored model:** "Baton dies" becomes "the harness process dies." The concern is unchanged in substance: orphan `claude` processes, credentials-file corruption, and issues stuck in `agent-in-progress` at crash time remain unaddressed.
+**In-flight / stuck-state recovery: RESOLVED by design.** The merged spec's `recovery.py` reconstruction (§11.5) re-derives the scheduler `done`/`parked`/frontier state from git provenance and labels on each daemon start. The `agent-in-progress` orphan rule (§8 / §11.5 rule 3b) handles issues stuck in-progress at crash time: the daemon re-evaluates them and re-dispatches rather than treating them as done. `after_run` crash-safety is tracked in **#31**; liveness in **#33**; failure notification in **#34**.
 
-**Specific gaps:**
-- One `claude -p` segfaults — does the harness reclaim the slot, or does it stay "in-progress" forever?
-- Container OOMs (multiple Claude sessions, each holding context) → all in-flight work lost, no notification fires.
-- Harness exits between dispatching `claude` and registering it internally → orphan process.
-- Credentials file corrupted mid-run → every subsequent run fails silently.
+**Operational hardening: tracked in issue #40** (within the Failure-mode-hardening milestone, alongside #31 / #33 / #34).
 
-**Resolution:** Startup reconciliation: on harness start, query GitHub for any `agent-in-progress` issues, mark them as needing requeue with an explanatory comment. Daily health-check Slack ping as a liveness signal.
+**Specific gaps — where each is covered:**
+- One `claude -p` segfaults — `agent-in-progress` orphan rule (§11.5 rule 3b) re-dispatches on next start. → resolved by design.
+- Container OOMs → all in-flight work lost, no notification fires. → tracked in #40.
+- Harness exits between dispatching `claude` and registering it internally → orphan `claude` process. → tracked in #40.
+- Credentials file corrupted mid-run → every subsequent run fails silently. → tracked in #40.
 
 ---
 
 ### S2.4 — Worktree isolation is weaker than the spec acknowledges
-**The assumption:** Git worktrees + container around the stack are sufficient isolation for parallel runs.
+**RESOLVED (v1) — see spec §6.**
 
-**Why it matters:** Worktrees share filesystem, global tool state (Python venvs, node_modules), database state, and the git index lock. Two parallel `npm install`s in different worktrees can corrupt each other's `node_modules`.
+The merged spec **serializes all work units in v1** — one DAG in flight repo-wide, one issue dispatched at a time (effective `max_concurrent = 1`) — which is exactly the "accept the constraint" resolution this item proposed. The isolation risks below are real but only bite under concurrent dispatch, which v1 forbids by design. Per-worktree port-namespacing and dependency-cache isolation are deferred to the **v2 cross-work-unit concurrency** work (spec §6 / §14).
 
-**Specific risks:**
+**Specific risks (v2 prerequisites before enabling concurrency):**
 - Concurrent `npm install` / `pip install` racing on shared cache
 - Local services bound to fixed ports (dev DB, dev server) — only one can claim the port
 - Git index lock contention on the parent repo
 - Test databases / Redis instances shared by name
-
-**Resolution:** Either accept the constraint (`max_concurrent: 1` for any repo with these dependencies), or document a project-onboarding checklist that requires per-worktree port namespacing and per-worktree dependency caches before a project enters the workflow. Add to problem-statement.md assumptions if accepted.
 
 ---
 
@@ -156,18 +150,16 @@ Langfuse integration with Claude Code isn't turnkey. **Resolution:** Operate on 
 
 ## Themes in the failures
 
-Three patterns emerge across the items above:
+Three patterns emerged across the items above:
 
-1. **Empirical gap.** Severity 1 issues all share the same root: we've designed against documented behavior, not observed behavior. Baton + Claude Code rate limits, hook behavior, and exit codes need to be exercised, not assumed.
+1. **Empirical gap.** S1.3 (rate limits) remains the one open Severity 1 item; it requires representative load measurement, not design work. All others were resolved — either empirically (spike/pilot) or by implementation.
 
-2. **Plumbing carries policy.** The outcome router (S2.1), Slack-to-GitHub round trip (S2.2), and startup reconciliation (S2.3) are treated as glue in the spec but are where most of the system's actual behavior lives. They need to be designed as first-class components, not afterthoughts.
+2. **Plumbing carries policy.** The outcome router (S2.1) and startup reconciliation (S2.3) turned out to be first-class components; both are implemented. S2.2 (Slack-to-GitHub round trip) is resolved for v1: the human drives the label transition directly on the GitHub issue.
 
-3. **No failure-recovery story above the container.** Inside a single run, hooks and Claude Code's own guardrails handle things. Above the run — orchestrator, bot, credentials, in-flight state — there is currently "systemd restart" and not much else. This is the largest under-designed area.
+3. **Failure recovery above the container.** Stuck-state recovery is resolved by design (`recovery.py`, issue #27 §11.5); operational hardening (OOM, orphan processes, credential corruption) remains tracked in issue #40.
 
 ---
 
 ## Process for resolution
 
-The Severity 1 items should be resolved (via the [smoke-test-spike](./smoke-test-spike.md) and direct ToS review) before iterating on the architecture spec. Severity 2 items become design tasks once the spike validates the foundations. Severity 3 and 4 are tracked here but don't block forward progress.
-
-After the spike completes, update the architecture spec to reflect what was learned, and either close items here or convert them into design tasks.
+**As of 2026-06-09 (post-#27 merge):** S1.1 (ToS) accepted risk (issue #37). S1.2 (Baton integration) dissolved by vendoring (issue #27 P0). S1.3 (rate limits) remains open — tracked in issue #39; measure before raising concurrency above 1. S2.1 (outcome router) implemented. S2.2 (Slack-to-requeue) resolved for v1 (human drives label transition — spec §9). S2.3 (failure recovery): stuck-state recovery implemented (`recovery.py`, issue #27 §11.5); operational hardening (OOM/orphan processes/credential corruption) tracked in issue #40. S2.4 (worktree isolation) resolved for v1 by serialization. Severity 3 and 4 remain valid monitors for rollout.

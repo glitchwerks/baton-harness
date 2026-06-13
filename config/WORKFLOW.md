@@ -7,7 +7,7 @@ polling:
   interval_ms: 30000
 agent:
   max_concurrent: 2
-  max_turns: 2  # workaround for terminal-block cost: external Baton does not re-check exclude_labels between turns, so a blocked issue burns up to max_turns runs. Keep modest until vendored symphony is patched to check exclude_labels in the _run_worker turn loop, at which point this can be raised to reflect real work complexity. Issue #23 closed (workaround merged PR #26); vendored fix is decided-not-yet-built.
+  max_turns: 8
   command: claude
   permission_mode: bypassPermissions
 hooks:
@@ -55,6 +55,7 @@ reorder them.
    Run:
    ```
    gh pr create --draft \
+     --base "$BH_FEATURE_BRANCH" \
      --title "<short description>" \
      --body "Closes #{{ issue.number }}"
    ```
