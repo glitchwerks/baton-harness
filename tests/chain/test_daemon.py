@@ -2504,15 +2504,13 @@ class TestRunlogObservabilityWiring:
     ) -> None:
         """Dispatch and outcome events are emitted around each work unit.
 
-        This test is marked xfail because the stable patch point for
-        the RunLog instance inside run_daemon depends on the exact
-        implementation shape of _poll_and_run / _run_work_unit —
-        specifically whether the runlog handle is accessible via a
-        module-level reference or only as a local variable.  The
-        contract specifies ``runlog: RunLog | None = None`` on those
-        helpers, but the implementer is free to wire it differently
-        internally.  Once the implementation lands, this test should
-        be made strict=True (remove xfail) and the patch point updated.
+        Originally anticipated to need xfail due to patch-point fragility
+        (the RunLog handle inside run_daemon could have been a local
+        variable inaccessible to patching).  The implementation exposes
+        the ``_write_line`` module-level seam in
+        ``baton_harness.chain.runlog``, which allows direct patching
+        without touching the RunLog instance itself — so the xfail marker
+        was never needed and this test runs strict.
         """
         import baton_harness.chain.runlog as runlog_mod
 

@@ -18,9 +18,11 @@ Coverage:
 from __future__ import annotations
 
 import dataclasses
+import logging
 from pathlib import Path
 
 import pytest
+
 from baton_harness.chain.obs_config import ObsConfig, load_obs_config
 
 # ---------------------------------------------------------------------------
@@ -266,4 +268,81 @@ def test_obs_config_field_types_are_correct(
     # heartbeat_ping_url is None or str — confirm it is not something else.
     assert cfg.heartbeat_ping_url is None or isinstance(
         cfg.heartbeat_ping_url, str
+    )
+
+
+# ---------------------------------------------------------------------------
+# Malformed numeric env var tolerance (regression for PR #80 review finding)
+# ---------------------------------------------------------------------------
+
+
+def test_load_obs_config_malformed_int_uses_default(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Non-numeric BH_REDISPATCH_* values fall back to documented defaults.
+
+    Regression test: ``load_obs_config()`` must NEVER raise on malformed
+    integer env vars — the function contract guarantees it never raises.
+
+    Args:
+        monkeypatch: pytest fixture for hermetic env-var injection.
+        caplog: pytest fixture to assert a WARNING was logged.
+    """
+    _clear_all_obs_vars(monkeypatch)
+    monkeypatch.setenv(_BH_PROJECT_ROOT, "/r")
+    monkeypatch.setenv(_BH_REDISPATCH_MAX, "nope")
+    monkeypatch.setenv(_BH_REDISPATCH_WINDOW_TICKS, "also-bad")
+
+    with caplog.at_level(logging.WARNING):
+        cfg = load_obs_config()
+
+    # Must not raise — result must equal the documented defaults.
+    assert cfg.redispatch_max == 3, (
+        f"Expected default 3 for malformed BH_REDISPATCH_MAX; got "
+        f"{cfg.redispatch_max!r}"
+    )
+    assert cfg.redispatch_window_ticks == 10, (
+        f"Expected default 10 for malformed BH_REDISPATCH_WINDOW_TICKS; "
+        f"got {cfg.redispatch_window_ticks!r}"
+    )
+    # A WARNING must have been logged for each malformed var.
+    warning_text = caplog.text
+    assert "BH_REDISPATCH_MAX" in warning_text, (
+        "Expected a WARNING mentioning BH_REDISPATCH_MAX in the log output"
+    )
+    assert "BH_REDISPATCH_WINDOW_TICKS" in warning_text, (
+        "Expected a WARNING mentioning BH_REDISPATCH_WINDOW_TICKS in the "
+        "log output"
+    )
+
+
+def test_load_obs_config_malformed_float_uses_default(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Non-numeric BH_HEARTBEAT_STALL_S falls back to the documented default.
+
+    Regression test: ``load_obs_config()`` must NEVER raise on a malformed
+    float env var.
+
+    Args:
+        monkeypatch: pytest fixture for hermetic env-var injection.
+        caplog: pytest fixture to assert a WARNING was logged.
+    """
+    _clear_all_obs_vars(monkeypatch)
+    monkeypatch.setenv(_BH_PROJECT_ROOT, "/r")
+    monkeypatch.setenv(_BH_HEARTBEAT_STALL_S, "not-a-float")
+
+    with caplog.at_level(logging.WARNING):
+        cfg = load_obs_config()
+
+    # Must not raise — result must equal the documented default.
+    assert cfg.heartbeat_stall_s == 7200.0, (
+        f"Expected default 7200.0 for malformed BH_HEARTBEAT_STALL_S; "
+        f"got {cfg.heartbeat_stall_s!r}"
+    )
+    # A WARNING must have been logged for the malformed var.
+    assert "BH_HEARTBEAT_STALL_S" in caplog.text, (
+        "Expected a WARNING mentioning BH_HEARTBEAT_STALL_S in the log output"
     )

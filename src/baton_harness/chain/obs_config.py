@@ -47,8 +47,11 @@ BH_HEARTBEAT_PING_URL : str, optional
 from __future__ import annotations
 
 import dataclasses
+import logging
 import os
 from pathlib import Path
+
+_log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -139,18 +142,52 @@ def load_obs_config() -> ObsConfig:
     )
 
     # Numeric fields: parse from env or use defaults.
-    redispatch_window_ticks = int(
-        os.environ.get(
-            "BH_REDISPATCH_WINDOW_TICKS",
-            str(_DEFAULT_REDISPATCH_WINDOW_TICKS),
-        )
-    )
-    redispatch_max = int(
-        os.environ.get("BH_REDISPATCH_MAX", str(_DEFAULT_REDISPATCH_MAX))
-    )
-    heartbeat_stall_s = float(
-        os.environ.get("BH_HEARTBEAT_STALL_S", str(_DEFAULT_HEARTBEAT_STALL_S))
-    )
+    # Each parse is guarded: a non-numeric value logs a WARNING and falls
+    # back to the documented default so this function NEVER raises.
+    _rdw_raw = os.environ.get("BH_REDISPATCH_WINDOW_TICKS")
+    if _rdw_raw is not None:
+        try:
+            redispatch_window_ticks = int(_rdw_raw)
+        except ValueError:
+            _log.warning(
+                "load_obs_config: BH_REDISPATCH_WINDOW_TICKS=%r is not a "
+                "valid integer; using default %d",
+                _rdw_raw,
+                _DEFAULT_REDISPATCH_WINDOW_TICKS,
+            )
+            redispatch_window_ticks = _DEFAULT_REDISPATCH_WINDOW_TICKS
+    else:
+        redispatch_window_ticks = _DEFAULT_REDISPATCH_WINDOW_TICKS
+
+    _rdm_raw = os.environ.get("BH_REDISPATCH_MAX")
+    if _rdm_raw is not None:
+        try:
+            redispatch_max = int(_rdm_raw)
+        except ValueError:
+            _log.warning(
+                "load_obs_config: BH_REDISPATCH_MAX=%r is not a valid "
+                "integer; using default %d",
+                _rdm_raw,
+                _DEFAULT_REDISPATCH_MAX,
+            )
+            redispatch_max = _DEFAULT_REDISPATCH_MAX
+    else:
+        redispatch_max = _DEFAULT_REDISPATCH_MAX
+
+    _hbs_raw = os.environ.get("BH_HEARTBEAT_STALL_S")
+    if _hbs_raw is not None:
+        try:
+            heartbeat_stall_s = float(_hbs_raw)
+        except ValueError:
+            _log.warning(
+                "load_obs_config: BH_HEARTBEAT_STALL_S=%r is not a valid "
+                "float; using default %.1f",
+                _hbs_raw,
+                _DEFAULT_HEARTBEAT_STALL_S,
+            )
+            heartbeat_stall_s = _DEFAULT_HEARTBEAT_STALL_S
+    else:
+        heartbeat_stall_s = _DEFAULT_HEARTBEAT_STALL_S
 
     # Optional string field.
     heartbeat_ping_url = os.environ.get("BH_HEARTBEAT_PING_URL") or None

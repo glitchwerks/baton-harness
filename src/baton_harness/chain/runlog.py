@@ -139,3 +139,4 @@ class RunLog:
                 event.get("event"),
                 exc,
             )
+        return
