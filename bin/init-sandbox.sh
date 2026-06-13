@@ -430,6 +430,18 @@ else
     GITIGNORE_SEEDED=1
 fi
 
+# Also seed .baton-harness/ (runlog dir) into the sandbox .gitignore.
+if grep -qxF '.baton-harness/' "${GITIGNORE_FILE}"; then
+    echo "baton-harness:   .baton-harness/ already in .gitignore, skipping"
+else
+    if [[ -s "${GITIGNORE_FILE}" && -n "$(tail -c1 "${GITIGNORE_FILE}")" ]]; then
+        printf '\n' >> "${GITIGNORE_FILE}"
+    fi
+    printf '%s\n' '.baton-harness/' >> "${GITIGNORE_FILE}"
+    echo "baton-harness:   .baton-harness/ appended to .gitignore"
+    GITIGNORE_SEEDED=1
+fi
+
 if [[ "${GITIGNORE_SEEDED}" == 1 ]]; then
     git -C "${BH_PROJECT_ROOT}" add ".gitignore"
     if git -C "${BH_PROJECT_ROOT}" diff --cached --quiet -- ".gitignore"; then

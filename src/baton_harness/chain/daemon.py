@@ -44,6 +44,7 @@ import logging
 import os
 import subprocess
 import sys
+from datetime import datetime, timezone
 from typing import Any
 
 from baton_harness.chain import branches
@@ -53,8 +54,10 @@ from baton_harness.chain.gh_deps import (
     fetch_blocked_by,
 )
 from baton_harness.chain.merge import MergeOutcome, merge_issue_branch
+from baton_harness.chain.obs_config import load_obs_config
 from baton_harness.chain.recovery import reconstruct
 from baton_harness.chain.registry import RepoConfig
+from baton_harness.chain.runlog import RunLog
 from baton_harness.chain.scheduler import IssueScheduler
 from baton_harness.vendor.symphony.config import WorkflowConfig
 from baton_harness.vendor.symphony.orchestrator import Orchestrator
@@ -436,6 +439,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
     agent_ready_issues: frozenset[int] | None = None,
     ci_poll_interval: float = _DEFAULT_CI_POLL_INTERVAL,
     ci_timeout: float = _DEFAULT_CI_TIMEOUT,
+    runlog: RunLog | None = None,
 ) -> None:
     """Run one work unit (one DAG) to completion.
 
@@ -457,6 +461,8 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
             un-milestoned units where membership IS the ready set).
         ci_poll_interval: Seconds between CI polls in the merge gate.
         ci_timeout: Hard ceiling for the CI gate in seconds.
+        runlog: Optional ``RunLog`` handle for best-effort event
+            emission.  When ``None``, all emission is a no-op.
     """
     owner = repo_cfg.owner
     repo = repo_cfg.repo
@@ -722,6 +728,22 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
             continue
 
         # Dispatch the worker.
+        # Emit dispatch event (best-effort; never raises into the loop).
+        if runlog is not None:
+            try:
+                runlog.emit(
+                    {
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                        "event": "dispatch",
+                        "issue": n,
+                        "outcome": None,
+                        "severity": "info",
+                        "detail": f"dispatching worker for issue #{n}",
+                        "tick_id": None,
+                    }
+                )
+            except Exception:  # noqa: BLE001
+                pass
         try:
             worker_result = await orch._run_worker(issue_obj)
         except Exception as exc:
@@ -737,6 +759,26 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 kind="debug",
             )
             continue
+
+        # Emit outcome event (best-effort; never raises into the loop).
+        if runlog is not None:
+            try:
+                runlog.emit(
+                    {
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                        "event": "outcome",
+                        "issue": n,
+                        "outcome": str(worker_result),
+                        "severity": "info",
+                        "detail": (
+                            f"worker for issue #{n} returned"
+                            f" {worker_result!r}"
+                        ),
+                        "tick_id": None,
+                    }
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
         # Re-read labels after _run_worker (after_run may have set blocked).
         post_labels = _fetch_issue_labels(owner, repo, n)
@@ -940,6 +982,26 @@ async def run_daemon(
         once,
     )
 
+    # --- Observability startup (best-effort; risk R2 — must never raise). ---
+    runlog: RunLog | None = None
+    try:
+        obs = load_obs_config()
+        runlog = RunLog(obs.runlog_path)
+        runlog.emit(
+            {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "event": "daemon_start",
+                "issue": None,
+                "outcome": None,
+                "severity": "info",
+                "detail": "daemon starting up",
+                "tick_id": None,
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("daemon: observability init failed: %s", exc)
+        runlog = None
+
     while True:
         for repo_cfg in registry:
             # FIX 2: defensive catch around each per-repo tick.  A failure
@@ -952,6 +1014,7 @@ async def run_daemon(
                     repo_cfg,
                     ci_poll_interval=ci_poll_interval,
                     ci_timeout=ci_timeout,
+                    runlog=runlog,
                 )
             except Exception as exc:
                 _log.error(
@@ -987,6 +1050,7 @@ async def _poll_and_run(
     *,
     ci_poll_interval: float,
     ci_timeout: float,
+    runlog: RunLog | None = None,
 ) -> None:
     """Poll one repo for a ready work unit and run it if found.
 
@@ -995,6 +1059,8 @@ async def _poll_and_run(
         repo_cfg: The repo registry entry.
         ci_poll_interval: Seconds between CI polls.
         ci_timeout: Hard CI ceiling in seconds.
+        runlog: Optional ``RunLog`` handle for best-effort event
+            emission.  When ``None``, all emission is a no-op.
     """
     owner = repo_cfg.owner
     repo = repo_cfg.repo
@@ -1072,6 +1138,7 @@ async def _poll_and_run(
         agent_ready_issues=frozenset(i["number"] for i in ready_issues),
         ci_poll_interval=ci_poll_interval,
         ci_timeout=ci_timeout,
+        runlog=runlog,
     )
 
 

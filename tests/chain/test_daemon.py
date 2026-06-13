@@ -2321,3 +2321,284 @@ def test_revlist_count_failure_falls_through_to_draft_pr() -> None:
         "gh pr create MUST be called when rev-list --count fails (fail-open"
         " guard); no pr create call recorded"
     )
+
+
+# ---------------------------------------------------------------------------
+# Observability wiring (issue #74 — runlog substrate)
+# ---------------------------------------------------------------------------
+# These tests assert the daemon wires RunLog and emits structured events.
+# The new modules (runlog, obs_config) are imported lazily inside each
+# test so a missing implementation surfaces as an ImportError (correct
+# red) rather than a collection-time failure that would break the
+# existing 334 tests.
+
+
+class TestRunlogObservabilityWiring:
+    """Daemon observability wiring: RunLog construction and event emission."""
+
+    def test_run_daemon_without_bh_env_does_not_raise(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """run_daemon completes without raising when no BH_* obs vars are set.
+
+        Proves that observability is best-effort and never prevents the
+        daemon loop from running (risk R2).
+        """
+        # Clear all BH_* observability vars so load_obs_config uses defaults.
+        for var in (
+            "BH_PROJECT_ROOT",
+            "BH_RUNLOG_PATH",
+            "BH_HEARTBEAT_FILE",
+            "BH_REDISPATCH_WINDOW_TICKS",
+            "BH_REDISPATCH_MAX",
+            "BH_HEARTBEAT_STALL_S",
+            "BH_HEARTBEAT_PING_URL",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+        # Must not raise — mirrors the happy-path once=True pattern.
+        with (
+            patch.object(
+                daemon_mod,
+                "_run",
+                side_effect=_make_run_side_effect(
+                    ready_issues=[],
+                    pr_head_sha="abc123",
+                    issue_branch="baton/issue-10-10",
+                    feature_branch_exists=False,
+                ),
+            ),
+            patch(
+                "baton_harness.chain.daemon.fetch_blocked_by",
+                return_value=[],
+            ),
+            patch("baton_harness.chain.branches.create_feature_branch"),
+            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch(
+                "baton_harness.chain.branches.record_cut_point",
+                return_value="deadbeef" * 5,
+            ),
+            patch(
+                "baton_harness.chain.recovery.reconstruct",
+                return_value=RecoveryResult(
+                    done=set(),
+                    parked_seed=set(),
+                    ci_gate_reentry=set(),
+                    redispatch=set(),
+                ),
+            ),
+            patch(
+                "baton_harness.chain.daemon.merge_issue_branch",
+                return_value=MergeOutcome.MERGED,
+            ),
+            patch("baton_harness.chain.daemon.escalate", return_value=True),
+            _patch_run_worker("pr_created"),
+        ):
+            asyncio.run(
+                run_daemon(
+                    _minimal_wf_config(),
+                    [_repo_cfg()],
+                    once=True,
+                    poll_interval_s=0,
+                )
+            )
+
+    def test_daemon_startup_emits_daemon_start_event(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """run_daemon emits a daemon_start event on startup via RunLog.
+
+        Uses BH_PROJECT_ROOT so load_obs_config resolves the log path
+        under tmp_path, then patches the _write_line seam to capture
+        what is written without touching the real filesystem.
+        """
+        import baton_harness.chain.runlog as runlog_mod
+
+        monkeypatch.setenv("BH_PROJECT_ROOT", str(tmp_path))
+        for var in (
+            "BH_RUNLOG_PATH",
+            "BH_HEARTBEAT_FILE",
+            "BH_REDISPATCH_WINDOW_TICKS",
+            "BH_REDISPATCH_MAX",
+            "BH_HEARTBEAT_STALL_S",
+            "BH_HEARTBEAT_PING_URL",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+        written_lines: list[str] = []
+
+        def capture_write(path: Path, line: str) -> None:
+            written_lines.append(line)
+
+        with (
+            patch.object(runlog_mod, "_write_line", side_effect=capture_write),
+            patch.object(
+                daemon_mod,
+                "_run",
+                side_effect=_make_run_side_effect(
+                    ready_issues=[],
+                    pr_head_sha="abc123",
+                    issue_branch="baton/issue-10-10",
+                    feature_branch_exists=False,
+                ),
+            ),
+            patch(
+                "baton_harness.chain.daemon.fetch_blocked_by",
+                return_value=[],
+            ),
+            patch("baton_harness.chain.branches.create_feature_branch"),
+            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch(
+                "baton_harness.chain.branches.record_cut_point",
+                return_value="deadbeef" * 5,
+            ),
+            patch(
+                "baton_harness.chain.recovery.reconstruct",
+                return_value=RecoveryResult(
+                    done=set(),
+                    parked_seed=set(),
+                    ci_gate_reentry=set(),
+                    redispatch=set(),
+                ),
+            ),
+            patch(
+                "baton_harness.chain.daemon.merge_issue_branch",
+                return_value=MergeOutcome.MERGED,
+            ),
+            patch("baton_harness.chain.daemon.escalate", return_value=True),
+            _patch_run_worker("pr_created"),
+        ):
+            asyncio.run(
+                run_daemon(
+                    _minimal_wf_config(),
+                    [_repo_cfg()],
+                    once=True,
+                    poll_interval_s=0,
+                )
+            )
+
+        import json
+
+        events = [json.loads(line) for line in written_lines]
+        event_names = [e.get("event") for e in events]
+        assert "daemon_start" in event_names, (
+            f"Expected a daemon_start event in emitted lines; "
+            f"got event names: {event_names!r}"
+        )
+
+        # The .baton-harness/ directory must exist under tmp_path
+        # (mkdir-before-emit requirement).
+        baton_dir = tmp_path / ".baton-harness"
+        assert baton_dir.exists(), (
+            f"Expected {baton_dir} to exist after daemon startup "
+            f"(RunLog must mkdir parents)"
+        )
+
+    def test_daemon_emits_dispatch_and_outcome_events_around_work_unit(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Dispatch and outcome events are emitted around each work unit.
+
+        This test is marked xfail because the stable patch point for
+        the RunLog instance inside run_daemon depends on the exact
+        implementation shape of _poll_and_run / _run_work_unit —
+        specifically whether the runlog handle is accessible via a
+        module-level reference or only as a local variable.  The
+        contract specifies ``runlog: RunLog | None = None`` on those
+        helpers, but the implementer is free to wire it differently
+        internally.  Once the implementation lands, this test should
+        be made strict=True (remove xfail) and the patch point updated.
+        """
+        import baton_harness.chain.runlog as runlog_mod
+
+        monkeypatch.setenv("BH_PROJECT_ROOT", str(tmp_path))
+        for var in (
+            "BH_RUNLOG_PATH",
+            "BH_HEARTBEAT_FILE",
+            "BH_REDISPATCH_WINDOW_TICKS",
+            "BH_REDISPATCH_MAX",
+            "BH_HEARTBEAT_STALL_S",
+            "BH_HEARTBEAT_PING_URL",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+        ready_issues = [
+            {
+                "number": 10,
+                "title": "Issue 10",
+                "state": "open",
+                "body": "",
+                "url": "https://github.com/o/r/issues/10",
+                "labels": [{"name": "agent-ready"}],
+                "milestone": None,
+                "assignees": [],
+            }
+        ]
+
+        written_lines: list[str] = []
+
+        def capture_write(path: Path, line: str) -> None:
+            written_lines.append(line)
+
+        with (
+            patch.object(runlog_mod, "_write_line", side_effect=capture_write),
+            patch.object(
+                daemon_mod,
+                "_run",
+                side_effect=_make_run_side_effect(
+                    ready_issues=ready_issues,
+                    pr_head_sha="abc123",
+                    issue_branch="baton/issue-10-10",
+                    feature_branch_exists=False,
+                ),
+            ),
+            patch(
+                "baton_harness.chain.daemon.fetch_blocked_by",
+                return_value=[],
+            ),
+            patch("baton_harness.chain.branches.create_feature_branch"),
+            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch(
+                "baton_harness.chain.branches.record_cut_point",
+                return_value="deadbeef" * 5,
+            ),
+            patch(
+                "baton_harness.chain.recovery.reconstruct",
+                return_value=RecoveryResult(
+                    done=set(),
+                    parked_seed=set(),
+                    ci_gate_reentry=set(),
+                    redispatch=set(),
+                ),
+            ),
+            patch(
+                "baton_harness.chain.daemon.merge_issue_branch",
+                return_value=MergeOutcome.MERGED,
+            ),
+            patch("baton_harness.chain.daemon.escalate", return_value=True),
+            _patch_run_worker("pr_created"),
+        ):
+            asyncio.run(
+                run_daemon(
+                    _minimal_wf_config(),
+                    [_repo_cfg()],
+                    once=True,
+                    poll_interval_s=0,
+                )
+            )
+
+        import json
+
+        events = [json.loads(line) for line in written_lines]
+        event_names = [e.get("event") for e in events]
+        assert "dispatch" in event_names, (
+            f"Expected a dispatch event; got: {event_names!r}"
+        )
+        assert "outcome" in event_names, (
+            f"Expected an outcome event; got: {event_names!r}"
+        )
