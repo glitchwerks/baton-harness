@@ -189,6 +189,12 @@ of: `<prefix>-<issue>`, `<prefix>-<issue>-<slug>`, or bare `<issue>`.
 - The target project repo cloned locally (`BH_PROJECT_ROOT`)
 - The target project repo must have all five harness state labels (see
   [Required GitHub labels](#required-github-labels) below)
+- The target project repo must have `.symphony/` in its `.gitignore` — `bin/run-daemon.sh`
+  enforces this with a preflight check and aborts ("this repo is not ready for harness work")
+  if the entry is absent; without it, `gh pr create` warns about an uncommitted change and
+  the state file pollutes the tree (see
+  [docs/smoke-test-daemon.md](docs/smoke-test-daemon.md) for details; `bin/init-sandbox.sh`
+  seeds this automatically for throwaway sandboxes)
 
 The separate `baton` pip install is **not required** — `symphony` is vendored inside the
 `baton_harness` package. Only `uv pip install -e .` (or `pip install -e .`) is needed.
