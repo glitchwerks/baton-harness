@@ -4,6 +4,9 @@
 # Local scratch / transient files
 .tmp/
 
+# Observability runlog dir (CWD-relative fallback when BH_PROJECT_ROOT unset)
+.baton-harness/
+
 # OS / editor cruft
 .DS_Store
 Thumbs.db
