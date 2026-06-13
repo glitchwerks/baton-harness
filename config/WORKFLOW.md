@@ -55,6 +55,7 @@ reorder them.
    Run:
    ```
    gh pr create --draft \
+     --base "$BH_FEATURE_BRANCH" \
      --title "<short description>" \
      --body "Closes #{{ issue.number }}"
    ```

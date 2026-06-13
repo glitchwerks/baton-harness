@@ -494,6 +494,26 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
     # --- Step 1: create or resume the feature branch. ---
     branches.create_feature_branch(repo_root, branch_name, exist_ok=True)
 
+    # Issue #67 / PR #69 (Codex P1): publish the feature branch to origin
+    # NOW, before any worker/agent runs.  The agent's WORKFLOW.md uses
+    #   gh pr create --base "$BH_FEATURE_BRANCH"
+    # which requires the base branch to already exist on the remote.  The
+    # completion push at Step 3 below publishes merge commits at unit end,
+    # but for a fresh work unit `origin/<branch_name>` does not yet exist
+    # when the first _run_worker executes.  An idempotent early push fixes
+    # the ordering: re-runs where the branch is already on origin are no-ops
+    # (git exits 0 for up-to-date / fast-forwardable pushes).
+    early_push = _run(
+        ["git", "-C", str(repo_root), "push", "origin", branch_name]
+    )
+    if early_push.returncode != 0:
+        _log.warning(
+            "daemon: early git push %r to origin failed (exit %d): %s",
+            branch_name,
+            early_push.returncode,
+            early_push.stderr,
+        )
+
     # Determine if we are resuming (branch existed before
     # create_feature_branch).  Recovery is idempotent on a fresh branch.
     recovery_result = reconstruct(
@@ -681,6 +701,9 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
 
         # Thread cut-point base to hooks via env (VP-1 wiring).
         os.environ["CHAIN_BASE_BRANCH"] = cut_point
+        # Thread feature branch name to agent env so WORKFLOW.md step 4 can
+        # use --base "$BH_FEATURE_BRANCH" in gh pr create (issue #67).
+        os.environ["BH_FEATURE_BRANCH"] = branch_name
 
         # Fetch the Issue object.
         issue_obj = _fetch_issue_obj(owner, repo, n)
@@ -832,14 +855,21 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
         )
 
     # Build PR body.
-    merged_refs = ", ".join(f"#{n}" for n in merged_issues) or "(none)"
+    # Each merged issue needs its own ``Closes #N`` keyword so GitHub
+    # auto-closes all of them when the feature → main PR merges.  GitHub
+    # does NOT parse comma-continuation (``closes #100, #101`` only closes
+    # #100), so we emit one keyword per line (issue #67).
+    if merged_issues:
+        merged_section = "\n".join(f"Closes #{n}" for n in merged_issues)
+    else:
+        merged_section = "(none)"
     parked_list = (
         "\n".join(f"- #{n}: {reason}" for n, reason in parked_reasons.items())
         or "(none)"
     )
     pr_body = (
         f"## Work unit: {slug}\n\n"
-        f"### Issues merged\n\n{merged_refs}\n\n"
+        f"### Issues merged\n\n{merged_section}\n\n"
         f"### Issues parked (need human attention)\n\n{parked_list}\n"
         f"{_CLAUDE_ATTRIBUTION}"
     )
