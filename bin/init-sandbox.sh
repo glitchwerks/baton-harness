@@ -420,7 +420,10 @@ if [[ ! -f "${GITIGNORE_FILE}" ]]; then
 elif grep -qxF '.symphony/' "${GITIGNORE_FILE}"; then
     echo "baton-harness:   .symphony/ already in .gitignore, skipping"
 else
-    printf '.symphony/\n' >> "${GITIGNORE_FILE}"
+    if [[ -s "${GITIGNORE_FILE}" && -n "$(tail -c1 "${GITIGNORE_FILE}")" ]]; then
+        printf '\n' >> "${GITIGNORE_FILE}"
+    fi
+    printf '%s\n' '.symphony/' >> "${GITIGNORE_FILE}"
     echo "baton-harness:   .symphony/ appended to .gitignore"
 fi
 
