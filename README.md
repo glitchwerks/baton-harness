@@ -276,6 +276,24 @@ mid-2026. The gate therefore validates token *type* and *reachability* — it
 cannot verify that the exact permission set above was granted. That verification
 is the operator's responsibility at token-mint time.
 
+### Known limitation — persistent transient GitHub API failures fail-closed
+
+The capability self-test in the `before_run` auth gate calls `gh api user`
+to confirm the token is reachable. If the GitHub API is experiencing a
+sustained outage, rate-limit storm, or network-level failure (DNS, TLS, gateway
+errors), the self-test will retry a small number of times
+(`_auth._MAX_RETRIES`, currently 2) and then fail-closed — blocking the run
+before any git work is attempted.
+
+**This is intentional:** an agent run against an unreachable GitHub API would
+produce useless or misleading output.
+
+**Recovery:** wait for GitHub to recover (check
+<https://www.githubstatus.com/>), then re-run the harness or restart the
+daemon. The `TokenValidationError` message will indicate a
+transient/network condition so it is distinguishable from a genuine bad-token
+failure.
+
 ## Usage
 
 ### Running the daemon

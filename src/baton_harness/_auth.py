@@ -5,6 +5,19 @@ wrong token types before any real GitHub API work begins.  It is called at
 the top of ``before_run.main()`` so the harness fails fast rather than
 burning an agent turn with a bad credential.
 
+The capability self-test (Gate 3) distinguishes **transient** network/API
+errors from **permanent** credential failures:
+
+- **Transient**: rate-limit (429), gateway errors (502-504), DNS/TLS
+  failures, timeouts.  The self-test is retried with bounded backoff
+  (``_MAX_RETRIES`` attempts, ``_RETRY_SLEEP_SECONDS`` between each).
+  If still failing, ``TokenValidationError`` is raised with a message
+  indicating the transient/network nature so the operator knows to retry
+  after GitHub recovers.
+- **Permanent**: authentication failures (401, 403, "Unauthorized", "Bad
+  credentials").  Raised immediately with no retries; the operator must
+  fix the token.
+
 .. important::
 
     **This check is a defense-in-depth layer, NOT a safety guarantee.**
@@ -26,6 +39,14 @@ burning an agent turn with a bad credential.
     successfully authenticate to the GitHub API.  Scope-level enforcement
     relies entirely on the bot account's repository-level permission
     configuration.
+
+    **Known limitation — persistent transient GitHub API failures:**
+
+    If the GitHub API is experiencing a sustained outage or rate-limit,
+    the capability self-test will exhaust all retries and fail-closed
+    (i.e. block the run).  The ``TokenValidationError`` message will
+    indicate a transient/network condition.  Recovery: wait for GitHub
+    to recover, then re-run the harness.
 """
 
 from __future__ import annotations
@@ -33,6 +54,8 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
+from collections.abc import Callable
 
 
 class TokenValidationError(Exception):
@@ -66,6 +89,33 @@ _FINE_GRAINED_PREFIX = "github_pat_"
 
 #: Token prefix for classic PATs — explicitly rejected with a targeted message.
 _CLASSIC_PREFIX = "ghp_"
+
+#: Maximum number of capability self-test retries on transient errors.
+#: Inject / override in tests via monkeypatching ``_auth._MAX_RETRIES``.
+_MAX_RETRIES: int = 2
+
+#: Seconds to sleep between capability self-test retry attempts.
+#: Override with a zero-sleep callable in tests to avoid real delays:
+#: ``monkeypatch.setattr(auth_mod, "_RETRY_SLEEP_SECONDS", 0)``
+_RETRY_SLEEP_SECONDS: float = 2.0
+
+#: Substrings in ``gh`` stderr that indicate a *transient* (network/API)
+#: failure.  Checked case-insensitively.  Everything else is permanent.
+_TRANSIENT_MARKERS: tuple[str, ...] = (
+    "429",
+    "too many requests",
+    "502",
+    "503",
+    "504",
+    "timeout",
+    "timed out",
+    "connection refused",
+    "connection reset",
+    "could not resolve host",
+    "temporarily unavailable",
+    "tls handshake",
+    "eof",
+)
 
 
 def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
@@ -104,15 +154,78 @@ def _read_token() -> str:
     return os.environ.get("GH_TOKEN", "") or os.environ.get("GITHUB_TOKEN", "")
 
 
+def _is_transient(stderr: str) -> bool:
+    """Return True if the ``gh`` stderr looks like a transient error.
+
+    Checks case-insensitively against a fixed set of substrings that
+    indicate rate-limits, gateway errors, and network-level failures
+    (as opposed to authentication/authorisation rejections).
+
+    Args:
+        stderr: The captured standard-error text from the failed ``gh``
+            invocation.
+
+    Returns:
+        ``True`` when ``stderr`` contains at least one transient-error
+        marker; ``False`` for permanent errors (401, 403, bad credentials,
+        etc.) and for unrecognised stderr content.
+    """
+    lower = stderr.lower()
+    return any(marker in lower for marker in _TRANSIENT_MARKERS)
+
+
+def _run_self_test(
+    sleep_fn: Callable[[float], None] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run the ``gh api user`` capability self-test with transient retries.
+
+    On transient failures (rate-limits, network errors, gateway errors)
+    retries up to ``_MAX_RETRIES`` times with ``_RETRY_SLEEP_SECONDS``
+    between each attempt.  Permanent failures (401/403, bad credentials)
+    are returned immediately without retrying.
+
+    The ``sleep_fn`` parameter exists solely for test injection; callers
+    must not supply it in production.
+
+    Args:
+        sleep_fn: A callable that replaces ``time.sleep`` during retries.
+            Defaults to ``time.sleep``.  Pass a no-op lambda in tests to
+            avoid real delays (see ``_RETRY_SLEEP_SECONDS`` docstring).
+
+    Returns:
+        The ``CompletedProcess`` from the *last* ``gh api user`` call,
+        whether successful or not.  Callers inspect ``returncode`` and
+        the ``_is_transient`` classification.
+    """
+    if sleep_fn is None:
+        sleep_fn = time.sleep
+
+    result = _run(["gh", "api", "user", "--jq", ".login"])
+    if result.returncode == 0:
+        return result
+
+    attempt = 0
+    while attempt < _MAX_RETRIES and _is_transient(result.stderr):
+        sleep_fn(_RETRY_SLEEP_SECONDS)
+        result = _run(["gh", "api", "user", "--jq", ".login"])
+        if result.returncode == 0:
+            return result
+        attempt += 1
+
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
 
-def validate_github_token() -> None:
+def validate_github_token(
+    sleep_fn: Callable[[float], None] | None = None,
+) -> None:
     """Validate the GitHub token before any harness work begins.
 
-    Performs two checks in order:
+    Performs three checks in order:
 
     1. **Token-type gate**: reads ``GH_TOKEN`` (falling back to
        ``GITHUB_TOKEN``) and rejects any token whose prefix is not
@@ -122,8 +235,11 @@ def validate_github_token() -> None:
 
     2. **Capability self-test**: calls ``gh api user --jq .login`` to
        confirm the token is authenticated and can reach the GitHub API.
-       A non-zero exit code or unparseable JSON response is treated as an
-       under-scoped or invalid token.
+       Transient errors (rate-limits, network timeouts, gateway errors)
+       are retried up to ``_MAX_RETRIES`` times before raising.  Permanent
+       errors (401, 403, bad credentials) raise immediately.
+
+    3. **Login parse**: validates the parsed login string is non-empty.
 
     .. note::
 
@@ -133,12 +249,18 @@ def validate_github_token() -> None:
         introspection API, so this gate checks token type + reachability
         only — not what the token is permitted to do.
 
+    Args:
+        sleep_fn: Injected sleep callable for tests (default
+            ``time.sleep``).  Pass a no-op lambda to avoid real delay in
+            unit tests.
+
     Raises:
         TokenValidationError: When the token is missing, has the wrong
-            type, or fails the capability self-test.  The exception
-            message is human-readable and actionable, naming the specific
-            problem and directing the operator to mint a fine-grained,
-            repo-scoped PAT.
+            type, or fails the capability self-test.  Transient failures
+            include a message indicating the network/API condition and
+            that retrying after GitHub recovers is the remedy.  Permanent
+            failures name the credential problem and direct the operator
+            to mint a new fine-grained, repo-scoped PAT.
 
     Example::
 
@@ -186,14 +308,26 @@ def validate_github_token() -> None:
     # ------------------------------------------------------------------ #
     # Gate 3: capability self-test                                         #
     # ------------------------------------------------------------------ #
-    result = _run(["gh", "api", "user", "--jq", ".login"])
+    result = _run_self_test(sleep_fn=sleep_fn)
 
     if result.returncode != 0:
+        if _is_transient(result.stderr):
+            raise TokenValidationError(
+                f"capability self-test failed after {_MAX_RETRIES + 1} "
+                f"attempt(s): transient network or GitHub API condition "
+                f"(see gh output above). "
+                "Recovery: wait for GitHub to recover and re-run the "
+                "harness. If the problem persists, check "
+                "https://www.githubstatus.com/ for an active incident."
+            )
         raise TokenValidationError(
             f"capability self-test failed: gh api user exited "
             f"{result.returncode} — token may be expired, revoked, or "
-            f"lack the required repository permissions. "
-            f"gh stderr: {result.stderr.strip()!r}"
+            f"lack the required repository permissions "
+            f"(see gh output above). "
+            "Mint a fine-grained, repo-scoped PAT at "
+            "https://github.com/settings/personal-access-tokens/new "
+            "and export it as GH_TOKEN."
         )
 
     try:
@@ -212,6 +346,6 @@ def validate_github_token() -> None:
     except (json.JSONDecodeError, ValueError) as exc:
         raise TokenValidationError(
             f"capability self-test failed: could not parse gh api user "
-            f"response — {exc}. "
-            f"Raw output: {result.stdout.strip()!r}"
+            f"response — {exc} "
+            f"(see gh output above)."
         ) from exc

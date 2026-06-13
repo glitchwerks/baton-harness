@@ -10,6 +10,10 @@ Coverage:
 - Capability self-test failure (non-zero gh exit, bad JSON) is rejected.
 - ``GH_TOKEN`` takes precedence over ``GITHUB_TOKEN``.
 - ``GITHUB_TOKEN`` is used when ``GH_TOKEN`` is absent.
+- Transient errors (429, 502–504, network failures) are retried up to
+  ``_MAX_RETRIES`` times before raising with a transient-specific message.
+- Permanent errors (401, bad credentials) raise immediately without retry.
+- Exception messages never contain raw ``gh`` stderr payloads.
 
 All ``gh`` subprocess calls are intercepted by patching
 ``baton_harness._auth._run`` so no real network calls are made.
@@ -306,3 +310,281 @@ class TestCapabilitySelfTestFail:
         ):
             with pytest.raises(TokenValidationError, match="capability"):
                 validate_github_token()
+
+
+# ---------------------------------------------------------------------------
+# Transient vs permanent distinction (review finding: Critical)
+# ---------------------------------------------------------------------------
+
+
+_TRANSIENT_STDERRS = [
+    "error: HTTP 429: Too Many Requests",
+    "error: HTTP 503 Service Unavailable",
+    "connection timed out",
+    "connection refused",
+    "502 Bad Gateway",
+    "504 Gateway Timeout",
+    "could not resolve host: api.github.com",
+    "TLS handshake timeout",
+    "unexpected EOF",
+]
+
+_PERMANENT_STDERRS = [
+    "HTTP 401: Unauthorized",
+    "HTTP 401 Bad credentials",
+    "error: HTTP 403 Forbidden",
+]
+
+
+class TestTransientRetry:
+    """Transient errors are retried; permanent errors are not."""
+
+    @pytest.mark.parametrize("transient_stderr", _TRANSIENT_STDERRS)
+    def test_transient_stderr_raises_after_retries(
+        self,
+        transient_stderr: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Transient ``gh`` stderr causes retries then a transient message.
+
+        After exhausting ``_MAX_RETRIES`` retries, raises
+        ``TokenValidationError`` whose message indicates a transient /
+        network condition — NOT the permanent "token expired" wording.
+        """
+        monkeypatch.setenv("GH_TOKEN", _VALID_TOKEN)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+        sleep_calls: list[float] = []
+
+        def no_sleep(secs: float) -> None:
+            sleep_calls.append(secs)
+
+        with patch.object(
+            auth_mod,
+            "_run",
+            return_value=_completed(
+                stdout="",
+                returncode=1,
+                stderr=transient_stderr,
+            ),
+        ):
+            with pytest.raises(TokenValidationError) as exc_info:
+                validate_github_token(sleep_fn=no_sleep)
+
+        msg = exc_info.value.message
+        # Message must indicate transient/network nature.
+        assert any(
+            word in msg.lower()
+            for word in ("transient", "network", "github api condition")
+        ), f"Expected transient-condition wording, got: {msg!r}"
+        # Message must NOT use the permanent "token may be expired/revoked"
+        # wording.
+        assert "expired" not in msg.lower(), (
+            f"Transient message must not say 'expired': {msg!r}"
+        )
+        assert "revoked" not in msg.lower(), (
+            f"Transient message must not say 'revoked': {msg!r}"
+        )
+
+    @pytest.mark.parametrize("transient_stderr", _TRANSIENT_STDERRS)
+    def test_transient_retried_max_retries_times(
+        self,
+        transient_stderr: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Self-test is retried exactly ``_MAX_RETRIES`` times on transient.
+
+        Total ``_run`` calls = 1 (initial) + ``_MAX_RETRIES`` (retries).
+        Sleep is called ``_MAX_RETRIES`` times — once between each pair.
+        """
+        monkeypatch.setenv("GH_TOKEN", _VALID_TOKEN)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+        sleep_calls: list[float] = []
+
+        def no_sleep(secs: float) -> None:
+            sleep_calls.append(secs)
+
+        run_calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            run_calls.append(cmd)
+            return _completed(
+                stdout="",
+                returncode=1,
+                stderr=transient_stderr,
+            )
+
+        with patch.object(auth_mod, "_run", fake_run):
+            with pytest.raises(TokenValidationError):
+                validate_github_token(sleep_fn=no_sleep)
+
+        # Count only the gh api user calls (not token-type gate).
+        api_calls = [c for c in run_calls if "gh" in c and "api" in c]
+        expected_calls = 1 + auth_mod._MAX_RETRIES
+        assert len(api_calls) == expected_calls, (
+            f"Expected {expected_calls} gh api user calls "
+            f"(1 initial + {auth_mod._MAX_RETRIES} retries), "
+            f"got {len(api_calls)}"
+        )
+        assert len(sleep_calls) == auth_mod._MAX_RETRIES, (
+            f"Expected {auth_mod._MAX_RETRIES} sleep calls, "
+            f"got {len(sleep_calls)}"
+        )
+
+    @pytest.mark.parametrize("permanent_stderr", _PERMANENT_STDERRS)
+    def test_permanent_stderr_raises_immediately(
+        self,
+        permanent_stderr: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Permanent errors raise immediately with no retries.
+
+        Only one ``_run`` call (the initial self-test) should be made.
+        Sleep must never be called.
+        """
+        monkeypatch.setenv("GH_TOKEN", _VALID_TOKEN)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+        sleep_calls: list[float] = []
+
+        def no_sleep(secs: float) -> None:
+            sleep_calls.append(secs)
+
+        run_calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            run_calls.append(cmd)
+            return _completed(
+                stdout="",
+                returncode=1,
+                stderr=permanent_stderr,
+            )
+
+        with patch.object(auth_mod, "_run", fake_run):
+            with pytest.raises(TokenValidationError) as exc_info:
+                validate_github_token(sleep_fn=no_sleep)
+
+        api_calls = [c for c in run_calls if "gh" in c and "api" in c]
+        assert len(api_calls) == 1, (
+            f"Permanent error must not be retried — expected 1 gh api "
+            f"call, got {len(api_calls)}"
+        )
+        assert sleep_calls == [], (
+            f"Sleep must not be called for permanent errors, got {sleep_calls}"
+        )
+        # Message must mention capability failure or token problem,
+        # not the transient wording.
+        msg = exc_info.value.message
+        assert "transient" not in msg.lower(), (
+            f"Permanent error message must not say 'transient': {msg!r}"
+        )
+
+    @pytest.mark.parametrize("permanent_stderr", _PERMANENT_STDERRS)
+    def test_permanent_message_is_permanent_wording(
+        self,
+        permanent_stderr: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Permanent errors produce the 'expired/revoked/permissions' message.
+
+        The token-expired wording gives the operator an actionable hint
+        that the token itself (not a transient GitHub outage) is the
+        problem.
+        """
+        monkeypatch.setenv("GH_TOKEN", _VALID_TOKEN)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+        with patch.object(
+            auth_mod,
+            "_run",
+            return_value=_completed(
+                stdout="",
+                returncode=1,
+                stderr=permanent_stderr,
+            ),
+        ):
+            with pytest.raises(TokenValidationError) as exc_info:
+                validate_github_token(sleep_fn=lambda _: None)
+
+        msg = exc_info.value.message
+        assert any(
+            word in msg.lower()
+            for word in ("expired", "revoked", "permissions")
+        ), f"Permanent message must mention token state, got: {msg!r}"
+
+
+# ---------------------------------------------------------------------------
+# Credential hygiene (review finding: Warning)
+# ---------------------------------------------------------------------------
+
+
+class TestCredentialHygiene:
+    """Raw gh stderr must never appear verbatim in the exception message."""
+
+    def test_transient_message_does_not_contain_raw_stderr(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Sentinel injected into transient stderr must not appear in message.
+
+        If the exception message leaks the raw stderr string, any secret
+        material in that output (auth headers, tokens in error responses)
+        could end up in structured logs or tracebacks.
+        """
+        monkeypatch.setenv("GH_TOKEN", _VALID_TOKEN)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+        sentinel = "SENTINEL_SECRET_DO_NOT_LEAK_xyzzy1234"
+        stderr_with_sentinel = f"429 Too Many Requests — {sentinel}"
+
+        with patch.object(
+            auth_mod,
+            "_run",
+            return_value=_completed(
+                stdout="",
+                returncode=1,
+                stderr=stderr_with_sentinel,
+            ),
+        ):
+            with pytest.raises(TokenValidationError) as exc_info:
+                validate_github_token(sleep_fn=lambda _: None)
+
+        msg = str(exc_info.value)
+        assert sentinel not in msg, (
+            f"Raw stderr sentinel must not appear in the exception "
+            f"message. Got: {msg!r}"
+        )
+
+    def test_permanent_message_does_not_contain_raw_stderr(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Sentinel injected into permanent stderr must not appear in message.
+
+        Permanent failures may include user-identifying information in the
+        response body; leaking that into the exception could expose PII.
+        """
+        monkeypatch.setenv("GH_TOKEN", _VALID_TOKEN)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+        sentinel = "SENTINEL_SECRET_DO_NOT_LEAK_xyzzy5678"
+        stderr_with_sentinel = f"401 Unauthorized — {sentinel}"
+
+        with patch.object(
+            auth_mod,
+            "_run",
+            return_value=_completed(
+                stdout="",
+                returncode=1,
+                stderr=stderr_with_sentinel,
+            ),
+        ):
+            with pytest.raises(TokenValidationError) as exc_info:
+                validate_github_token(sleep_fn=lambda _: None)
+
+        msg = str(exc_info.value)
+        assert sentinel not in msg, (
+            f"Raw stderr sentinel must not appear in the exception "
+            f"message. Got: {msg!r}"
+        )

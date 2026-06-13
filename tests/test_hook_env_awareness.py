@@ -45,9 +45,7 @@ def _bypass_before_run_auth(monkeypatch: pytest.MonkeyPatch) -> None:
     are not testing auth; they patch ``validate_github_token`` away so the
     auth gate is transparent and the fetch/rebase logic under test runs.
     """
-    monkeypatch.setattr(
-        before_run_mod, "validate_github_token", lambda: None
-    )
+    monkeypatch.setattr(before_run_mod, "validate_github_token", lambda: None)
 
 
 # ---------------------------------------------------------------------------
