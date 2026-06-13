@@ -771,8 +771,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                         "outcome": str(worker_result),
                         "severity": "info",
                         "detail": (
-                            f"worker for issue #{n} returned"
-                            f" {worker_result!r}"
+                            f"worker for issue #{n} returned {worker_result!r}"
                         ),
                         "tick_id": None,
                     }
