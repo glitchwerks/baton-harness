@@ -6,6 +6,7 @@
 #   - Creates a trivial trigger issue (agent-ready)
 #   - Creates a hello-feature milestone with two DAG-ordered issues
 #   - Writes a stub CI workflow to the sandbox repo and pushes it
+#   - Seeds .symphony/ into the sandbox repo's .gitignore and pushes it
 #
 # Usage:
 #   bin/init-sandbox.sh [--help|-h]
@@ -33,6 +34,7 @@ print_safety_banner() {
     echo "    - Creates labels" >&2
     echo "    - Creates GitHub issues" >&2
     echo "    - Pushes a CI workflow file to the default branch" >&2
+    echo "    - Seeds .symphony/ into the sandbox repo's .gitignore" >&2
     echo "" >&2
     echo "  ONLY point it at a THROWAWAY SANDBOX repo — never a real project." >&2
     echo "  Target repo is read from BH_REPO_OWNER / BH_REPO_NAME." >&2
@@ -65,6 +67,8 @@ Steps performed:
   4. Create hello-feature milestone + 2 DAG-ordered issues (B blocked_by A)
   5. Write stub CI workflow (.github/workflows/ci.yml) to BH_PROJECT_ROOT
      and push to the sandbox default branch (idempotent if unchanged)
+  6. Seed .symphony/ into BH_PROJECT_ROOT/.gitignore and push
+     (idempotent — skipped if the entry is already present)
 
 Idempotency notes:
   - Labels: duplicates are tolerated; existing labels are left unchanged.
@@ -400,6 +404,36 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Seed .symphony/ into the sandbox repo's .gitignore
+#
+# The daemon writes run state to <repo_root>/.symphony/state.json; without
+# this entry, `gh pr create` emits "Warning: 1 uncommitted change".
+# ---------------------------------------------------------------------------
+
+echo "baton-harness: seeding .symphony/ into sandbox .gitignore ..."
+
+GITIGNORE_FILE="${BH_PROJECT_ROOT}/.gitignore"
+
+if [[ ! -f "${GITIGNORE_FILE}" ]]; then
+    printf '.symphony/\n' > "${GITIGNORE_FILE}"
+    echo "baton-harness:   .gitignore created with .symphony/ entry"
+elif grep -qxF '.symphony/' "${GITIGNORE_FILE}"; then
+    echo "baton-harness:   .symphony/ already in .gitignore, skipping"
+else
+    printf '.symphony/\n' >> "${GITIGNORE_FILE}"
+    echo "baton-harness:   .symphony/ appended to .gitignore"
+fi
+
+git -C "${BH_PROJECT_ROOT}" add ".gitignore"
+if git -C "${BH_PROJECT_ROOT}" diff --cached --quiet -- ".gitignore"; then
+    echo "baton-harness:   .gitignore unchanged, skipping commit"
+else
+    git -C "${BH_PROJECT_ROOT}" commit -m "chore: gitignore .symphony/ daemon state"
+    git -C "${BH_PROJECT_ROOT}" push -u origin HEAD:"${DEFAULT_BRANCH}"
+    echo "baton-harness:   .gitignore committed and pushed to sandbox"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 
@@ -416,6 +450,7 @@ echo "    - Milestone 'hello-feature' (#${MILESTONE_NUMBER})"
 echo "    - Issue A:  ${ISSUE_A_URL}"
 echo "    - Issue B:  ${ISSUE_B_URL}  (blocked_by A)"
 echo "    - Stub CI workflow: .github/workflows/ci.yml"
+echo "    - .symphony/ entry in: .gitignore"
 echo ""
 echo "  Next steps:"
 echo "    1. Set BH_REPO_OWNER, BH_REPO_NAME, BH_PROJECT_ROOT in your shell"

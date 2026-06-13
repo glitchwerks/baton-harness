@@ -63,6 +63,20 @@ Replace `<owner>/<repo>` with your sandbox repo slug (e.g. `alice/sandbox-baton`
 
 ---
 
+## Target-repo `.gitignore` requirement
+
+The daemon writes orchestrator state to `.symphony/state.json` inside the managed target repo. If `.symphony/` is not in that repo's `.gitignore`, `gh pr create` (which the daemon invokes from that working directory) emits a `Warning: 1 uncommitted change` on every PR creation, and the state file appears as untracked clutter in `git status`.
+
+Add this line to the target repo's `.gitignore` before running the daemon:
+
+```
+.symphony/
+```
+
+If you are using `bin/init-sandbox.sh` to provision a throwaway sandbox, this is seeded automatically. For any real repo you point the daemon at, add the entry yourself and commit it before the first daemon run.
+
+---
+
 ## Environment variables
 
 Set these in your shell before running the launcher:
