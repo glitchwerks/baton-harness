@@ -2040,3 +2040,302 @@ def test_feature_branch_pushed_to_origin_before_run_worker() -> None:
         f"(first push at index {first_push_idx}, "
         f"first worker at index {first_worker_idx})"
     )
+
+
+# ---------------------------------------------------------------------------
+# Issue #65: skip gh pr create when feature branch has zero commits over main
+# ---------------------------------------------------------------------------
+
+
+def test_zero_commit_branch_skips_draft_pr_and_logs_info(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Zero commits over main → no gh pr create call; INFO log emitted.
+
+    When ``git rev-list --count origin/main..<branch>`` returns ``0``,
+    ``_run_work_unit`` must skip ``_open_draft_pr`` entirely and emit an
+    informational log line describing the skip.
+
+    Asserts:
+    - No ``_run`` call whose command list contains ``"gh"``, ``"pr"``,
+      and ``"create"`` occurs after the completion push.
+    - At least one INFO log record contains a stable substring indicating
+      the skip (``"no commits"`` or ``"skipping"`` — implementation may
+      choose exact wording).
+
+    This test MUST FAIL against the current implementation because
+    ``_open_draft_pr`` is always called today.
+    """
+    ready_issues = [
+        {
+            "number": 10,
+            "title": "Issue 10",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/10",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        }
+    ]
+
+    pr_create_cmds: list[list[str]] = []
+
+    def recording_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        """Record pr-create calls; inject rev-list count of 0."""
+        if "pr" in cmd and "create" in cmd:
+            pr_create_cmds.append(list(cmd))
+        # Inject zero-commit count for the rev-list --count check.
+        # The implementation will call:
+        #   git -C <repo_root> rev-list --count origin/main..<branch>
+        if (
+            "git" in cmd
+            and "rev-list" in cmd
+            and "--count" in cmd
+        ):
+            return _ok("0\n")
+        return _make_run_side_effect(
+            ready_issues=ready_issues,
+            pr_head_sha="abc123",
+            issue_branch="baton/issue-10-10",
+            feature_branch_exists=False,
+        )(cmd)
+
+    with (
+        patch.object(daemon_mod, "_run", side_effect=recording_run),
+        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch("baton_harness.chain.daemon.escalate", return_value=True),
+        _patch_run_worker("pr_created"),
+    ):
+        import logging
+
+        with caplog.at_level(logging.INFO, logger="baton_harness"):
+            asyncio.run(
+                run_daemon(
+                    _minimal_wf_config(),
+                    [_repo_cfg()],
+                    once=True,
+                    poll_interval_s=0,
+                )
+            )
+
+    # Primary assertion: no gh pr create must have been invoked.
+    gh_pr_create_cmds = [
+        c
+        for c in pr_create_cmds
+        if "gh" in c and "pr" in c and "create" in c
+    ]
+    assert not gh_pr_create_cmds, (
+        "gh pr create must NOT be called when rev-list --count returns 0;"
+        f" got: {gh_pr_create_cmds}"
+    )
+
+    # Secondary assertion: an INFO log line must describe the skip.
+    skip_log_records = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.INFO
+        and (
+            "no commits" in r.message.lower()
+            or "skipping" in r.message.lower()
+        )
+    ]
+    assert skip_log_records, (
+        "Expected an INFO log record containing 'no commits' or 'skipping'"
+        " when draft PR creation is skipped; records seen:"
+        f" {[r.message for r in caplog.records if r.levelno == logging.INFO]}"
+    )
+
+
+def test_nonzero_commit_branch_proceeds_to_draft_pr() -> None:
+    """Non-zero commits over main → gh pr create IS called (regression guard).
+
+    When ``git rev-list --count origin/main..<branch>`` returns ``3``,
+    the existing ``_open_draft_pr`` path must execute unchanged.
+
+    This test exercises the same rev-list seam as
+    ``test_zero_commit_branch_skips_draft_pr_and_logs_info`` but with
+    stdout ``"3\\n"``, confirming the guard does not break the normal path.
+    """
+    ready_issues = [
+        {
+            "number": 10,
+            "title": "Issue 10",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/10",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        }
+    ]
+
+    pr_create_cmds: list[list[str]] = []
+
+    def recording_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        """Record pr-create calls; inject rev-list count of 3."""
+        if "pr" in cmd and "create" in cmd:
+            pr_create_cmds.append(list(cmd))
+        # Inject non-zero commit count: 3 commits over main.
+        if (
+            "git" in cmd
+            and "rev-list" in cmd
+            and "--count" in cmd
+        ):
+            return _ok("3\n")
+        return _make_run_side_effect(
+            ready_issues=ready_issues,
+            pr_head_sha="abc123",
+            issue_branch="baton/issue-10-10",
+            feature_branch_exists=False,
+        )(cmd)
+
+    with (
+        patch.object(daemon_mod, "_run", side_effect=recording_run),
+        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch("baton_harness.chain.daemon.escalate", return_value=True),
+        _patch_run_worker("pr_created"),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    gh_pr_create_cmds = [
+        c
+        for c in pr_create_cmds
+        if "gh" in c and "pr" in c and "create" in c
+    ]
+    assert gh_pr_create_cmds, (
+        "gh pr create MUST be called when rev-list --count returns 3"
+        " (non-zero commits); no pr create call recorded"
+    )
+
+
+def test_revlist_count_failure_falls_through_to_draft_pr() -> None:
+    """rev-list --count failure → gh pr create still attempted (fail-open).
+
+    If the ``git rev-list --count`` command exits non-zero (e.g. the
+    remote ref is not yet fetched), the daemon must NOT silently skip
+    ``_open_draft_pr``.  Skipping on error would cause silent data loss.
+    The guard must be fail-open: any subprocess error from the count
+    command causes the code to proceed as if the count is non-zero.
+    """
+    ready_issues = [
+        {
+            "number": 10,
+            "title": "Issue 10",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/10",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        }
+    ]
+
+    pr_create_cmds: list[list[str]] = []
+
+    def recording_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        """Record pr-create calls; make rev-list --count fail."""
+        if "pr" in cmd and "create" in cmd:
+            pr_create_cmds.append(list(cmd))
+        # Simulate rev-list failing (unknown ref / network issue).
+        if (
+            "git" in cmd
+            and "rev-list" in cmd
+            and "--count" in cmd
+        ):
+            return _fail("fatal: unknown revision 'origin/main'")
+        return _make_run_side_effect(
+            ready_issues=ready_issues,
+            pr_head_sha="abc123",
+            issue_branch="baton/issue-10-10",
+            feature_branch_exists=False,
+        )(cmd)
+
+    with (
+        patch.object(daemon_mod, "_run", side_effect=recording_run),
+        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch("baton_harness.chain.daemon.escalate", return_value=True),
+        _patch_run_worker("pr_created"),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    gh_pr_create_cmds = [
+        c
+        for c in pr_create_cmds
+        if "gh" in c and "pr" in c and "create" in c
+    ]
+    assert gh_pr_create_cmds, (
+        "gh pr create MUST be called when rev-list --count fails (fail-open"
+        " guard); no pr create call recorded"
+    )
