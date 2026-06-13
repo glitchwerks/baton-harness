@@ -874,7 +874,32 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
         f"{_CLAUDE_ATTRIBUTION}"
     )
     pr_title = f"[daemon] {slug}"
-    _open_draft_pr(owner, repo, branch_name, pr_title, pr_body)
+
+    # Guard: skip _open_draft_pr when the feature branch has zero commits
+    # over origin/main.  This prevents an empty "Warning: 1 uncommitted
+    # change" PR when the agent produced no commits (issue #65).
+    # Fail-open: if rev-list exits non-zero or stdout is unparseable, we
+    # proceed to _open_draft_pr rather than silently losing the PR.
+    count_proc = _run(
+        [
+            "git",
+            "-C",
+            str(repo_root),
+            "rev-list",
+            "--count",
+            f"origin/main..{branch_name}",
+        ]
+    )
+    if count_proc.returncode == 0 and count_proc.stdout.strip() == "0":
+        _log.info(
+            "daemon: work unit %r produced no commits over main"
+            " — skipping draft PR (%d merged, %d parked)",
+            slug,
+            len(merged_issues),
+            len(parked_reasons),
+        )
+    else:
+        _open_draft_pr(owner, repo, branch_name, pr_title, pr_body)
 
 
 # ---------------------------------------------------------------------------
