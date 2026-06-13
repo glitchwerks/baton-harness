@@ -20,8 +20,15 @@ import logging
 import os
 import subprocess
 import urllib.request
+from datetime import datetime, timezone
+from typing import Literal
+
+from baton_harness.chain.runlog import RunLog
 
 _log = logging.getLogger(__name__)
+
+# Loud prefix prepended to the escalation body for critical-severity alerts.
+_CRITICAL_PREFIX = "🚨 CRITICAL: "
 
 # ---------------------------------------------------------------------------
 # Subprocess helper (the sole gh I/O seam; patch this in tests)
@@ -180,6 +187,90 @@ def escalate(
         )
 
     return durable_landed
+
+
+def alert(
+    owner: str,
+    repo: str,
+    issue: int | None,
+    summary: str,
+    *,
+    severity: Literal["info", "warn", "critical"],
+    runlog: RunLog | None = None,
+    kind: str = "block",
+) -> bool:
+    """Post an alert through the severity-routing layer.
+
+    Routes the alert to ``escalate()`` based on ``severity``:
+
+    - ``"info"`` — never calls ``escalate()``; returns ``True`` immediately.
+      Useful for informational events that should be logged but not escalated.
+    - ``"warn"`` — calls ``escalate(owner, repo, issue, summary, kind=kind)``
+      with the summary unchanged.
+    - ``"critical"`` — prefixes the summary with a loud marker (the module-
+      level ``_CRITICAL_PREFIX`` constant) and calls ``escalate()`` with the
+      prefixed body.  The original summary remains a substring of the body
+      passed to ``escalate()``.
+
+    A runlog event is always emitted (for all severities, including info)
+    when ``runlog`` is not ``None``.  Runlog emission is best-effort — any
+    exception is swallowed so that the alert routing itself is never aborted
+    by an observability failure.  When ``runlog`` is ``None``, emission is
+    skipped silently.
+
+    Args:
+        owner: The GitHub repository owner (organisation or user login).
+        repo: The repository name (without the owner prefix).
+        issue: The issue number for the alert.  Pass ``None`` for repo-level
+            / tick-level alerts where no valid issue target exists.
+        summary: The human-readable alert summary.
+        severity: Routing level — ``"info"``, ``"warn"``, or ``"critical"``.
+        runlog: Optional ``RunLog`` handle for best-effort event emission.
+            When ``None``, emission is skipped without error.
+        kind: Escalation kind hint passed through to ``escalate()`` unchanged.
+            Defaults to ``"block"``.
+
+    Returns:
+        ``True`` for ``severity="info"`` (no escalation attempted).
+        For ``"warn"`` and ``"critical"``, returns the result of
+        ``escalate()`` — ``True`` if the GitHub comment landed, ``False``
+        otherwise.
+
+    Raises:
+        Nothing.  All exceptions from runlog emission are swallowed;
+        ``escalate()`` itself does not raise.
+    """
+    # ------------------------------------------------------------------
+    # 1. Emit a runlog escalation event (best-effort, all severities).
+    # ------------------------------------------------------------------
+    if runlog is not None:
+        try:
+            runlog.emit(
+                {
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "event": "escalation",
+                    "issue": issue,
+                    "outcome": None,
+                    "severity": severity,
+                    "detail": summary,
+                    "tick_id": None,
+                }
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    # ------------------------------------------------------------------
+    # 2. Route by severity.
+    # ------------------------------------------------------------------
+    if severity == "info":
+        return True
+
+    if severity == "warn":
+        return escalate(owner, repo, issue, summary, kind=kind)
+
+    # severity == "critical"
+    body = f"{_CRITICAL_PREFIX}{summary}"
+    return escalate(owner, repo, issue, body, kind=kind)
 
 
 def _post_slack(
