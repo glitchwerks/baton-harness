@@ -26,8 +26,9 @@ import logging
 from pathlib import Path
 from unittest.mock import patch
 
-import baton_harness.chain.runlog as runlog_mod
 import pytest
+
+import baton_harness.chain.runlog as runlog_mod
 from baton_harness.chain.runlog import RunLog
 
 # ---------------------------------------------------------------------------
