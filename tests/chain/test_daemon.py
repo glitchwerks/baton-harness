@@ -2167,14 +2167,14 @@ def test_zero_commit_branch_skips_draft_pr_and_logs_info(
 
 
 def test_nonzero_commit_branch_proceeds_to_draft_pr() -> None:
-    """Non-zero commits over main → gh pr create IS called (regression guard).
+    r"""Non-zero commits over main → gh pr create IS called (regression guard).
 
     When ``git rev-list --count origin/main..<branch>`` returns ``3``,
     the existing ``_open_draft_pr`` path must execute unchanged.
 
     This test exercises the same rev-list seam as
     ``test_zero_commit_branch_skips_draft_pr_and_logs_info`` but with
-    stdout ``"3\\n"``, confirming the guard does not break the normal path.
+    stdout ``"3\n"``, confirming the guard does not break the normal path.
     """
     ready_issues = [
         {
