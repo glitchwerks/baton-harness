@@ -634,7 +634,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                     repo,
                     n,
                     f"Issue #{n} needs CI-gate re-entry but has no open PR.",
-                    severity="warn",
+                    severity="critical",
                     kind="debug",
                     runlog=runlog,
                 )

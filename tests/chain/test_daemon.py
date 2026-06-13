@@ -2773,3 +2773,86 @@ def test_worker_exception_routes_through_alert_severity_warn() -> None:
         "Expected alert(severity='warn') for worker exception; "
         f"all alert calls: {mock_alert.call_args_list}"
     )
+
+
+def test_ci_gate_reentry_no_open_pr_alert_is_critical() -> None:
+    """CI-gate re-entry with no open PR uses alert severity='critical'.
+
+    The contract assigns severity='critical' to the park site whose
+    summary contains ``"needs CI-gate re-entry but has no open PR"``
+    (park reason ``"ci_gate_reentry: no open PR"``).  We drive the
+    path by placing issue #10 in ``ci_gate_reentry`` and mocking
+    ``_find_issue_pr`` to return ``(None, None)``, then assert that
+    ``alert`` was called with ``severity='critical'``.
+    """
+    ready_issues = [
+        {
+            "number": 10,
+            "title": "Issue 10",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/10",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        }
+    ]
+
+    mock_alert = MagicMock(return_value=True)
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=_make_run_side_effect(
+                ready_issues=ready_issues,
+                pr_head_sha="abc123",
+                issue_branch="baton/issue-10-10",
+                feature_branch_exists=False,
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            return_value=[],
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.daemon.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry={10},
+                redispatch=set(),
+            ),
+        ),
+        # No open PR found for the ci_gate_reentry issue.
+        patch(
+            "baton_harness.chain.daemon._find_issue_pr",
+            return_value=(None, None),
+        ),
+        patch("baton_harness.chain.daemon.alert", mock_alert),
+        _patch_run_worker("pr_created"),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    critical_calls = [
+        c
+        for c in mock_alert.call_args_list
+        if c.kwargs.get("severity") == "critical"
+    ]
+    assert critical_calls, (
+        "Expected alert(severity='critical') for ci_gate_reentry with no"
+        f" open PR; all alert calls: {mock_alert.call_args_list}"
+    )
