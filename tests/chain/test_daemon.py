@@ -2856,3 +2856,136 @@ def test_ci_gate_reentry_no_open_pr_alert_is_critical() -> None:
         "Expected alert(severity='critical') for ci_gate_reentry with no"
         f" open PR; all alert calls: {mock_alert.call_args_list}"
     )
+
+
+def test_ci_gate_reentry_failed_outcome_alert_is_critical() -> None:
+    """CI-gate re-entry with a non-MERGED outcome is severity='critical'.
+
+    The contract assigns severity='critical' to the site whose summary
+    contains ``"CI-gate re-entry failed: {outcome.name}"``.  We drive
+    the path by placing issue #10 in ``ci_gate_reentry`` and returning
+    ``MergeOutcome.CI_FAILED`` from ``merge_issue_branch``, then assert
+    that ``alert`` was called with ``severity='critical'`` for that issue.
+    """
+    ready_issues = [
+        {
+            "number": 10,
+            "title": "Issue 10",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/10",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        }
+    ]
+
+    mock_alert = MagicMock(return_value=True)
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=_make_run_side_effect(
+                ready_issues=ready_issues,
+                pr_head_sha="abc123",
+                issue_branch="baton/issue-10-10",
+                feature_branch_exists=False,
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            return_value=[],
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.daemon.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry={10},
+                redispatch=set(),
+            ),
+        ),
+        # Open PR found — reentry proceeds to merge_issue_branch.
+        patch(
+            "baton_harness.chain.daemon._find_issue_pr",
+            return_value=("baton/issue-10-10", "abc123"),
+        ),
+        # Simulate CI_FAILED from the re-entry merge gate.
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.CI_FAILED,
+        ),
+        patch("baton_harness.chain.daemon.alert", mock_alert),
+        _patch_run_worker("pr_created"),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    critical_calls = [
+        c
+        for c in mock_alert.call_args_list
+        if c.kwargs.get("severity") == "critical"
+    ]
+    assert critical_calls, (
+        "Expected alert(severity='critical') for ci_gate_reentry CI_FAILED"
+        f" outcome; all alert calls: {mock_alert.call_args_list}"
+    )
+
+
+def test_repo_level_tick_failure_alert_is_critical() -> None:
+    """Outer run_daemon repo-level handler fires alert severity='critical'.
+
+    When ``_poll_and_run`` raises an unhandled exception, the outer
+    ``run_daemon`` try/except fires ``alert(..., issue=None,
+    severity='critical')``.  We force the raise by patching
+    ``_poll_and_run`` directly, then assert the critical alert call with
+    ``issue=None``.
+    """
+    mock_alert = MagicMock(return_value=True)
+
+    with (
+        patch(
+            "baton_harness.chain.daemon._poll_and_run",
+            side_effect=RuntimeError("poll explodes"),
+        ),
+        patch("baton_harness.chain.daemon.alert", mock_alert),
+        # Suppress observability startup so runlog is None; simpler env.
+        patch(
+            "baton_harness.chain.daemon.load_obs_config",
+            side_effect=RuntimeError("no obs"),
+        ),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    # The outer handler must have called alert with severity='critical'
+    # and issue=None (repo-level failure, not tied to a specific issue).
+    critical_calls = [
+        c
+        for c in mock_alert.call_args_list
+        if c.kwargs.get("severity") == "critical"
+        and c.args[2] is None  # issue positional arg
+    ]
+    assert critical_calls, (
+        "Expected alert(severity='critical', issue=None) for daemon tick"
+        f" failure; all alert calls: {mock_alert.call_args_list}"
+    )

@@ -595,7 +595,12 @@ def test_alert_info_without_runlog_returns_true_and_does_not_raise() -> None:
 def test_alert_runlog_failure_does_not_propagate_and_escalate_still_fires(
     tmp_path: Path,
 ) -> None:
-    """A runlog._write_line that raises must be swallowed by alert().
+    """alert()'s own try/except around runlog.emit() must swallow failures.
+
+    Patching ``RunLog.emit`` directly (not the internal ``_write_line``
+    seam) exercises the guard inside ``alert()`` itself.  If that guard
+    were removed, the test would fail because the ``RuntimeError`` would
+    propagate out of ``alert()``.
 
     escalate() must still be called for severity='warn' even when the
     runlog fails.
@@ -605,18 +610,15 @@ def test_alert_runlog_failure_does_not_propagate_and_escalate_still_fires(
     with (
         patch.object(esc_mod, "_run", return_value=_ok()) as mock_run,
         patch.dict("os.environ", {}, clear=False),
-        patch.object(
-            runlog_mod,
-            "_write_line",
-            side_effect=OSError("disk full"),
-        ),
+        patch.object(rl, "emit", side_effect=RuntimeError("emit explodes")),
     ):
         import os
 
         os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
         from baton_harness.chain.escalation import alert
 
-        # Must not raise despite the failing write seam.
+        # Must not raise despite emit() failing — alert()'s guard protects
+        # the caller.
         result = alert(
             _OWNER,
             _REPO,
