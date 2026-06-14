@@ -33,6 +33,7 @@ import logging
 import os
 import tempfile
 import threading
+import urllib.request
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -47,6 +48,10 @@ _log = logging.getLogger(__name__)
 # liveness updates arrive well before any external stall threshold
 # triggers.
 _DEFAULT_HEARTBEAT_CADENCE_S: float = 30.0
+
+# Ping timeout — must be well under _DEFAULT_HEARTBEAT_CADENCE_S so a
+# hung ping cannot stall the beat.
+_DEFAULT_PING_TIMEOUT_S: float = 5.0
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +162,36 @@ def _write_heartbeat(path: Path, timestamp: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Ping-URL seam
+# ---------------------------------------------------------------------------
+
+
+def _ping_url(url: str, *, timeout: float = _DEFAULT_PING_TIMEOUT_S) -> None:
+    """Perform a best-effort GET ping to *url*.
+
+    This is the **sole network-ping surface** for Healthchecks.io-style
+    dead-man's-switch monitors.  Tests can patch this single symbol to
+    intercept all outbound pings.
+
+    The response body is read and discarded immediately so the
+    underlying connection is released promptly.  Any exception from
+    ``urlopen`` is allowed to propagate to the caller, which is
+    responsible for swallowing it.
+
+    Args:
+        url: Target URL for the GET request (e.g.
+            ``"https://hc-ping.com/abc-123"``).
+        timeout: Socket timeout in seconds.  Defaults to
+            ``_DEFAULT_PING_TIMEOUT_S`` (5 s), well under the
+            30 s heartbeat cadence so a hung ping cannot stall
+            the beat.
+    """
+    resp = urllib.request.urlopen(url, timeout=timeout)  # noqa: S310
+    resp.read()
+    resp.close()
+
+
+# ---------------------------------------------------------------------------
 # Per-tick work (deterministic, no sleeping, fully guarded)
 # ---------------------------------------------------------------------------
 
@@ -179,9 +214,16 @@ def _heartbeat_tick(
     1. Capture ``t = now()``.
     2. Call ``_write_heartbeat(obs.heartbeat_file, t.isoformat())`` —
        the liveness signal.  Exceptions are logged and swallowed.
-    3. Emit a ``{"event": "heartbeat", ...}`` runlog event (best-effort,
+    3. If ``obs.heartbeat_ping_url`` is not ``None``, call
+       ``_ping_url(obs.heartbeat_ping_url)`` — a best-effort GET to an
+       external dead-man's-switch monitor (e.g. Healthchecks.io).
+       Exceptions are logged and swallowed; a ping failure never
+       prevents steps 4 or 5 from executing.  When
+       ``heartbeat_ping_url`` is ``None``, this step is skipped
+       entirely.
+    4. Emit a ``{"event": "heartbeat", ...}`` runlog event (best-effort,
        if *runlog* is provided).
-    4. Check for a stall condition:
+    5. Check for a stall condition:
        - ``state.in_progress_since`` is set,
        - ``(t - state.in_progress_since).total_seconds()``
          is **strictly greater than** ``obs.heartbeat_stall_s``, and
@@ -197,7 +239,7 @@ def _heartbeat_tick(
         runlog: Optional run-log handle for best-effort event emission.
         now: UTC ``datetime`` factory (injectable for tests).
     """
-    # ---- Step 1 & 2: capture time, write liveness signal (guarded). ----
+    # ---- Steps 1-2: capture time, write liveness signal (guarded). -----
     try:
         t = now()
     except Exception as exc:  # noqa: BLE001
@@ -209,7 +251,14 @@ def _heartbeat_tick(
     except Exception as exc:  # noqa: BLE001
         _log.warning("_heartbeat_tick: _write_heartbeat failed: %s", exc)
 
-    # ---- Step 3: runlog heartbeat event (best-effort). -----------------
+    # ---- Step 3: ping external dead-man's-switch (best-effort). --------
+    if obs.heartbeat_ping_url is not None:
+        try:
+            _ping_url(obs.heartbeat_ping_url)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("_heartbeat_tick: _ping_url failed: %s", exc)
+
+    # ---- Step 4: runlog heartbeat event (best-effort). -----------------
     if runlog is not None:
         try:
             runlog.emit(
@@ -228,7 +277,7 @@ def _heartbeat_tick(
                 "_heartbeat_tick: runlog.emit(heartbeat) failed: %s", exc
             )
 
-    # ---- Step 4: stall detection (debounced). --------------------------
+    # ---- Step 5: stall detection (debounced). --------------------------
     # Snapshot all relevant fields into locals *before* any conditional
     # logic to avoid torn reads.  The daemon thread can call
     # mark_in_progress() or clear() (each a multi-field write) between
