@@ -202,9 +202,7 @@ def test_heartbeat_monitor_emits_liveness_write_each_iteration(
             )
         )
 
-    assert len(written) >= 2, (
-        "Liveness file must be written on each iteration"
-    )
+    assert len(written) >= 2, "Liveness file must be written on each iteration"
 
 
 def test_poll_and_run_does_not_touch_heartbeat_write_seam(
@@ -242,11 +240,7 @@ def test_poll_and_run_does_not_touch_heartbeat_write_seam(
         cmd_str = " ".join(cmd)
         if "issue" in cmd_str and "list" in cmd_str:
             return _ok(_j.dumps(ready_issues))
-        if (
-            "issue" in cmd_str
-            and "view" in cmd_str
-            and "edit" not in cmd_str
-        ):
+        if "issue" in cmd_str and "view" in cmd_str and "edit" not in cmd_str:
             nums = [p for p in cmd if p.isdigit()]
             n = int(nums[0]) if nums else 10
             return _ok(
@@ -442,9 +436,7 @@ def test_stall_alert_fires_once_at_critical_severity(
             )
         )
 
-    stall_alerts = [
-        a for a in alert_calls if a["severity"] == "critical"
-    ]
+    stall_alerts = [a for a in alert_calls if a["severity"] == "critical"]
     assert len(stall_alerts) == 1, (
         f"Expected exactly 1 critical stall alert; "
         f"got {len(stall_alerts)}: {stall_alerts}"
@@ -547,9 +539,7 @@ def test_stall_resets_after_clear_and_mark_in_progress(
         if iteration[0] == 1:
             # Reset: debounce must clear so episode 2 can fire.
             state.clear()
-            state.mark_in_progress(
-                owner, repo, issue_num, _utc(clock[0])
-            )
+            state.mark_in_progress(owner, repo, issue_num, _utc(clock[0]))
         if iteration[0] >= 4:
             stop.set()
 
@@ -748,9 +738,7 @@ def test_write_heartbeat_uses_temp_then_os_replace(tmp_path: Path) -> None:
     with patch("os.replace", side_effect=spy_replace):
         _write_heartbeat(target, ts)
 
-    assert target.exists(), (
-        "_write_heartbeat must create the target file"
-    )
+    assert target.exists(), "_write_heartbeat must create the target file"
     content = target.read_text(encoding="utf-8")
     assert ts in content, (
         f"Target file must contain the timestamp; got: {content!r}"
@@ -758,8 +746,7 @@ def test_write_heartbeat_uses_temp_then_os_replace(tmp_path: Path) -> None:
     assert replace_calls, "os.replace must be used (temp-then-replace)"
     _, dst = replace_calls[-1]
     assert dst == str(target), (
-        f"os.replace destination must be the target path {target}; "
-        f"got {dst!r}"
+        f"os.replace destination must be the target path {target}; got {dst!r}"
     )
 
 

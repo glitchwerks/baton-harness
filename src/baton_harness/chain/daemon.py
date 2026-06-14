@@ -1220,9 +1220,7 @@ async def run_daemon(
                 heartbeat_monitor(obs, liveness_state, runlog=runlog)
             )
         except Exception as exc:  # noqa: BLE001
-            _log.warning(
-                "daemon: heartbeat monitor startup failed: %s", exc
-            )
+            _log.warning("daemon: heartbeat monitor startup failed: %s", exc)
             monitor_task = None
 
     try:

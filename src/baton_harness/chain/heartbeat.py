@@ -70,9 +70,7 @@ class LivenessState:
     in_progress_repo: str | None = None
     in_progress_issue: int | None = None
     in_progress_since: datetime | None = None
-    _stall_alerted: bool = dataclasses.field(
-        default=False, repr=False
-    )
+    _stall_alerted: bool = dataclasses.field(default=False, repr=False)
 
     def mark_in_progress(
         self,
@@ -136,9 +134,7 @@ def _write_heartbeat(path: Path, timestamp: str) -> None:
         timestamp: ISO-8601 UTC timestamp string to write.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
-        dir=path.parent, prefix=".heartbeat-tmp-"
-    )
+    fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=".heartbeat-tmp-")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(timestamp)
@@ -237,8 +233,7 @@ async def heartbeat_monitor(  # noqa: C901
                     )
                 except Exception as exc:  # noqa: BLE001
                     _log.warning(
-                        "heartbeat_monitor: runlog.emit(heartbeat)"
-                        " failed: %s",
+                        "heartbeat_monitor: runlog.emit(heartbeat) failed: %s",
                         exc,
                     )
 
