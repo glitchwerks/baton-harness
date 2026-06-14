@@ -290,3 +290,62 @@ One daemon per repo. The binding constraint is the GitHub dependency API (`block
 - **Cycle detection:** `graphlib.TopologicalSorter` raises on cycles at construction time.
 - **C1 interaction:** daemon is the sole promoter during a run; serial per-DAG execution eliminates concurrent claim races.
 - **CI trigger:** must be extended to `feature/**` glob before CI-gated merges into the feature branch can work. This is a prerequisite before the daemon can complete CI-gated merges — captured as an implementation prerequisite for issue #27.
+
+---
+
+## 11. Daemon liveness monitoring [implemented — issue #79]
+
+The heartbeat thread (`src/baton_harness/chain/heartbeat.py`) provides two independent liveness signals on every tick. The cadence is 30 s (`_DEFAULT_HEARTBEAT_CADENCE_S`).
+
+### Two monitoring modes
+
+**Mode A — local heartbeat file (`BH_HEARTBEAT_FILE`)**
+
+On each tick the daemon writes an ISO-8601 UTC timestamp to a file. The default path is `${BH_PROJECT_ROOT}/.baton-harness/heartbeat`; override with `BH_HEARTBEAT_FILE` (absolute path). An external process — a cron job, a container health-check, or a file-age alert — can compare the file's modification time or contents against a threshold to determine whether the daemon is alive.
+
+When to use: local deployments where a network endpoint is unavailable or unwanted; as a complement to the webhook ping (both signals are always written regardless of whether Mode B is configured).
+
+**Mode B — external dead-man's-switch webhook ping (`BH_HEARTBEAT_PING_URL`)**
+
+When `BH_HEARTBEAT_PING_URL` is set, the daemon issues a best-effort HTTP GET to that URL on every tick. If the env var is unset, no ping is sent and Mode A is the only liveness signal. The mechanism is compatible with any Healthchecks.io-style ping-URL service (`obs_config.py` line 206: `os.environ.get("BH_HEARTBEAT_PING_URL") or None`).
+
+When to use: unattended server deployments where you want an alert delivered without polling a local filesystem; the hosted service handles the alerting logic and silencing.
+
+### Wiring an external monitor (Healthchecks.io example)
+
+1. Create a new check at <https://healthchecks.io>. Set the **Period** to 30 s (matching `_DEFAULT_HEARTBEAT_CADENCE_S`). Set the **Grace** period — see "Staleness threshold guidance" below.
+2. Copy the check's ping URL (e.g. `https://hc-ping.com/<uuid>`).
+3. Export it before starting the daemon:
+   ```bash
+   export BH_HEARTBEAT_PING_URL=https://hc-ping.com/<uuid>
+   bin/run-daemon.sh
+   ```
+4. The daemon will GET that URL every 30 s. When pings stop arriving, the service fires its configured alarm after the grace period expires.
+
+The same approach works with any service that accepts a GET ping and alarms on silence: UptimeRobot (heartbeat monitor type), Better Uptime (heartbeat), or a self-hosted equivalent.
+
+### Staleness threshold guidance
+
+Set the external monitor's expected-period to the heartbeat cadence:
+
+| Parameter | Recommended value | Derivation |
+|---|---|---|
+| Expected period | 30 s | `_DEFAULT_HEARTBEAT_CADENCE_S` (`heartbeat.py` line 50) |
+| Grace / alert threshold | 105 s (≈ 3 × 30 s + 15 s margin) | 3 missed beats + one ping-timeout (`_DEFAULT_PING_TIMEOUT_S` = 5 s, `heartbeat.py` line 54) + a 15 s fudge for system scheduling jitter |
+
+A threshold of one or two missed beats produces spurious alarms from ordinary scheduling jitter or transient network delays. Three missed beats (90 s) plus a 15 s margin (105 s) is a practical minimum before declaring the daemon dead.
+
+### Failure semantics
+
+**Ping failures are non-fatal.** A transient network error, DNS timeout, or unreachable endpoint is logged as a WARNING and swallowed (`heartbeat.py` lines 256–259). The heartbeat thread continues; the ping timeout is 5 s (`_DEFAULT_PING_TIMEOUT_S`) — well under the 30 s cadence, so a hung connection cannot stall the beat. A silent ping failure therefore means only that the external service missed one check-in, not that the daemon has crashed. Verify against the local heartbeat file before treating a single missed ping as an incident.
+
+**Local file failures are also non-fatal.** A filesystem error during `_write_heartbeat` is likewise logged and swallowed (`heartbeat.py` lines 249–252); the thread continues. On Windows, `os.replace` is not guaranteed atomic — a crash between the write and the rename may leave an absent or partial file. External monitors must treat a missing or unreadable heartbeat file as *stale*, not as a parse error. The `_write_heartbeat` docstring (`heartbeat.py` lines 133–143) records this caveat.
+
+**Summary of the two-signal interpretation:**
+
+| Local file fresh | Ping arriving | Interpretation |
+|---|---|---|
+| Yes | Yes | Daemon healthy |
+| Yes | No | Transient ping failure — likely network; wait one more interval before alarming |
+| No | Yes | File write failed — unusual; check daemon logs |
+| No | No | Likely crash or process exit — treat as down |
