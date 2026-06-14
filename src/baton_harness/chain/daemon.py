@@ -44,6 +44,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -55,7 +56,7 @@ from baton_harness.chain.escalation import alert
 from baton_harness.chain.gh_deps import (
     fetch_blocked_by,
 )
-from baton_harness.chain.heartbeat import LivenessState, heartbeat_monitor
+from baton_harness.chain.heartbeat import LivenessState, run_heartbeat_loop
 from baton_harness.chain.labels import assert_single_state
 from baton_harness.chain.merge import MergeOutcome, merge_issue_branch
 from baton_harness.chain.obs_config import ObsConfig, load_obs_config
@@ -1206,22 +1207,32 @@ async def run_daemon(
 
     # --- Heartbeat monitor setup. ----------------------------------------
     # Construct liveness state shared between the daemon and the monitor.
+    #
+    # LivenessState is written from the daemon (asyncio) thread and read
+    # from the monitor thread; field assignments are atomic under the GIL
+    # and this is best-effort liveness, so no lock is required.
     liveness_state = LivenessState()
-    # The monitor task is the ONLY long-lived asyncio.Task in the daemon
-    # and does NOT violate the B-I3 serial contract (which forbids
-    # concurrent work-unit tasks — the monitor touches no repo HEAD).
-    # Skip starting the monitor for once=True runs (tests / --once CLI):
-    # the one-shot tick has no meaningful lifetime for a background monitor,
-    # and starting it would race with immediate cancellation in the finally.
-    monitor_task: asyncio.Task[None] | None = None
-    if not once and obs is not None:
+
+    # Start the heartbeat OS thread unconditionally — including once=True
+    # runs (--once CLI / smoke tests).  A real thread beats independently
+    # of the asyncio event loop, so it continues writing heartbeats even
+    # while the loop is blocked inside the synchronous CI gate
+    # (time.sleep in merge.py up to 1800 s).
+    stop_event = threading.Event()
+    monitor_thread: threading.Thread | None = None
+    if obs is not None:
         try:
-            monitor_task = asyncio.create_task(
-                heartbeat_monitor(obs, liveness_state, runlog=runlog)
+            monitor_thread = threading.Thread(
+                target=run_heartbeat_loop,
+                args=(obs, liveness_state, stop_event),
+                kwargs={"runlog": runlog},
+                name="heartbeat-monitor",
+                daemon=True,
             )
+            monitor_thread.start()
         except Exception as exc:  # noqa: BLE001
-            _log.warning("daemon: heartbeat monitor startup failed: %s", exc)
-            monitor_task = None
+            _log.warning("daemon: heartbeat thread startup failed: %s", exc)
+            monitor_thread = None
 
     try:
         while True:
@@ -1273,10 +1284,10 @@ async def run_daemon(
 
             await asyncio.sleep(poll_interval_s)
     finally:
-        # Cancel and await the monitor task so it exits cleanly.
-        if monitor_task is not None:
-            monitor_task.cancel()
-            await asyncio.gather(monitor_task, return_exceptions=True)
+        # Signal the monitor thread and wait for it to exit cleanly.
+        stop_event.set()
+        if monitor_thread is not None:
+            monitor_thread.join(timeout=5.0)
 
     _log.info("daemon: stopped")
 

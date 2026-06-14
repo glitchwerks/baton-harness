@@ -1,4 +1,4 @@
-"""Decoupled heartbeat coroutine and in-daemon stall detection.
+"""Thread-based heartbeat and in-daemon stall detection.
 
 This module provides two concerns that are deliberately kept separate:
 
@@ -10,26 +10,32 @@ This module provides two concerns that are deliberately kept separate:
    must treat a missing or partial heartbeat file as *stale*, not as an
    error.
 
-2. **Stall detection** — ``heartbeat_monitor`` tracks the per-issue
+2. **Stall detection** — ``_heartbeat_tick`` tracks the per-issue
    ``agent-in-progress`` state via ``LivenessState`` and fires a
    ``severity="critical"`` alert when an issue has been in-progress
-   longer than ``obs.heartbeat_stall_s`` seconds.  The alert is
-   debounced: it fires **once per episode** and resets only when
-   ``LivenessState.clear()`` or ``LivenessState.mark_in_progress()`` is
-   called.
+   longer than ``obs.heartbeat_stall_s`` seconds (strictly greater than).
+   The alert is debounced: it fires **once per episode** and resets only
+   when ``LivenessState.clear()`` or ``LivenessState.mark_in_progress()``
+   is called.
+
+3. **Thread loop** — ``run_heartbeat_loop`` is the daemon OS-thread
+   target.  It calls ``_heartbeat_tick`` on each iteration, then blocks
+   on ``stop_event.wait(interval_s)`` (a ``threading.Event`` — truly
+   interruptible, unlike ``asyncio.sleep``).  This means the heartbeat
+   beats independently even while the asyncio event loop is blocked
+   inside the synchronous CI gate (``merge.py`` ``time.sleep``).
 """
 
 from __future__ import annotations
 
-import asyncio
 import dataclasses
 import logging
 import os
 import tempfile
+import threading
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 from baton_harness.chain.escalation import alert
 from baton_harness.chain.obs_config import ObsConfig
@@ -37,8 +43,9 @@ from baton_harness.chain.runlog import RunLog
 
 _log = logging.getLogger(__name__)
 
-# Fixed heartbeat cadence — shorter than the daemon poll interval so liveness
-# updates arrive well before any external stall threshold triggers.
+# Fixed heartbeat cadence — shorter than the daemon poll interval so
+# liveness updates arrive well before any external stall threshold
+# triggers.
 _DEFAULT_HEARTBEAT_CADENCE_S: float = 30.0
 
 
@@ -51,9 +58,10 @@ _DEFAULT_HEARTBEAT_CADENCE_S: float = 30.0
 class LivenessState:
     """Mutable record of the currently-in-progress issue.
 
-    Shared between the daemon (writer) and ``heartbeat_monitor`` (reader).
-    All mutations are synchronous and executed on the single asyncio
-    thread — no locking needed.
+    Shared between the daemon (writer, asyncio thread) and
+    ``run_heartbeat_loop`` (reader, monitor OS thread).  Field assignments
+    are atomic under the GIL and this is best-effort liveness, so no
+    explicit lock is required.
 
     Attributes:
         in_progress_owner: GitHub owner of the in-progress issue, or
@@ -140,7 +148,7 @@ def _write_heartbeat(path: Path, timestamp: str) -> None:
             fh.write(timestamp)
         os.replace(tmp_path, path)
     except BaseException:
-        # Clean up the temp file on any error (including CancelledError).
+        # Clean up the temp file on any error (including KeyboardInterrupt).
         try:
             os.unlink(tmp_path)
         except OSError:
@@ -149,170 +157,185 @@ def _write_heartbeat(path: Path, timestamp: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Heartbeat monitor coroutine
+# Per-tick work (deterministic, no sleeping, fully guarded)
 # ---------------------------------------------------------------------------
 
 
-async def heartbeat_monitor(  # noqa: C901
+def _heartbeat_tick(
     obs: ObsConfig,
     state: LivenessState,
     *,
     runlog: RunLog | None = None,
-    interval_s: float = _DEFAULT_HEARTBEAT_CADENCE_S,
-    sleep: Callable[[float], Any] = asyncio.sleep,
     now: Callable[[], datetime] = lambda: datetime.now(tz=timezone.utc),
-    stop_event: asyncio.Event | None = None,
 ) -> None:
-    """Run the background heartbeat and stall-detection loop.
+    """Execute one heartbeat iteration — deterministic, no sleeping.
 
-    Designed to be launched as a single background ``asyncio.Task``
-    (the ONLY long-lived task in the daemon — does NOT violate the
-    B-I3 serial contract because this task touches no repo HEAD).
+    Fully guarded: this function never raises.  Each step is wrapped
+    independently so a failure in one step does not prevent later steps
+    from executing.
 
-    Per-iteration semantics (in order):
+    Per-call semantics (in order):
 
     1. Capture ``t = now()``.
     2. Call ``_write_heartbeat(obs.heartbeat_file, t.isoformat())`` —
-       the liveness signal.  Failures are logged and swallowed.
+       the liveness signal.  Exceptions are logged and swallowed.
     3. Emit a ``{"event": "heartbeat", ...}`` runlog event (best-effort,
        if *runlog* is provided).
     4. Check for a stall condition:
        - ``state.in_progress_since`` is set,
        - ``(t - state.in_progress_since).total_seconds()``
-         is strictly greater than ``obs.heartbeat_stall_s``, and
+         is **strictly greater than** ``obs.heartbeat_stall_s``, and
        - not already debounced (``state._stall_alerted`` is ``False``).
        If all three hold: call ``alert(...)`` with
-       ``severity="critical"``, emit a ``{"event": "stall", ...}``
-       runlog event, and set the debounce flag.
-    5. ``await sleep(interval_s)`` — yields control to the event loop.
-    6. If ``stop_event`` is set, break and return.
-
-    The coroutine is **fully guarded**: any exception from
-    ``_write_heartbeat``, runlog emission, or ``alert`` (except
-    ``asyncio.CancelledError``) is logged at WARNING and swallowed —
-    the loop always continues.  ``asyncio.CancelledError`` from
-    ``sleep`` is caught and the coroutine returns cleanly without
-    propagating.
+       ``severity="critical"`` and ``kind="debug"``, emit a
+       ``{"event": "stall", ...}`` runlog event, and set the debounce
+       flag.
 
     Args:
-        obs: Observability configuration (heartbeat_file, heartbeat_stall_s).
-        state: Shared liveness state mutated by the daemon.
+        obs: Observability configuration (heartbeat_file, stall_s).
+        state: Shared liveness state written by the daemon.
         runlog: Optional run-log handle for best-effort event emission.
-        interval_s: Seconds between heartbeat writes.  Defaults to
-            ``_DEFAULT_HEARTBEAT_CADENCE_S`` (30 s).
-        sleep: Async sleep callable (injectable for tests).
         now: UTC ``datetime`` factory (injectable for tests).
-        stop_event: Optional event; when set, the loop exits cleanly
-            after the current iteration completes.  ``None`` means
-            "run until cancelled".
     """
-    while True:
-        try:
-            # ---- Step 1 & 2: liveness write (fully guarded). ----------------
-            t = now()
-            try:
-                _write_heartbeat(obs.heartbeat_file, t.isoformat())
-            except Exception as exc:  # noqa: BLE001
-                _log.warning(
-                    "heartbeat_monitor: _write_heartbeat failed: %s", exc
-                )
+    # ---- Step 1 & 2: capture time, write liveness signal (guarded). ----
+    try:
+        t = now()
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("_heartbeat_tick: now() failed: %s", exc)
+        return
 
-            # ---- Step 3: runlog heartbeat event (best-effort). --------------
+    try:
+        _write_heartbeat(obs.heartbeat_file, t.isoformat())
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("_heartbeat_tick: _write_heartbeat failed: %s", exc)
+
+    # ---- Step 3: runlog heartbeat event (best-effort). -----------------
+    if runlog is not None:
+        try:
+            runlog.emit(
+                {
+                    "ts": t.isoformat(),
+                    "event": "heartbeat",
+                    "issue": state.in_progress_issue,
+                    "outcome": None,
+                    "severity": "info",
+                    "detail": "heartbeat",
+                    "tick_id": None,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "_heartbeat_tick: runlog.emit(heartbeat) failed: %s", exc
+            )
+
+    # ---- Step 4: stall detection (debounced). --------------------------
+    if state.in_progress_since is not None and not state._stall_alerted:
+        try:
+            elapsed = (t - state.in_progress_since).total_seconds()
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "_heartbeat_tick: elapsed calculation failed: %s", exc
+            )
+            return
+
+        if elapsed > obs.heartbeat_stall_s:
+            try:
+                alert(
+                    state.in_progress_owner or "",
+                    state.in_progress_repo or "",
+                    state.in_progress_issue,
+                    (
+                        f"Issue #{state.in_progress_issue} has been"
+                        f" agent-in-progress for"
+                        f" {elapsed:.0f}s (threshold:"
+                        f" {obs.heartbeat_stall_s:.0f}s) —"
+                        " possible stall."
+                    ),
+                    severity="critical",
+                    kind="debug",
+                    runlog=runlog,
+                )
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("_heartbeat_tick: alert() failed: %s", exc)
+            state._stall_alerted = True
+
             if runlog is not None:
                 try:
                     runlog.emit(
                         {
                             "ts": t.isoformat(),
-                            "event": "heartbeat",
+                            "event": "stall",
                             "issue": state.in_progress_issue,
                             "outcome": None,
-                            "severity": "info",
-                            "detail": "heartbeat",
+                            "severity": "critical",
+                            "detail": (f"stall detected after {elapsed:.0f}s"),
                             "tick_id": None,
                         }
                     )
                 except Exception as exc:  # noqa: BLE001
                     _log.warning(
-                        "heartbeat_monitor: runlog.emit(heartbeat) failed: %s",
+                        "_heartbeat_tick: runlog.emit(stall) failed: %s",
                         exc,
                     )
 
-            # ---- Step 4: stall detection (debounced). -----------------------
-            if (
-                state.in_progress_since is not None
-                and not state._stall_alerted
-            ):
-                elapsed = (t - state.in_progress_since).total_seconds()
-                if elapsed > obs.heartbeat_stall_s:
-                    try:
-                        alert(
-                            state.in_progress_owner or "",
-                            state.in_progress_repo or "",
-                            state.in_progress_issue,
-                            (
-                                f"Issue #{state.in_progress_issue} has been"
-                                f" agent-in-progress for"
-                                f" {elapsed:.0f}s (threshold:"
-                                f" {obs.heartbeat_stall_s:.0f}s) —"
-                                " possible stall."
-                            ),
-                            severity="critical",
-                            kind="debug",
-                            runlog=runlog,
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        _log.warning(
-                            "heartbeat_monitor: alert() failed: %s", exc
-                        )
-                    state._stall_alerted = True
 
-                    if runlog is not None:
-                        try:
-                            runlog.emit(
-                                {
-                                    "ts": t.isoformat(),
-                                    "event": "stall",
-                                    "issue": state.in_progress_issue,
-                                    "outcome": None,
-                                    "severity": "critical",
-                                    "detail": (
-                                        f"stall detected after {elapsed:.0f}s"
-                                    ),
-                                    "tick_id": None,
-                                }
-                            )
-                        except Exception as exc:  # noqa: BLE001
-                            _log.warning(
-                                "heartbeat_monitor: runlog.emit(stall)"
-                                " failed: %s",
-                                exc,
-                            )
+# ---------------------------------------------------------------------------
+# Thread target: interruptible heartbeat loop
+# ---------------------------------------------------------------------------
 
+
+def run_heartbeat_loop(
+    obs: ObsConfig,
+    state: LivenessState,
+    stop_event: threading.Event,
+    *,
+    runlog: RunLog | None = None,
+    interval_s: float = _DEFAULT_HEARTBEAT_CADENCE_S,
+    now: Callable[[], datetime] = lambda: datetime.now(tz=timezone.utc),
+) -> None:
+    """Daemon OS-thread target: tick then interruptible-sleep loop.
+
+    Designed to run as a ``daemon=True`` ``threading.Thread``.  Because
+    it uses ``threading.Event.wait`` (not ``asyncio.sleep``) for its
+    inter-tick sleep, it beats independently even while the asyncio event
+    loop is blocked inside a synchronous call such as ``time.sleep`` in
+    ``merge.py``.
+
+    Loop semantics:
+
+    1. Call ``_heartbeat_tick(obs, state, runlog=runlog, now=now)``.
+    2. Call ``stop_event.wait(interval_s)``.  This blocks for up to
+       *interval_s* seconds but returns immediately (``True``) when
+       ``stop_event`` is set by the caller.  On return value ``True``,
+       the loop exits cleanly.
+
+    The entire loop body is guarded: any unexpected exception is logged
+    and the loop continues.  The ``stop_event.wait`` path is the sole
+    clean-exit mechanism.
+
+    Args:
+        obs: Observability configuration (heartbeat_file, stall_s).
+        state: Shared liveness state written by the daemon.
+        stop_event: ``threading.Event`` — set by the daemon's
+            ``finally`` block to signal the thread to exit.
+        runlog: Optional run-log handle for best-effort event emission.
+        interval_s: Seconds between heartbeat ticks.  Defaults to
+            ``_DEFAULT_HEARTBEAT_CADENCE_S`` (30 s).
+        now: UTC ``datetime`` factory (injectable for tests).
+    """
+    while True:
+        try:
+            _heartbeat_tick(obs, state, runlog=runlog, now=now)
         except Exception as exc:  # noqa: BLE001
-            # Outer guard: any unexpected exception from the per-iteration
-            # work (including now(), stop_event interactions, or stall
-            # logic) is logged and swallowed so the loop survives.
-            # asyncio.CancelledError is a BaseException, not Exception, so
-            # it will NOT be caught here — cancellation still propagates
-            # cleanly from the sleep handler below.
+            # _heartbeat_tick is itself guarded and should never raise,
+            # but add a belt-and-suspenders catch here so the thread
+            # survives any unexpected exception.
             _log.warning(
-                "heartbeat_monitor: unhandled per-iteration exception: %s",
+                "run_heartbeat_loop: unexpected exception from tick: %s",
                 exc,
             )
 
-        # ---- Step 5: sleep (yields to event loop). ----------------------
-        try:
-            await sleep(interval_s)
-        except asyncio.CancelledError:
-            return
-
-        # ---- Step 6: stop-event check (guarded). ------------------------
-        try:
-            should_stop = stop_event is not None and stop_event.is_set()
-        except Exception as exc:  # noqa: BLE001
-            _log.warning(
-                "heartbeat_monitor: stop_event.is_set() failed: %s", exc
-            )
-            should_stop = False
-        if should_stop:
+        # Interruptible sleep: returns True immediately when stop_event
+        # is set, so the thread exits promptly on shutdown.
+        if stop_event.wait(interval_s):
             return
