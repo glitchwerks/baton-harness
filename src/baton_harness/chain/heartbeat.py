@@ -311,6 +311,13 @@ async def heartbeat_monitor(  # noqa: C901
         except asyncio.CancelledError:
             return
 
-        # ---- Step 6: stop-event check. ----------------------------------
-        if stop_event is not None and stop_event.is_set():
+        # ---- Step 6: stop-event check (guarded). ------------------------
+        try:
+            should_stop = stop_event is not None and stop_event.is_set()
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "heartbeat_monitor: stop_event.is_set() failed: %s", exc
+            )
+            should_stop = False
+        if should_stop:
             return
