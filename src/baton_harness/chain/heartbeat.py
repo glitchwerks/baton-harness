@@ -182,8 +182,8 @@ async def heartbeat_monitor(  # noqa: C901
        if *runlog* is provided).
     4. Check for a stall condition:
        - ``state.in_progress_since`` is set,
-       - ``(t - state.in_progress_since).total_seconds()
-         > obs.heartbeat_stall_s``, and
+       - ``(t - state.in_progress_since).total_seconds()``
+         is strictly greater than ``obs.heartbeat_stall_s``, and
        - not already debounced (``state._stall_alerted`` is ``False``).
        If all three hold: call ``alert(...)`` with
        ``severity="critical"``, emit a ``{"event": "stall", ...}``
@@ -211,85 +211,99 @@ async def heartbeat_monitor(  # noqa: C901
             "run until cancelled".
     """
     while True:
-        # ---- Step 1 & 2: liveness write (fully guarded). ----------------
-        t = now()
         try:
-            _write_heartbeat(obs.heartbeat_file, t.isoformat())
-        except Exception as exc:  # noqa: BLE001
-            _log.warning(
-                "heartbeat_monitor: _write_heartbeat failed: %s", exc
-            )
-
-        # ---- Step 3: runlog heartbeat event (best-effort). --------------
-        if runlog is not None:
+            # ---- Step 1 & 2: liveness write (fully guarded). ----------------
+            t = now()
             try:
-                runlog.emit(
-                    {
-                        "ts": t.isoformat(),
-                        "event": "heartbeat",
-                        "issue": state.in_progress_issue,
-                        "outcome": None,
-                        "severity": "info",
-                        "detail": "heartbeat",
-                        "tick_id": None,
-                    }
-                )
+                _write_heartbeat(obs.heartbeat_file, t.isoformat())
             except Exception as exc:  # noqa: BLE001
                 _log.warning(
-                    "heartbeat_monitor: runlog.emit(heartbeat) failed: %s",
-                    exc,
+                    "heartbeat_monitor: _write_heartbeat failed: %s", exc
                 )
 
-        # ---- Step 4: stall detection (debounced). -----------------------
-        if (
-            state.in_progress_since is not None
-            and not state._stall_alerted
-        ):
-            elapsed = (t - state.in_progress_since).total_seconds()
-            if elapsed >= obs.heartbeat_stall_s:
+            # ---- Step 3: runlog heartbeat event (best-effort). --------------
+            if runlog is not None:
                 try:
-                    alert(
-                        state.in_progress_owner or "",
-                        state.in_progress_repo or "",
-                        state.in_progress_issue,
-                        (
-                            f"Issue #{state.in_progress_issue} has been"
-                            f" agent-in-progress for"
-                            f" {elapsed:.0f}s (threshold:"
-                            f" {obs.heartbeat_stall_s:.0f}s) —"
-                            " possible stall."
-                        ),
-                        severity="critical",
-                        kind="debug",
-                        runlog=runlog,
+                    runlog.emit(
+                        {
+                            "ts": t.isoformat(),
+                            "event": "heartbeat",
+                            "issue": state.in_progress_issue,
+                            "outcome": None,
+                            "severity": "info",
+                            "detail": "heartbeat",
+                            "tick_id": None,
+                        }
                     )
                 except Exception as exc:  # noqa: BLE001
                     _log.warning(
-                        "heartbeat_monitor: alert() failed: %s", exc
+                        "heartbeat_monitor: runlog.emit(heartbeat)"
+                        " failed: %s",
+                        exc,
                     )
-                state._stall_alerted = True
 
-                if runlog is not None:
+            # ---- Step 4: stall detection (debounced). -----------------------
+            if (
+                state.in_progress_since is not None
+                and not state._stall_alerted
+            ):
+                elapsed = (t - state.in_progress_since).total_seconds()
+                if elapsed > obs.heartbeat_stall_s:
                     try:
-                        runlog.emit(
-                            {
-                                "ts": t.isoformat(),
-                                "event": "stall",
-                                "issue": state.in_progress_issue,
-                                "outcome": None,
-                                "severity": "critical",
-                                "detail": (
-                                    f"stall detected after {elapsed:.0f}s"
-                                ),
-                                "tick_id": None,
-                            }
+                        alert(
+                            state.in_progress_owner or "",
+                            state.in_progress_repo or "",
+                            state.in_progress_issue,
+                            (
+                                f"Issue #{state.in_progress_issue} has been"
+                                f" agent-in-progress for"
+                                f" {elapsed:.0f}s (threshold:"
+                                f" {obs.heartbeat_stall_s:.0f}s) —"
+                                " possible stall."
+                            ),
+                            severity="critical",
+                            kind="debug",
+                            runlog=runlog,
                         )
                     except Exception as exc:  # noqa: BLE001
                         _log.warning(
-                            "heartbeat_monitor: runlog.emit(stall)"
-                            " failed: %s",
-                            exc,
+                            "heartbeat_monitor: alert() failed: %s", exc
                         )
+                    state._stall_alerted = True
+
+                    if runlog is not None:
+                        try:
+                            runlog.emit(
+                                {
+                                    "ts": t.isoformat(),
+                                    "event": "stall",
+                                    "issue": state.in_progress_issue,
+                                    "outcome": None,
+                                    "severity": "critical",
+                                    "detail": (
+                                        f"stall detected after {elapsed:.0f}s"
+                                    ),
+                                    "tick_id": None,
+                                }
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            _log.warning(
+                                "heartbeat_monitor: runlog.emit(stall)"
+                                " failed: %s",
+                                exc,
+                            )
+
+        except Exception as exc:  # noqa: BLE001
+            # Outer guard: any unexpected exception from the per-iteration
+            # work (including now(), stop_event interactions, or stall
+            # logic) is logged and swallowed so the loop survives.
+            # asyncio.CancelledError is a BaseException, not Exception, so
+            # it will NOT be caught here — cancellation still propagates
+            # cleanly from the sleep handler below.
+            _log.warning(
+                "heartbeat_monitor: unhandled per-iteration exception: %s",
+                exc,
+            )
 
         # ---- Step 5: sleep (yields to event loop). ----------------------
         try:

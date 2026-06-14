@@ -685,6 +685,16 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 )
                 continue
 
+            # Liveness tracking: mark in-progress so heartbeat_monitor
+            # can detect a stall during the CI poll (which may block up
+            # to ci_timeout=1800s).  Mirror the pattern in the fresh-
+            # dispatch path (see liveness_state.mark_in_progress call
+            # ~30 lines below in _run_work_unit).
+            if liveness_state is not None:
+                liveness_state.mark_in_progress(
+                    owner, repo, n, datetime.now(timezone.utc)
+                )
+
             # FIX 2: wrap merge_issue_branch in a per-issue try/except so a
             # transient git/gh error parks this issue but does not kill the
             # daemon.
@@ -708,6 +718,8 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                     exc,
                 )
                 _label_edit(owner, repo, n, remove=["agent-in-progress"])
+                if liveness_state is not None:
+                    liveness_state.clear()
                 sched.mark_parked(n)
                 parked_reasons[n] = f"merge exception (ci_gate): {exc}"
                 alert(
@@ -725,10 +737,14 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 _label_edit(
                     owner, repo, n, remove=["agent-in-progress", "agent-done"]
                 )
+                if liveness_state is not None:
+                    liveness_state.clear()
                 sched.mark_done(n)
                 merged_issues.append(n)
             else:
                 _label_edit(owner, repo, n, remove=["agent-in-progress"])
+                if liveness_state is not None:
+                    liveness_state.clear()
                 sched.mark_parked(n)
                 parked_reasons[n] = f"ci_gate_reentry: {outcome.name}"
                 alert(

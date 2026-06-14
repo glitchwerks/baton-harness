@@ -32,7 +32,6 @@ from baton_harness.chain.heartbeat import (
     _write_heartbeat,
     heartbeat_monitor,
 )
-
 from baton_harness.chain.obs_config import ObsConfig
 from baton_harness.chain.runlog import RunLog
 
@@ -551,7 +550,7 @@ def test_stall_resets_after_clear_and_mark_in_progress(
             state.mark_in_progress(
                 owner, repo, issue_num, _utc(clock[0])
             )
-        if iteration[0] >= 3:
+        if iteration[0] >= 4:
             stop.set()
 
     def fake_now() -> datetime:
@@ -656,6 +655,71 @@ def test_no_stall_alert_for_normal_long_running_issue(
     )
     assert write_calls, (
         "Heartbeat writes must still occur below stall threshold"
+    )
+
+
+def test_stall_boundary_exact_threshold_does_not_alert(
+    tmp_path: Path,
+) -> None:
+    """At elapsed == heartbeat_stall_s exactly, no stall alert must fire.
+
+    The contract is strictly greater-than (>): a stall fires only when the
+    issue has been in progress *longer than* the threshold.  At the exact
+    boundary (elapsed == stall_s) the alert must remain silent.
+
+    This test is the regression lock for the > vs >= boundary: it will
+    FAIL if the implementation uses >= instead of >.
+    """
+    owner, repo, issue_num = "acme", "widget", 11
+    stall_s = 300.0
+    obs = _make_obs(tmp_path / "heartbeat", heartbeat_stall_s=stall_s)
+    state = LivenessState()
+    # in_progress_since = t=0; clock starts at exactly stall_s so that
+    # elapsed = stall_s - 0 = stall_s (boundary, not past).
+    state.mark_in_progress(owner, repo, issue_num, _utc(0.0))
+
+    stop = asyncio.Event()
+    clock: list[float] = [stall_s]  # elapsed == stall_s exactly
+    iteration: list[int] = [0]
+
+    async def fake_sleep(seconds: float) -> None:
+        """Advance clock by 0 each tick so elapsed stays at stall_s."""
+        clock[0] += 0.0  # no advance — hold at exact boundary
+        iteration[0] += 1
+        if iteration[0] >= 2:
+            stop.set()
+
+    def fake_now() -> datetime:
+        return _utc(clock[0])
+
+    alert_calls: list[dict[str, Any]] = []
+
+    def fake_alert(*args: Any, **kwargs: Any) -> bool:  # noqa: ANN401
+        alert_calls.append({"args": args, "kwargs": kwargs})
+        return True
+
+    with (
+        patch("baton_harness.chain.heartbeat._write_heartbeat"),
+        patch(
+            "baton_harness.chain.heartbeat.alert",
+            side_effect=fake_alert,
+        ),
+    ):
+        asyncio.run(
+            heartbeat_monitor(
+                obs,
+                state,
+                interval_s=0.0,
+                sleep=fake_sleep,
+                now=fake_now,
+                stop_event=stop,
+            )
+        )
+
+    assert not alert_calls, (
+        "elapsed == heartbeat_stall_s must NOT fire a stall alert "
+        "(contract is strictly >, not >=); "
+        f"got {len(alert_calls)} alert(s): {alert_calls}"
     )
 
 
