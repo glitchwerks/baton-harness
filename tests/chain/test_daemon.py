@@ -164,7 +164,7 @@ def _common_patches(
                 return_value=merge_outcome,
             ) as mock_merge,
             patch(
-                "baton_harness.chain.daemon.escalate",
+                "baton_harness.chain.daemon.alert",
                 return_value=True,
             ) as mock_escalate,
         ):
@@ -316,7 +316,7 @@ def test_happy_linear_dag_merges_and_opens_draft_pr() -> None:
             "baton_harness.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.escalate", return_value=True),
+        patch("baton_harness.chain.daemon.alert", return_value=True),
         _patch_run_worker("pr_created"),
     ):
         # After _run_worker returns "pr_created", after_run label state
@@ -392,7 +392,7 @@ def test_draft_pr_flag_present_in_pr_create() -> None:
             "baton_harness.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.escalate", return_value=True),
+        patch("baton_harness.chain.daemon.alert", return_value=True),
         _patch_run_worker("pr_created"),
     ):
         asyncio.run(
@@ -463,7 +463,7 @@ def test_never_merges_to_main() -> None:
             "baton_harness.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.escalate", return_value=True),
+        patch("baton_harness.chain.daemon.alert", return_value=True),
         _patch_run_worker("pr_created"),
     ):
         asyncio.run(
@@ -536,7 +536,7 @@ def test_no_pr_result_parks_and_escalates_without_retry() -> None:
             "baton_harness.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.escalate", mock_escalate),
+        patch("baton_harness.chain.daemon.alert", mock_escalate),
         patch(
             "baton_harness.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
@@ -614,7 +614,7 @@ def test_agent_in_progress_removed_on_every_terminal_outcome() -> None:
                 "baton_harness.chain.daemon.merge_issue_branch",
                 return_value=MergeOutcome.MERGED,
             ),
-            patch("baton_harness.chain.daemon.escalate", return_value=True),
+            patch("baton_harness.chain.daemon.alert", return_value=True),
             patch(
                 "baton_harness.vendor.symphony.orchestrator.Orchestrator._run_worker",
                 new_callable=AsyncMock,
@@ -696,7 +696,7 @@ def test_fully_parked_dag_exits_work_unit_daemon_stays_alive() -> None:
             "baton_harness.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.escalate", mock_escalate),
+        patch("baton_harness.chain.daemon.alert", mock_escalate),
         patch(
             "baton_harness.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
@@ -793,7 +793,7 @@ def test_serial_dispatch_one_worker_at_a_time() -> None:
             "baton_harness.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.escalate", return_value=True),
+        patch("baton_harness.chain.daemon.alert", return_value=True),
         patch(
             "baton_harness.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
@@ -864,7 +864,7 @@ def test_ci_gated_merge_relabels_to_agent_merged() -> None:
             "baton_harness.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.escalate", return_value=True),
+        patch("baton_harness.chain.daemon.alert", return_value=True),
         patch(
             "baton_harness.vendor.symphony.orchestrator.Orchestrator._run_worker",
             new_callable=AsyncMock,
@@ -1056,7 +1056,7 @@ def test_milestone_membership_uses_full_set_not_just_agent_ready() -> None:
             "baton_harness.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.escalate", return_value=True),
+        patch("baton_harness.chain.daemon.alert", return_value=True),
         patch(
             "baton_harness.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
@@ -1173,7 +1173,7 @@ def test_milestone_dispatch_order_a_before_b_when_both_ready() -> None:
             "baton_harness.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.escalate", return_value=True),
+        patch("baton_harness.chain.daemon.alert", return_value=True),
         patch(
             "baton_harness.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
@@ -1269,9 +1269,7 @@ def test_waiting_for_greenlight_exits_work_unit_without_escalating() -> None:
             "baton_harness.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch(
-            "baton_harness.chain.daemon.escalate", side_effect=fake_escalate
-        ),
+        patch("baton_harness.chain.daemon.alert", side_effect=fake_escalate),
     ):
         # Must NOT raise; daemon stays alive.
         asyncio.run(
@@ -1356,9 +1354,7 @@ def test_merge_issue_branch_raises_parks_issue_and_daemon_survives() -> None:
             "baton_harness.chain.daemon.merge_issue_branch",
             side_effect=RuntimeError("transient git failure"),
         ),
-        patch(
-            "baton_harness.chain.daemon.escalate", side_effect=fake_escalate
-        ),
+        patch("baton_harness.chain.daemon.alert", side_effect=fake_escalate),
         _patch_run_worker("pr_created"),
     ):
         # Must NOT raise — daemon survives the merge failure.
@@ -1420,7 +1416,7 @@ def test_work_unit_exception_daemon_survives_and_proceeds() -> None:
     with (
         patch.object(daemon_mod, "_run", side_effect=run_side_effect),
         patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
-        patch("baton_harness.chain.daemon.escalate", return_value=True),
+        patch("baton_harness.chain.daemon.alert", return_value=True),
         patch(
             "baton_harness.chain.daemon._run_work_unit",
             side_effect=exploding_run_work_unit,
@@ -1500,7 +1496,7 @@ def test_bh_feature_branch_exported_before_run_worker() -> None:
             "baton_harness.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.escalate", return_value=True),
+        patch("baton_harness.chain.daemon.alert", return_value=True),
         patch(
             "baton_harness.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
@@ -1622,7 +1618,7 @@ def test_bh_feature_branch_exported_for_milestone_work_unit() -> None:
             "baton_harness.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.escalate", return_value=True),
+        patch("baton_harness.chain.daemon.alert", return_value=True),
         patch(
             "baton_harness.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
@@ -1703,7 +1699,7 @@ def test_integration_pr_body_contains_closes_keyword_per_issue() -> None:
             "baton_harness.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.escalate", return_value=True),
+        patch("baton_harness.chain.daemon.alert", return_value=True),
         _patch_run_worker("pr_created"),
     ):
         asyncio.run(
@@ -1866,7 +1862,7 @@ def test_integration_pr_body_contains_closes_keyword_per_issue_multi() -> None:
             "baton_harness.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.escalate", return_value=True),
+        patch("baton_harness.chain.daemon.alert", return_value=True),
         _patch_run_worker("pr_created"),
     ):
         asyncio.run(
@@ -2004,7 +2000,7 @@ def test_feature_branch_pushed_to_origin_before_run_worker() -> None:
             "baton_harness.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.escalate", return_value=True),
+        patch("baton_harness.chain.daemon.alert", return_value=True),
         patch(
             "baton_harness.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
@@ -2119,7 +2115,7 @@ def test_zero_commit_branch_skips_draft_pr_and_logs_info(
             "baton_harness.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.escalate", return_value=True),
+        patch("baton_harness.chain.daemon.alert", return_value=True),
         _patch_run_worker("pr_created"),
     ):
         import logging
@@ -2221,7 +2217,7 @@ def test_nonzero_commit_branch_proceeds_to_draft_pr() -> None:
             "baton_harness.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.escalate", return_value=True),
+        patch("baton_harness.chain.daemon.alert", return_value=True),
         _patch_run_worker("pr_created"),
     ):
         asyncio.run(
@@ -2302,7 +2298,7 @@ def test_revlist_count_failure_falls_through_to_draft_pr() -> None:
             "baton_harness.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.escalate", return_value=True),
+        patch("baton_harness.chain.daemon.alert", return_value=True),
         _patch_run_worker("pr_created"),
     ):
         asyncio.run(
@@ -2392,7 +2388,7 @@ class TestRunlogObservabilityWiring:
                 "baton_harness.chain.daemon.merge_issue_branch",
                 return_value=MergeOutcome.MERGED,
             ),
-            patch("baton_harness.chain.daemon.escalate", return_value=True),
+            patch("baton_harness.chain.daemon.alert", return_value=True),
             _patch_run_worker("pr_created"),
         ):
             asyncio.run(
@@ -2468,7 +2464,7 @@ class TestRunlogObservabilityWiring:
                 "baton_harness.chain.daemon.merge_issue_branch",
                 return_value=MergeOutcome.MERGED,
             ),
-            patch("baton_harness.chain.daemon.escalate", return_value=True),
+            patch("baton_harness.chain.daemon.alert", return_value=True),
             _patch_run_worker("pr_created"),
         ):
             asyncio.run(
@@ -2578,7 +2574,7 @@ class TestRunlogObservabilityWiring:
                 "baton_harness.chain.daemon.merge_issue_branch",
                 return_value=MergeOutcome.MERGED,
             ),
-            patch("baton_harness.chain.daemon.escalate", return_value=True),
+            patch("baton_harness.chain.daemon.alert", return_value=True),
             _patch_run_worker("pr_created"),
         ):
             asyncio.run(
@@ -2600,3 +2596,396 @@ class TestRunlogObservabilityWiring:
         assert "outcome" in event_names, (
             f"Expected an outcome event; got: {event_names!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# #75 alert() severity axis — daemon call-site routing
+# ---------------------------------------------------------------------------
+# These tests assert on ``daemon.alert`` (not the old bare ``escalate``).
+# They will FAIL until the impl agent replaces escalate(...) calls in
+# daemon.py with alert(..., severity=<assigned>).
+
+
+def test_ci_gate_failed_park_routes_through_alert_severity_critical() -> None:
+    """CI-gate park uses alert severity=critical.
+
+    The contract assigns severity='critical' to the park site whose
+    summary matches ``"Issue #{n} parked: {reason} ({outcome.name})."``
+    where reason is one of {CI check failed, CI timed out, merge conflict}.
+    We drive a CI_FAILED outcome and assert alert was called with
+    severity='critical'.
+    """
+    ready_issues = [
+        {
+            "number": 10,
+            "title": "Issue 10",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/10",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        }
+    ]
+
+    mock_alert = MagicMock(return_value=True)
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=_make_run_side_effect(
+                ready_issues=ready_issues,
+                pr_head_sha="abc123",
+                issue_branch="baton/issue-10-10",
+                feature_branch_exists=False,
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            return_value=[],
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        # Simulate a CI_FAILED outcome from the merge gate.
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.CI_FAILED,
+        ),
+        # Patch alert (not escalate) — impl agent will add this name.
+        patch("baton_harness.chain.daemon.alert", mock_alert),
+        _patch_run_worker("pr_created"),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    # At least one call to alert with severity='critical' must have fired.
+    critical_calls = [
+        c
+        for c in mock_alert.call_args_list
+        if c.kwargs.get("severity") == "critical"
+    ]
+    assert critical_calls, (
+        "Expected alert(severity='critical') for CI_FAILED park; "
+        f"all alert calls: {mock_alert.call_args_list}"
+    )
+
+
+def test_worker_exception_routes_through_alert_severity_warn() -> None:
+    """Worker raising an exception uses alert severity='warn'.
+
+    The contract assigns severity='warn' to the worker-raised-exception
+    site whose summary contains ``"worker raised an exception"``.
+    """
+    ready_issues = [
+        {
+            "number": 10,
+            "title": "Issue 10",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/10",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        }
+    ]
+
+    mock_alert = MagicMock(return_value=True)
+
+    async def exploding_worker(issue: Any) -> str:  # noqa: ANN401
+        raise RuntimeError("worker boom")
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=_make_run_side_effect(
+                ready_issues=ready_issues,
+                pr_head_sha="abc123",
+                issue_branch="baton/issue-10-10",
+                feature_branch_exists=False,
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            return_value=[],
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch("baton_harness.chain.daemon.alert", mock_alert),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.Orchestrator"
+            "._run_worker",
+            side_effect=exploding_worker,
+        ),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    warn_calls = [
+        c
+        for c in mock_alert.call_args_list
+        if c.kwargs.get("severity") == "warn"
+    ]
+    assert warn_calls, (
+        "Expected alert(severity='warn') for worker exception; "
+        f"all alert calls: {mock_alert.call_args_list}"
+    )
+
+
+def test_ci_gate_reentry_no_open_pr_alert_is_critical() -> None:
+    """CI-gate re-entry with no open PR uses alert severity='critical'.
+
+    The contract assigns severity='critical' to the park site whose
+    summary contains ``"needs CI-gate re-entry but has no open PR"``
+    (park reason ``"ci_gate_reentry: no open PR"``).  We drive the
+    path by placing issue #10 in ``ci_gate_reentry`` and mocking
+    ``_find_issue_pr`` to return ``(None, None)``, then assert that
+    ``alert`` was called with ``severity='critical'``.
+    """
+    ready_issues = [
+        {
+            "number": 10,
+            "title": "Issue 10",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/10",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        }
+    ]
+
+    mock_alert = MagicMock(return_value=True)
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=_make_run_side_effect(
+                ready_issues=ready_issues,
+                pr_head_sha="abc123",
+                issue_branch="baton/issue-10-10",
+                feature_branch_exists=False,
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            return_value=[],
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.daemon.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry={10},
+                redispatch=set(),
+            ),
+        ),
+        # No open PR found for the ci_gate_reentry issue.
+        patch(
+            "baton_harness.chain.daemon._find_issue_pr",
+            return_value=(None, None),
+        ),
+        patch("baton_harness.chain.daemon.alert", mock_alert),
+        _patch_run_worker("pr_created"),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    critical_calls = [
+        c
+        for c in mock_alert.call_args_list
+        if c.kwargs.get("severity") == "critical"
+    ]
+    assert critical_calls, (
+        "Expected alert(severity='critical') for ci_gate_reentry with no"
+        f" open PR; all alert calls: {mock_alert.call_args_list}"
+    )
+
+
+def test_ci_gate_reentry_failed_outcome_alert_is_critical() -> None:
+    """CI-gate re-entry with a non-MERGED outcome is severity='critical'.
+
+    The contract assigns severity='critical' to the site whose summary
+    contains ``"CI-gate re-entry failed: {outcome.name}"``.  We drive
+    the path by placing issue #10 in ``ci_gate_reentry`` and returning
+    ``MergeOutcome.CI_FAILED`` from ``merge_issue_branch``, then assert
+    that ``alert`` was called with ``severity='critical'`` for that issue.
+    """
+    ready_issues = [
+        {
+            "number": 10,
+            "title": "Issue 10",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/10",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        }
+    ]
+
+    mock_alert = MagicMock(return_value=True)
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=_make_run_side_effect(
+                ready_issues=ready_issues,
+                pr_head_sha="abc123",
+                issue_branch="baton/issue-10-10",
+                feature_branch_exists=False,
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            return_value=[],
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.daemon.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry={10},
+                redispatch=set(),
+            ),
+        ),
+        # Open PR found — reentry proceeds to merge_issue_branch.
+        patch(
+            "baton_harness.chain.daemon._find_issue_pr",
+            return_value=("baton/issue-10-10", "abc123"),
+        ),
+        # Simulate CI_FAILED from the re-entry merge gate.
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.CI_FAILED,
+        ),
+        patch("baton_harness.chain.daemon.alert", mock_alert),
+        _patch_run_worker("pr_created"),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    critical_calls = [
+        c
+        for c in mock_alert.call_args_list
+        if c.kwargs.get("severity") == "critical"
+    ]
+    assert critical_calls, (
+        "Expected alert(severity='critical') for ci_gate_reentry CI_FAILED"
+        f" outcome; all alert calls: {mock_alert.call_args_list}"
+    )
+
+
+def test_repo_level_tick_failure_alert_is_critical() -> None:
+    """Outer run_daemon repo-level handler fires alert severity='critical'.
+
+    When ``_poll_and_run`` raises an unhandled exception, the outer
+    ``run_daemon`` try/except fires ``alert(..., issue=None,
+    severity='critical')``.  We force the raise by patching
+    ``_poll_and_run`` directly, then assert the critical alert call with
+    ``issue=None``.
+    """
+    mock_alert = MagicMock(return_value=True)
+
+    with (
+        patch(
+            "baton_harness.chain.daemon._poll_and_run",
+            side_effect=RuntimeError("poll explodes"),
+        ),
+        patch("baton_harness.chain.daemon.alert", mock_alert),
+        # Suppress observability startup so runlog is None; simpler env.
+        patch(
+            "baton_harness.chain.daemon.load_obs_config",
+            side_effect=RuntimeError("no obs"),
+        ),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    # The outer handler must have called alert with severity='critical'
+    # and issue=None (repo-level failure, not tied to a specific issue).
+    critical_calls = [
+        c
+        for c in mock_alert.call_args_list
+        if c.kwargs.get("severity") == "critical"
+        and c.args[2] is None  # issue positional arg
+    ]
+    assert critical_calls, (
+        "Expected alert(severity='critical', issue=None) for daemon tick"
+        f" failure; all alert calls: {mock_alert.call_args_list}"
+    )

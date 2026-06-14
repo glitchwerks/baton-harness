@@ -49,7 +49,7 @@ from typing import Any
 
 from baton_harness.chain import branches
 from baton_harness.chain.dag import build_dag
-from baton_harness.chain.escalation import escalate
+from baton_harness.chain.escalation import alert
 from baton_harness.chain.gh_deps import (
     fetch_blocked_by,
 )
@@ -488,12 +488,14 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
         _log.warning(
             "daemon: CycleError in work unit %r: %s; skipping", slug, exc
         )
-        escalate(
+        alert(
             owner,
             repo,
             next(iter(membership)),
             f"Cyclic dependency detected in work unit '{slug}': {exc}",
+            severity="warn",
             kind="block",
+            runlog=runlog,
         )
         return
 
@@ -627,12 +629,14 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 )
                 sched.mark_parked(n)
                 parked_reasons[n] = "ci_gate_reentry: no open PR"
-                escalate(
+                alert(
                     owner,
                     repo,
                     n,
                     f"Issue #{n} needs CI-gate re-entry but has no open PR.",
+                    severity="critical",
                     kind="debug",
+                    runlog=runlog,
                 )
                 continue
 
@@ -661,12 +665,14 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 _label_edit(owner, repo, n, remove=["agent-in-progress"])
                 sched.mark_parked(n)
                 parked_reasons[n] = f"merge exception (ci_gate): {exc}"
-                escalate(
+                alert(
                     owner,
                     repo,
                     n,
                     f"Issue #{n} merge failed (ci_gate_reentry): {exc}",
+                    severity="warn",
                     kind="debug",
+                    runlog=runlog,
                 )
                 continue
 
@@ -680,12 +686,14 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 _label_edit(owner, repo, n, remove=["agent-in-progress"])
                 sched.mark_parked(n)
                 parked_reasons[n] = f"ci_gate_reentry: {outcome.name}"
-                escalate(
+                alert(
                     owner,
                     repo,
                     n,
                     f"Issue #{n} CI-gate re-entry failed: {outcome.name}",
+                    severity="critical",
                     kind="debug",
+                    runlog=runlog,
                 )
             continue
 
@@ -718,12 +726,14 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
             _label_edit(owner, repo, n, remove=["agent-in-progress"])
             sched.mark_parked(n)
             parked_reasons[n] = "issue fetch failed"
-            escalate(
+            alert(
                 owner,
                 repo,
                 n,
                 f"Issue #{n} could not be fetched; worker not dispatched.",
+                severity="warn",
                 kind="debug",
+                runlog=runlog,
             )
             continue
 
@@ -751,12 +761,14 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
             _label_edit(owner, repo, n, remove=["agent-in-progress"])
             sched.mark_parked(n)
             parked_reasons[n] = f"worker exception: {exc}"
-            escalate(
+            alert(
                 owner,
                 repo,
                 n,
                 f"Issue #{n} worker raised an exception: {exc}",
+                severity="warn",
                 kind="debug",
+                runlog=runlog,
             )
             continue
 
@@ -795,12 +807,14 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 _label_edit(owner, repo, n, remove=["agent-in-progress"])
                 sched.mark_parked(n)
                 parked_reasons[n] = "pr_created but no PR located"
-                escalate(
+                alert(
                     owner,
                     repo,
                     n,
                     f"Issue #{n} returned pr_created but no PR found.",
+                    severity="warn",
                     kind="debug",
+                    runlog=runlog,
                 )
                 continue
 
@@ -828,12 +842,14 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 _label_edit(owner, repo, n, remove=["agent-in-progress"])
                 sched.mark_parked(n)
                 parked_reasons[n] = f"merge exception: {exc}"
-                escalate(
+                alert(
                     owner,
                     repo,
                     n,
                     f"Issue #{n} merge raised an exception: {exc}",
+                    severity="warn",
                     kind="debug",
+                    runlog=runlog,
                 )
                 continue
 
@@ -856,12 +872,14 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                     if outcome == MergeOutcome.CI_TIMEOUT
                     else "merge conflict"
                 )
-                escalate(
+                alert(
                     owner,
                     repo,
                     n,
                     f"Issue #{n} parked: {reason} ({outcome.name}).",
+                    severity="critical",
                     kind="debug",
+                    runlog=runlog,
                 )
         else:
             # Park path: blocked or no_pr.
@@ -874,12 +892,14 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
             _label_edit(owner, repo, n, remove=["agent-in-progress"])
             sched.mark_parked(n)
             parked_reasons[n] = reason_text
-            escalate(
+            alert(
                 owner,
                 repo,
                 n,
                 f"Issue #{n} parked: {reason_text}.",
+                severity="warn",
                 kind=kind,
+                runlog=runlog,
             )
 
     # --- Step 3: completion. ---
@@ -1024,13 +1044,15 @@ async def run_daemon(
                     exc,
                 )
                 try:
-                    escalate(
+                    alert(
                         repo_cfg.owner,
                         repo_cfg.repo,
-                        None,  # No valid issue target for repo-level failure.
+                        None,
                         f"Daemon tick failed for {repo_cfg.owner}/"
                         f"{repo_cfg.repo}: {exc}",
+                        severity="critical",
                         kind="debug",
+                        runlog=runlog,
                     )
                 except Exception:
                     pass  # escalation itself may fail; daemon must survive

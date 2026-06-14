@@ -12,18 +12,27 @@ Coverage:
   comment is the record).
 - GitHub-comment failure logs a WARNING and returns ``False``.
 - ``kind`` kwarg accepted (default ``"block"``).
+- ``alert()`` severity routing: info skips escalate; warn passes through
+  unchanged; critical prefixes with a loud marker.
+- ``alert()`` always emits a runlog ``escalation`` event (best-effort).
+- ``alert()`` survives a None runlog and a failing runlog.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import subprocess
+from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
 
 import baton_harness.chain.escalation as esc_mod
+import baton_harness.chain.runlog as runlog_mod
 from baton_harness.chain.escalation import escalate
+from baton_harness.chain.runlog import RunLog
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -316,3 +325,337 @@ def test_escalate_none_issue_still_posts_slack_when_env_set(
     mock_urlopen.assert_called_once()
     # Return is still False — no durable record was written.
     assert result is False
+
+
+# ---------------------------------------------------------------------------
+# Helpers for alert() tests
+# ---------------------------------------------------------------------------
+
+
+def _make_runlog(tmp_path: Path) -> tuple[RunLog, list[dict[str, Any]]]:
+    """Create a RunLog backed by tmp_path and a list capturing all emits.
+
+    Returns:
+        A (RunLog, captured_events) pair.  Every dict passed to
+        ``runlog.emit`` is appended to ``captured_events`` so tests can
+        assert on the emitted payload without touching the filesystem.
+    """
+    rl = RunLog(tmp_path / "test.jsonl")
+    captured: list[dict[str, Any]] = []
+
+    original_write = runlog_mod._write_line
+
+    def _capture(path: Path, line: str) -> None:
+        captured.append(json.loads(line.rstrip("\n")))
+        original_write(path, line)
+
+    # Attach the capture list so callers can reach it.
+    rl._captured = captured  # type: ignore[attr-defined]
+    return rl, captured
+
+
+# ---------------------------------------------------------------------------
+# alert() — severity routing
+# ---------------------------------------------------------------------------
+
+
+def test_alert_info_does_not_call_escalate_and_returns_true(
+    tmp_path: Path,
+) -> None:
+    """alert(severity='info') never invokes escalate; returns True."""
+    rl, captured = _make_runlog(tmp_path)
+
+    with (
+        patch.object(esc_mod, "_run") as mock_run,
+        patch.dict("os.environ", {}, clear=False),
+        patch(
+            "baton_harness.chain.runlog._write_line",
+            side_effect=lambda p, ln: captured.append(
+                json.loads(ln.rstrip("\n"))
+            ),
+        ),
+    ):
+        import os
+
+        os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
+        # alert() does not exist yet; this import will fail (red phase).
+        from baton_harness.chain.escalation import alert
+
+        result = alert(
+            _OWNER,
+            _REPO,
+            _ISSUE,
+            "just informational",
+            severity="info",
+            runlog=rl,
+        )
+
+    assert result is True
+    mock_run.assert_not_called()
+    # Exactly one escalation event must have been emitted.
+    esc_events = [e for e in captured if e.get("event") == "escalation"]
+    assert len(esc_events) == 1
+    ev = esc_events[0]
+    assert ev["severity"] == "info"
+    assert ev["issue"] == _ISSUE
+    assert ev["detail"] == "just informational"
+
+
+def test_alert_warn_calls_escalate_with_unchanged_body(
+    tmp_path: Path,
+) -> None:
+    """alert(severity='warn') calls escalate with the summary unmodified."""
+    rl, captured = _make_runlog(tmp_path)
+    summary = "something is slightly off"
+
+    with (
+        patch.object(esc_mod, "_run", return_value=_ok()) as mock_run,
+        patch.dict("os.environ", {}, clear=False),
+        patch(
+            "baton_harness.chain.runlog._write_line",
+            side_effect=lambda p, ln: captured.append(
+                json.loads(ln.rstrip("\n"))
+            ),
+        ),
+    ):
+        import os
+
+        os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
+        from baton_harness.chain.escalation import alert
+
+        result = alert(
+            _OWNER,
+            _REPO,
+            _ISSUE,
+            summary,
+            severity="warn",
+            runlog=rl,
+        )
+
+    assert result is True
+    assert mock_run.called
+    # The body passed to _run (the gh issue comment cmd) must contain the
+    # summary verbatim.
+    all_args = " ".join(
+        " ".join(c[0][0]) if c[0] else "" for c in mock_run.call_args_list
+    )
+    assert summary in all_args
+    # Runlog escalation event with severity=warn.
+    esc_events = [e for e in captured if e.get("event") == "escalation"]
+    assert len(esc_events) == 1
+    assert esc_events[0]["severity"] == "warn"
+
+
+def test_alert_critical_prefixes_body_with_loud_marker(
+    tmp_path: Path,
+) -> None:
+    """alert(severity='critical') passes a loud-prefixed body to escalate.
+
+    The body must (a) contain the original summary as a substring and
+    (b) carry a recognisable loud prefix — either the string ``CRITICAL``
+    or a leading ``🚨``.  The exact marker text is up to the implementer.
+    """
+    rl, captured = _make_runlog(tmp_path)
+    summary = "CI gate failed catastrophically"
+
+    bodies_seen: list[str] = []
+
+    def _capture_run(
+        cmd: list[str],
+    ) -> subprocess.CompletedProcess[str]:
+        # The gh issue comment body is passed via --body <value>.
+        if "--body" in cmd:
+            idx = cmd.index("--body")
+            bodies_seen.append(cmd[idx + 1])
+        return _ok()
+
+    with (
+        patch.object(esc_mod, "_run", side_effect=_capture_run),
+        patch.dict("os.environ", {}, clear=False),
+        patch(
+            "baton_harness.chain.runlog._write_line",
+            side_effect=lambda p, ln: captured.append(
+                json.loads(ln.rstrip("\n"))
+            ),
+        ),
+    ):
+        import os
+
+        os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
+        from baton_harness.chain.escalation import alert
+
+        result = alert(
+            _OWNER,
+            _REPO,
+            _ISSUE,
+            summary,
+            severity="critical",
+            runlog=rl,
+        )
+
+    assert result is True
+    assert bodies_seen, "escalate must be called for severity='critical'"
+    body = bodies_seen[0]
+    # Original summary must still be a substring.
+    assert summary in body, (
+        f"Original summary not found in critical body: {body!r}"
+    )
+    # A loud prefix must be present.
+    assert "CRITICAL" in body or body.startswith("🚨"), (
+        f"No loud prefix found in critical body: {body!r}"
+    )
+    # Runlog event with severity=critical.
+    esc_events = [e for e in captured if e.get("event") == "escalation"]
+    assert len(esc_events) == 1
+    assert esc_events[0]["severity"] == "critical"
+
+
+# ---------------------------------------------------------------------------
+# alert() — runlog=None must not crash
+# ---------------------------------------------------------------------------
+
+
+def test_alert_warn_without_runlog_still_calls_escalate() -> None:
+    """alert(runlog=None, severity='warn') succeeds; escalate is called."""
+    with (
+        patch.object(esc_mod, "_run", return_value=_ok()) as mock_run,
+        patch.dict("os.environ", {}, clear=False),
+    ):
+        import os
+
+        os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
+        from baton_harness.chain.escalation import alert
+
+        result = alert(
+            _OWNER,
+            _REPO,
+            _ISSUE,
+            "warn without runlog",
+            severity="warn",
+            runlog=None,
+        )
+
+    assert result is True
+    assert mock_run.called
+
+
+def test_alert_critical_without_runlog_still_calls_escalate() -> None:
+    """alert(runlog=None, severity='critical') succeeds; escalate is called."""
+    with (
+        patch.object(esc_mod, "_run", return_value=_ok()) as mock_run,
+        patch.dict("os.environ", {}, clear=False),
+    ):
+        import os
+
+        os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
+        from baton_harness.chain.escalation import alert
+
+        result = alert(
+            _OWNER,
+            _REPO,
+            _ISSUE,
+            "critical without runlog",
+            severity="critical",
+            runlog=None,
+        )
+
+    assert result is True
+    assert mock_run.called
+
+
+def test_alert_info_without_runlog_returns_true_and_does_not_raise() -> None:
+    """alert(runlog=None, severity='info') returns True without raising."""
+    with (
+        patch.object(esc_mod, "_run") as mock_run,
+        patch.dict("os.environ", {}, clear=False),
+    ):
+        import os
+
+        os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
+        from baton_harness.chain.escalation import alert
+
+        result = alert(
+            _OWNER,
+            _REPO,
+            _ISSUE,
+            "info without runlog",
+            severity="info",
+            runlog=None,
+        )
+
+    assert result is True
+    mock_run.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# alert() — failing runlog must not propagate (best-effort)
+# ---------------------------------------------------------------------------
+
+
+def test_alert_runlog_failure_does_not_propagate_and_escalate_still_fires(
+    tmp_path: Path,
+) -> None:
+    """alert()'s own try/except around runlog.emit() must swallow failures.
+
+    Patching ``RunLog.emit`` directly (not the internal ``_write_line``
+    seam) exercises the guard inside ``alert()`` itself.  If that guard
+    were removed, the test would fail because the ``RuntimeError`` would
+    propagate out of ``alert()``.
+
+    escalate() must still be called for severity='warn' even when the
+    runlog fails.
+    """
+    rl = RunLog(tmp_path / "test.jsonl")
+
+    with (
+        patch.object(esc_mod, "_run", return_value=_ok()) as mock_run,
+        patch.dict("os.environ", {}, clear=False),
+        patch.object(rl, "emit", side_effect=RuntimeError("emit explodes")),
+    ):
+        import os
+
+        os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
+        from baton_harness.chain.escalation import alert
+
+        # Must not raise despite emit() failing — alert()'s guard protects
+        # the caller.
+        result = alert(
+            _OWNER,
+            _REPO,
+            _ISSUE,
+            "warn with broken runlog",
+            severity="warn",
+            runlog=rl,
+        )
+
+    assert result is True
+    assert mock_run.called
+
+
+# ---------------------------------------------------------------------------
+# Sanity: escalate() contract unchanged when called directly
+# ---------------------------------------------------------------------------
+
+
+def test_escalate_direct_call_still_posts_gh_comment_first() -> None:
+    """Calling escalate() directly (not via alert) still behaves as before.
+
+    This test is a contract-preservation sanity check: if the existing
+    tests in the module already cover this behaviour exhaustively, this
+    additional test is redundant but harmless.
+    """
+    with (
+        patch.object(esc_mod, "_run", return_value=_ok()) as mock_run,
+        patch.dict("os.environ", {}, clear=False),
+    ):
+        import os
+
+        os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
+        result = escalate(_OWNER, _REPO, _ISSUE, "direct escalate call")
+
+    assert result is True
+    assert mock_run.called
+    cmd = mock_run.call_args_list[0][0][0]
+    assert "gh" in cmd
+    assert "issue" in cmd
+    assert "comment" in cmd
