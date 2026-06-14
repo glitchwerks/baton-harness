@@ -53,6 +53,7 @@ from baton_harness.chain.escalation import alert
 from baton_harness.chain.gh_deps import (
     fetch_blocked_by,
 )
+from baton_harness.chain.labels import assert_single_state
 from baton_harness.chain.merge import MergeOutcome, merge_issue_branch
 from baton_harness.chain.obs_config import load_obs_config
 from baton_harness.chain.recovery import reconstruct
@@ -794,6 +795,46 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
         # Re-read labels after _run_worker (after_run may have set blocked).
         post_labels = _fetch_issue_labels(owner, repo, n)
         has_blocked = "blocked" in post_labels
+
+        # Single-state invariant backstop (#34 P2 / #76).
+        # Must run BEFORE the outcome-protocol branches so torn or zero-state
+        # label sets are caught early rather than dispatched to logic that
+        # assumes a clean state.
+        _inv_violation = assert_single_state(post_labels)
+        if _inv_violation is not None:
+            _log.error(
+                "daemon: label invariant violated for #%d: %s; parking",
+                n,
+                _inv_violation,
+            )
+            if runlog is not None:
+                try:
+                    runlog.emit(
+                        {
+                            "ts": datetime.now(timezone.utc).isoformat(),
+                            "event": "label_invariant_violation",
+                            "issue": n,
+                            "outcome": None,
+                            "severity": "critical",
+                            "detail": _inv_violation,
+                            "tick_id": None,
+                        }
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+            alert(
+                owner,
+                repo,
+                n,
+                f"Issue #{n} has torn label state: {_inv_violation}",
+                severity="critical",
+                kind="block",
+                runlog=runlog,
+            )
+            _label_edit(owner, repo, n, remove=["agent-in-progress"])
+            sched.mark_parked(n)
+            parked_reasons[n] = f"label invariant violation: {_inv_violation}"
+            continue
 
         # Apply §3.5 outcome protocol.
         if worker_result == "pr_created" and not has_blocked:

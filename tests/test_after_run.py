@@ -681,3 +681,56 @@ class TestMain:
             ]
             result = after_run.main()
         assert result != 0
+
+
+# ---------------------------------------------------------------------------
+# Issue #76: after_run label constants import-redirect
+# ---------------------------------------------------------------------------
+
+
+class TestLabelConstantsRedirect:
+    """after_run label constants must be re-exported from chain.labels.
+
+    After the import redirect (issue #76), after_run removes its own
+    constant definitions and imports them from
+    ``baton_harness.chain.labels``.  The three names must still be
+    accessible on the ``after_run`` module, and they must resolve to the
+    same objects as those in ``baton_harness.chain.labels`` (not a copy).
+    """
+
+    def test_after_run_label_agent_ready_is_chain_labels_object(
+        self,
+    ) -> None:
+        """after_run.LABEL_AGENT_READY is baton_harness.chain.labels object.
+
+        Importing the same name from both modules must yield the same
+        interned string object, confirming the redirect is live and not a
+        duplicated constant.
+        """
+        import baton_harness.chain.labels as labels_mod
+
+        assert after_run.LABEL_AGENT_READY is labels_mod.LABEL_AGENT_READY, (
+            "after_run.LABEL_AGENT_READY must resolve to the same object as "
+            "baton_harness.chain.labels.LABEL_AGENT_READY (import redirect "
+            "not in place or value diverged)"
+        )
+
+    def test_after_run_label_agent_done_is_chain_labels_object(
+        self,
+    ) -> None:
+        """after_run.LABEL_AGENT_DONE is baton_harness.chain.labels object."""
+        import baton_harness.chain.labels as labels_mod
+
+        assert after_run.LABEL_AGENT_DONE is labels_mod.LABEL_AGENT_DONE, (
+            "after_run.LABEL_AGENT_DONE must resolve to the same object as "
+            "baton_harness.chain.labels.LABEL_AGENT_DONE"
+        )
+
+    def test_after_run_label_blocked_is_chain_labels_object(self) -> None:
+        """after_run.LABEL_BLOCKED is baton_harness.chain.labels object."""
+        import baton_harness.chain.labels as labels_mod
+
+        assert after_run.LABEL_BLOCKED is labels_mod.LABEL_BLOCKED, (
+            "after_run.LABEL_BLOCKED must resolve to the same object as "
+            "baton_harness.chain.labels.LABEL_BLOCKED"
+        )
