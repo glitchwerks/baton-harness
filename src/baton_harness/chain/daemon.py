@@ -44,6 +44,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -55,9 +56,10 @@ from baton_harness.chain.escalation import alert
 from baton_harness.chain.gh_deps import (
     fetch_blocked_by,
 )
+from baton_harness.chain.heartbeat import LivenessState, run_heartbeat_loop
 from baton_harness.chain.labels import assert_single_state
 from baton_harness.chain.merge import MergeOutcome, merge_issue_branch
-from baton_harness.chain.obs_config import load_obs_config
+from baton_harness.chain.obs_config import ObsConfig, load_obs_config
 from baton_harness.chain.recovery import RecoveryResult
 from baton_harness.chain.redispatch import RedispatchTally
 from baton_harness.chain.registry import RepoConfig
@@ -477,6 +479,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
     ci_timeout: float = _DEFAULT_CI_TIMEOUT,
     runlog: RunLog | None = None,
     tally: RedispatchTally | None = None,
+    liveness_state: LivenessState | None = None,
 ) -> None:
     """Run one work unit (one DAG) to completion.
 
@@ -502,6 +505,10 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
             emission.  When ``None``, all emission is a no-op.
         tally: Optional ``RedispatchTally`` for re-dispatch loop
             detection.  When ``None``, loop detection is skipped.
+        liveness_state: Optional ``LivenessState`` shared with the
+            heartbeat monitor.  When provided, this function calls
+            ``mark_in_progress`` before dispatching a worker and
+            ``clear`` on every terminal branch (C-I4).
     """
     owner = repo_cfg.owner
     repo = repo_cfg.repo
@@ -679,6 +686,16 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 )
                 continue
 
+            # Liveness tracking: mark in-progress so heartbeat_monitor
+            # can detect a stall during the CI poll (which may block up
+            # to ci_timeout=1800s).  Mirror the pattern in the fresh-
+            # dispatch path (see liveness_state.mark_in_progress call
+            # ~30 lines below in _run_work_unit).
+            if liveness_state is not None:
+                liveness_state.mark_in_progress(
+                    owner, repo, n, datetime.now(timezone.utc)
+                )
+
             # FIX 2: wrap merge_issue_branch in a per-issue try/except so a
             # transient git/gh error parks this issue but does not kill the
             # daemon.
@@ -702,6 +719,8 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                     exc,
                 )
                 _label_edit(owner, repo, n, remove=["agent-in-progress"])
+                if liveness_state is not None:
+                    liveness_state.clear()
                 sched.mark_parked(n)
                 parked_reasons[n] = f"merge exception (ci_gate): {exc}"
                 alert(
@@ -719,10 +738,14 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 _label_edit(
                     owner, repo, n, remove=["agent-in-progress", "agent-done"]
                 )
+                if liveness_state is not None:
+                    liveness_state.clear()
                 sched.mark_done(n)
                 merged_issues.append(n)
             else:
                 _label_edit(owner, repo, n, remove=["agent-in-progress"])
+                if liveness_state is not None:
+                    liveness_state.clear()
                 sched.mark_parked(n)
                 parked_reasons[n] = f"ci_gate_reentry: {outcome.name}"
                 alert(
@@ -795,6 +818,12 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
         _label_edit(
             owner, repo, n, add=["agent-in-progress"], remove=["agent-ready"]
         )
+        # Liveness tracking: record that this issue is now in-progress so
+        # heartbeat_monitor can detect a stall.
+        if liveness_state is not None:
+            liveness_state.mark_in_progress(
+                owner, repo, n, datetime.now(timezone.utc)
+            )
 
         # Thread cut-point base to hooks via env (VP-1 wiring).
         os.environ["CHAIN_BASE_BRANCH"] = cut_point
@@ -807,6 +836,8 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
         if issue_obj is None:
             _log.error("daemon: could not fetch issue #%d; parking", n)
             _label_edit(owner, repo, n, remove=["agent-in-progress"])
+            if liveness_state is not None:
+                liveness_state.clear()
             sched.mark_parked(n)
             parked_reasons[n] = "issue fetch failed"
             alert(
@@ -842,6 +873,8 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
         except Exception as exc:
             _log.error("daemon: _run_worker raised for #%d: %s", n, exc)
             _label_edit(owner, repo, n, remove=["agent-in-progress"])
+            if liveness_state is not None:
+                liveness_state.clear()
             sched.mark_parked(n)
             parked_reasons[n] = f"worker exception: {exc}"
             alert(
@@ -917,6 +950,8 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 runlog=runlog,
             )
             _label_edit(owner, repo, n, remove=["agent-in-progress"])
+            if liveness_state is not None:
+                liveness_state.clear()
             sched.mark_parked(n)
             parked_reasons[n] = f"label invariant violation: {_inv_violation}"
             continue
@@ -931,6 +966,8 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                     n,
                 )
                 _label_edit(owner, repo, n, remove=["agent-in-progress"])
+                if liveness_state is not None:
+                    liveness_state.clear()
                 sched.mark_parked(n)
                 parked_reasons[n] = "pr_created but no PR located"
                 alert(
@@ -966,6 +1003,8 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                     exc,
                 )
                 _label_edit(owner, repo, n, remove=["agent-in-progress"])
+                if liveness_state is not None:
+                    liveness_state.clear()
                 sched.mark_parked(n)
                 parked_reasons[n] = f"merge exception: {exc}"
                 alert(
@@ -984,11 +1023,15 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 _label_edit(
                     owner, repo, n, remove=["agent-in-progress", "agent-done"]
                 )
+                if liveness_state is not None:
+                    liveness_state.clear()
                 sched.mark_done(n)
                 merged_issues.append(n)
                 _log.info("daemon: issue #%d merged into %r", n, branch_name)
             else:
                 _label_edit(owner, repo, n, remove=["agent-in-progress"])
+                if liveness_state is not None:
+                    liveness_state.clear()
                 sched.mark_parked(n)
                 parked_reasons[n] = f"CI gate: {outcome.name}"
                 reason = (
@@ -1016,6 +1059,8 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 else "no PR created (agent may have failed)"
             )
             _label_edit(owner, repo, n, remove=["agent-in-progress"])
+            if liveness_state is not None:
+                liveness_state.clear()
             sched.mark_parked(n)
             parked_reasons[n] = reason_text
             alert(
@@ -1129,6 +1174,7 @@ async def run_daemon(
 
     # --- Observability startup (best-effort; risk R2 — must never raise). ---
     runlog: RunLog | None = None
+    obs: ObsConfig | None = None
     tally: RedispatchTally | None = None
     try:
         obs = load_obs_config()
@@ -1159,53 +1205,89 @@ async def run_daemon(
         _log.warning("daemon: redispatch tally init failed: %s", exc)
         tally = None
 
-    while True:
-        # Advance the re-dispatch tally tick once per outer poll cycle
-        # (before iterating repos so the tick is shared across all repos
-        # in the same outer loop iteration).
-        if tally is not None:
-            tally.advance_tick()
+    # --- Heartbeat monitor setup. ----------------------------------------
+    # Construct liveness state shared between the daemon and the monitor.
+    #
+    # LivenessState is written from the daemon (asyncio) thread and read
+    # from the monitor thread; field assignments are atomic under the GIL
+    # and this is best-effort liveness, so no lock is required.
+    liveness_state = LivenessState()
 
-        for repo_cfg in registry:
-            # FIX 2: defensive catch around each per-repo tick.  A failure
-            # building or running one work unit must not kill the always-on
-            # daemon.  Log, escalate if possible, then continue to the next
-            # repo/tick.
-            try:
-                await _poll_and_run(
-                    config,
-                    repo_cfg,
-                    ci_poll_interval=ci_poll_interval,
-                    ci_timeout=ci_timeout,
-                    runlog=runlog,
-                    tally=tally,
-                )
-            except Exception as exc:
-                _log.error(
-                    "daemon: unhandled exception for %s/%s: %s; "
-                    "daemon continues",
-                    repo_cfg.owner,
-                    repo_cfg.repo,
-                    exc,
-                )
+    # Start the heartbeat OS thread unconditionally — including once=True
+    # runs (--once CLI / smoke tests).  A real thread beats independently
+    # of the asyncio event loop, so it continues writing heartbeats even
+    # while the loop is blocked inside the synchronous CI gate
+    # (time.sleep in merge.py up to 1800 s).
+    stop_event = threading.Event()
+    monitor_thread: threading.Thread | None = None
+    if obs is not None:
+        try:
+            monitor_thread = threading.Thread(
+                target=run_heartbeat_loop,
+                args=(obs, liveness_state, stop_event),
+                kwargs={"runlog": runlog},
+                name="heartbeat-monitor",
+                daemon=True,
+            )
+            monitor_thread.start()
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("daemon: heartbeat thread startup failed: %s", exc)
+            monitor_thread = None
+
+    try:
+        while True:
+            # Advance the re-dispatch tally tick once per outer poll cycle
+            # (before iterating repos so the tick is shared across all
+            # repos in the same outer loop iteration).
+            if tally is not None:
+                tally.advance_tick()
+
+            for repo_cfg in registry:
+                # FIX 2: defensive catch around each per-repo tick.  A
+                # failure building or running one work unit must not kill
+                # the always-on daemon.  Log, escalate if possible, then
+                # continue to the next repo/tick.
                 try:
-                    alert(
+                    await _poll_and_run(
+                        config,
+                        repo_cfg,
+                        ci_poll_interval=ci_poll_interval,
+                        ci_timeout=ci_timeout,
+                        runlog=runlog,
+                        tally=tally,
+                        liveness_state=liveness_state,
+                    )
+                except Exception as exc:
+                    _log.error(
+                        "daemon: unhandled exception for %s/%s: %s; "
+                        "daemon continues",
                         repo_cfg.owner,
                         repo_cfg.repo,
-                        None,
-                        f"Daemon tick failed for {repo_cfg.owner}/"
-                        f"{repo_cfg.repo}: {exc}",
-                        severity="critical",
-                        kind="debug",
-                        runlog=runlog,
+                        exc,
                     )
-                except Exception:
-                    pass  # escalation itself may fail; daemon must survive
+                    try:
+                        alert(
+                            repo_cfg.owner,
+                            repo_cfg.repo,
+                            None,
+                            f"Daemon tick failed for {repo_cfg.owner}/"
+                            f"{repo_cfg.repo}: {exc}",
+                            severity="critical",
+                            kind="debug",
+                            runlog=runlog,
+                        )
+                    except Exception:
+                        pass  # escalation may fail; daemon must survive
 
-        if once:
-            break
+            if once:
+                break
 
-        await asyncio.sleep(poll_interval_s)
+            await asyncio.sleep(poll_interval_s)
+    finally:
+        # Signal the monitor thread and wait for it to exit cleanly.
+        stop_event.set()
+        if monitor_thread is not None:
+            monitor_thread.join(timeout=5.0)
 
     _log.info("daemon: stopped")
 
@@ -1218,6 +1300,7 @@ async def _poll_and_run(
     ci_timeout: float,
     runlog: RunLog | None = None,
     tally: RedispatchTally | None = None,
+    liveness_state: LivenessState | None = None,
 ) -> None:
     """Poll one repo for a ready work unit and run it if found.
 
@@ -1230,6 +1313,8 @@ async def _poll_and_run(
             emission.  When ``None``, all emission is a no-op.
         tally: Optional ``RedispatchTally`` for re-dispatch loop
             detection.  When ``None``, loop detection is skipped.
+        liveness_state: Optional ``LivenessState`` shared with the
+            heartbeat monitor.  Passed through to ``_run_work_unit``.
     """
     owner = repo_cfg.owner
     repo = repo_cfg.repo
@@ -1309,6 +1394,7 @@ async def _poll_and_run(
         ci_timeout=ci_timeout,
         runlog=runlog,
         tally=tally,
+        liveness_state=liveness_state,
     )
 
 
