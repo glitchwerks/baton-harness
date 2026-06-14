@@ -229,9 +229,23 @@ def _heartbeat_tick(
             )
 
     # ---- Step 4: stall detection (debounced). --------------------------
-    if state.in_progress_since is not None and not state._stall_alerted:
+    # Snapshot all relevant fields into locals *before* any conditional
+    # logic to avoid torn reads.  The daemon thread can call
+    # mark_in_progress() or clear() (each a multi-field write) between
+    # successive attribute accesses, which could cause:
+    #   (a) TypeError from (t - None) if cleared mid-read, or
+    #   (b) a mixed-issue alert if two fields come from different issues.
+    # Reading into locals once under the GIL makes each local assignment
+    # atomic; subsequent logic operates only on the snapshot.
+    alerted_snap: bool = state._stall_alerted
+    since_snap: datetime | None = state.in_progress_since
+    owner_snap: str | None = state.in_progress_owner
+    repo_snap: str | None = state.in_progress_repo
+    issue_snap: int | None = state.in_progress_issue
+
+    if since_snap is not None and not alerted_snap:
         try:
-            elapsed = (t - state.in_progress_since).total_seconds()
+            elapsed = (t - since_snap).total_seconds()
         except Exception as exc:  # noqa: BLE001
             _log.warning(
                 "_heartbeat_tick: elapsed calculation failed: %s", exc
@@ -242,11 +256,11 @@ def _heartbeat_tick(
             delivered = False
             try:
                 delivered = alert(
-                    state.in_progress_owner or "",
-                    state.in_progress_repo or "",
-                    state.in_progress_issue,
+                    owner_snap or "",
+                    repo_snap or "",
+                    issue_snap,
                     (
-                        f"Issue #{state.in_progress_issue} has been"
+                        f"Issue #{issue_snap} has been"
                         f" agent-in-progress for"
                         f" {elapsed:.0f}s (threshold:"
                         f" {obs.heartbeat_stall_s:.0f}s) —"
@@ -260,6 +274,9 @@ def _heartbeat_tick(
                 _log.warning("_heartbeat_tick: alert() failed: %s", exc)
 
             if delivered:
+                # Write back to the shared object — intentional: this
+                # is the latch that prevents a second alert for the
+                # same stall episode.
                 state._stall_alerted = True
 
                 if runlog is not None:
@@ -268,7 +285,7 @@ def _heartbeat_tick(
                             {
                                 "ts": t.isoformat(),
                                 "event": "stall",
-                                "issue": state.in_progress_issue,
+                                "issue": issue_snap,
                                 "outcome": None,
                                 "severity": "critical",
                                 "detail": (
