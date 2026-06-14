@@ -123,11 +123,7 @@ def _make_run_side_effect(
         ):
             return _ok(_issue_list_json(issue_number))
         # Issue view.
-        if (
-            "issue" in cmd_str
-            and "view" in cmd_str
-            and "edit" not in cmd_str
-        ):
+        if "issue" in cmd_str and "view" in cmd_str and "edit" not in cmd_str:
             return _ok(
                 _json.dumps(
                     {
@@ -212,9 +208,7 @@ def test_parked_seed_clears_agent_in_progress_before_mark_parked() -> None:
 
     with (
         patch.object(daemon_mod, "_run", side_effect=recording_run),
-        patch(
-            "baton_harness.chain.daemon.fetch_blocked_by", return_value=[]
-        ),
+        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
         patch("baton_harness.chain.branches.create_feature_branch"),
         patch("baton_harness.chain.branches.checkout_feature_branch"),
         patch(
@@ -307,11 +301,7 @@ def test_ci_gate_reentry_no_pr_clears_agent_in_progress() -> None:
         ):
             return _ok(_issue_list_json(issue_number))
         # Issue view.
-        if (
-            "issue" in cmd_str
-            and "view" in cmd_str
-            and "edit" not in cmd_str
-        ):
+        if "issue" in cmd_str and "view" in cmd_str and "edit" not in cmd_str:
             return _ok(
                 _json.dumps(
                     {
@@ -357,9 +347,7 @@ def test_ci_gate_reentry_no_pr_clears_agent_in_progress() -> None:
 
     with (
         patch.object(daemon_mod, "_run", side_effect=recording_run),
-        patch(
-            "baton_harness.chain.daemon.fetch_blocked_by", return_value=[]
-        ),
+        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
         patch("baton_harness.chain.branches.create_feature_branch"),
         patch("baton_harness.chain.branches.checkout_feature_branch"),
         patch(
