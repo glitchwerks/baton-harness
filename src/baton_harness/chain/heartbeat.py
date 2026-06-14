@@ -239,8 +239,9 @@ def _heartbeat_tick(
             return
 
         if elapsed > obs.heartbeat_stall_s:
+            delivered = False
             try:
-                alert(
+                delivered = alert(
                     state.in_progress_owner or "",
                     state.in_progress_repo or "",
                     state.in_progress_issue,
@@ -257,26 +258,30 @@ def _heartbeat_tick(
                 )
             except Exception as exc:  # noqa: BLE001
                 _log.warning("_heartbeat_tick: alert() failed: %s", exc)
-            state._stall_alerted = True
 
-            if runlog is not None:
-                try:
-                    runlog.emit(
-                        {
-                            "ts": t.isoformat(),
-                            "event": "stall",
-                            "issue": state.in_progress_issue,
-                            "outcome": None,
-                            "severity": "critical",
-                            "detail": (f"stall detected after {elapsed:.0f}s"),
-                            "tick_id": None,
-                        }
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    _log.warning(
-                        "_heartbeat_tick: runlog.emit(stall) failed: %s",
-                        exc,
-                    )
+            if delivered:
+                state._stall_alerted = True
+
+                if runlog is not None:
+                    try:
+                        runlog.emit(
+                            {
+                                "ts": t.isoformat(),
+                                "event": "stall",
+                                "issue": state.in_progress_issue,
+                                "outcome": None,
+                                "severity": "critical",
+                                "detail": (
+                                    f"stall detected after {elapsed:.0f}s"
+                                ),
+                                "tick_id": None,
+                            }
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        _log.warning(
+                            "_heartbeat_tick: runlog.emit(stall) failed: %s",
+                            exc,
+                        )
 
 
 # ---------------------------------------------------------------------------

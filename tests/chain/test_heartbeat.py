@@ -20,6 +20,9 @@ AC coverage:
   stop_event.set(); thread-interruptible sleep (threading.Event.wait).
 - P1 regression: monitor beats independently while main thread blocks
   (simulating CI-gate time.sleep).
+- P2 robustness: stall debounce only latches when alert() returns True
+  (delivery confirmed); a False return must NOT latch, forcing retry on
+  the next tick; the latch fires after a later tick delivers successfully.
 
 No asyncio / pytest-asyncio dependency -- all tests are synchronous.
 """
@@ -679,3 +682,93 @@ def test_heartbeat_loop_beats_while_main_thread_blocks(
         "Monitor must have written >= 2 heartbeats during the main-thread "
         f"block (proving thread independence); got {count_during_block}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 11 -- P2 ROBUSTNESS: stall debounce only latches on delivery success
+# ---------------------------------------------------------------------------
+
+
+def test_stall_debounce_not_latched_on_delivery_failure(
+    tmp_path: Path,
+) -> None:
+    """Stall debounce only latches when alert() returns True (delivered).
+
+    Failure scenario (alert returns False):
+    - Tick 1 (past threshold): alert called; returns False (transient
+      delivery failure).  Debounce must NOT latch.  _stall_alerted stays
+      False.
+    - Tick 2 (still past threshold): alert called AGAIN (retry, because
+      debounce was not latched).
+    - Total alert calls after 2 ticks: 2.  _stall_alerted is still False.
+
+    Success latching after prior failure:
+    - Tick 3: alert fake now returns True.  Debounce MUST latch on this tick.
+    - Tick 4 (still past threshold): alert NOT called again (debounce held).
+    - Total alert calls after ticks 1+2+3+4: exactly 3 (fail, fail, succeed,
+      suppressed).  _stall_alerted is True after tick 3.
+    """
+    owner, repo, issue_num = "glitchwerks", "baton-harness", 78
+    stall_s = 100.0
+    obs = _make_obs(tmp_path / "heartbeat", heartbeat_stall_s=stall_s)
+    state = LivenessState()
+    state.mark_in_progress(owner, repo, issue_num, _utc(0.0))
+
+    # Clock is past stall threshold throughout all ticks.
+    t_breach = _utc(stall_s + 1.0)
+
+    alert_calls: list[int] = []
+    # Controls what the fake alert returns on each successive call.
+    delivery_results: list[bool] = [False, False, True]
+
+    def fake_alert_delivery_controlled(
+        *args: Any,  # noqa: ANN401
+        **kwargs: Any,  # noqa: ANN401
+    ) -> bool:
+        alert_calls.append(1)
+        if delivery_results:
+            return delivery_results.pop(0)
+        return True
+
+    with (
+        patch("baton_harness.chain.heartbeat._write_heartbeat"),
+        patch(
+            "baton_harness.chain.heartbeat.alert",
+            side_effect=fake_alert_delivery_controlled,
+        ),
+    ):
+        # Tick 1: delivery fails -> debounce must NOT latch.
+        _heartbeat_tick(obs, state, now=lambda: t_breach)
+        assert len(alert_calls) == 1, (
+            "Tick 1: expected 1 alert call (first delivery attempt); "
+            f"got {len(alert_calls)}"
+        )
+
+        # Tick 2: still past threshold; no latch from tick 1 -> must retry.
+        _heartbeat_tick(obs, state, now=lambda: t_breach)
+        assert len(alert_calls) == 2, (
+            "Tick 2: alert must be retried when prior delivery failed "
+            f"(debounce must NOT have latched); got {len(alert_calls)} calls"
+        )
+
+        # Verify _stall_alerted is still False (delivery not confirmed yet).
+        assert not state._stall_alerted, (  # type: ignore[attr-defined]
+            "After two failed deliveries, _stall_alerted must still be False"
+        )
+
+        # Tick 3: delivery succeeds -> debounce MUST latch this time.
+        _heartbeat_tick(obs, state, now=lambda: t_breach)
+        assert len(alert_calls) == 3, (
+            "Tick 3: expected one more alert call (successful delivery); "
+            f"got {len(alert_calls)} total"
+        )
+        assert state._stall_alerted, (  # type: ignore[attr-defined]
+            "After successful delivery (True), _stall_alerted must be True"
+        )
+
+        # Tick 4: debounce now held -> alert must NOT be called again.
+        _heartbeat_tick(obs, state, now=lambda: t_breach)
+        assert len(alert_calls) == 3, (
+            "Tick 4: alert must be suppressed after successful delivery "
+            f"latched debounce; got {len(alert_calls)} total (expected 3)"
+        )
