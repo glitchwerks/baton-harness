@@ -826,7 +826,10 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 owner,
                 repo,
                 n,
-                f"Issue #{n} has torn label state: {_inv_violation}",
+                (
+                    f"Issue #{n} failed the single-state"
+                    f" label invariant: {_inv_violation}"
+                ),
                 severity="critical",
                 kind="block",
                 runlog=runlog,

@@ -61,8 +61,14 @@ def assert_single_state(labels: Iterable[str]) -> str | None:
         holds.  A non-empty human-readable violation string when zero or
         two-or-more state labels are found, naming the offending labels so
         callers can include it in alert messages and runlog events.
+        A non-empty violation string is also returned when the *labels*
+        argument is malformed (e.g. contains unhashable members); the
+        function never raises regardless of input.
     """
-    found: frozenset[str] = frozenset(labels) & STATE_LABELS
+    try:
+        found: frozenset[str] = frozenset(labels) & STATE_LABELS
+    except Exception as exc:  # noqa: BLE001 — pure checker must never raise
+        return f"label invariant uncheckable: malformed labels input ({exc})"
     count = len(found)
     if count == 1:
         return None
