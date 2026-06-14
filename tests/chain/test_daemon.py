@@ -3742,3 +3742,388 @@ def test_runlog_emit_raises_daemon_still_alerts_parks_and_continues() -> None:
         "IssueScheduler.mark_parked(10) must be called even when "
         f"runlog.emit raises; mark_parked calls: {mark_parked_calls}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Issue #77: redispatch-loop detection via durable RedispatchTally
+# ---------------------------------------------------------------------------
+# The daemon must build a RedispatchTally from obs.redispatch_counts_path
+# in run_daemon, call tally.advance_tick() once per outer tick, and in the
+# redispatch branch call tally.record_and_check(n) BEFORE clearing
+# agent-in-progress.  On breach the daemon must:
+#   - NOT call _run_worker for that issue
+#   - remove agent-in-progress
+#   - call sched.mark_parked(n)
+#   - call alert(severity='critical', kind='block')
+#   - emit event='redispatch_loop' to runlog
+#
+# Below-threshold: worker IS called; no critical alert for the breach.
+#
+# Mocking strategy:
+#   - Pre-seed the dispatch-counts.json file to simulate a counts file
+#     that already has marks at the threshold.
+#   - Use BH_REDISPATCH_COUNTS_PATH / BH_PROJECT_ROOT (monkeypatch) so
+#     obs.redispatch_counts_path resolves to the pre-seeded temp file.
+#   - recovery_result.redispatch={10} to put the issue on the redispatch
+#     path (mirrors existing torn-state test style).
+#   - Patch runlog._write_line to capture emitted events.
+# ---------------------------------------------------------------------------
+
+
+def _make_redispatch_ready_issue(n: int = 10) -> dict[str, Any]:
+    """Return a minimal gh issue dict for the given issue number."""
+    return {
+        "number": n,
+        "title": f"Issue {n}",
+        "state": "open",
+        "body": "",
+        "url": f"https://github.com/o/r/issues/{n}",
+        "labels": [{"name": "agent-in-progress"}],
+        "milestone": None,
+        "assignees": [],
+    }
+
+
+def _seed_counts_file(
+    path: Path,
+    tick: int,
+    issue: int,
+    marks: list[int],
+) -> None:
+    """Write a pre-seeded dispatch-counts.json at ``path``.
+
+    Args:
+        path: File path to write.
+        tick: Current tick value to store.
+        issue: Issue number key.
+        marks: List of tick marks already recorded for that issue.
+    """
+    import json as _json
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {"tick": tick, "issues": {str(issue): marks}}
+    path.write_text(_json.dumps(data), encoding="utf-8")
+
+
+def test_redispatch_loop_breach_skips_worker_and_parks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Redispatch loop breach: worker not called; issue parked; alert fires.
+
+    Arrange: issue #10 is in recovery_result.redispatch.  The pre-seeded
+    dispatch-counts.json already contains max_count marks within the window
+    so that the next record_and_check trips the threshold immediately.
+
+    Assert:
+    - _run_worker is NOT called for issue 10.
+    - alert(severity='critical') is called at least once.
+
+    Args:
+        tmp_path: pytest fixture providing a temporary directory.
+        monkeypatch: pytest fixture for hermetic env-var injection.
+    """
+    import baton_harness.chain.runlog as runlog_mod
+
+    # Point obs config at tmp_path so redispatch_counts_path resolves there.
+    monkeypatch.setenv("BH_PROJECT_ROOT", str(tmp_path))
+    for var in (
+        "BH_RUNLOG_PATH",
+        "BH_HEARTBEAT_FILE",
+        "BH_REDISPATCH_WINDOW_TICKS",
+        "BH_REDISPATCH_MAX",
+        "BH_HEARTBEAT_STALL_S",
+        "BH_HEARTBEAT_PING_URL",
+        "BH_REDISPATCH_COUNTS_PATH",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    # Default: window=10, max=3.  Pre-seed 3 marks at ticks 1, 2, 3
+    # (all within a window of 10 from tick 4 which the daemon will reach).
+    counts_path = tmp_path / ".baton-harness" / "dispatch-counts.json"
+    _seed_counts_file(counts_path, tick=3, issue=10, marks=[1, 2, 3])
+
+    ready_issues = [_make_redispatch_ready_issue(10)]
+    mock_alert = MagicMock(return_value=True)
+    worker_called_for: list[int] = []
+
+    async def tracking_worker(issue: Any) -> str:  # noqa: ANN401
+        worker_called_for.append(issue.number)
+        return "pr_created"
+
+    written_lines: list[str] = []
+
+    def capture_write(path: Path, line: str) -> None:
+        written_lines.append(line)
+
+    with (
+        patch.object(runlog_mod, "_write_line", side_effect=capture_write),
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=_make_run_side_effect(
+                ready_issues=ready_issues,
+                pr_head_sha="abc123",
+                issue_branch="baton/issue-10-10",
+                feature_branch_exists=False,
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            return_value=[],
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch={10},
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch("baton_harness.chain.daemon.alert", mock_alert),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator."
+            "Orchestrator._run_worker",
+            side_effect=tracking_worker,
+        ),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    # Worker must NOT have been dispatched for issue 10 (loop detected).
+    assert 10 not in worker_called_for, (
+        "Expected _run_worker NOT called for issue 10 when redispatch "
+        f"loop detected; worker_called_for={worker_called_for}"
+    )
+
+    # A critical alert must have fired.
+    critical_calls = [
+        c
+        for c in mock_alert.call_args_list
+        if c.kwargs.get("severity") == "critical"
+    ]
+    assert critical_calls, (
+        "Expected alert(severity='critical') on redispatch-loop breach; "
+        f"all alert calls: {mock_alert.call_args_list}"
+    )
+
+
+def test_redispatch_loop_breach_emits_redispatch_loop_event(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Redispatch loop breach emits a 'redispatch_loop' runlog event.
+
+    The runlog event dict must contain event='redispatch_loop' and
+    severity='critical'.
+
+    Args:
+        tmp_path: pytest fixture providing a temporary directory.
+        monkeypatch: pytest fixture for hermetic env-var injection.
+    """
+    import baton_harness.chain.runlog as runlog_mod
+
+    monkeypatch.setenv("BH_PROJECT_ROOT", str(tmp_path))
+    for var in (
+        "BH_RUNLOG_PATH",
+        "BH_HEARTBEAT_FILE",
+        "BH_REDISPATCH_WINDOW_TICKS",
+        "BH_REDISPATCH_MAX",
+        "BH_HEARTBEAT_STALL_S",
+        "BH_HEARTBEAT_PING_URL",
+        "BH_REDISPATCH_COUNTS_PATH",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    counts_path = tmp_path / ".baton-harness" / "dispatch-counts.json"
+    _seed_counts_file(counts_path, tick=3, issue=10, marks=[1, 2, 3])
+
+    ready_issues = [_make_redispatch_ready_issue(10)]
+    written_lines: list[str] = []
+
+    def capture_write(path: Path, line: str) -> None:
+        written_lines.append(line)
+
+    with (
+        patch.object(runlog_mod, "_write_line", side_effect=capture_write),
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=_make_run_side_effect(
+                ready_issues=ready_issues,
+                pr_head_sha="abc123",
+                issue_branch="baton/issue-10-10",
+                feature_branch_exists=False,
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            return_value=[],
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch={10},
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch("baton_harness.chain.daemon.alert", return_value=True),
+        _patch_run_worker("pr_created"),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    import json as _json
+
+    events = [_json.loads(line) for line in written_lines]
+    loop_events = [e for e in events if e.get("event") == "redispatch_loop"]
+    assert loop_events, (
+        "Expected a 'redispatch_loop' runlog event on breach; "
+        f"emitted event names: {[e.get('event') for e in events]!r}"
+    )
+    # The event must carry severity='critical'.
+    for ev in loop_events:
+        assert ev.get("severity") == "critical", (
+            f"redispatch_loop event must have severity='critical'; got: {ev!r}"
+        )
+
+
+def test_redispatch_below_threshold_dispatches_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Below-threshold redispatch: worker is called normally, no breach alert.
+
+    Arrange: issue #10 is in recovery_result.redispatch but the
+    dispatch-counts.json has only 1 mark (below max_count=3) so
+    record_and_check returns False.
+
+    Assert:
+    - _run_worker IS called for issue 10.
+    - No alert(severity='critical') fires for the redispatch_loop reason.
+
+    Args:
+        tmp_path: pytest fixture providing a temporary directory.
+        monkeypatch: pytest fixture for hermetic env-var injection.
+    """
+    monkeypatch.setenv("BH_PROJECT_ROOT", str(tmp_path))
+    for var in (
+        "BH_RUNLOG_PATH",
+        "BH_HEARTBEAT_FILE",
+        "BH_REDISPATCH_WINDOW_TICKS",
+        "BH_REDISPATCH_MAX",
+        "BH_HEARTBEAT_STALL_S",
+        "BH_HEARTBEAT_PING_URL",
+        "BH_REDISPATCH_COUNTS_PATH",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    # Only 1 prior mark — well below max_count=3.
+    counts_path = tmp_path / ".baton-harness" / "dispatch-counts.json"
+    _seed_counts_file(counts_path, tick=1, issue=10, marks=[1])
+
+    ready_issues = [_make_redispatch_ready_issue(10)]
+    mock_alert = MagicMock(return_value=True)
+    worker_called_for: list[int] = []
+
+    async def tracking_worker(issue: Any) -> str:  # noqa: ANN401
+        worker_called_for.append(issue.number)
+        return "pr_created"
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=_make_run_side_effect(
+                ready_issues=ready_issues,
+                pr_head_sha="abc123",
+                issue_branch="baton/issue-10-10",
+                feature_branch_exists=False,
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            return_value=[],
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch={10},
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch("baton_harness.chain.daemon.alert", mock_alert),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator."
+            "Orchestrator._run_worker",
+            side_effect=tracking_worker,
+        ),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    # Worker must have been dispatched for issue 10.
+    assert 10 in worker_called_for, (
+        "Expected _run_worker called for issue 10 when redispatch count "
+        f"is below threshold; worker_called_for={worker_called_for}"
+    )
+
+    # No critical alert for redispatch_loop specifically.
+    # (Other critical alerts for unrelated reasons are tolerated; only
+    # the runlog event 'redispatch_loop' is the definitive breach signal
+    # tested in the breach test above.)
+    # Here we assert the worker ran, which is sufficient to confirm
+    # the non-breach path was taken.

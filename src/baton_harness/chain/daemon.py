@@ -45,9 +45,11 @@ import os
 import subprocess
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from baton_harness.chain import branches
+from baton_harness.chain import recovery as _recovery_mod
 from baton_harness.chain.dag import build_dag
 from baton_harness.chain.escalation import alert
 from baton_harness.chain.gh_deps import (
@@ -56,7 +58,8 @@ from baton_harness.chain.gh_deps import (
 from baton_harness.chain.labels import assert_single_state
 from baton_harness.chain.merge import MergeOutcome, merge_issue_branch
 from baton_harness.chain.obs_config import load_obs_config
-from baton_harness.chain.recovery import reconstruct
+from baton_harness.chain.recovery import RecoveryResult
+from baton_harness.chain.redispatch import RedispatchTally
 from baton_harness.chain.registry import RepoConfig
 from baton_harness.chain.runlog import RunLog
 from baton_harness.chain.scheduler import IssueScheduler
@@ -65,6 +68,38 @@ from baton_harness.vendor.symphony.orchestrator import Orchestrator
 from baton_harness.vendor.symphony.tracker import Issue
 
 _log = logging.getLogger(__name__)
+
+
+def reconstruct(
+    repo_root: Path,
+    owner: str,
+    repo: str,
+    branch_name: str,
+    membership: frozenset[int],
+) -> RecoveryResult:
+    """Thin dispatch wrapper for ``recovery.reconstruct``.
+
+    Delegates to ``_recovery_mod.reconstruct`` via a module-level
+    attribute lookup so that tests can patch either this symbol
+    (``"baton_harness.chain.daemon.reconstruct"``) or the upstream
+    symbol (``"baton_harness.chain.recovery.reconstruct"``) and both
+    will affect the call site.
+
+    Args:
+        repo_root: Absolute ``Path`` to the repository root.
+        owner: GitHub repository owner.
+        repo: GitHub repository name.
+        branch_name: Feature branch name (``"feature/<slug>"``).
+        membership: Set of issue numbers in the work unit.
+
+    Returns:
+        A ``RecoveryResult`` describing the daemon's prior state for
+        this work unit.
+    """
+    return _recovery_mod.reconstruct(
+        repo_root, owner, repo, branch_name, membership
+    )
+
 
 # Default poll configuration for the CI gate (overridable by caller).
 _DEFAULT_CI_POLL_INTERVAL: float = 10.0
@@ -441,6 +476,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
     ci_poll_interval: float = _DEFAULT_CI_POLL_INTERVAL,
     ci_timeout: float = _DEFAULT_CI_TIMEOUT,
     runlog: RunLog | None = None,
+    tally: RedispatchTally | None = None,
 ) -> None:
     """Run one work unit (one DAG) to completion.
 
@@ -464,6 +500,8 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
         ci_timeout: Hard ceiling for the CI gate in seconds.
         runlog: Optional ``RunLog`` handle for best-effort event
             emission.  When ``None``, all emission is a no-op.
+        tally: Optional ``RedispatchTally`` for re-dispatch loop
+            detection.  When ``None``, loop detection is skipped.
     """
     owner = repo_cfg.owner
     repo = repo_cfg.repo
@@ -700,6 +738,50 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
 
         # --- Fresh dispatch (or 3b redispatch). ---
         if n in recovery_result.redispatch:
+            # Re-dispatch loop detection (#77): record this attempt and
+            # check whether it breaches the configured threshold.
+            if tally is not None and tally.record_and_check(n):
+                # Threshold breached — park the issue without dispatching.
+                _log.warning(
+                    "daemon: redispatch loop detected for #%d; parking",
+                    n,
+                )
+                detail = (
+                    f"Issue #{n} hit the re-dispatch loop threshold "
+                    f"(window={tally.window_ticks} ticks, "
+                    f"max={tally.max_count}). "
+                    "Parking to prevent infinite crash-restart cycle."
+                )
+                if runlog is not None:
+                    try:
+                        runlog.emit(
+                            {
+                                "ts": datetime.now(timezone.utc).isoformat(),
+                                "event": "redispatch_loop",
+                                "issue": n,
+                                "outcome": None,
+                                "severity": "critical",
+                                "detail": detail,
+                                "tick_id": None,
+                            }
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+                alert(
+                    owner,
+                    repo,
+                    n,
+                    f"Issue #{n} hit the re-dispatch loop threshold"
+                    " — parked to prevent infinite crash-restart cycle.",
+                    severity="critical",
+                    kind="block",
+                    runlog=runlog,
+                )
+                _label_edit(owner, repo, n, remove=["agent-in-progress"])
+                sched.mark_parked(n)
+                parked_reasons[n] = "redispatch loop"
+                continue
+
             # Clear orphan agent-in-progress before re-dispatch (C1).
             _label_edit(owner, repo, n, remove=["agent-in-progress"])
             _log.info("daemon: cleared orphan agent-in-progress for #%d", n)
@@ -1047,6 +1129,7 @@ async def run_daemon(
 
     # --- Observability startup (best-effort; risk R2 — must never raise). ---
     runlog: RunLog | None = None
+    tally: RedispatchTally | None = None
     try:
         obs = load_obs_config()
         runlog = RunLog(obs.runlog_path)
@@ -1064,8 +1147,25 @@ async def run_daemon(
     except Exception as exc:  # noqa: BLE001
         _log.warning("daemon: observability init failed: %s", exc)
         runlog = None
+    try:
+        if tally is None:
+            obs_for_tally = load_obs_config()
+            tally = RedispatchTally(
+                obs_for_tally.redispatch_counts_path,
+                window_ticks=obs_for_tally.redispatch_window_ticks,
+                max_count=obs_for_tally.redispatch_max,
+            )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("daemon: redispatch tally init failed: %s", exc)
+        tally = None
 
     while True:
+        # Advance the re-dispatch tally tick once per outer poll cycle
+        # (before iterating repos so the tick is shared across all repos
+        # in the same outer loop iteration).
+        if tally is not None:
+            tally.advance_tick()
+
         for repo_cfg in registry:
             # FIX 2: defensive catch around each per-repo tick.  A failure
             # building or running one work unit must not kill the always-on
@@ -1078,6 +1178,7 @@ async def run_daemon(
                     ci_poll_interval=ci_poll_interval,
                     ci_timeout=ci_timeout,
                     runlog=runlog,
+                    tally=tally,
                 )
             except Exception as exc:
                 _log.error(
@@ -1116,6 +1217,7 @@ async def _poll_and_run(
     ci_poll_interval: float,
     ci_timeout: float,
     runlog: RunLog | None = None,
+    tally: RedispatchTally | None = None,
 ) -> None:
     """Poll one repo for a ready work unit and run it if found.
 
@@ -1126,6 +1228,8 @@ async def _poll_and_run(
         ci_timeout: Hard CI ceiling in seconds.
         runlog: Optional ``RunLog`` handle for best-effort event
             emission.  When ``None``, all emission is a no-op.
+        tally: Optional ``RedispatchTally`` for re-dispatch loop
+            detection.  When ``None``, loop detection is skipped.
     """
     owner = repo_cfg.owner
     repo = repo_cfg.repo
@@ -1204,6 +1308,7 @@ async def _poll_and_run(
         ci_poll_interval=ci_poll_interval,
         ci_timeout=ci_timeout,
         runlog=runlog,
+        tally=tally,
     )
 
 
