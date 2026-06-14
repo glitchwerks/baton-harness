@@ -42,6 +42,12 @@ BH_HEARTBEAT_STALL_S : float, optional
 BH_HEARTBEAT_PING_URL : str, optional
     URL to ping on each heartbeat write (e.g. an uptime-monitor
     webhook).  Default: ``None`` (pinging disabled).
+
+BH_REDISPATCH_COUNTS_PATH : str, optional
+    Absolute path for the durable re-dispatch tally JSON file.
+    Default: ``${BH_PROJECT_ROOT}/.baton-harness/dispatch-counts.json``
+    (or CWD-relative ``.baton-harness/dispatch-counts.json`` when
+    ``BH_PROJECT_ROOT`` is unset).
 """
 
 from __future__ import annotations
@@ -60,6 +66,7 @@ _log = logging.getLogger(__name__)
 _BH_HARNESS_DIR = ".baton-harness"
 _DEFAULT_RUNLOG_NAME = "runlog.jsonl"
 _DEFAULT_HEARTBEAT_NAME = "heartbeat"
+_DEFAULT_DISPATCH_COUNTS_NAME = "dispatch-counts.json"
 _DEFAULT_REDISPATCH_WINDOW_TICKS = 10
 _DEFAULT_REDISPATCH_MAX = 3
 _DEFAULT_HEARTBEAT_STALL_S = 7200.0
@@ -85,6 +92,8 @@ class ObsConfig:
         heartbeat_stall_s: Seconds without a heartbeat before stall is
             declared.
         heartbeat_ping_url: Optional URL pinged on each heartbeat write.
+        redispatch_counts_path: Path to the durable re-dispatch tally
+            JSON file used for loop detection.
     """
 
     runlog_path: Path
@@ -93,6 +102,7 @@ class ObsConfig:
     redispatch_max: int
     heartbeat_stall_s: float
     heartbeat_ping_url: str | None
+    redispatch_counts_path: Path
 
 
 # ---------------------------------------------------------------------------
@@ -118,15 +128,18 @@ def load_obs_config() -> ObsConfig:
 
     # Derive CWD-relative or project-root-relative defaults.
     if project_root_raw is not None:
-        _default_runlog = (
-            Path(project_root_raw) / _BH_HARNESS_DIR / _DEFAULT_RUNLOG_NAME
-        )
-        _default_heartbeat = (
-            Path(project_root_raw) / _BH_HARNESS_DIR / _DEFAULT_HEARTBEAT_NAME
+        _root = Path(project_root_raw)
+        _default_runlog = _root / _BH_HARNESS_DIR / _DEFAULT_RUNLOG_NAME
+        _default_heartbeat = _root / _BH_HARNESS_DIR / _DEFAULT_HEARTBEAT_NAME
+        _default_dispatch_counts = (
+            _root / _BH_HARNESS_DIR / _DEFAULT_DISPATCH_COUNTS_NAME
         )
     else:
         _default_runlog = Path(_BH_HARNESS_DIR) / _DEFAULT_RUNLOG_NAME
         _default_heartbeat = Path(_BH_HARNESS_DIR) / _DEFAULT_HEARTBEAT_NAME
+        _default_dispatch_counts = (
+            Path(_BH_HARNESS_DIR) / _DEFAULT_DISPATCH_COUNTS_NAME
+        )
 
     # Explicit path overrides always win over derived defaults.
     runlog_raw = os.environ.get("BH_RUNLOG_PATH")
@@ -192,6 +205,12 @@ def load_obs_config() -> ObsConfig:
     # Optional string field.
     heartbeat_ping_url = os.environ.get("BH_HEARTBEAT_PING_URL") or None
 
+    # Durable re-dispatch tally path (env override wins; else derived).
+    _rdc_raw = os.environ.get("BH_REDISPATCH_COUNTS_PATH")
+    redispatch_counts_path = (
+        Path(_rdc_raw) if _rdc_raw is not None else _default_dispatch_counts
+    )
+
     return ObsConfig(
         runlog_path=runlog_path,
         heartbeat_file=heartbeat_file,
@@ -199,4 +218,5 @@ def load_obs_config() -> ObsConfig:
         redispatch_max=redispatch_max,
         heartbeat_stall_s=heartbeat_stall_s,
         heartbeat_ping_url=heartbeat_ping_url,
+        redispatch_counts_path=redispatch_counts_path,
     )

@@ -36,6 +36,7 @@ _BH_REDISPATCH_WINDOW_TICKS = "BH_REDISPATCH_WINDOW_TICKS"
 _BH_REDISPATCH_MAX = "BH_REDISPATCH_MAX"
 _BH_HEARTBEAT_STALL_S = "BH_HEARTBEAT_STALL_S"
 _BH_HEARTBEAT_PING_URL = "BH_HEARTBEAT_PING_URL"
+_BH_REDISPATCH_COUNTS_PATH = "BH_REDISPATCH_COUNTS_PATH"
 
 _ALL_OBS_VARS = (
     _BH_PROJECT_ROOT,
@@ -45,6 +46,7 @@ _ALL_OBS_VARS = (
     _BH_REDISPATCH_MAX,
     _BH_HEARTBEAT_STALL_S,
     _BH_HEARTBEAT_PING_URL,
+    _BH_REDISPATCH_COUNTS_PATH,
 )
 
 
@@ -346,3 +348,126 @@ def test_load_obs_config_malformed_float_uses_default(
     assert "BH_HEARTBEAT_STALL_S" in caplog.text, (
         "Expected a WARNING mentioning BH_HEARTBEAT_STALL_S in the log output"
     )
+
+
+# ---------------------------------------------------------------------------
+# redispatch_counts_path field (new for #77)
+# ---------------------------------------------------------------------------
+
+
+def test_load_obs_config_redispatch_counts_path_default_from_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Default redispatch_counts_path is derived from BH_PROJECT_ROOT.
+
+    The path must be
+    ``${BH_PROJECT_ROOT}/.baton-harness/dispatch-counts.json``
+    when BH_REDISPATCH_COUNTS_PATH is unset.
+
+    Args:
+        monkeypatch: pytest fixture for hermetic env-var injection.
+    """
+    _clear_all_obs_vars(monkeypatch)
+    monkeypatch.setenv(_BH_PROJECT_ROOT, "/some/root")
+
+    cfg = load_obs_config()
+
+    assert cfg.redispatch_counts_path == Path(
+        "/some/root/.baton-harness/dispatch-counts.json"
+    )
+
+
+def test_load_obs_config_redispatch_counts_path_cwd_relative(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without BH_PROJECT_ROOT, redispatch_counts_path is CWD-relative.
+
+    Must be ``.baton-harness/dispatch-counts.json`` (mirrors runlog_path
+    behaviour when BH_PROJECT_ROOT is unset).
+
+    Args:
+        monkeypatch: pytest fixture for hermetic env-var injection.
+    """
+    _clear_all_obs_vars(monkeypatch)
+
+    cfg = load_obs_config()
+
+    assert cfg.redispatch_counts_path == Path(
+        ".baton-harness/dispatch-counts.json"
+    )
+
+
+def test_load_obs_config_redispatch_counts_path_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BH_REDISPATCH_COUNTS_PATH overrides the derived default.
+
+    Args:
+        monkeypatch: pytest fixture for hermetic env-var injection.
+    """
+    _clear_all_obs_vars(monkeypatch)
+    monkeypatch.setenv(_BH_PROJECT_ROOT, "/some/root")
+    monkeypatch.setenv(
+        _BH_REDISPATCH_COUNTS_PATH, "/custom/path/dispatch-counts.json"
+    )
+
+    cfg = load_obs_config()
+
+    assert cfg.redispatch_counts_path == Path(
+        "/custom/path/dispatch-counts.json"
+    )
+
+
+def test_load_obs_config_redispatch_counts_path_override_no_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BH_REDISPATCH_COUNTS_PATH wins even when BH_PROJECT_ROOT is unset.
+
+    Args:
+        monkeypatch: pytest fixture for hermetic env-var injection.
+    """
+    _clear_all_obs_vars(monkeypatch)
+    monkeypatch.setenv(
+        _BH_REDISPATCH_COUNTS_PATH, "/explicit/dispatch-counts.json"
+    )
+
+    cfg = load_obs_config()
+
+    assert cfg.redispatch_counts_path == Path("/explicit/dispatch-counts.json")
+
+
+def test_load_obs_config_redispatch_counts_path_is_path_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """redispatch_counts_path is a Path instance (not str).
+
+    Args:
+        monkeypatch: pytest fixture for hermetic env-var injection.
+    """
+    _clear_all_obs_vars(monkeypatch)
+    monkeypatch.setenv(_BH_PROJECT_ROOT, "/r")
+
+    cfg = load_obs_config()
+
+    assert isinstance(cfg.redispatch_counts_path, Path), (
+        f"Expected Path, got {type(cfg.redispatch_counts_path)!r}"
+    )
+
+
+def test_load_obs_config_still_never_raises_with_new_field(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """load_obs_config() does not raise even with the new field unset.
+
+    Regression guard: adding redispatch_counts_path must not break the
+    never-raise contract.
+
+    Args:
+        monkeypatch: pytest fixture for hermetic env-var injection.
+    """
+    _clear_all_obs_vars(monkeypatch)
+
+    # Must not raise.
+    cfg = load_obs_config()
+
+    assert hasattr(cfg, "redispatch_counts_path")
