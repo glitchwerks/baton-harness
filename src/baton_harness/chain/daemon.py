@@ -19,7 +19,7 @@ The daemon is the central orchestrator.  It:
    - CI-gates merges via ``merge.merge_issue_branch``.
 4. On work-unit completion: pushes the feature branch and opens a **draft**
    ``feature/<slug> → main`` PR.  The daemon NEVER merges to ``main``.
-5. Escalates stalled issues via ``escalation.escalate`` (dual-channel:
+5. Escalates stalled issues via ``escalation.alert`` (dual-channel:
    GitHub comment + optional Slack).
 
 Concurrency contract (B-I3):
@@ -660,6 +660,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
             continue
 
         if n in recovery_result.parked_seed:
+            _label_edit(owner, repo, n, remove=["agent-in-progress"])
             sched.mark_parked(n)
             parked_reasons[n] = "blocked (recovery)"
             continue
@@ -673,6 +674,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                     " parking",
                     n,
                 )
+                _label_edit(owner, repo, n, remove=["agent-in-progress"])
                 sched.mark_parked(n)
                 parked_reasons[n] = "ci_gate_reentry: no open PR"
                 alert(
