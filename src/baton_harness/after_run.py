@@ -64,6 +64,11 @@ import subprocess
 import sys
 
 from baton_harness._cli import err, log, resolve_issue_number
+from baton_harness.chain.labels import (
+    LABEL_AGENT_DONE,
+    LABEL_AGENT_READY,
+    LABEL_BLOCKED,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -71,15 +76,6 @@ from baton_harness._cli import err, log, resolve_issue_number
 
 #: Short name used in log/err prefixes.
 _HOOK = "after-run"
-
-#: Label applied when the issue is ready for an agent run.
-LABEL_AGENT_READY = "agent-ready"
-
-#: Label applied when the agent has opened a PR (pilot: human verifies CI).
-LABEL_AGENT_DONE = "agent-done"
-
-#: Label applied by the agent mid-run when it needs human input.
-LABEL_BLOCKED = "blocked"
 
 #: Environment variable controlling the cherry base ref.  Set by the daemon
 #: to ``feature/<slug>`` for milestone work units; defaults to

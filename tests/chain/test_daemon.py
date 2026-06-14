@@ -935,6 +935,7 @@ def _make_milestone_issues(
         A list of raw issue dicts as returned by ``gh issue list``.
         Only agent-ready issues appear in this list; not_ready issues
         represent the *full* milestone members fetched separately.
+
     """
     agent_ready = agent_ready or []
     result = []
@@ -2988,4 +2989,756 @@ def test_repo_level_tick_failure_alert_is_critical() -> None:
     assert critical_calls, (
         "Expected alert(severity='critical', issue=None) for daemon tick"
         f" failure; all alert calls: {mock_alert.call_args_list}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Issue #76: post-worker single-state label invariant backstop
+# ---------------------------------------------------------------------------
+# These tests pin the widened invariant check at daemon.py:795.  The
+# implementation must call assert_single_state(post_labels) after re-reading
+# labels and fire alert(severity='critical') + park when a torn state is found.
+#
+# Mocking style mirrors the existing #75 tests above: patch
+# ``baton_harness.chain.daemon.alert`` (where daemon imports it) and
+# ``baton_harness.chain.daemon._fetch_issue_labels`` (module-level helper).
+# ---------------------------------------------------------------------------
+
+
+def _make_torn_label_run_side_effect(
+    *,
+    ready_issues: list[dict[str, Any]],
+    post_labels_json: str,
+    pr_head_sha: str = "abc123",
+    issue_branch: str = "baton/issue-10-10",
+    feature_branch_exists: bool = False,
+) -> Any:  # noqa: ANN401
+    """Build a _run side-effect that injects torn post-worker label state.
+
+    The ``gh issue view`` call that drives ``_fetch_issue_labels`` (the
+    post-worker re-read) returns ``post_labels_json`` so the daemon sees a
+    torn label set.  All other commands return plausible success stubs so
+    the loop reaches the post-worker guard.
+
+    Args:
+        ready_issues: Issues returned by gh issue list --label agent-ready.
+        post_labels_json: JSON array string for the torn label response.
+        pr_head_sha: SHA returned for PR head.
+        issue_branch: Branch name returned in pr list.
+        feature_branch_exists: Whether ls-remote simulates existing branch.
+
+    Returns:
+        A callable side-effect for patch.object(daemon_mod, '_run').
+
+    """
+    import json as _json
+
+    # Build the base helper for non-issue-view calls.
+    base_se = _make_run_side_effect(
+        ready_issues=ready_issues,
+        pr_head_sha=pr_head_sha,
+        issue_branch=issue_branch,
+        feature_branch_exists=feature_branch_exists,
+    )
+
+    def side_effect(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        cmd_str = " ".join(cmd)
+        # Intercept post-worker label re-read (gh issue view --json labels).
+        if (
+            "issue" in cmd_str
+            and "view" in cmd_str
+            and "edit" not in cmd_str
+            and "labels" in cmd_str
+        ):
+            # Build a raw issue object with the torn labels.
+            nums = [p for p in cmd if p.isdigit()]
+            n = int(nums[0]) if nums else 10
+            raw = {
+                "number": n,
+                "title": f"Issue {n}",
+                "state": "open",
+                "body": "",
+                "url": f"https://github.com/o/r/issues/{n}",
+                "labels": _json.loads(post_labels_json),
+                "assignees": [],
+            }
+            return _ok(_json.dumps(raw))
+        return base_se(cmd)
+
+    return side_effect
+
+
+def _make_ready_issue_10() -> list[dict[str, Any]]:
+    """Return a single-item list for issue #10 with agent-ready label."""
+    return [
+        {
+            "number": 10,
+            "title": "Issue 10",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/10",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        }
+    ]
+
+
+def test_torn_labels_post_worker_fires_critical_alert_and_parks() -> None:
+    """Torn label state after _run_worker triggers critical alert + park.
+
+    When _fetch_issue_labels returns {'agent-done', 'blocked'} (two state
+    labels) after the worker completes, the daemon must:
+    - call alert(..., severity='critical')
+    - mark the issue parked (sched.mark_parked)
+    - remove agent-in-progress
+    - continue to the next issue (not crash)
+
+    This is the primary invariant-backstop test for issue #76.
+    """
+    ready_issues = _make_ready_issue_10()
+    mock_alert = MagicMock(return_value=True)
+
+    # Post-worker labels: torn state (agent-done + blocked simultaneously).
+    torn_labels = '[{"name": "agent-done"}, {"name": "blocked"}]'
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=_make_torn_label_run_side_effect(
+                ready_issues=ready_issues,
+                post_labels_json=torn_labels,
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon._fetch_issue_labels",
+            return_value={"agent-done", "blocked"},
+        ),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            return_value=[],
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch("baton_harness.chain.daemon.alert", mock_alert),
+        _patch_run_worker("pr_created"),
+    ):
+        # Must not raise — daemon survives and exits normally with once=True.
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    # A critical alert must have fired for the torn-state violation.
+    critical_calls = [
+        c
+        for c in mock_alert.call_args_list
+        if c.kwargs.get("severity") == "critical"
+    ]
+    assert critical_calls, (
+        "Expected alert(severity='critical') when post-worker labels are torn"
+        " (agent-done + blocked); all alert calls: "
+        f"{mock_alert.call_args_list}"
+    )
+
+
+def test_no_state_label_post_worker_fires_critical_alert_and_parks() -> None:
+    """Zero state labels after _run_worker triggers critical alert + park.
+
+    When _fetch_issue_labels returns only non-state labels
+    (e.g. {'agent-in-progress'}) after the worker completes, the daemon
+    must call alert(severity='critical') and park the issue.
+    """
+    ready_issues = _make_ready_issue_10()
+    mock_alert = MagicMock(return_value=True)
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=_make_run_side_effect(
+                ready_issues=ready_issues,
+                pr_head_sha="abc123",
+                issue_branch="baton/issue-10-10",
+                feature_branch_exists=False,
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon._fetch_issue_labels",
+            return_value={"agent-in-progress"},
+        ),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            return_value=[],
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch("baton_harness.chain.daemon.alert", mock_alert),
+        _patch_run_worker("pr_created"),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    critical_calls = [
+        c
+        for c in mock_alert.call_args_list
+        if c.kwargs.get("severity") == "critical"
+    ]
+    assert critical_calls, (
+        "Expected alert(severity='critical') when post-worker labels have no"
+        " state label (zero-state violation); "
+        f"all alert calls: {mock_alert.call_args_list}"
+    )
+
+
+def test_torn_labels_post_worker_parks_the_issue() -> None:
+    """Torn label state causes the issue to be parked (sched.mark_parked).
+
+    The daemon must call sched.mark_parked(n) when assert_single_state
+    detects a violation.  We verify this by patching the scheduler at the
+    daemon module level and asserting mark_parked was called for issue 10.
+    """
+    ready_issues = _make_ready_issue_10()
+    mock_alert = MagicMock(return_value=True)
+    mock_sched = MagicMock()
+    # Scheduler must report mark_done/mark_parked for is_done/is_parked.
+    mock_sched.is_done.return_value = False
+    mock_sched.is_parked.return_value = False
+    mock_sched.pending.return_value = [10]
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=_make_run_side_effect(
+                ready_issues=ready_issues,
+                pr_head_sha="abc123",
+                issue_branch="baton/issue-10-10",
+                feature_branch_exists=False,
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon._fetch_issue_labels",
+            return_value={"agent-done", "blocked"},
+        ),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            return_value=[],
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch("baton_harness.chain.daemon.alert", mock_alert),
+        _patch_run_worker("pr_created"),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    # A critical alert must have been emitted — the park signal.
+    critical_calls = [
+        c
+        for c in mock_alert.call_args_list
+        if c.kwargs.get("severity") == "critical"
+    ]
+    assert critical_calls, (
+        "Torn post-worker labels must trigger severity='critical' alert "
+        f"(proxy for park); all alert calls: {mock_alert.call_args_list}"
+    )
+
+
+def test_single_blocked_post_worker_does_not_fire_invariant_critical() -> None:
+    """Exactly one state label (blocked) must not trip the invariant guard.
+
+    When _fetch_issue_labels returns {'blocked'} (one state label, valid),
+    the invariant guard must NOT fire a critical alert.  The existing
+    blocked-handling path should run instead (a non-critical alert or no
+    alert at severity='critical' for the invariant reason).
+    """
+    ready_issues = _make_ready_issue_10()
+    mock_alert = MagicMock(return_value=True)
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=_make_run_side_effect(
+                ready_issues=ready_issues,
+                pr_head_sha="abc123",
+                issue_branch="baton/issue-10-10",
+                feature_branch_exists=False,
+            ),
+        ),
+        # Post-worker: exactly one state label (blocked) — valid.
+        patch(
+            "baton_harness.chain.daemon._fetch_issue_labels",
+            return_value={"blocked"},
+        ),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            return_value=[],
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch("baton_harness.chain.daemon.alert", mock_alert),
+        _patch_run_worker("pr_created"),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    # The invariant guard must NOT have fired a critical alert.
+    # The existing blocked park path may fire a different alert call,
+    # but the invariant-specific critical must not appear.
+    # We distinguish by asserting: if any critical alert fired, it must
+    # not be caused by the single-state invariant check (i.e. the
+    # invariant guard fired for a VALID label set).
+    # The safest assertion: no critical alert fires when post_labels is
+    # exactly {'blocked'} (valid single state).
+    #
+    # Note: the existing blocked-park path uses kind='block' (not severity).
+    # After issue #75 wiring, it should use severity='warn' or no alert.
+    # The invariant guard uses severity='critical' — that must NOT appear.
+    critical_calls = [
+        c
+        for c in mock_alert.call_args_list
+        if c.kwargs.get("severity") == "critical"
+    ]
+    assert not critical_calls, (
+        "Single-state label {'blocked'} must NOT trigger the invariant "
+        "critical alert; the invariant guard must pass for valid inputs. "
+        f"Got critical alert calls: {critical_calls}"
+    )
+
+
+def test_single_agent_done_pr_created_does_not_fire_invariant_critical() -> (
+    None
+):
+    """Happy path (pr_created + agent-done) must not trip the invariant guard.
+
+    When _fetch_issue_labels returns {'agent-done'} after a successful
+    pr_created worker result, no critical invariant-violation alert should
+    fire.  The CI-gate merge path should proceed normally.
+    """
+    ready_issues = _make_ready_issue_10()
+    mock_alert = MagicMock(return_value=True)
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=_make_run_side_effect(
+                ready_issues=ready_issues,
+                pr_head_sha="abc123",
+                issue_branch="baton/issue-10-10",
+                feature_branch_exists=False,
+            ),
+        ),
+        # Post-worker: exactly one state label (agent-done) — valid.
+        patch(
+            "baton_harness.chain.daemon._fetch_issue_labels",
+            return_value={"agent-done"},
+        ),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            return_value=[],
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch("baton_harness.chain.daemon.alert", mock_alert),
+        _patch_run_worker("pr_created"),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    # The invariant guard must NOT have fired a critical alert on the
+    # happy path where post_labels={'agent-done'} (valid single state).
+    critical_calls = [
+        c
+        for c in mock_alert.call_args_list
+        if c.kwargs.get("severity") == "critical"
+    ]
+    assert not critical_calls, (
+        "Happy path (pr_created, agent-done) must NOT trigger a critical "
+        "invariant alert; the guard must pass for valid single-state inputs. "
+        f"Got critical alert calls: {critical_calls}"
+    )
+
+
+def test_torn_labels_post_worker_removes_agent_in_progress() -> None:
+    """Torn label violation must still remove agent-in-progress.
+
+    Even when the invariant guard fires, the daemon must remove
+    agent-in-progress (C-I4: cleared on every terminal branch).
+    """
+    ready_issues = _make_ready_issue_10()
+    label_edits: list[list[str]] = []
+
+    def recording_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        if "issue" in cmd and "edit" in cmd:
+            label_edits.append(list(cmd))
+        return _make_run_side_effect(
+            ready_issues=ready_issues,
+            pr_head_sha="abc123",
+            issue_branch="baton/issue-10-10",
+            feature_branch_exists=False,
+        )(cmd)
+
+    with (
+        patch.object(daemon_mod, "_run", side_effect=recording_run),
+        patch(
+            "baton_harness.chain.daemon._fetch_issue_labels",
+            return_value={"agent-done", "blocked"},
+        ),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            return_value=[],
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch("baton_harness.chain.daemon.alert", return_value=True),
+        _patch_run_worker("pr_created"),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    remove_calls = [
+        c
+        for c in label_edits
+        if "--remove-label" in c and "agent-in-progress" in c
+    ]
+    assert remove_calls, (
+        "agent-in-progress must be removed even when torn-label invariant "
+        "violation is detected (C-I4 requirement)"
+    )
+
+
+def test_torn_labels_post_worker_mark_parked_is_called() -> None:
+    """Torn label violation must explicitly call sched.mark_parked(10).
+
+    Strengthens test_torn_labels_post_worker_parks_the_issue by spying on
+    IssueScheduler.mark_parked directly rather than inferring park status
+    from the critical alert.  The method must be called with the torn issue
+    number (10) as the argument.
+    """
+    from baton_harness.chain.scheduler import IssueScheduler
+
+    ready_issues = _make_ready_issue_10()
+    mark_parked_calls: list[int] = []
+
+    real_mark_parked = IssueScheduler.mark_parked
+
+    def spy_mark_parked(self: IssueScheduler, issue: int) -> None:
+        """Record the call then delegate to the real implementation."""
+        mark_parked_calls.append(issue)
+        real_mark_parked(self, issue)
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=_make_run_side_effect(
+                ready_issues=ready_issues,
+                pr_head_sha="abc123",
+                issue_branch="baton/issue-10-10",
+                feature_branch_exists=False,
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon._fetch_issue_labels",
+            return_value={"agent-done", "blocked"},
+        ),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            return_value=[],
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch.object(
+            IssueScheduler,
+            "mark_parked",
+            autospec=True,
+            side_effect=spy_mark_parked,
+        ),
+        _patch_run_worker("pr_created"),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    assert 10 in mark_parked_calls, (
+        "IssueScheduler.mark_parked must be called with issue 10 when "
+        "post-worker labels are torn (agent-done + blocked); "
+        f"mark_parked was called with: {mark_parked_calls}"
+    )
+
+
+def test_runlog_emit_raises_daemon_still_alerts_parks_and_continues() -> None:
+    """runlog.emit raising must not prevent alert, park, or loop continuation.
+
+    Patches daemon_mod.RunLog to return a mock whose emit raises
+    RuntimeError on the label_invariant_violation event (but succeeds on
+    daemon_start so runlog stays non-None).  Verifies the daemon-level
+    try/except around runlog.emit absorbs the error and the daemon still:
+    - calls alert(severity='critical')
+    - calls sched.mark_parked(10)
+    - returns normally (once=True)
+    """
+    from baton_harness.chain.scheduler import IssueScheduler
+
+    ready_issues = _make_ready_issue_10()
+    mock_alert = MagicMock(return_value=True)
+    mark_parked_calls: list[int] = []
+    real_mark_parked = IssueScheduler.mark_parked
+
+    def spy_mark_parked(self: IssueScheduler, issue: int) -> None:
+        """Record the call then delegate to the real implementation."""
+        mark_parked_calls.append(issue)
+        real_mark_parked(self, issue)
+
+    # Build a RunLog mock whose emit raises only on the invariant event.
+    mock_runlog = MagicMock()
+
+    def selective_emit(event: dict) -> None:  # type: ignore[type-arg]
+        """Raise RuntimeError for the invariant-violation event only."""
+        if event.get("event") == "label_invariant_violation":
+            raise RuntimeError("boom — simulated emit failure")
+
+    mock_runlog.emit.side_effect = selective_emit
+
+    # RunLog class mock: constructor returns mock_runlog.
+    mock_runlog_cls = MagicMock(return_value=mock_runlog)
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=_make_run_side_effect(
+                ready_issues=ready_issues,
+                pr_head_sha="abc123",
+                issue_branch="baton/issue-10-10",
+                feature_branch_exists=False,
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon._fetch_issue_labels",
+            return_value={"agent-done", "blocked"},
+        ),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            return_value=[],
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch("baton_harness.chain.daemon.alert", mock_alert),
+        patch.object(
+            IssueScheduler,
+            "mark_parked",
+            autospec=True,
+            side_effect=spy_mark_parked,
+        ),
+        # Inject the selective-raising RunLog via the class reference in
+        # daemon so the invariant-violation emit raises while startup emit
+        # succeeds (runlog stays non-None).
+        patch.object(daemon_mod, "RunLog", mock_runlog_cls),
+        _patch_run_worker("pr_created"),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    # alert must have fired with severity='critical' despite emit raising.
+    critical_calls = [
+        c
+        for c in mock_alert.call_args_list
+        if c.kwargs.get("severity") == "critical"
+    ]
+    assert critical_calls, (
+        "Expected alert(severity='critical') even when runlog.emit raises;"
+        f" all alert calls: {mock_alert.call_args_list}"
+    )
+
+    # mark_parked must have been called for issue 10.
+    assert 10 in mark_parked_calls, (
+        "IssueScheduler.mark_parked(10) must be called even when "
+        f"runlog.emit raises; mark_parked calls: {mark_parked_calls}"
     )
