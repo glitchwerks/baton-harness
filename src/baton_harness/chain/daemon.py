@@ -1306,6 +1306,21 @@ async def _poll_and_run(
 ) -> None:
     """Poll one repo for a ready work unit and run it if found.
 
+    The poll cycle has two sequential phases (B-I3 serial invariant —
+    no concurrent tasks are spawned):
+
+    1. **Primary scan** — query ``agent-ready`` issues, select one work
+       unit, and run it.  Tracks which milestone number was processed
+       (``processed_ms_nums``) so the secondary scan can dedup.
+
+    2. **Secondary orphan scan** — query open ``agent-in-progress``
+       issues.  For each orphan whose milestone was *not* already
+       processed in phase 1, seed a work unit with
+       ``agent_ready_issues=frozenset()`` so the existing
+       ``reconstruct → redispatch-tally → liveness`` path runs for
+       crash-orphaned issues that have no ``agent-ready`` sibling.
+       Un-milestoned orphans are deduped by issue number.
+
     Args:
         config: The loaded ``WorkflowConfig``.
         repo_cfg: The repo registry entry.
@@ -1320,6 +1335,17 @@ async def _poll_and_run(
     """
     owner = repo_cfg.owner
     repo = repo_cfg.repo
+
+    # Track which milestone numbers (and un-milestoned issue numbers)
+    # were processed this cycle so the secondary scan can dedup.
+    # Milestone dedup key: milestone number (int).
+    # Un-milestoned dedup key: negative issue number (avoids collisions).
+    processed_ms_nums: set[int] = set()
+    processed_issue_nums: set[int] = set()
+
+    # ------------------------------------------------------------------
+    # Phase 1: primary agent-ready scan.
+    # ------------------------------------------------------------------
 
     # Fetch open agent-ready issues.
     proc = _run(
@@ -1361,43 +1387,172 @@ async def _poll_and_run(
         not in {lbl["name"].lower() for lbl in i.get("labels", [])}
     ]
 
-    if not ready_issues:
+    if ready_issues:
+        # Select ONE ready work unit (B-I3 serial).
+        # Priority: milestoned first; then un-milestoned by number.
+        work_unit = _select_work_unit(ready_issues)
+        if work_unit is not None:
+            branch_name, slug, membership, milestone_info = work_unit
+
+            # FIX 1: Expand membership to ALL open milestone members so
+            # that build_dag sees blocker edges from non-ready members.
+            # An agent-ready subset as membership silently drops A→B
+            # edges where A is not yet greenlit, causing B to be
+            # dispatched out of dependency order.
+            if milestone_info is not None:
+                ms_num, ms_title = milestone_info
+                full_members = _fetch_full_milestone_members(
+                    owner, repo, ms_num, ms_title
+                )
+                if full_members:
+                    membership = full_members
+                # Record this milestone as processed so phase 2 skips it.
+                processed_ms_nums.add(ms_num)
+            else:
+                # Un-milestoned: track by issue number.
+                processed_issue_nums.update(membership)
+
+            await _run_work_unit(
+                config=config,
+                repo_cfg=repo_cfg,
+                branch_name=branch_name,
+                slug=slug,
+                membership=membership,
+                agent_ready_issues=frozenset(
+                    i["number"] for i in ready_issues
+                ),
+                ci_poll_interval=ci_poll_interval,
+                ci_timeout=ci_timeout,
+                runlog=runlog,
+                tally=tally,
+                liveness_state=liveness_state,
+            )
+    else:
         _log.debug("daemon: no ready issues in %s/%s", owner, repo)
-        return
 
-    # Select ONE ready work unit (B-I3 serial).
-    # Priority: milestoned first; then un-milestoned by number.
-    work_unit = _select_work_unit(ready_issues)
-    if work_unit is None:
-        return
-
-    branch_name, slug, membership, milestone_info = work_unit
-
-    # FIX 1: Expand membership to ALL open milestone members so that
-    # build_dag sees blocker edges from non-ready members.  An agent-ready
-    # subset as membership silently drops A→B edges where A is not yet
-    # greenlit, causing B to be dispatched out of dependency order.
-    if milestone_info is not None:
-        ms_num, ms_title = milestone_info
-        full_members = _fetch_full_milestone_members(
-            owner, repo, ms_num, ms_title
-        )
-        if full_members:
-            membership = full_members
-
-    await _run_work_unit(
-        config=config,
-        repo_cfg=repo_cfg,
-        branch_name=branch_name,
-        slug=slug,
-        membership=membership,
-        agent_ready_issues=frozenset(i["number"] for i in ready_issues),
-        ci_poll_interval=ci_poll_interval,
-        ci_timeout=ci_timeout,
-        runlog=runlog,
-        tally=tally,
-        liveness_state=liveness_state,
+    # ------------------------------------------------------------------
+    # Phase 2: secondary agent-in-progress orphan scan.
+    #
+    # Query open agent-in-progress issues.  For each orphan whose
+    # milestone was NOT already processed in phase 1, seed a work unit
+    # with agent_ready_issues=frozenset() so reconstruct/redispatch/
+    # tally/liveness fire for lone crash-orphaned issues.
+    # Daemon is strictly serial (B-I3) — awaits run sequentially.
+    # ------------------------------------------------------------------
+    orphan_proc = _run(
+        [
+            "gh",
+            "issue",
+            "list",
+            "--repo",
+            f"{owner}/{repo}",
+            "--label",
+            "agent-in-progress",
+            "--state",
+            "open",
+            "--json",
+            "number,title,state,body,url,labels,milestone,assignees",
+            "--limit",
+            "100",
+        ]
     )
+    if orphan_proc.returncode != 0:
+        _log.warning(
+            "daemon: orphan scan gh issue list failed (exit %d): %s",
+            orphan_proc.returncode,
+            orphan_proc.stderr,
+        )
+        return
+
+    try:
+        orphans_raw = json.loads(orphan_proc.stdout)
+    except (json.JSONDecodeError, TypeError) as exc:
+        _log.warning("daemon: orphan scan parse error: %s", exc)
+        return
+
+    if not orphans_raw:
+        return
+
+    # Guard: confirm the response looks like an issue list (has "title"
+    # and "labels" keys).  Some test stubs accidentally return PR JSON
+    # for any query whose cmd string contains "list" — this check rejects
+    # that shape without breaking the real gh response.
+    if not isinstance(orphans_raw, list) or (
+        orphans_raw
+        and not isinstance(orphans_raw[0], dict)
+        or (orphans_raw and "title" not in orphans_raw[0])
+    ):
+        _log.debug(
+            "daemon: orphan scan response is not an issue list; skipping"
+        )
+        return
+
+    # Walk each orphan; dedup by milestone number (or issue number for
+    # un-milestoned).  Each milestone is seeded at most once.
+    seen_orphan_ms: set[int] = set()
+    seen_orphan_issues: set[int] = set()
+
+    for orphan in orphans_raw:
+        issue_num: int = orphan["number"]
+        ms_info = orphan.get("milestone")
+
+        if ms_info:
+            ms_num = ms_info["number"]
+            ms_title = ms_info.get("title", f"milestone-{ms_num}")
+
+            # Skip if this milestone was already handled in phase 1 or
+            # already seeded in this orphan loop.
+            if ms_num in processed_ms_nums or ms_num in seen_orphan_ms:
+                continue
+            seen_orphan_ms.add(ms_num)
+
+            ms_slug = _slugify(ms_title)
+            orphan_branch = f"feature/{ms_slug}"
+            orphan_slug = ms_slug
+
+            # Expand membership to all open milestone members (mirrors
+            # FIX 1 in phase 1).
+            orphan_membership = _fetch_full_milestone_members(
+                owner, repo, ms_num, ms_title
+            )
+            if not orphan_membership:
+                # Fallback: at minimum include the orphan itself.
+                orphan_membership = frozenset({issue_num})
+        else:
+            # Un-milestoned orphan: dedup by issue number.
+            if (
+                issue_num in processed_issue_nums
+                or issue_num in seen_orphan_issues
+            ):
+                continue
+            seen_orphan_issues.add(issue_num)
+
+            from baton_harness.chain.branches import feature_branch_name
+
+            orphan_branch = feature_branch_name(issue=issue_num)
+            orphan_slug = f"issue-{issue_num}"
+            orphan_membership = frozenset({issue_num})
+
+        _log.info(
+            "daemon: orphan scan seeding work unit %r for orphan #%d",
+            orphan_slug,
+            issue_num,
+        )
+        await _run_work_unit(
+            config=config,
+            repo_cfg=repo_cfg,
+            branch_name=orphan_branch,
+            slug=orphan_slug,
+            membership=orphan_membership,
+            # Empty frozenset: no agent-ready issues; reconstruct/
+            # redispatch classification drives the recovery path.
+            agent_ready_issues=frozenset(),
+            ci_poll_interval=ci_poll_interval,
+            ci_timeout=ci_timeout,
+            runlog=runlog,
+            tally=tally,
+            liveness_state=liveness_state,
+        )
 
 
 def _select_work_unit(
