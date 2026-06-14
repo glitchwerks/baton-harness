@@ -234,3 +234,17 @@ class TestAssertSingleStateNeverRaises:
         """assert_single_state accepts a generator (any iterable)."""
         result = assert_single_state(x for x in ["agent-done"])
         assert result is None
+
+    def test_does_not_raise_on_unhashable_members(self) -> None:
+        """assert_single_state returns a non-empty string on unhashable input.
+
+        Passing a list of dicts (each label as a mapping, not a string)
+        triggers a TypeError when the implementation tries to build a set
+        of state labels.  The function must catch that and return a
+        non-empty diagnostic string rather than propagating the exception.
+        """
+        result = assert_single_state([{"name": "blocked"}])
+        assert isinstance(result, str) and result, (
+            "Expected a non-empty string when input contains unhashable"
+            f" members (list of dicts); got {result!r}"
+        )

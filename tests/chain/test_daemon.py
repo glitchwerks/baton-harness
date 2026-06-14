@@ -3545,3 +3545,200 @@ def test_torn_labels_post_worker_removes_agent_in_progress() -> None:
         "agent-in-progress must be removed even when torn-label invariant "
         "violation is detected (C-I4 requirement)"
     )
+
+
+def test_torn_labels_post_worker_mark_parked_is_called() -> None:
+    """Torn label violation must explicitly call sched.mark_parked(10).
+
+    Strengthens test_torn_labels_post_worker_parks_the_issue by spying on
+    IssueScheduler.mark_parked directly rather than inferring park status
+    from the critical alert.  The method must be called with the torn issue
+    number (10) as the argument.
+    """
+    from baton_harness.chain.scheduler import IssueScheduler
+
+    ready_issues = _make_ready_issue_10()
+    mark_parked_calls: list[int] = []
+
+    real_mark_parked = IssueScheduler.mark_parked
+
+    def spy_mark_parked(self: IssueScheduler, issue: int) -> None:
+        """Record the call then delegate to the real implementation."""
+        mark_parked_calls.append(issue)
+        real_mark_parked(self, issue)
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=_make_run_side_effect(
+                ready_issues=ready_issues,
+                pr_head_sha="abc123",
+                issue_branch="baton/issue-10-10",
+                feature_branch_exists=False,
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon._fetch_issue_labels",
+            return_value={"agent-done", "blocked"},
+        ),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            return_value=[],
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch.object(
+            IssueScheduler,
+            "mark_parked",
+            autospec=True,
+            side_effect=spy_mark_parked,
+        ),
+        _patch_run_worker("pr_created"),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    assert 10 in mark_parked_calls, (
+        "IssueScheduler.mark_parked must be called with issue 10 when "
+        "post-worker labels are torn (agent-done + blocked); "
+        f"mark_parked was called with: {mark_parked_calls}"
+    )
+
+
+def test_runlog_emit_raises_daemon_still_alerts_parks_and_continues() -> None:
+    """runlog.emit raising must not prevent alert, park, or loop continuation.
+
+    Patches daemon_mod.RunLog to return a mock whose emit raises
+    RuntimeError on the label_invariant_violation event (but succeeds on
+    daemon_start so runlog stays non-None).  Verifies the daemon-level
+    try/except around runlog.emit absorbs the error and the daemon still:
+    - calls alert(severity='critical')
+    - calls sched.mark_parked(10)
+    - returns normally (once=True)
+    """
+    from baton_harness.chain.scheduler import IssueScheduler
+
+    ready_issues = _make_ready_issue_10()
+    mock_alert = MagicMock(return_value=True)
+    mark_parked_calls: list[int] = []
+    real_mark_parked = IssueScheduler.mark_parked
+
+    def spy_mark_parked(self: IssueScheduler, issue: int) -> None:
+        """Record the call then delegate to the real implementation."""
+        mark_parked_calls.append(issue)
+        real_mark_parked(self, issue)
+
+    # Build a RunLog mock whose emit raises only on the invariant event.
+    mock_runlog = MagicMock()
+
+    def selective_emit(event: dict) -> None:  # type: ignore[type-arg]
+        """Raise RuntimeError for the invariant-violation event only."""
+        if event.get("event") == "label_invariant_violation":
+            raise RuntimeError("boom — simulated emit failure")
+
+    mock_runlog.emit.side_effect = selective_emit
+
+    # RunLog class mock: constructor returns mock_runlog.
+    mock_runlog_cls = MagicMock(return_value=mock_runlog)
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=_make_run_side_effect(
+                ready_issues=ready_issues,
+                pr_head_sha="abc123",
+                issue_branch="baton/issue-10-10",
+                feature_branch_exists=False,
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon._fetch_issue_labels",
+            return_value={"agent-done", "blocked"},
+        ),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            return_value=[],
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch("baton_harness.chain.daemon.alert", mock_alert),
+        patch.object(
+            IssueScheduler,
+            "mark_parked",
+            autospec=True,
+            side_effect=spy_mark_parked,
+        ),
+        # Inject the selective-raising RunLog via the class reference in
+        # daemon so the invariant-violation emit raises while startup emit
+        # succeeds (runlog stays non-None).
+        patch.object(daemon_mod, "RunLog", mock_runlog_cls),
+        _patch_run_worker("pr_created"),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    # alert must have fired with severity='critical' despite emit raising.
+    critical_calls = [
+        c
+        for c in mock_alert.call_args_list
+        if c.kwargs.get("severity") == "critical"
+    ]
+    assert critical_calls, (
+        "Expected alert(severity='critical') even when runlog.emit raises;"
+        f" all alert calls: {mock_alert.call_args_list}"
+    )
+
+    # mark_parked must have been called for issue 10.
+    assert 10 in mark_parked_calls, (
+        "IssueScheduler.mark_parked(10) must be called even when "
+        f"runlog.emit raises; mark_parked calls: {mark_parked_calls}"
+    )
