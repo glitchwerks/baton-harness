@@ -83,3 +83,46 @@ def assert_single_state(labels: Iterable[str]) -> str | None:
         f"label invariant violated: {count} state labels found "
         f"({', '.join(found_sorted)}); expected exactly one"
     )
+
+
+# ---------------------------------------------------------------------------
+# Observed-fact reconciler (Issue #31 AC2)
+# ---------------------------------------------------------------------------
+
+
+def target_state_from_observed(blocked: bool, pr_open: bool) -> str:
+    """Re-derive the correct single-state label from observable facts.
+
+    This is a **pure function** — no I/O, no side-effects, never raises.
+    It encodes the label-state-machine precedence rules from
+    harness-design.md §5 so that any caller can re-derive the intended
+    label state independent of which hook last ran (idempotent AC2
+    reconciler).
+
+    Precedence (highest to lowest):
+    1. ``blocked=True``  → ``LABEL_BLOCKED`` (blocking condition wins
+       regardless of PR state; the issue must not be marked done until
+       the block is resolved).
+    2. ``blocked=False, pr_open=True`` → ``LABEL_AGENT_DONE`` (agent
+       opened a PR and no blocker is active).
+    3. ``blocked=False, pr_open=False`` → ``LABEL_AGENT_READY`` (no PR,
+       no block; the issue is ready for another agent run).
+
+    The return value is always a member of ``STATE_LABELS``.
+
+    Args:
+        blocked: Whether the ``blocked`` label is currently present on
+            the issue (i.e. a blocking condition is active).
+        pr_open: Whether the agent has an open pull request associated
+            with this issue.
+
+    Returns:
+        The single-state label string the issue should carry given the
+        supplied observable facts.  Always one of ``LABEL_BLOCKED``,
+        ``LABEL_AGENT_DONE``, or ``LABEL_AGENT_READY``.
+    """
+    if blocked:
+        return LABEL_BLOCKED
+    if pr_open:
+        return LABEL_AGENT_DONE
+    return LABEL_AGENT_READY
