@@ -212,19 +212,14 @@ class TestMainGuardedJsonLoadsNoAgentReadyRemoval:
         with patch("baton_harness.after_run._run") as mock_run:
             # Provide enough responses: git prefix + repeated non-JSON for
             # all retry attempts
-            mock_run.side_effect = (
-                list(_GIT_PREFIX_CLEAN)
-                + [
-                    _completed(stdout=_NON_JSON_BANNERS[0]),
-                    _completed(stdout=_NON_JSON_BANNERS[0]),
-                    _completed(stdout=_NON_JSON_BANNERS[0]),
-                    _completed(stdout=_NON_JSON_BANNERS[0]),
-                    _completed(stdout=_NON_JSON_BANNERS[0]),
-                ]
-            )
-            with patch(
-                "baton_harness.after_run.time", create=True
-            ) as _mt:
+            mock_run.side_effect = list(_GIT_PREFIX_CLEAN) + [
+                _completed(stdout=_NON_JSON_BANNERS[0]),
+                _completed(stdout=_NON_JSON_BANNERS[0]),
+                _completed(stdout=_NON_JSON_BANNERS[0]),
+                _completed(stdout=_NON_JSON_BANNERS[0]),
+                _completed(stdout=_NON_JSON_BANNERS[0]),
+            ]
+            with patch("baton_harness.after_run.time", create=True) as _mt:
                 _mt.sleep = MagicMock()
                 result = after_run.main()
 
@@ -266,9 +261,7 @@ class TestMainGuardedJsonLoadsNoAgentReadyRemoval:
                 + [_completed(stdout=banner) for banner in _NON_JSON_BANNERS]
                 + [_completed(stdout=_NON_JSON_BANNERS[0])]
             )
-            with patch(
-                "baton_harness.after_run.time", create=True
-            ) as _mt:
+            with patch("baton_harness.after_run.time", create=True) as _mt:
                 _mt.sleep = MagicMock()
                 result = after_run.main()
 
@@ -308,9 +301,7 @@ class TestClassifyReturncodeChecked:
                 list(_GIT_PREFIX_CLEAN)
                 + [_completed(returncode=1, stdout="")] * 5
             )
-            with patch(
-                "baton_harness.after_run.time", create=True
-            ) as _mt:
+            with patch("baton_harness.after_run.time", create=True) as _mt:
                 _mt.sleep = MagicMock()
                 try:
                     result = _classify()
@@ -341,9 +332,7 @@ class TestClassifyReturncodeChecked:
                 list(_GIT_PREFIX_CLEAN)
                 + [_completed(returncode=1, stdout="")] * 5
             )
-            with patch(
-                "baton_harness.after_run.time", create=True
-            ) as _mt:
+            with patch("baton_harness.after_run.time", create=True) as _mt:
                 _mt.sleep = MagicMock()
                 result = after_run.main()
 
@@ -371,16 +360,18 @@ class TestClassifyReturncodeChecked:
         empty stdout must not be misread as an empty PR list.
         """
         with patch("baton_harness.after_run._run") as mock_run:
-            mock_run.side_effect = list(_GIT_PREFIX_CLEAN) + [
-                _completed(
-                    returncode=1,
-                    stdout="",
-                    stderr="error: authentication required",
-                )
-            ] * 5
-            with patch(
-                "baton_harness.after_run.time", create=True
-            ) as _mt:
+            mock_run.side_effect = (
+                list(_GIT_PREFIX_CLEAN)
+                + [
+                    _completed(
+                        returncode=1,
+                        stdout="",
+                        stderr="error: authentication required",
+                    )
+                ]
+                * 5
+            )
+            with patch("baton_harness.after_run.time", create=True) as _mt:
                 _mt.sleep = MagicMock()
                 try:
                     result = _classify()
@@ -412,17 +403,12 @@ class TestClassifyRetryWithRecovery:
         third attempt.
         """
         with patch("baton_harness.after_run._run") as mock_run:
-            mock_run.side_effect = (
-                list(_GIT_PREFIX_CLEAN)
-                + [
-                    _completed(stdout=_NON_JSON_BANNERS[0]),  # attempt 1 fail
-                    _completed(stdout=_NON_JSON_BANNERS[1]),  # attempt 2 fail
-                    _completed(stdout=_PR_JSON_OPEN),  # attempt 3 success
-                ]
-            )
-            with patch(
-                "baton_harness.after_run.time", create=True
-            ) as _mt:
+            mock_run.side_effect = list(_GIT_PREFIX_CLEAN) + [
+                _completed(stdout=_NON_JSON_BANNERS[0]),  # attempt 1 fail
+                _completed(stdout=_NON_JSON_BANNERS[1]),  # attempt 2 fail
+                _completed(stdout=_PR_JSON_OPEN),  # attempt 3 success
+            ]
+            with patch("baton_harness.after_run.time", create=True) as _mt:
                 _mt.sleep = MagicMock()
                 result = _classify()
 
@@ -436,17 +422,12 @@ class TestClassifyRetryWithRecovery:
     ) -> None:
         """First 2 gh pr list calls non-zero, 3rd valid → PR_OPENED."""
         with patch("baton_harness.after_run._run") as mock_run:
-            mock_run.side_effect = (
-                list(_GIT_PREFIX_CLEAN)
-                + [
-                    _completed(returncode=1, stdout=""),  # attempt 1 fail
-                    _completed(returncode=1, stdout=""),  # attempt 2 fail
-                    _completed(stdout=_PR_JSON_OPEN),  # attempt 3 success
-                ]
-            )
-            with patch(
-                "baton_harness.after_run.time", create=True
-            ) as _mt:
+            mock_run.side_effect = list(_GIT_PREFIX_CLEAN) + [
+                _completed(returncode=1, stdout=""),  # attempt 1 fail
+                _completed(returncode=1, stdout=""),  # attempt 2 fail
+                _completed(stdout=_PR_JSON_OPEN),  # attempt 3 success
+            ]
+            with patch("baton_harness.after_run.time", create=True) as _mt:
                 _mt.sleep = MagicMock()
                 result = _classify()
 
@@ -466,13 +447,10 @@ class TestClassifyRetryWithRecovery:
         """
         sleep_mock = MagicMock()
         with patch("baton_harness.after_run._run") as mock_run:
-            mock_run.side_effect = (
-                list(_GIT_PREFIX_CLEAN)
-                + [
-                    _completed(stdout=_NON_JSON_BANNERS[0]),  # attempt 1 fail
-                    _completed(stdout=_PR_JSON_OPEN),  # attempt 2 success
-                ]
-            )
+            mock_run.side_effect = list(_GIT_PREFIX_CLEAN) + [
+                _completed(stdout=_NON_JSON_BANNERS[0]),  # attempt 1 fail
+                _completed(stdout=_PR_JSON_OPEN),  # attempt 2 success
+            ]
             with patch(
                 "baton_harness.after_run.time", create=True
             ) as mock_time:
@@ -536,9 +514,9 @@ class TestClassifyRetryWithRecovery:
         """
         sleep_mock = MagicMock()
         with patch("baton_harness.after_run._run") as mock_run:
-            mock_run.side_effect = (
-                list(_GIT_PREFIX_CLEAN) + [_completed(stdout=_PR_JSON_OPEN)]
-            )
+            mock_run.side_effect = list(_GIT_PREFIX_CLEAN) + [
+                _completed(stdout=_PR_JSON_OPEN)
+            ]
             with patch(
                 "baton_harness.after_run.time", create=True
             ) as mock_time:
