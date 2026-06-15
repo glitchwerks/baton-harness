@@ -42,9 +42,14 @@ The backstop now calls `labels.target_state_from_observed` (Phase 3's pure
 helper, now wired) before deciding whether to park. For the specific case of
 **zero state labels + open PR + not blocked**, it converges the issue directly to
 `agent-done` (adds the label, clears `agent-in-progress`, emits a
-`label_invariant_converged` runlog event) rather than parking. The next poll
-tick re-classifies via the existing ci-gate-reentry path (reconstruction rule
-3a).
+`label_invariant_converged` runlog event) rather than parking. It then sets a
+`_converged` flag and falls through to the in-tick CI gate
+(`worker_result == "pr_created"` → `merge_issue_branch`), merging the PR in
+the **same** tick — not on a subsequent poll. (A second Codex P1 on PR #95,
+commit 92798a7, caught the original "next tick re-classify via ci-gate-reentry
+path (3a)" claim as wrong: the converged `agent-done` issue is seeded by
+neither the agent-ready nor the agent-in-progress scan, so it would never have
+been re-scanned and the PR would have remained unmerged until daemon restart.)
 
 All other violations — no open PR, `blocked` present, or 2+ state labels —
 preserve the existing critical-alert + park behavior unchanged.
