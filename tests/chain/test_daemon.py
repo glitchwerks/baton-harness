@@ -4127,3 +4127,365 @@ def test_redispatch_below_threshold_dispatches_worker(
     # tested in the breach test above.)
     # Here we assert the worker ran, which is sufficient to confirm
     # the non-breach path was taken.
+
+
+# ---------------------------------------------------------------------------
+# Issue #31 P1: backstop convergence (fix-31-after-run-idempotent)
+# ---------------------------------------------------------------------------
+# Background: when a 60-second kill fires between after_run's
+# --remove-label agent-ready and --add-label agent-done, the issue
+# lands on {agent-in-progress} with zero state labels.  _run_worker
+# already returned "pr_created" (a PR exists).  The current backstop
+# sees the invariant violation → fires critical alert + parks.
+# Because agent-in-progress is cleared by the park path, the secondary
+# orphan scan (which keys on --label agent-in-progress) can never
+# re-dispatch the issue — the completed PR is silently parked forever.
+#
+# Required fix: BEFORE the existing park+alert path, the backstop must
+# derive observable facts and attempt convergence:
+#   blocked  = "blocked" in post_labels
+#   pr_open  = _find_issue_pr(...) returns a real (branch, sha)
+#   target   = target_state_from_observed(blocked, pr_open)
+# Converge ONLY when there is definite terminal evidence:
+#   - target == "agent-done"  (PR open, not blocked) → add agent-done,
+#     remove other state labels, clear agent-in-progress, continue
+#   - target == "blocked"     (blocked label present) → add blocked (if
+#     missing), remove other state labels, clear agent-in-progress,
+#     continue
+# Preserve the existing park+alert path when target == "agent-ready"
+# (zero state labels, no PR, not blocked — no completion evidence).
+#
+# Seams used (match existing #76 tests above):
+#   patch("baton_harness.chain.daemon._fetch_issue_labels", ...)
+#   patch("baton_harness.chain.daemon._find_issue_pr", ...)
+#   patch("baton_harness.chain.daemon.alert", mock_alert)
+#   patch.object(daemon_mod, "_run", side_effect=recording_run)
+#   patch("baton_harness.chain.scheduler.IssueScheduler.mark_parked", ...)
+# ---------------------------------------------------------------------------
+
+
+class TestBackstopConvergence:
+    """Backstop convergence when assert_single_state finds a violation.
+
+    Tests that the invariant backstop attempts convergence before parking
+    when definite terminal evidence (open PR or blocked label) is present,
+    and that the existing park path is preserved when no such evidence
+    exists (issue #31 P1).
+    """
+
+    # ------------------------------------------------------------------
+    # Shared helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _make_recording_run(
+        label_edits: list[list[str]],
+    ) -> Any:  # noqa: ANN401
+        """Return a _run side-effect that records gh issue edit calls.
+
+        Args:
+            label_edits: Mutable list; each ``gh issue edit`` call's
+                full command is appended here for later assertion.
+
+        Returns:
+            A callable for ``patch.object(daemon_mod, "_run", ...)``.
+        """
+        ready_issues = [
+            {
+                "number": 10,
+                "title": "Issue 10",
+                "state": "open",
+                "body": "",
+                "url": "https://github.com/o/r/issues/10",
+                "labels": [{"name": "agent-ready"}],
+                "milestone": None,
+                "assignees": [],
+            }
+        ]
+
+        def side_effect(
+            cmd: list[str],
+        ) -> subprocess.CompletedProcess[str]:
+            if "issue" in cmd and "edit" in cmd:
+                label_edits.append(list(cmd))
+            return _make_run_side_effect(
+                ready_issues=ready_issues,
+                pr_head_sha="abc123",
+                issue_branch="baton/issue-10-10",
+                feature_branch_exists=False,
+            )(cmd)
+
+        return side_effect
+
+    # ------------------------------------------------------------------
+    # Test 1 (TRUE RED): zero state labels + open PR → converge to
+    # agent-done; must NOT park.
+    # ------------------------------------------------------------------
+
+    def test_backstop_converges_zero_state_open_pr_to_agent_done(
+        self,
+    ) -> None:
+        """Zero state labels + open PR → backstop adds agent-done; no park.
+
+        Scenario (the #31 live bug):
+        - _run_worker returns ``pr_created``.
+        - After-run kill between label edits leaves issue on
+          ``{agent-in-progress}`` only (zero state labels).
+        - ``_find_issue_pr`` finds a real open PR for issue #10.
+        - ``blocked`` label is NOT present.
+
+        Expected backstop behaviour (the fix under test):
+        - Issues a ``gh issue edit --add-label agent-done`` call.
+        - Issues a ``gh issue edit --remove-label agent-in-progress``
+          call.
+        - Does NOT call ``sched.mark_parked`` for issue #10.
+        - Does NOT fire a ``severity='critical'`` park alert.
+        - Allows the loop to ``continue`` (the issue is re-classified
+          on the next tick).
+
+        This MUST FAIL on current code: the current backstop always
+        calls ``sched.mark_parked`` and ``alert(severity='critical')``
+        when the invariant is violated, with no convergence attempt.
+        """
+        label_edits: list[list[str]] = []
+        mock_alert = MagicMock(return_value=True)
+        mark_parked_calls: list[int] = []
+
+        def recording_mark_parked(
+            self_sched: Any,  # noqa: ANN401
+            issue: int,
+        ) -> None:
+            """Spy: record which issues are parked."""
+            mark_parked_calls.append(issue)
+            # Drive real scheduler logic so is_active() stays consistent.
+            self_sched.parked.add(issue)
+
+        with (
+            patch.object(
+                daemon_mod,
+                "_run",
+                side_effect=self._make_recording_run(label_edits),
+            ),
+            # Post-worker: only agent-in-progress — zero STATE labels.
+            patch(
+                "baton_harness.chain.daemon._fetch_issue_labels",
+                return_value={"agent-in-progress"},
+            ),
+            # PR exists for issue #10.
+            patch(
+                "baton_harness.chain.daemon._find_issue_pr",
+                return_value=("baton/issue-10-10", "abc123"),
+            ),
+            patch("baton_harness.chain.daemon.alert", mock_alert),
+            patch(
+                "baton_harness.chain.scheduler.IssueScheduler.mark_parked",
+                autospec=True,
+                side_effect=recording_mark_parked,
+            ),
+            patch(
+                "baton_harness.chain.daemon.fetch_blocked_by",
+                return_value=[],
+            ),
+            patch("baton_harness.chain.branches.create_feature_branch"),
+            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch(
+                "baton_harness.chain.branches.record_cut_point",
+                return_value="deadbeef" * 5,
+            ),
+            patch(
+                "baton_harness.chain.recovery.reconstruct",
+                return_value=RecoveryResult(
+                    done=set(),
+                    parked_seed=set(),
+                    ci_gate_reentry=set(),
+                    redispatch=set(),
+                ),
+            ),
+            patch(
+                "baton_harness.chain.daemon.merge_issue_branch",
+                return_value=MergeOutcome.MERGED,
+            ),
+            _patch_run_worker("pr_created"),
+        ):
+            asyncio.run(
+                run_daemon(
+                    _minimal_wf_config(),
+                    [_repo_cfg()],
+                    once=True,
+                    poll_interval_s=0,
+                )
+            )
+
+        # Assert: agent-done was added.
+        add_agent_done = [
+            c for c in label_edits if "--add-label" in c and "agent-done" in c
+        ]
+        assert add_agent_done, (
+            "Backstop must issue '--add-label agent-done' when zero state"
+            " labels + open PR are observed; no such gh issue edit call"
+            f" found. label_edits={label_edits}"
+        )
+
+        # Assert: agent-in-progress was removed.
+        remove_in_progress = [
+            c
+            for c in label_edits
+            if "--remove-label" in c and "agent-in-progress" in c
+        ]
+        assert remove_in_progress, (
+            "Backstop must clear agent-in-progress during convergence;"
+            f" label_edits={label_edits}"
+        )
+
+        # Assert: issue #10 was NOT parked.
+        assert 10 not in mark_parked_calls, (
+            "Backstop must NOT call sched.mark_parked(10) when the issue"
+            " has an open PR (convergence target is agent-done, not park);"
+            f" mark_parked_calls={mark_parked_calls}"
+        )
+
+        # Assert: no critical park alert for this issue.
+        critical_calls = [
+            c
+            for c in mock_alert.call_args_list
+            if c.kwargs.get("severity") == "critical"
+            and (
+                len(c.args) >= 3
+                and c.args[2] == 10  # positional n
+                or c.kwargs.get("issue") == 10
+            )
+        ]
+        assert not critical_calls, (
+            "Backstop must NOT fire a critical alert for issue #10 when"
+            " convergence to agent-done is possible; critical_calls="
+            f"{critical_calls}"
+        )
+
+    # ------------------------------------------------------------------
+    # Test 2 (REGRESSION GUARD): zero state labels + no PR → preserve
+    # the existing park+alert path; must NOT add agent-done.
+    # ------------------------------------------------------------------
+
+    def test_backstop_preserves_park_when_zero_state_and_no_pr(
+        self,
+    ) -> None:
+        """Zero state labels + no PR → existing park path preserved.
+
+        No convergence should occur when there is no open PR.
+
+        Scenario:
+        - _run_worker returns ``pr_created``.
+        - Post-worker labels = ``{agent-in-progress}`` (zero state
+          labels).
+        - ``_find_issue_pr`` returns ``(None, None)`` — no open PR.
+        - ``blocked`` label NOT present.
+
+        Expected behaviour (the existing park path must be preserved):
+        - Does NOT issue ``--add-label agent-done``.
+        - DOES call ``sched.mark_parked`` for issue #10 (or fires the
+          existing critical alert that signals the park).
+        - DOES fire ``alert(severity='critical')`` for the invariant
+          violation.
+
+        This MUST PASS on current code (it is a regression guard
+        confirming the fix does NOT over-converge when there is no PR
+        evidence).  It MUST ALSO PASS post-fix.
+        """
+        label_edits: list[list[str]] = []
+        mock_alert = MagicMock(return_value=True)
+        mark_parked_calls: list[int] = []
+
+        def recording_mark_parked(
+            self_sched: Any,  # noqa: ANN401
+            issue: int,
+        ) -> None:
+            """Spy: record which issues are parked."""
+            mark_parked_calls.append(issue)
+            self_sched.parked.add(issue)
+
+        with (
+            patch.object(
+                daemon_mod,
+                "_run",
+                side_effect=self._make_recording_run(label_edits),
+            ),
+            # Post-worker: only agent-in-progress — zero STATE labels.
+            patch(
+                "baton_harness.chain.daemon._fetch_issue_labels",
+                return_value={"agent-in-progress"},
+            ),
+            # No PR exists.
+            patch(
+                "baton_harness.chain.daemon._find_issue_pr",
+                return_value=(None, None),
+            ),
+            patch("baton_harness.chain.daemon.alert", mock_alert),
+            patch(
+                "baton_harness.chain.scheduler.IssueScheduler.mark_parked",
+                autospec=True,
+                side_effect=recording_mark_parked,
+            ),
+            patch(
+                "baton_harness.chain.daemon.fetch_blocked_by",
+                return_value=[],
+            ),
+            patch("baton_harness.chain.branches.create_feature_branch"),
+            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch(
+                "baton_harness.chain.branches.record_cut_point",
+                return_value="deadbeef" * 5,
+            ),
+            patch(
+                "baton_harness.chain.recovery.reconstruct",
+                return_value=RecoveryResult(
+                    done=set(),
+                    parked_seed=set(),
+                    ci_gate_reentry=set(),
+                    redispatch=set(),
+                ),
+            ),
+            patch(
+                "baton_harness.chain.daemon.merge_issue_branch",
+                return_value=MergeOutcome.MERGED,
+            ),
+            _patch_run_worker("pr_created"),
+        ):
+            asyncio.run(
+                run_daemon(
+                    _minimal_wf_config(),
+                    [_repo_cfg()],
+                    once=True,
+                    poll_interval_s=0,
+                )
+            )
+
+        # Assert: agent-done must NOT have been added.
+        add_agent_done = [
+            c for c in label_edits if "--add-label" in c and "agent-done" in c
+        ]
+        assert not add_agent_done, (
+            "Backstop must NOT add agent-done when there is no open PR"
+            " (no completion evidence); convergence would be incorrect."
+            f" label_edits={label_edits}"
+        )
+
+        # Assert: critical alert fired (invariant violation with no PR
+        # is a genuine unknown state — park + alert is correct).
+        critical_calls = [
+            c
+            for c in mock_alert.call_args_list
+            if c.kwargs.get("severity") == "critical"
+        ]
+        assert critical_calls, (
+            "Backstop must still fire alert(severity='critical') for a"
+            " zero-state violation when no open PR is found (no"
+            " convergence target available); all alert calls="
+            f"{mock_alert.call_args_list}"
+        )
+
+        # Assert: issue #10 was parked (existing behavior preserved).
+        assert 10 in mark_parked_calls, (
+            "Backstop must still call sched.mark_parked(10) when zero"
+            " state labels + no open PR (no convergence target);"
+            f" mark_parked_calls={mark_parked_calls}"
+        )
