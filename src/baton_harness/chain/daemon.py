@@ -266,8 +266,17 @@ def _fetch_issue_labels(
     owner: str,
     repo: str,
     issue: int,
-) -> set[str]:
+) -> set[str] | None:
     """Fetch current labels for an issue (lowercase).
+
+    Returns ``None`` on any fetch failure so callers can distinguish
+    an unreadable state from a genuinely empty label set.  This mirrors
+    the sentinel pattern used by ``after_run._current_labels`` (#32).
+
+    On a ``gh`` call failure (``returncode != 0``) the issue may still
+    carry ``blocked`` or other state labels that we cannot see — returning
+    ``None`` forces the caller to handle the unknown state conservatively
+    rather than treating it as zero-state and triggering convergence.
 
     Args:
         owner: The GitHub repository owner.
@@ -275,7 +284,13 @@ def _fetch_issue_labels(
         issue: The issue number.
 
     Returns:
-        A set of lowercase label name strings; empty on error.
+        A ``set[str]`` of lowercase label name strings when the fetch
+        succeeds (possibly empty — a genuine empty set is distinct from
+        failure).  ``None`` when the ``gh`` call returns a non-zero exit
+        code or when the response cannot be parsed (``JSONDecodeError``,
+        ``KeyError``, or ``TypeError``).  Callers must guard on ``None``
+        and must NOT attempt single-state convergence on an unknown state
+        (Codex P1 #3, PR #95).
     """
     proc = _run(
         [
@@ -290,12 +305,12 @@ def _fetch_issue_labels(
         ]
     )
     if proc.returncode != 0:
-        return set()
+        return None
     try:
         data = json.loads(proc.stdout)
         return {lbl["name"].lower() for lbl in data.get("labels", [])}
     except (json.JSONDecodeError, KeyError, TypeError):
-        return set()
+        return None
 
 
 def _fetch_issue_obj(
@@ -914,6 +929,54 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
 
         # Re-read labels after _run_worker (after_run may have set blocked).
         post_labels = _fetch_issue_labels(owner, repo, n)
+
+        # Guard: None sentinel means the gh call failed or stdout was
+        # unparsable.  The single-state invariant CANNOT be verified and
+        # convergence MUST NOT fire on an unknown state (Codex P1 #3,
+        # PR #95).  Take the conservative path: park + alert.
+        if post_labels is None:
+            _log.error(
+                "daemon: label fetch failed for #%d"
+                " (gh error / unparsable); parking conservatively",
+                n,
+            )
+            if runlog is not None:
+                try:
+                    runlog.emit(
+                        {
+                            "ts": datetime.now(timezone.utc).isoformat(),
+                            "event": "label_fetch_failed",
+                            "issue": n,
+                            "outcome": None,
+                            "severity": "critical",
+                            "detail": (
+                                f"Issue #{n} labels unreadable;"
+                                " cannot verify single-state invariant"
+                            ),
+                            "tick_id": None,
+                        }
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+            alert(
+                owner,
+                repo,
+                n,
+                (
+                    f"Issue #{n} labels unreadable; cannot verify"
+                    " single-state invariant — parking."
+                ),
+                severity="critical",
+                kind="block",
+                runlog=runlog,
+            )
+            _label_edit(owner, repo, n, remove=["agent-in-progress"])
+            if liveness_state is not None:
+                liveness_state.clear()
+            sched.mark_parked(n)
+            parked_reasons[n] = "labels unreadable"
+            continue
+
         has_blocked = "blocked" in post_labels
 
         # Single-state invariant backstop (#34 P2 / #76).
