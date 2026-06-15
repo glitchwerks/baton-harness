@@ -22,8 +22,11 @@
     linear backoff via ``time.sleep``.  When all attempts are exhausted
     the outcome is ``TRANSIENT_ERROR``, which leaves ``agent-ready``
     intact (the issue remains eligible for a future run) and causes
-    ``main()`` to return non-zero.  ``_current_labels`` likewise degrades
-    gracefully on parse or returncode errors (returns empty list).
+    ``main()`` to return non-zero.  A non-zero ``git cherry`` exit is
+    likewise treated as ``TRANSIENT_ERROR`` (MAJOR 1).
+    ``_current_labels`` returns ``None`` (not ``[]``) on parse or
+    returncode errors so that ``_reconcile_labels`` aborts with zero
+    label mutations, preserving the single-state invariant (MAJOR 2).
 
 Invoked by Baton after each agent run turn completes.  Responsible for:
 
@@ -240,6 +243,21 @@ def _classify() -> RunOutcome:
 
     # Step 2: any commits ahead of base?
     cherry = _run(["git", "cherry", base_sha, "HEAD"])
+
+    # MAJOR 1 (#32): a non-zero returncode means git cherry itself failed
+    # (e.g. bad base SHA, detached HEAD).  Do NOT derive commit presence from
+    # empty stdout — that would misclassify as NO_COMMITS and trigger
+    # agent-ready removal.  Treat any non-zero exit as transient.
+    if cherry.returncode != 0:
+        err(
+            _HOOK,
+            0,
+            f"git cherry failed (returncode={cherry.returncode}); "
+            f"stderr: {cherry.stderr.strip()!r} — treating as "
+            "TRANSIENT_ERROR, agent-ready left intact.",
+        )
+        return RunOutcome.TRANSIENT_ERROR
+
     ahead_commits = [
         line for line in cherry.stdout.splitlines() if line.startswith("+")
     ]
@@ -310,23 +328,26 @@ def _classify() -> RunOutcome:
 # ---------------------------------------------------------------------------
 
 
-def _current_labels(issue: int) -> list[str]:
+def _current_labels(issue: int) -> list[str] | None:
     """Fetch the current label names for a GitHub issue.
 
     Parses ``gh issue view --json labels`` output with ``json.loads`` (never
     grepped — addresses the H1 root-cause pattern).
 
-    Degrades gracefully on transient failures (#32): a non-zero returncode
-    or a ``json.JSONDecodeError`` logs the error and returns an empty list
-    so that the caller (``_reconcile_labels``) can proceed rather than
-    crashing the hook entirely.
+    MAJOR 2 (#32): failure is signalled distinctly from "no labels".  A
+    non-zero returncode or a ``json.JSONDecodeError`` returns ``None`` (not
+    ``[]``) so that ``_reconcile_labels`` can detect the failure and abort
+    with zero label mutations, preserving the single-state invariant.
+    Returning ``[]`` would have been misread as "issue has no labels" and
+    allowed mutations to proceed against an unknown label state.
 
     Args:
         issue: GitHub issue number whose labels are fetched.
 
     Returns:
-        A list of label name strings currently on the issue, or an empty
-        list if the ``gh`` call failed or returned non-JSON output.
+        A list of label name strings currently on the issue, or ``None``
+        if the ``gh`` call failed or returned non-JSON output (signals
+        fetch failure, distinct from an empty label list).
     """
     result = _run(["gh", "issue", "view", str(issue), "--json", "labels"])
 
@@ -334,11 +355,11 @@ def _current_labels(issue: int) -> list[str]:
         err(
             _HOOK,
             issue,
-            "gh issue view failed (returncode="
-            f"{result.returncode}); "
-            "assuming no labels (degraded).",
+            f"gh issue view failed (returncode={result.returncode}); "
+            f"stderr: {result.stderr.strip()!r} — aborting label "
+            "reconciliation to preserve single-state invariant.",
         )
-        return []
+        return None
 
     try:
         data: dict[str, list[dict[str, str]]] = json.loads(result.stdout)
@@ -346,10 +367,10 @@ def _current_labels(issue: int) -> list[str]:
         err(
             _HOOK,
             issue,
-            "gh issue view returned non-JSON stdout; "
-            "assuming no labels (degraded).",
+            "gh issue view returned non-JSON stdout; aborting label "
+            "reconciliation to preserve single-state invariant.",
         )
-        return []
+        return None
 
     return [lbl["name"] for lbl in data.get("labels", [])]
 
@@ -367,6 +388,10 @@ def _reconcile_labels(issue: int, outcome: RunOutcome) -> int:
            eligible for a future run.  Return ``0`` (the label state is
            unchanged, not broken); ``main()`` is responsible for returning
            non-zero to the caller.
+        0b. If ``_current_labels`` returns ``None`` (labels-fetch failure),
+           perform ZERO label mutations and return ``1`` so that ``main()``
+           returns non-zero.  Operating on an unknown label state would risk
+           violating the single-state invariant (MAJOR 2, #32).
         1. If ``blocked`` is already on the issue (applied mid-run by the
            agent), remove ``agent-ready`` and leave ``blocked``.  Do NOT add
            ``agent-done`` — the block overrides the F5 classification.
@@ -388,7 +413,8 @@ def _reconcile_labels(issue: int, outcome: RunOutcome) -> int:
         outcome: The F5 classification for the current run.
 
     Returns:
-        ``0`` on success, ``1`` if any label mutation fails.
+        ``0`` on success, ``1`` if any label mutation fails or if the
+        labels-fetch itself failed (to signal hook failure without mutations).
     """
     # Priority 0: transient gh failure — leave all labels untouched (#32).
     # agent-ready stays on the issue so the daemon can retry later.
@@ -401,7 +427,20 @@ def _reconcile_labels(issue: int, outcome: RunOutcome) -> int:
         )
         return 0
 
+    # MAJOR 2 (#32): fetch labels BEFORE any mutation path.  None signals a
+    # fetch failure (non-JSON or non-zero returncode) — distinct from [] which
+    # means the issue genuinely has no labels.  Operating on an unknown label
+    # state would risk violating the single-state invariant, so abort with
+    # zero mutations and return non-zero.
     labels = _current_labels(issue)
+    if labels is None:
+        err(
+            _HOOK,
+            issue,
+            "labels-fetch failed — aborting reconciliation with zero label "
+            "mutations to preserve the single-state invariant.",
+        )
+        return 1
 
     # Priority 1: blocked label wins regardless of F5 outcome.
     if LABEL_BLOCKED in labels:

@@ -8,8 +8,12 @@ Pins the behavioral contract for:
    empty stdout) is a transient error, NOT ``COMMITTED_NO_PR``.
 3. Bounded retry with recovery: transient failures followed by a valid ``gh
    pr list`` response classify as ``PR_OPENED``.
-4. Guarded ``_current_labels`` parse: non-JSON ``gh issue view`` output does
-   not crash the run.
+4. Guarded ``_current_labels`` parse: a labels-fetch failure must cause
+   ``_reconcile_labels`` to abort with ZERO label mutations and a non-zero
+   ``main()`` result.  The single-state-invariant must not be violated.
+5. Returncode-checked ``git cherry``: a non-zero ``git cherry`` (empty
+   stdout) must NOT classify as ``NO_COMMITS``; it is treated as a
+   transient error (non-terminal, no ``agent-ready`` removal).
 
 All subprocess calls are patched through the module-local ``_run`` seam —
 the single patchable symbol used by every existing test in
@@ -25,6 +29,21 @@ Retry contract (for Phase 2 implementer):
       seam or provide an equivalent patchable alias in the module.
     - After exhausting retries, ``main()`` must return non-zero AND must NOT
       issue ``gh issue edit --remove-label agent-ready``.
+
+Single-state-invariant contract (for Phase 2 implementer — MAJOR 2):
+    - ``_current_labels`` failure (non-JSON stdout OR non-zero returncode)
+      must cause ``_reconcile_labels`` to issue ZERO ``gh issue edit`` calls
+      (no ``--remove-label`` and no ``--add-label``) and ``main()`` must
+      return non-zero.
+    - The mechanism (sentinel return, controlled exception, etc.) is the
+      implementer's choice; the tests assert observable behaviour only.
+
+git cherry returncode contract (for Phase 2 implementer — MAJOR 1):
+    - A non-zero ``git cherry`` exit (e.g. bad base SHA, detached HEAD)
+      must NOT classify as ``NO_COMMITS`` (which would falsely signal "no
+      work done" and trigger ``agent-ready`` removal via the blocked path).
+    - The result must be treated as a transient error: non-terminal, with
+      no ``agent-ready`` removal, and ``main()`` returns non-zero.
 """
 
 from __future__ import annotations
@@ -531,29 +550,45 @@ class TestClassifyRetryWithRecovery:
 
 
 # ---------------------------------------------------------------------------
-# Contract 4 (optional, forward-spec): guarded _current_labels parse
+# Contract 4: _current_labels failure → _reconcile_labels aborts,
+# zero label mutations, main() non-zero  (MAJOR 2 — single-state invariant)
 # ---------------------------------------------------------------------------
 
 
 class TestCurrentLabelsGuardedParse:
-    """Non-JSON ``gh issue view`` stdout does not crash the run.
+    """Labels-fetch failure → zero label mutations + non-zero main().
 
-    This is marked as a forward-spec: the current implementation has an
-    unguarded ``json.loads(result.stdout)`` at L251.  The test asserts the
-    observable effect (no uncaught exception), leaving the recovery
-    mechanism (return empty list, treat as transient, etc.) to the
-    implementer.
+    MAJOR 2 (Codex review): the current implementation returns ``[]`` on
+    both non-JSON and non-zero-returncode ``gh issue view``.  That empty
+    list is misread by ``_reconcile_labels`` as "issue has no labels":
+      - The fast-path ``blocked`` label check is skipped.
+      - Priority 3 falls through to remove ``agent-ready`` and add
+        ``blocked`` — but ``agent-ready`` WAS on the issue; the removal
+        never happened, leaving BOTH labels present (violates single-state
+        invariant).
 
-    FORWARD-SPEC: exact recovery behavior is implementation-defined.
-    Constraint: must not propagate ``JSONDecodeError`` or ``KeyError`` to
-    the caller.
+    Correct contract:
+        A ``_current_labels`` failure must cause ``_reconcile_labels`` to
+        abort with ZERO ``gh issue edit`` calls.  ``main()`` must return
+        non-zero.  The mechanism is the implementer's choice.
+
+    These tests assert OBSERVABLE behaviour only (zero mutations + non-zero
+    main()); they do NOT constrain the internal return type of
+    ``_current_labels``.
+
+    The tests in this class that assert zero label mutations + non-zero
+    main() are FORWARD-SPEC (RED until Phase 2 implementation lands) —
+    the current code returns ``[]`` and allows mutations to proceed.
+    The no-crash tests are also FORWARD-SPEC for the same reason.
     """
+
+    # --- No-crash guards (assert _current_labels itself does not raise) ---
 
     def test_non_json_gh_issue_view_does_not_raise(self) -> None:
         """Non-JSON gh issue view stdout must not propagate JSONDecodeError.
 
-        Current code raises ``JSONDecodeError`` immediately.  After the fix
-        this must be caught.
+        Asserts the internal function does not raise; the observable effect
+        on the label-mutation contract is asserted in the main() tests below.
         """
         with patch("baton_harness.after_run._run") as mock_run:
             mock_run.return_value = _completed(
@@ -570,24 +605,400 @@ class TestCurrentLabelsGuardedParse:
     def test_nonzero_returncode_gh_issue_view_does_not_raise(self) -> None:
         """Non-zero returncode from gh issue view must not raise.
 
-        The caller (_reconcile_labels) must be able to handle the degraded
-        response (empty list, or similar) without an uncaught exception.
+        The no-crash contract: ``_current_labels`` must not propagate
+        ``JSONDecodeError`` or ``KeyError``.  Observable mutation contract
+        is asserted in the main() tests below.
         """
         with patch("baton_harness.after_run._run") as mock_run:
             mock_run.return_value = _completed(
                 returncode=1, stdout="", stderr="auth error"
             )
             try:
-                result = _current_labels(42)
-                # Forward-spec: graceful degradation yields some value, not
-                # an exception. The exact value is implementation-defined;
-                # a list (possibly empty) is the expected shape.
-                assert isinstance(result, list), (
-                    "_current_labels must return a list on degraded input; "
-                    f"got {type(result)!r}"
-                )
+                _current_labels(42)
             except (json.JSONDecodeError, KeyError) as exc:
                 pytest.fail(
                     f"_current_labels raised {type(exc).__name__} on "
                     f"non-zero returncode: {exc}"
                 )
+
+    # --- Observable-contract guards (FORWARD-SPEC — RED until Phase 2) ---
+    # These assert the load-bearing single-state-invariant behaviour:
+    # a labels-fetch failure must produce ZERO label mutations and non-zero
+    # main(), regardless of what outcome _classify() would have returned.
+
+    def test_non_json_labels_fetch_zero_label_mutations(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Non-JSON gh issue view → zero gh issue edit calls issued.
+
+        Arrange: git prefix clean with commits ahead + open PR (would
+        normally trigger remove-agent-ready + add-agent-done), but
+        gh issue view returns a non-JSON rate-limit banner.
+        Assert: NO ``gh issue edit`` calls of any kind.
+
+        FORWARD-SPEC: RED until Phase 2 — current code proceeds with
+        mutations using the degraded ``[]`` label list.
+        """
+        worktree = tmp_path / "feat-32-labels-guard-nonjson"
+        worktree.mkdir()
+        monkeypatch.chdir(worktree)
+        monkeypatch.delenv("CHAIN_BASE_BRANCH", raising=False)
+
+        with patch("baton_harness.after_run._run") as mock_run:
+            # _classify: git status, git rev-parse, git cherry (ahead),
+            #            git rev-parse --abbrev-ref (branch), gh pr list (ok)
+            # _current_labels: gh issue view → non-JSON
+            # Extra completeds absorb any gh issue edit calls that current
+            # (unfixed) code makes — so mock doesn't StopIterate before we
+            # reach the assertion; the assertion itself catches the violation.
+            mock_run.side_effect = [
+                _completed(stdout=""),  # git status — clean
+                _completed(stdout="abc123\n"),  # git rev-parse base SHA
+                _completed(stdout="+ deadbeef\n"),  # git cherry — 1 ahead
+                _completed(stdout="feat-32-guard\n"),  # branch name
+                _completed(stdout=_PR_JSON_OPEN),  # gh pr list — has PR
+                # gh issue view — non-JSON (rate-limit banner)
+                _completed(stdout="<!DOCTYPE html>rate limited</html>"),
+                # Absorb any spurious gh issue edit calls from unfixed code:
+                _completed(stdout=""),
+                _completed(stdout=""),
+            ]
+            with patch("baton_harness.after_run.time", create=True) as _mt:
+                _mt.sleep = MagicMock()
+                result = after_run.main()
+
+        # Non-zero: labels-fetch failure must surface as hook failure.
+        assert result != 0, (
+            "main() must return non-zero when gh issue view returns non-JSON"
+        )
+
+        # Zero label mutations: no gh issue edit must be called at all.
+        all_cmd_lists = [c[0][0] for c in mock_run.call_args_list]
+        issue_edit_calls = [
+            cmd for cmd in all_cmd_lists if "issue" in cmd and "edit" in cmd
+        ]
+        assert issue_edit_calls == [], (
+            "gh issue edit must NOT be called when gh issue view returns "
+            "non-JSON — zero label mutations required to preserve the "
+            "single-state invariant. "
+            f"Got calls: {issue_edit_calls}"
+        )
+
+    def test_nonzero_labels_fetch_zero_label_mutations(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Non-zero gh issue view returncode → zero gh issue edit calls.
+
+        Arrange: git prefix clean with commits ahead + open PR (would
+        normally trigger remove-agent-ready + add-agent-done), but
+        gh issue view returns returncode=1 with empty stdout.
+        Assert: NO ``gh issue edit`` calls of any kind.
+
+        FORWARD-SPEC: RED until Phase 2 — current code proceeds with
+        mutations using the degraded ``[]`` label list.
+        """
+        worktree = tmp_path / "feat-32-labels-guard-rc"
+        worktree.mkdir()
+        monkeypatch.chdir(worktree)
+        monkeypatch.delenv("CHAIN_BASE_BRANCH", raising=False)
+
+        with patch("baton_harness.after_run._run") as mock_run:
+            mock_run.side_effect = [
+                _completed(stdout=""),  # git status — clean
+                _completed(stdout="abc123\n"),  # git rev-parse base SHA
+                _completed(stdout="+ deadbeef\n"),  # git cherry — 1 ahead
+                _completed(stdout="feat-32-guard\n"),  # branch name
+                _completed(stdout=_PR_JSON_OPEN),  # gh pr list — has PR
+                # gh issue view — non-zero returncode
+                _completed(returncode=1, stdout="", stderr="auth error"),
+                # Absorb any spurious gh issue edit calls from unfixed code:
+                _completed(stdout=""),
+                _completed(stdout=""),
+            ]
+            with patch("baton_harness.after_run.time", create=True) as _mt:
+                _mt.sleep = MagicMock()
+                result = after_run.main()
+
+        assert result != 0, (
+            "main() must return non-zero when gh issue view fails with "
+            "returncode=1"
+        )
+
+        all_cmd_lists = [c[0][0] for c in mock_run.call_args_list]
+        issue_edit_calls = [
+            cmd for cmd in all_cmd_lists if "issue" in cmd and "edit" in cmd
+        ]
+        assert issue_edit_calls == [], (
+            "gh issue edit must NOT be called when gh issue view fails "
+            "with returncode=1 — zero label mutations required. "
+            f"Got calls: {issue_edit_calls}"
+        )
+
+    def test_non_json_labels_fetch_no_remove_label(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Non-JSON gh issue view: no --remove-label call emitted.
+
+        Specifically checks the --remove-label vector, which would be the
+        most likely mutation to occur (Priority 3 path, or PR path both
+        start with remove-agent-ready).
+
+        FORWARD-SPEC: RED until Phase 2.
+        """
+        worktree = tmp_path / "feat-32-labels-no-remove"
+        worktree.mkdir()
+        monkeypatch.chdir(worktree)
+        monkeypatch.delenv("CHAIN_BASE_BRANCH", raising=False)
+
+        with patch("baton_harness.after_run._run") as mock_run:
+            # Use NO_COMMITS path (no commits ahead) so _reconcile_labels
+            # is called for a non-TRANSIENT_ERROR outcome — the current
+            # Priority 3 path would normally remove agent-ready + add blocked.
+            # Absorb spurious label-mutation calls from unfixed code so the
+            # assertion (not StopIteration) is the failure signal.
+            mock_run.side_effect = [
+                _completed(stdout=""),  # git status — clean
+                _completed(stdout="abc123\n"),  # git rev-parse base SHA
+                _completed(stdout=""),  # git cherry — nothing ahead
+                # gh issue view — non-JSON
+                _completed(stdout="error: HTTP 429: too many requests"),
+                # Absorb any gh issue edit calls from unfixed code:
+                _completed(stdout=""),
+                _completed(stdout=""),
+            ]
+            with patch("baton_harness.after_run.time", create=True) as _mt:
+                _mt.sleep = MagicMock()
+                result = after_run.main()
+
+        assert result != 0, (
+            "main() must return non-zero when gh issue view is non-JSON "
+            "(even on a NO_COMMITS outcome)"
+        )
+
+        all_cmd_lists = [c[0][0] for c in mock_run.call_args_list]
+        remove_calls = [
+            cmd for cmd in all_cmd_lists if "--remove-label" in cmd
+        ]
+        assert remove_calls == [], (
+            "--remove-label must NOT be called when gh issue view returns "
+            "non-JSON — zero mutations required to guard single-state "
+            f"invariant. Got: {remove_calls}"
+        )
+
+    def test_non_json_labels_fetch_no_add_label(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Non-JSON gh issue view: no --add-label call emitted.
+
+        FORWARD-SPEC: RED until Phase 2.
+        """
+        worktree = tmp_path / "feat-32-labels-no-add"
+        worktree.mkdir()
+        monkeypatch.chdir(worktree)
+        monkeypatch.delenv("CHAIN_BASE_BRANCH", raising=False)
+
+        with patch("baton_harness.after_run._run") as mock_run:
+            mock_run.side_effect = [
+                _completed(stdout=""),  # git status — clean
+                _completed(stdout="abc123\n"),  # git rev-parse base SHA
+                _completed(stdout=""),  # git cherry — nothing ahead
+                # gh issue view — non-JSON
+                _completed(
+                    stdout="rate limit exceeded; retry after 00:00:00Z"
+                ),
+                # Absorb any gh issue edit calls from unfixed code:
+                _completed(stdout=""),
+                _completed(stdout=""),
+            ]
+            with patch("baton_harness.after_run.time", create=True) as _mt:
+                _mt.sleep = MagicMock()
+                result = after_run.main()
+
+        assert result != 0, (
+            "main() must return non-zero when gh issue view returns non-JSON"
+        )
+
+        all_cmd_lists = [c[0][0] for c in mock_run.call_args_list]
+        add_calls = [cmd for cmd in all_cmd_lists if "--add-label" in cmd]
+        assert add_calls == [], (
+            "--add-label must NOT be called when gh issue view returns "
+            "non-JSON — zero mutations required. "
+            f"Got: {add_calls}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Contract 5: git cherry returncode must be checked  (MAJOR 1)
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyGitCherryReturncodeChecked:
+    """Non-zero ``git cherry`` exit is transient, NOT ``NO_COMMITS``.
+
+    MAJOR 1 (Codex review): AC for issue #32 states "_classify checks
+    returncode before trusting git cherry / gh pr list."  The ``gh pr list``
+    side is already hardened.  The ``git cherry`` side is not: a non-zero
+    exit (e.g. detached HEAD, bad base SHA, git error) produces empty stdout,
+    ``ahead_commits`` is ``[]``, and ``NO_COMMITS`` is returned — a
+    misclassification that triggers ``agent-ready`` removal and ``blocked``
+    label addition.
+
+    Correct contract:
+        A non-zero ``git cherry`` returncode must NOT yield ``NO_COMMITS``.
+        The outcome must be treated as transient (non-terminal).  ``main()``
+        must return non-zero.  No ``agent-ready`` removal or ``blocked``
+        addition may occur.
+
+    All tests in this class are FORWARD-SPEC (RED until Phase 2) because the
+    current implementation does not check ``cherry.returncode``.
+
+    Side-effect sequence note:
+        ``_classify`` issues these ``_run`` calls in order:
+          1. ``git status`` (Step 1 — uncommitted check)
+          2. ``git rev-parse <base>`` (inside ``_resolve_base_sha``)
+          3. ``git cherry <base_sha> HEAD`` (Step 2 — commits-ahead check)
+          4. ``git rev-parse --abbrev-ref HEAD`` (``_current_branch``)
+          5. ``gh pr list ...`` (Step 3, repeated up to MAX_ATTEMPTS)
+        A non-zero cherry at position 3 must short-circuit before positions
+        4 and 5.
+    """
+
+    def test_nonzero_cherry_is_not_no_commits(self) -> None:
+        """Git cherry non-zero + empty stdout must NOT yield NO_COMMITS.
+
+        ``NO_COMMITS`` would trigger the blocked path (remove agent-ready +
+        add blocked).  A failed cherry must be treated as non-terminal.
+
+        FORWARD-SPEC: RED until Phase 2 — current code returns NO_COMMITS.
+        """
+        with patch("baton_harness.after_run._run") as mock_run:
+            mock_run.side_effect = [
+                _completed(stdout=""),  # git status — clean
+                _completed(stdout="abc123\n"),  # git rev-parse base SHA
+                # git cherry — non-zero (e.g. bad ref, detached HEAD)
+                _completed(returncode=128, stdout="", stderr="bad object"),
+                # Provide extras so _current_labels / subsequent calls don't
+                # StopIterate before we reach the assertion.
+                _completed(stdout=""),
+                _completed(stdout=""),
+            ]
+            result = _classify()
+            assert result != RunOutcome.NO_COMMITS, (
+                "git cherry returncode=128 with empty stdout must NOT "
+                "be classified as NO_COMMITS — that would remove "
+                "agent-ready and add blocked incorrectly. "
+                f"Got: {result!r}"
+            )
+
+    def test_nonzero_cherry_does_not_remove_agent_ready(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Non-zero git cherry: main() non-zero, no agent-ready removal.
+
+        The load-bearing safety test: a git error must not cause the hook to
+        remove ``agent-ready`` (which would make the issue ineligible for
+        retry and lose the work).
+
+        FORWARD-SPEC: RED until Phase 2.
+        """
+        worktree = tmp_path / "feat-32-cherry-rc"
+        worktree.mkdir()
+        monkeypatch.chdir(worktree)
+        monkeypatch.delenv("CHAIN_BASE_BRANCH", raising=False)
+
+        with patch("baton_harness.after_run._run") as mock_run:
+            # Provide extra completeds to absorb the gh issue view call and
+            # any label-mutation calls that unfixed code makes via the
+            # NO_COMMITS / _current_labels path; the assertion catches the
+            # violation rather than a StopIteration from the mock.
+            mock_run.side_effect = [
+                _completed(stdout=""),  # git status — clean
+                _completed(stdout="abc123\n"),  # git rev-parse base SHA
+                # git cherry — non-zero (fatal: bad object)
+                _completed(returncode=128, stdout="", stderr="bad object"),
+                # Absorb gh issue view + label mutations from unfixed code:
+                _completed(stdout='{"labels":[]}'),
+                _completed(stdout=""),
+                _completed(stdout=""),
+            ]
+            with patch("baton_harness.after_run.time", create=True) as _mt:
+                _mt.sleep = MagicMock()
+                result = after_run.main()
+
+        assert result != 0, (
+            "main() must return non-zero when git cherry fails with "
+            "returncode=128"
+        )
+
+        all_cmd_lists = [c[0][0] for c in mock_run.call_args_list]
+        remove_agent_ready = [
+            cmd
+            for cmd in all_cmd_lists
+            if "--remove-label" in cmd and "agent-ready" in cmd
+        ]
+        assert remove_agent_ready == [], (
+            "--remove-label agent-ready must NOT be called when git cherry "
+            "returns non-zero — issue must stay eligible for future run. "
+            f"Got: {remove_agent_ready}"
+        )
+
+    def test_nonzero_cherry_no_label_mutations_at_all(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Non-zero git cherry: no gh issue edit calls of any kind.
+
+        Confirms both the remove-label and add-label vectors are blocked.
+
+        FORWARD-SPEC: RED until Phase 2.
+        """
+        worktree = tmp_path / "feat-32-cherry-no-mutations"
+        worktree.mkdir()
+        monkeypatch.chdir(worktree)
+        monkeypatch.delenv("CHAIN_BASE_BRANCH", raising=False)
+
+        with patch("baton_harness.after_run._run") as mock_run:
+            mock_run.side_effect = [
+                _completed(stdout=""),  # git status — clean
+                _completed(stdout="abc123\n"),  # git rev-parse base SHA
+                _completed(returncode=128, stdout="", stderr="bad object"),
+                # Absorb gh issue view + label mutations from unfixed code:
+                _completed(stdout='{"labels":[]}'),
+                _completed(stdout=""),
+                _completed(stdout=""),
+            ]
+            with patch("baton_harness.after_run.time", create=True) as _mt:
+                _mt.sleep = MagicMock()
+                after_run.main()
+
+        all_cmd_lists = [c[0][0] for c in mock_run.call_args_list]
+        issue_edit_calls = [
+            cmd for cmd in all_cmd_lists if "issue" in cmd and "edit" in cmd
+        ]
+        assert issue_edit_calls == [], (
+            "gh issue edit must NOT be called when git cherry returns "
+            "non-zero (any returncode != 0). "
+            f"Got: {issue_edit_calls}"
+        )
+
+    def test_nonzero_cherry_returncode_1_is_also_guarded(self) -> None:
+        """returncode=1 from git cherry must not yield NO_COMMITS.
+
+        Covers returncode=1 (e.g. git exits 1 on some errors); the
+        guard must apply to any non-zero exit, not just fatal-level 128.
+
+        FORWARD-SPEC: RED until Phase 2.
+        """
+        with patch("baton_harness.after_run._run") as mock_run:
+            mock_run.side_effect = [
+                _completed(stdout=""),  # git status — clean
+                _completed(stdout="abc123\n"),  # git rev-parse base SHA
+                _completed(returncode=1, stdout="", stderr="error"),
+                # Extras so downstream calls don't StopIterate.
+                _completed(stdout=""),
+                _completed(stdout=""),
+            ]
+            result = _classify()
+            assert result != RunOutcome.NO_COMMITS, (
+                "git cherry returncode=1 must not be classified as "
+                f"NO_COMMITS; got {result!r}"
+            )
