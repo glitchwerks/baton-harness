@@ -4238,27 +4238,39 @@ class TestBackstopConvergence:
     def test_backstop_converges_zero_state_open_pr_to_agent_done(
         self,
     ) -> None:
-        """Zero state labels + open PR → backstop adds agent-done; no park.
+        """Zero state + open PR → converge to agent-done, then CI-gate merge.
 
-        Scenario (the #31 live bug):
+        Scenario (the #31 P1 live bug):
         - _run_worker returns ``pr_created``.
         - After-run kill between label edits leaves issue on
           ``{agent-in-progress}`` only (zero state labels).
         - ``_find_issue_pr`` finds a real open PR for issue #10.
         - ``blocked`` label is NOT present.
 
-        Expected backstop behaviour (the fix under test):
+        Expected behaviour (the corrected fall-through fix under test):
+
+        Convergence (unchanged from the P0 fix):
         - Issues a ``gh issue edit --add-label agent-done`` call.
         - Issues a ``gh issue edit --remove-label agent-in-progress``
-          call.
+          call (convergence cleanup).
         - Does NOT call ``sched.mark_parked`` for issue #10.
         - Does NOT fire a ``severity='critical'`` park alert.
-        - Allows the loop to ``continue`` (the issue is re-classified
-          on the next tick).
 
-        This MUST FAIL on current code: the current backstop always
-        calls ``sched.mark_parked`` and ``alert(severity='critical')``
-        when the invariant is violated, with no convergence attempt.
+        NEW — in-tick CI gate fall-through (daemon.py:1029):
+        - After convergence, does NOT ``continue``; falls through to the
+          normal CI-gate / merge path on this tick.
+        - ``merge_issue_branch`` IS called for issue #10 with the PR
+          branch ``"baton/issue-10-10"`` and sha ``"abc123"``.
+        - On ``MergeOutcome.MERGED``, the post-merge label cleanup runs:
+          ``agent-in-progress`` is removed (merge-success path).
+
+        The ``_find_issue_pr`` patch returns a fixed tuple so BOTH the
+        backstop convergence call and the CI-gate call (daemon.py:1031)
+        see the open PR.
+
+        This MUST FAIL on current code (the backstop still
+        ``continue``s after convergence, so ``merge_issue_branch`` is
+        never called in this tick).
         """
         label_edits: list[list[str]] = []
         mock_alert = MagicMock(return_value=True)
@@ -4273,6 +4285,8 @@ class TestBackstopConvergence:
             # Drive real scheduler logic so is_active() stays consistent.
             self_sched.parked.add(issue)
 
+        mock_merge_fn = MagicMock(return_value=MergeOutcome.MERGED)
+
         with (
             patch.object(
                 daemon_mod,
@@ -4284,7 +4298,8 @@ class TestBackstopConvergence:
                 "baton_harness.chain.daemon._fetch_issue_labels",
                 return_value={"agent-in-progress"},
             ),
-            # PR exists for issue #10.
+            # PR exists for issue #10 — covers both the backstop
+            # convergence call and the CI-gate call (daemon.py:1031).
             patch(
                 "baton_harness.chain.daemon._find_issue_pr",
                 return_value=("baton/issue-10-10", "abc123"),
@@ -4316,7 +4331,7 @@ class TestBackstopConvergence:
             ),
             patch(
                 "baton_harness.chain.daemon.merge_issue_branch",
-                return_value=MergeOutcome.MERGED,
+                mock_merge_fn,
             ),
             _patch_run_worker("pr_created"),
         ):
@@ -4329,7 +4344,7 @@ class TestBackstopConvergence:
                 )
             )
 
-        # Assert: agent-done was added.
+        # Assert: agent-done was added (convergence still fires).
         add_agent_done = [
             c for c in label_edits if "--add-label" in c and "agent-done" in c
         ]
@@ -4339,7 +4354,7 @@ class TestBackstopConvergence:
             f" found. label_edits={label_edits}"
         )
 
-        # Assert: agent-in-progress was removed.
+        # Assert: agent-in-progress was removed (convergence cleanup).
         remove_in_progress = [
             c
             for c in label_edits
@@ -4372,6 +4387,59 @@ class TestBackstopConvergence:
             "Backstop must NOT fire a critical alert for issue #10 when"
             " convergence to agent-done is possible; critical_calls="
             f"{critical_calls}"
+        )
+
+        # NEW: Assert fall-through to CI gate — merge_issue_branch called.
+        assert mock_merge_fn.called, (
+            "After backstop convergence, the in-tick CI gate must call"
+            " merge_issue_branch for issue #10 (fall-through, not"
+            " continue); merge_issue_branch was never called."
+            f" label_edits={label_edits}"
+        )
+
+        # NEW: Assert merge was invoked with the correct branch + sha.
+        # _find_issue_pr returns ("baton/issue-10-10", "abc123") for
+        # both the backstop call and the CI-gate call (daemon.py:1031).
+        merge_call_args = mock_merge_fn.call_args
+        assert merge_call_args is not None, (
+            "merge_issue_branch must have been called with branch/sha"
+            " args; call_args is None"
+        )
+        call_positional = merge_call_args.args
+        call_keyword = merge_call_args.kwargs
+        branch_arg = (
+            call_positional[1]
+            if len(call_positional) > 1
+            else call_keyword.get("issue_branch")
+        )
+        sha_arg = (
+            call_positional[2]
+            if len(call_positional) > 2
+            else call_keyword.get("pr_head_sha")
+        )
+        assert branch_arg == "baton/issue-10-10", (
+            "merge_issue_branch must be called with the PR branch"
+            f" 'baton/issue-10-10'; got branch_arg={branch_arg!r}."
+            f" full call_args={merge_call_args}"
+        )
+        assert sha_arg == "abc123", (
+            "merge_issue_branch must be called with the PR sha 'abc123';"
+            f" got sha_arg={sha_arg!r}."
+            f" full call_args={merge_call_args}"
+        )
+
+        # NEW: On MergeOutcome.MERGED the post-merge cleanup removes
+        # agent-in-progress (merge-success path, same contract as the
+        # normal pr_created→CI-gate tests).
+        remove_aip_after_merge = [
+            c
+            for c in label_edits
+            if "--remove-label" in c and "agent-in-progress" in c
+        ]
+        assert remove_aip_after_merge, (
+            "On MergeOutcome.MERGED the daemon must remove"
+            " agent-in-progress (merge-success label cleanup);"
+            f" label_edits={label_edits}"
         )
 
     # ------------------------------------------------------------------

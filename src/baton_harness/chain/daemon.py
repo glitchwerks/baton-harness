@@ -928,6 +928,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
             # kill between after_run's remove-agent-ready and
             # add-agent-done leaves the issue in {agent-in-progress}
             # only.
+            _converged = False
             _state_labels_present = post_labels & set(
                 ["agent-ready", "agent-done", "blocked"]
             )
@@ -982,48 +983,51 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                     if liveness_state is not None:
                         liveness_state.clear()
                     # Do NOT mark_parked; do NOT fire critical alert.
-                    # continue so next tick re-classifies via ci-gate-
-                    # reentry.
-                    continue
-
-            _log.error(
-                "daemon: label invariant violated for #%d: %s; parking",
-                n,
-                _inv_violation,
-            )
-            if runlog is not None:
-                try:
-                    runlog.emit(
-                        {
-                            "ts": datetime.now(timezone.utc).isoformat(),
-                            "event": "label_invariant_violation",
-                            "issue": n,
-                            "outcome": None,
-                            "severity": "critical",
-                            "detail": _inv_violation,
-                            "tick_id": None,
-                        }
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
-            alert(
-                owner,
-                repo,
-                n,
-                (
-                    f"Issue #{n} failed the single-state"
-                    f" label invariant: {_inv_violation}"
-                ),
-                severity="critical",
-                kind="block",
-                runlog=runlog,
-            )
-            _label_edit(owner, repo, n, remove=["agent-in-progress"])
-            if liveness_state is not None:
-                liveness_state.clear()
-            sched.mark_parked(n)
-            parked_reasons[n] = f"label invariant violation: {_inv_violation}"
-            continue
+                    # Fall through to the CI gate below so the converged
+                    # issue's open PR is merged in this tick (#31 P1).
+                    _converged = True
+            if not _converged:
+                _log.error(
+                    "daemon: label invariant violated for #%d: %s; parking",
+                    n,
+                    _inv_violation,
+                )
+                if runlog is not None:
+                    try:
+                        runlog.emit(
+                            {
+                                "ts": datetime.now(timezone.utc).isoformat(),
+                                "event": "label_invariant_violation",
+                                "issue": n,
+                                "outcome": None,
+                                "severity": "critical",
+                                "detail": _inv_violation,
+                                "tick_id": None,
+                            }
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+                alert(
+                    owner,
+                    repo,
+                    n,
+                    (
+                        f"Issue #{n} failed the single-state"
+                        f" label invariant: {_inv_violation}"
+                    ),
+                    severity="critical",
+                    kind="block",
+                    runlog=runlog,
+                )
+                _label_edit(owner, repo, n, remove=["agent-in-progress"])
+                if liveness_state is not None:
+                    liveness_state.clear()
+                sched.mark_parked(n)
+                parked_reasons[n] = (
+                    f"label invariant violation: {_inv_violation}"
+                )
+                continue
+            # _converged=True → fall through to §3.5 CI gate below.
 
         # Apply §3.5 outcome protocol.
         if worker_result == "pr_created" and not has_blocked:
