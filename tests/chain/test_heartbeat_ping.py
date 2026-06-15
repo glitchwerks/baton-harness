@@ -1,17 +1,20 @@
 """Tests for _heartbeat_tick ping-URL behavior (issues #79 / #85).
 
 Covers acceptance criteria for the BH_HEARTBEAT_PING_URL best-effort ping
-that _heartbeat_tick must perform after the liveness write on each tick.
+that _heartbeat_tick must perform on each tick.
 
 AC coverage:
 - Ping fired exactly once with configured URL when heartbeat_ping_url is set.
 - No ping at all when heartbeat_ping_url is None.
 - Ping failure is swallowed: _heartbeat_tick completes (does not raise),
-  and _write_heartbeat is still called (liveness write is not aborted).
-
-The _ping_url seam does NOT exist in the current codebase — tests reference
-``baton_harness.chain.heartbeat._ping_url`` via string patch so the failure
-reason is unambiguous (AttributeError naming the missing symbol).
+  _write_heartbeat is still called (liveness write is not aborted),
+  runlog.emit still fires, and a stall alert still fires when the stall
+  threshold is exceeded — ping failure never skips downstream steps.
+- _ping_url calls urllib.request.urlopen with timeout=_DEFAULT_PING_TIMEOUT_S
+  and enters/exits the response as a context manager (or calls
+  .read()/.close()).
+- _ping_url rejects non-http/https schemes without calling urlopen
+  (forward-spec — RED until implementation pass).
 
 No asyncio / pytest-asyncio dependency -- all tests are synchronous.
 """
@@ -20,11 +23,14 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 from baton_harness.chain.heartbeat import (
+    _DEFAULT_PING_TIMEOUT_S,
     LivenessState,
     _heartbeat_tick,
+    _ping_url,
 )
 from baton_harness.chain.obs_config import ObsConfig
 
@@ -34,6 +40,8 @@ from baton_harness.chain.obs_config import ObsConfig
 
 _PING_SEAM = "baton_harness.chain.heartbeat._ping_url"
 _WRITE_SEAM = "baton_harness.chain.heartbeat._write_heartbeat"
+_ALERT_SEAM = "baton_harness.chain.heartbeat.alert"
+_URLOPEN_SEAM = "urllib.request.urlopen"
 
 
 def _make_obs(
@@ -180,3 +188,182 @@ def test_ping_failure_swallowed_and_write_still_occurs(
 
     # (b) liveness write must still have been called
     write_mock.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Test 4 -- Ping failure does not skip downstream steps (runlog + stall)
+# ---------------------------------------------------------------------------
+
+
+def test_ping_failure_does_not_skip_runlog_emit_or_stall_alert(
+    tmp_path: Path,
+) -> None:
+    """Ping exception is swallowed; downstream steps still execute.
+
+    When _ping_url raises AND the state is past the stall threshold,
+    _heartbeat_tick must:
+    (a) not propagate the exception,
+    (b) still invoke _write_heartbeat,
+    (c) still call runlog.emit for the heartbeat event, and
+    (d) still fire the stall alert via alert().
+
+    This proves a ping failure cannot skip any downstream step regardless
+    of where ping appears in the tick's execution order.
+    """
+    ping_url = "https://hc-ping.com/xyz-boom"
+    stall_s = 10.0
+    obs = _make_obs(
+        tmp_path / "heartbeat",
+        heartbeat_ping_url=ping_url,
+        heartbeat_stall_s=stall_s,
+    )
+
+    # Configure state to be past the stall threshold.
+    state = LivenessState()
+    state.mark_in_progress("owner", "repo", 7, _utc(0.0))
+
+    # Clock well past the threshold so stall check fires.
+    t_breach = _utc(stall_s + 1.0)
+
+    write_mock = MagicMock()
+    runlog_mock = MagicMock()
+    alert_calls: list[dict[str, Any]] = []
+
+    def fake_alert(*args: Any, **kwargs: Any) -> bool:  # noqa: ANN401
+        alert_calls.append({"args": args, "kwargs": kwargs})
+        return True
+
+    with (
+        patch(_WRITE_SEAM, write_mock),
+        patch(_PING_SEAM, side_effect=Exception("network error")),
+        patch(_ALERT_SEAM, side_effect=fake_alert),
+    ):
+        # (a) must not raise
+        _heartbeat_tick(obs, state, runlog=runlog_mock, now=lambda: t_breach)
+
+    # (b) liveness write must still have been called
+    write_mock.assert_called_once()
+
+    # (c) runlog.emit must have been called for the heartbeat event
+    assert runlog_mock.emit.called, (
+        "runlog.emit must be called even when _ping_url raises; "
+        f"emit call count: {runlog_mock.emit.call_count}"
+    )
+    heartbeat_emit_calls = [
+        c
+        for c in runlog_mock.emit.call_args_list
+        if c.args
+        and isinstance(c.args[0], dict)
+        and c.args[0].get("event") == "heartbeat"
+    ]
+    assert heartbeat_emit_calls, (
+        "runlog.emit must be called with event='heartbeat' even when "
+        "_ping_url raises; actual emit calls: "
+        f"{runlog_mock.emit.call_args_list}"
+    )
+
+    # (d) stall alert must still have fired
+    assert alert_calls, (
+        "alert() must still fire for a stall condition even when "
+        "_ping_url raises; got no alert calls"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 5 -- _ping_url forwards timeout to urlopen
+# ---------------------------------------------------------------------------
+
+
+def test_ping_url_calls_urlopen_with_default_timeout() -> None:
+    """_ping_url forwards _DEFAULT_PING_TIMEOUT_S to urlopen.
+
+    The timeout value passed to urlopen must equal the module-level
+    _DEFAULT_PING_TIMEOUT_S constant so a hung ping cannot stall the
+    heartbeat beat.  The response must also be consumed: the context
+    manager must be entered and exited (or .read() + .close() called).
+    """
+    target_url = "https://hc-ping.com/test-timeout"
+
+    # Build a mock response that supports both the context-manager protocol
+    # and the explicit .read()/.close() protocol so the assertion below
+    # holds regardless of which the implementation uses.
+    mock_resp = MagicMock()
+    mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+    mock_resp.__exit__ = MagicMock(return_value=False)
+
+    with patch(_URLOPEN_SEAM, return_value=mock_resp) as mock_urlopen:
+        _ping_url(target_url)
+
+    # urlopen must have been called exactly once.
+    mock_urlopen.assert_called_once()
+    call_kwargs = mock_urlopen.call_args.kwargs
+    call_args = mock_urlopen.call_args.args
+
+    # The URL must be the first positional arg or a 'url' keyword.
+    url_passed = call_args[0] if call_args else call_kwargs.get("url")
+    assert url_passed == target_url, (
+        f"urlopen must be called with the target URL {target_url!r}; "
+        f"got: {url_passed!r}"
+    )
+
+    # timeout must equal _DEFAULT_PING_TIMEOUT_S (keyword or positional).
+    timeout_passed = call_kwargs.get("timeout")
+    if timeout_passed is None and len(call_args) >= 2:
+        timeout_passed = call_args[1]
+    assert timeout_passed == _DEFAULT_PING_TIMEOUT_S, (
+        f"urlopen must be called with timeout={_DEFAULT_PING_TIMEOUT_S}; "
+        f"got timeout={timeout_passed!r}"
+    )
+
+    # The response must be consumed via context manager OR explicit close.
+    # Prefer context-manager check; fall back to .read()/.close() check so
+    # the test remains valid both before and after the impl switches to
+    # `with urlopen(...) as resp:`.
+    cm_entered = mock_resp.__enter__.called
+    cm_exited = mock_resp.__exit__.called
+    explicitly_closed = mock_resp.close.called or mock_resp.read.called
+
+    assert cm_entered or explicitly_closed, (
+        "The response from urlopen must be consumed: either the context "
+        "manager must be entered (__enter__ called) or .read()/.close() "
+        "must be called explicitly; got neither."
+    )
+    if cm_entered:
+        assert cm_exited, (
+            "If the response context manager is entered (__enter__ called), "
+            "__exit__ must also be called to release the connection."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 6 -- _ping_url rejects non-http/https schemes (forward-spec, RED)
+# ---------------------------------------------------------------------------
+
+
+def test_ping_url_rejects_non_http_schemes_without_calling_urlopen() -> None:
+    """_ping_url must reject non-http/https schemes before calling urlopen.
+
+    A ``file://``, ``ftp://``, or other non-http/https URL must be
+    refused before urlopen is invoked.  This prevents SSRF-style
+    accidental reads of local files or intranet resources.
+
+    FORWARD-SPEC: this test is expected to be RED until the implementation
+    pass adds scheme validation to _ping_url.  The expected failure is
+    that urlopen IS called (because the scheme check does not yet exist),
+    not a setup or import error.
+    """
+    dangerous_url = "file:///etc/passwd"
+
+    with patch(_URLOPEN_SEAM) as mock_urlopen:
+        try:
+            _ping_url(dangerous_url)
+        except Exception:  # noqa: BLE001
+            # Any exception from _ping_url is acceptable as long as
+            # urlopen was not called first.
+            pass
+
+    assert not mock_urlopen.called, (
+        "urlopen must NOT be called for non-http/https schemes; "
+        f"_ping_url({dangerous_url!r}) caused urlopen to be called: "
+        f"{mock_urlopen.call_args_list}"
+    )
