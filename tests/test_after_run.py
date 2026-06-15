@@ -734,3 +734,276 @@ class TestLabelConstantsRedirect:
             "after_run.LABEL_BLOCKED must resolve to the same object as "
             "baton_harness.chain.labels.LABEL_BLOCKED"
         )
+
+
+# ---------------------------------------------------------------------------
+# Issue #31 — Phase 1: PR_OPENED path idempotency (AC1)
+# ---------------------------------------------------------------------------
+
+# Label JSON fixtures for torn / post-success re-run scenarios.
+# "Torn state": agent-ready was removed but agent-done not yet added;
+# only agent-in-progress remains (a non-state label).
+_LABEL_TORN = json.dumps({"labels": [{"name": "agent-in-progress"}]})
+
+# "Post-success re-run": both state-machine ops completed; only agent-done
+# is present (agent-ready already gone).
+_LABEL_AGENT_DONE_ONLY = json.dumps({"labels": [{"name": "agent-done"}]})
+
+
+class TestReconcilePrOpenedIdempotency:
+    """PR_OPENED path is idempotent on torn or fully-done re-runs.
+
+    Issue #31 AC1: a second call to ``_reconcile_labels`` against a torn
+    (zero-state) or fully-succeeded label set must converge to exactly one
+    state label (``agent-done``) and return ``0`` without attempting to
+    remove a label that is no longer present.
+    """
+
+    def test_pr_opened_rerun_after_torn_state_converges(self) -> None:
+        """Re-run against torn state converges without spurious remove.
+
+        Torn state: agent-ready was removed (before the SIGKILL) but
+        agent-done was never added.  The only label present is
+        agent-in-progress (a non-state label).
+
+        Expected behaviour after the AC1 guard is implemented:
+        - No ``--remove-label agent-ready`` call is issued (label absent).
+        - ``--add-label agent-done`` IS issued.
+        - ``_reconcile_labels`` returns ``0``.
+
+        The side-effect list is intentionally long enough to absorb the
+        current unconditional remove call so that mock does not raise
+        StopIteration; the test asserts the call pattern, not the mock
+        exhaustion behaviour.
+        """
+        with patch("baton_harness.after_run._run") as mock_run:
+            mock_run.side_effect = [
+                _completed(stdout=_LABEL_TORN),  # gh issue view
+                _completed(),  # unconditional remove (current code) OR add
+                _completed(),  # add (if remove fired above)
+            ]
+            exit_code = _reconcile_labels(42, RunOutcome.PR_OPENED)
+
+        assert exit_code == 0, (
+            "Expected exit 0 on torn-state re-run; got non-zero"
+        )
+
+        all_args = [c[0][0] for c in mock_run.call_args_list]
+
+        # The absent label must not be removed (guard missing in prod code).
+        remove_call = next(
+            (
+                a
+                for a in all_args
+                if "--remove-label" in a and "agent-ready" in a
+            ),
+            None,
+        )
+        assert remove_call is None, (
+            "--remove-label agent-ready must NOT be issued when agent-ready "
+            "is absent from the fetched label set; current code removes "
+            "unconditionally, meaning add-agent-done is the second call "
+            "instead of the first (or remove triggers a non-zero exit)"
+        )
+
+        # agent-done must still be added.
+        add_call = next(
+            (a for a in all_args if "--add-label" in a and "agent-done" in a),
+            None,
+        )
+        assert add_call is not None, (
+            "--add-label agent-done must be issued even when agent-ready "
+            "is already absent"
+        )
+
+    def test_pr_opened_remove_skipped_when_agent_ready_absent(self) -> None:
+        """Re-run after full success is a no-op-ish convergence.
+
+        Post-success state: agent-ready already removed, agent-done already
+        added.  A second ``_reconcile_labels(n, PR_OPENED)`` call must not
+        attempt to remove the absent agent-ready label, and must return ``0``
+        (full idempotency — converges to the same single state).
+        """
+        with patch("baton_harness.after_run._run") as mock_run:
+            # Only side-effects that may legitimately fire:
+            # 1. gh issue view (label fetch)
+            # 2. Optionally: add agent-done (tolerated if gh is idempotent)
+            mock_run.side_effect = [
+                _completed(stdout=_LABEL_AGENT_DONE_ONLY),  # gh issue view
+                _completed(),  # possible add (tolerated)
+                _completed(),  # safety extra
+            ]
+            exit_code = _reconcile_labels(42, RunOutcome.PR_OPENED)
+
+        assert exit_code == 0, (
+            "Expected exit 0 on post-success re-run (full idempotency); "
+            "got non-zero — unconditional remove of absent agent-ready "
+            "causes gh to return non-zero, aborting the function"
+        )
+
+        all_args = [c[0][0] for c in mock_run.call_args_list]
+
+        # The absent agent-ready must never be targeted for removal.
+        remove_call = next(
+            (
+                a
+                for a in all_args
+                if "--remove-label" in a and "agent-ready" in a
+            ),
+            None,
+        )
+        assert remove_call is None, (
+            "--remove-label agent-ready must not be issued when agent-ready "
+            "is absent; post-success re-run must be idempotent"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Issue #31 — Phase 2: Scenario F kill-simulation (AC3)
+# ---------------------------------------------------------------------------
+
+
+class TestReconcileCrashRecoveryScenarioF:
+    """Scenario F crash-recovery: kill between remove and add (AC3).
+
+    Simulates a kill between remove-agent-ready and add-agent-done
+    (Scenario F per harness-design.md §10).  The two-run sequence proves
+    that the idempotent hook (AC1) converges torn state to exactly one
+    state label (``agent-done``) on re-dispatch.
+    """
+
+    def test_kill_between_remove_and_add_then_rerun_converges(self) -> None:
+        """Simulate SIGKILL after remove-agent-ready; re-run converges.
+
+        The test models the Scenario F two-run sequence:
+
+        Run 1 (the kill): labels = {agent-ready, agent-in-progress}.
+        ``_reconcile_labels`` removes agent-ready first (Finding B ordering).
+        The process is killed between the remove and the add, leaving the
+        issue in torn state ({agent-in-progress} only, no state label).
+        The test confirms that remove fires and add fires AFTER it — the
+        remove-first ordering is what creates the exploitable torn window.
+
+        Run 2 (re-dispatch after orphan scan): fresh call to
+        ``_reconcile_labels`` with labels = {agent-in-progress} (torn).
+        After the AC1 guard is in place:
+        - add-agent-done fires and returns 0.
+        - No spurious remove of the absent agent-ready.
+        - Final state satisfies the single-state invariant with agent-done.
+
+        The red state is in Run 2: without the AC1 guard, the unconditional
+        remove of absent agent-ready returns non-zero from gh and the
+        function aborts before adding agent-done, so run2_exit != 0 and
+        run2_add_fired is False.
+        """
+        from baton_harness.chain.labels import (
+            LABEL_AGENT_DONE,
+            LABEL_AGENT_READY,
+            STATE_LABELS,
+            assert_single_state,
+        )
+
+        # ------------------------------------------------------------------
+        # Run 1: normal labels — confirm remove fires before add (ordering).
+        # This documents the torn-window: if killed after remove, before add,
+        # the surviving state is exactly _LABEL_TORN.
+        # ------------------------------------------------------------------
+        run1_ops: list[str] = []
+
+        def _run1_side_effect(
+            cmd: list[str],
+        ) -> subprocess.CompletedProcess[str]:
+            """Record operation order for Run 1."""
+            if "--json" in cmd:
+                return _completed(
+                    stdout=json.dumps(
+                        {
+                            "labels": [
+                                {"name": "agent-ready"},
+                                {"name": "agent-in-progress"},
+                            ]
+                        }
+                    )
+                )
+            if "--remove-label" in cmd and LABEL_AGENT_READY in cmd:
+                run1_ops.append("remove-agent-ready")
+                return _completed()
+            if "--add-label" in cmd and LABEL_AGENT_DONE in cmd:
+                run1_ops.append("add-agent-done")
+                return _completed()
+            return _completed()
+
+        with patch("baton_harness.after_run._run") as mock_run:
+            mock_run.side_effect = _run1_side_effect
+            _reconcile_labels(55, RunOutcome.PR_OPENED)
+
+        # remove must precede add in run 1 (Finding B ordering).
+        assert "remove-agent-ready" in run1_ops, (
+            "remove-agent-ready must fire in run 1"
+        )
+        remove_idx = run1_ops.index("remove-agent-ready")
+        if "add-agent-done" in run1_ops:
+            add_idx = run1_ops.index("add-agent-done")
+            assert remove_idx < add_idx, (
+                "remove-agent-ready must precede add-agent-done (Finding B)"
+            )
+
+        # ------------------------------------------------------------------
+        # Run 2: torn state — only agent-in-progress present.
+        # AC1 guard required: must add agent-done without removing absent
+        # agent-ready, and must return 0.
+        # ------------------------------------------------------------------
+        run2_remove_fired = False
+        run2_add_fired = False
+
+        def _run2_side_effect(
+            cmd: list[str],
+        ) -> subprocess.CompletedProcess[str]:
+            """Track ops for Run 2 against torn state."""
+            nonlocal run2_remove_fired, run2_add_fired
+            if "--json" in cmd:
+                return _completed(stdout=_LABEL_TORN)
+            if "--remove-label" in cmd and LABEL_AGENT_READY in cmd:
+                run2_remove_fired = True
+                # Simulate gh's non-zero exit for removing an absent label.
+                return _completed(
+                    returncode=1,
+                    stdout="Label 'agent-ready' is not on issue #55",
+                )
+            if "--add-label" in cmd and LABEL_AGENT_DONE in cmd:
+                run2_add_fired = True
+                return _completed()
+            return _completed()
+
+        with patch("baton_harness.after_run._run") as mock_run2:
+            mock_run2.side_effect = _run2_side_effect
+            run2_exit = _reconcile_labels(55, RunOutcome.PR_OPENED)
+
+        assert run2_exit == 0, (
+            f"Re-run against torn state must return 0; got {run2_exit}. "
+            "Without the AC1 guard the unconditional remove of absent "
+            "agent-ready returns non-zero from gh and the function aborts "
+            "before adding agent-done."
+        )
+
+        assert run2_add_fired, (
+            "add-agent-done must fire in run 2 (convergence of torn state)"
+        )
+
+        assert not run2_remove_fired, (
+            "--remove-label agent-ready must NOT fire in run 2 when "
+            "agent-ready is absent from the torn-state label set"
+        )
+
+        # Final state: exactly one state label (agent-done).
+        final_labels = {"agent-in-progress", LABEL_AGENT_DONE}
+        violation = assert_single_state(final_labels)
+        assert violation is None, (
+            f"Final state must satisfy the single-state invariant; "
+            f"assert_single_state reported: {violation!r}"
+        )
+        state_in_final = final_labels & STATE_LABELS
+        assert state_in_final == {LABEL_AGENT_DONE}, (
+            f"Final state label must be exactly {{agent-done}}; "
+            f"got {state_in_final!r}"
+        )
