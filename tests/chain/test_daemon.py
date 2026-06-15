@@ -3164,12 +3164,20 @@ def test_torn_labels_post_worker_fires_critical_alert_and_parks() -> None:
     )
 
 
-def test_no_state_label_post_worker_fires_critical_alert_and_parks() -> None:
-    """Zero state labels after _run_worker triggers critical alert + park.
+def test_no_state_label_no_pr_post_worker_fires_critical_alert_and_parks() -> (
+    None
+):
+    """Zero state labels + no open PR triggers critical alert + park.
 
-    When _fetch_issue_labels returns only non-state labels
-    (e.g. {'agent-in-progress'}) after the worker completes, the daemon
-    must call alert(severity='critical') and park the issue.
+    When _fetch_issue_labels returns only non-state labels (e.g.
+    {'agent-in-progress'}) after the worker completes AND no open PR
+    exists for the issue, the daemon must call alert(severity='critical')
+    and park the issue.
+
+    With the #31 P1 convergence fix, zero state labels WITH an open PR
+    now converge to agent-done instead of parking.  This test narrows the
+    scenario to the no-PR park path so the critical-alert assertion
+    remains valid: no convergence target → park + critical alert.
     """
     ready_issues = _make_ready_issue_10()
     mock_alert = MagicMock(return_value=True)
@@ -3188,6 +3196,11 @@ def test_no_state_label_post_worker_fires_critical_alert_and_parks() -> None:
         patch(
             "baton_harness.chain.daemon._fetch_issue_labels",
             return_value={"agent-in-progress"},
+        ),
+        # No open PR → backstop cannot converge; must park + alert.
+        patch(
+            "baton_harness.chain.daemon._find_issue_pr",
+            return_value=(None, None),
         ),
         patch(
             "baton_harness.chain.daemon.fetch_blocked_by",
@@ -3230,9 +3243,9 @@ def test_no_state_label_post_worker_fires_critical_alert_and_parks() -> None:
         if c.kwargs.get("severity") == "critical"
     ]
     assert critical_calls, (
-        "Expected alert(severity='critical') when post-worker labels have no"
-        " state label (zero-state violation); "
-        f"all alert calls: {mock_alert.call_args_list}"
+        "Expected alert(severity='critical') when post-worker labels have"
+        " no state label (zero-state violation) and no open PR exists;"
+        f" all alert calls: {mock_alert.call_args_list}"
     )
 
 

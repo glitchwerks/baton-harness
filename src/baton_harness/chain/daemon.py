@@ -57,7 +57,10 @@ from baton_harness.chain.gh_deps import (
     fetch_blocked_by,
 )
 from baton_harness.chain.heartbeat import LivenessState, run_heartbeat_loop
-from baton_harness.chain.labels import assert_single_state
+from baton_harness.chain.labels import (
+    assert_single_state,
+    target_state_from_observed,
+)
 from baton_harness.chain.merge import MergeOutcome, merge_issue_branch
 from baton_harness.chain.obs_config import ObsConfig, load_obs_config
 from baton_harness.chain.recovery import RecoveryResult
@@ -919,6 +922,70 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
         # assumes a clean state.
         _inv_violation = assert_single_state(post_labels)
         if _inv_violation is not None:
+            # Convergence path (#31 P1): zero state labels + open PR +
+            # not blocked → re-derive target and apply it instead of
+            # parking.  This handles the torn-state window where a 60s
+            # kill between after_run's remove-agent-ready and
+            # add-agent-done leaves the issue in {agent-in-progress}
+            # only.
+            _state_labels_present = post_labels & set(
+                ["agent-ready", "agent-done", "blocked"]
+            )
+            _zero_state = len(_state_labels_present) == 0
+            if _zero_state and not has_blocked:
+                _conv_branch, _conv_sha = _find_issue_pr(owner, repo, n)
+                if _conv_branch is not None:
+                    # Definite completion evidence: derive target via
+                    # the pure helper (avoids hard-coding "agent-done").
+                    _target = target_state_from_observed(
+                        blocked=False, pr_open=True
+                    )
+                    _log.warning(
+                        "daemon: backstop converging #%d to %r"
+                        " (zero state labels + open PR); skipping park",
+                        n,
+                        _target,
+                    )
+                    # Remove only the labels that are actually present to
+                    # keep the edit idempotent.
+                    _remove = ["agent-in-progress"] + [
+                        lbl for lbl in _state_labels_present if lbl != _target
+                    ]
+                    _label_edit(
+                        owner,
+                        repo,
+                        n,
+                        add=[_target],
+                        remove=_remove,
+                    )
+                    if runlog is not None:
+                        try:
+                            runlog.emit(
+                                {
+                                    "ts": datetime.now(
+                                        timezone.utc
+                                    ).isoformat(),
+                                    "event": "label_invariant_converged",
+                                    "issue": n,
+                                    "outcome": None,
+                                    "severity": "warning",
+                                    "detail": (
+                                        f"backstop converged #%d"
+                                        f" to {_target!r}: {_inv_violation}"
+                                        % n
+                                    ),
+                                    "tick_id": None,
+                                }
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
+                    if liveness_state is not None:
+                        liveness_state.clear()
+                    # Do NOT mark_parked; do NOT fire critical alert.
+                    # continue so next tick re-classifies via ci-gate-
+                    # reentry.
+                    continue
+
             _log.error(
                 "daemon: label invariant violated for #%d: %s; parking",
                 n,
