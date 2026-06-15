@@ -16,6 +16,18 @@
     for Baton retry.  The always-on daemon is the new retry authority and
     consults ``blocked`` issues itself.
 
+    **Transient gh failure handling (#32):**  ``gh pr list`` returncode
+    and ``json.loads`` parse errors are treated as transient, not terminal.
+    The call is retried up to ``_GH_PR_LIST_MAX_ATTEMPTS`` times with
+    linear backoff via ``time.sleep``.  When all attempts are exhausted
+    the outcome is ``TRANSIENT_ERROR``, which leaves ``agent-ready``
+    intact (the issue remains eligible for a future run) and causes
+    ``main()`` to return non-zero.  A non-zero ``git cherry`` exit is
+    likewise treated as ``TRANSIENT_ERROR`` (MAJOR 1).
+    ``_current_labels`` returns ``None`` (not ``[]``) on parse or
+    returncode errors so that ``_reconcile_labels`` aborts with zero
+    label mutations, preserving the single-state invariant (MAJOR 2).
+
 Invoked by Baton after each agent run turn completes.  Responsible for:
 
 1. Classifying the run outcome into one of the states defined in
@@ -25,6 +37,8 @@ Invoked by Baton after each agent run turn completes.  Responsible for:
    - ``no-commits`` — agent ran but produced no changes.
    - ``committed-no-pr`` — commits were made but no PR was opened.
    - ``pr-opened`` — a PR is open for the worktree branch (success path).
+   - ``transient-error`` — a transient gh API failure prevented
+     classification; ``agent-ready`` is left intact.
 
 2. Reconciling GitHub labels on the issue to a single state label
    (``agent-ready``, ``agent-done``, or ``blocked``), enforcing the
@@ -62,6 +76,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 from baton_harness._cli import err, log, resolve_issue_number
 from baton_harness.chain.labels import (
@@ -92,7 +107,8 @@ _DEFAULT_BASE = "origin/main"
 class RunOutcome(enum.Enum):
     """Classification of what an agent run produced.
 
-    Represents the four terminal states identified in spike finding F5.
+    Represents the four terminal states identified in spike finding F5,
+    plus a fifth non-terminal state for transient infrastructure errors.
     Using an enum (rather than raw strings) gives exhaustive-match checking
     and eliminates the grep-for-string fragility in the prior shell version.
 
@@ -101,12 +117,27 @@ class RunOutcome(enum.Enum):
         NO_COMMITS: Agent ran but produced no new commits ahead of main.
         COMMITTED_NO_PR: Agent committed changes but did not open a PR.
         PR_OPENED: Agent opened a PR; the success path (pilot: CI unverified).
+        TRANSIENT_ERROR: A transient gh API failure prevented classification.
+            ``agent-ready`` is left intact so the issue remains eligible for
+            a future run.  ``main()`` returns non-zero (#32).
     """
 
     UNCOMMITTED_CHANGES = "uncommitted-changes"
     NO_COMMITS = "no-commits"
     COMMITTED_NO_PR = "committed-no-pr"
     PR_OPENED = "pr-opened"
+    TRANSIENT_ERROR = "transient-error"
+
+
+# ---------------------------------------------------------------------------
+# Retry constants for transient gh failures (#32)
+# ---------------------------------------------------------------------------
+
+#: Minimum number of ``gh pr list`` attempts before giving up.
+_GH_PR_LIST_MAX_ATTEMPTS: int = 3
+
+#: Base sleep duration (seconds) between ``gh pr list`` retry attempts.
+_GH_PR_LIST_BACKOFF_SECONDS: float = 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -176,18 +207,28 @@ def _resolve_base_sha() -> str:
 def _classify() -> RunOutcome:
     """Classify the outcome of the most recent agent run.
 
-    Implements the four-state F5 classification (spike finding F5):
+    Implements the five-state F5 classification (spike finding F5, #32):
 
     1. ``UNCOMMITTED_CHANGES`` — ``git status --porcelain`` is non-empty.
     2. ``NO_COMMITS`` — ``git cherry <base-sha> HEAD`` has no ``+`` lines.
        The base SHA is resolved from ``CHAIN_BASE_BRANCH`` (default
        ``origin/main``) at entry via ``_resolve_base_sha()``.
     3. ``COMMITTED_NO_PR`` — commits exist ahead of base but ``gh pr list``
-       returns an empty array.
-    4. ``PR_OPENED`` — ``gh pr list`` returns a non-empty array.
+       returns a valid empty array.
+    4. ``PR_OPENED`` — ``gh pr list`` returns a valid non-empty array.
+    5. ``TRANSIENT_ERROR`` — ``gh pr list`` returned a non-zero exit code or
+       non-JSON stdout on every attempt (up to
+       ``_GH_PR_LIST_MAX_ATTEMPTS``).  ``agent-ready`` is left intact.
 
     ``gh --json`` output is parsed with ``json.loads`` (not grepped), fixing
     the fragility identified in PR #9's shell implementation.
+
+    Transient ``gh pr list`` failures (#32):
+        Both a non-zero returncode and a ``json.JSONDecodeError`` from
+        ``json.loads`` are treated as transient.  The call is retried up to
+        ``_GH_PR_LIST_MAX_ATTEMPTS`` times with ``time.sleep`` backoff
+        between each failed attempt.  Callers patch ``after_run.time.sleep``
+        to control timing in tests.
 
     Returns:
         The ``RunOutcome`` value matching the current worktree state.
@@ -202,32 +243,84 @@ def _classify() -> RunOutcome:
 
     # Step 2: any commits ahead of base?
     cherry = _run(["git", "cherry", base_sha, "HEAD"])
+
+    # MAJOR 1 (#32): a non-zero returncode means git cherry itself failed
+    # (e.g. bad base SHA, detached HEAD).  Do NOT derive commit presence from
+    # empty stdout — that would misclassify as NO_COMMITS and trigger
+    # agent-ready removal.  Treat any non-zero exit as transient.
+    if cherry.returncode != 0:
+        err(
+            _HOOK,
+            0,
+            f"git cherry failed (returncode={cherry.returncode}); "
+            f"stderr: {cherry.stderr.strip()!r} — treating as "
+            "TRANSIENT_ERROR, agent-ready left intact.",
+        )
+        return RunOutcome.TRANSIENT_ERROR
+
     ahead_commits = [
         line for line in cherry.stdout.splitlines() if line.startswith("+")
     ]
     if not ahead_commits:
         return RunOutcome.NO_COMMITS
 
-    # Step 3: open PR for this branch?
+    # Step 3: open PR for this branch? — guarded with retry (#32).
     branch = _current_branch()
-    pr_result = _run(
-        [
-            "gh",
-            "pr",
-            "list",
-            "--head",
-            branch,
-            "--state",
-            "open",
-            "--json",
-            "number",
-        ]
-    )
-    prs: list[dict[str, object]] = json.loads(pr_result.stdout)
-    if prs:
-        return RunOutcome.PR_OPENED
+    pr_cmd = [
+        "gh",
+        "pr",
+        "list",
+        "--head",
+        branch,
+        "--state",
+        "open",
+        "--json",
+        "number",
+    ]
 
-    return RunOutcome.COMMITTED_NO_PR
+    for attempt in range(1, _GH_PR_LIST_MAX_ATTEMPTS + 1):
+        pr_result = _run(pr_cmd)
+
+        # Treat non-zero returncode as transient — do not parse stdout.
+        if pr_result.returncode != 0:
+            print(
+                f"[{_HOOK}] gh pr list attempt "
+                f"{attempt}/{_GH_PR_LIST_MAX_ATTEMPTS} "
+                f"failed (returncode={pr_result.returncode}); "
+                "treating as transient.",
+                flush=True,
+            )
+            if attempt < _GH_PR_LIST_MAX_ATTEMPTS:
+                time.sleep(_GH_PR_LIST_BACKOFF_SECONDS * attempt)
+            continue
+
+        # Guard json.loads — non-JSON output (rate-limit banners, auth
+        # expiry HTML, etc.) is transient, not terminal.
+        try:
+            prs: list[dict[str, object]] = json.loads(pr_result.stdout)
+        except json.JSONDecodeError:
+            print(
+                f"[{_HOOK}] gh pr list attempt "
+                f"{attempt}/{_GH_PR_LIST_MAX_ATTEMPTS} "
+                "returned non-JSON stdout; treating as transient.",
+                flush=True,
+            )
+            if attempt < _GH_PR_LIST_MAX_ATTEMPTS:
+                time.sleep(_GH_PR_LIST_BACKOFF_SECONDS * attempt)
+            continue
+
+        # Successful parse — classify normally.
+        if prs:
+            return RunOutcome.PR_OPENED
+        return RunOutcome.COMMITTED_NO_PR
+
+    # All attempts exhausted without a clean response.
+    print(
+        f"[{_HOOK}] gh pr list failed on all {_GH_PR_LIST_MAX_ATTEMPTS} "
+        "attempts; returning TRANSIENT_ERROR — agent-ready left intact.",
+        flush=True,
+    )
+    return RunOutcome.TRANSIENT_ERROR
 
 
 # ---------------------------------------------------------------------------
@@ -235,20 +328,50 @@ def _classify() -> RunOutcome:
 # ---------------------------------------------------------------------------
 
 
-def _current_labels(issue: int) -> list[str]:
+def _current_labels(issue: int) -> list[str] | None:
     """Fetch the current label names for a GitHub issue.
 
     Parses ``gh issue view --json labels`` output with ``json.loads`` (never
     grepped — addresses the H1 root-cause pattern).
 
+    MAJOR 2 (#32): failure is signalled distinctly from "no labels".  A
+    non-zero returncode or a ``json.JSONDecodeError`` returns ``None`` (not
+    ``[]``) so that ``_reconcile_labels`` can detect the failure and abort
+    with zero label mutations, preserving the single-state invariant.
+    Returning ``[]`` would have been misread as "issue has no labels" and
+    allowed mutations to proceed against an unknown label state.
+
     Args:
         issue: GitHub issue number whose labels are fetched.
 
     Returns:
-        A list of label name strings currently on the issue.
+        A list of label name strings currently on the issue, or ``None``
+        if the ``gh`` call failed or returned non-JSON output (signals
+        fetch failure, distinct from an empty label list).
     """
     result = _run(["gh", "issue", "view", str(issue), "--json", "labels"])
-    data: dict[str, list[dict[str, str]]] = json.loads(result.stdout)
+
+    if result.returncode != 0:
+        err(
+            _HOOK,
+            issue,
+            f"gh issue view failed (returncode={result.returncode}); "
+            f"stderr: {result.stderr.strip()!r} — aborting label "
+            "reconciliation to preserve single-state invariant.",
+        )
+        return None
+
+    try:
+        data: dict[str, list[dict[str, str]]] = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        err(
+            _HOOK,
+            issue,
+            "gh issue view returned non-JSON stdout; aborting label "
+            "reconciliation to preserve single-state invariant.",
+        )
+        return None
+
     return [lbl["name"] for lbl in data.get("labels", [])]
 
 
@@ -260,6 +383,15 @@ def _reconcile_labels(issue: int, outcome: RunOutcome) -> int:
     be present after this function returns.
 
     Priority:
+        0. If outcome is ``TRANSIENT_ERROR`` (#32), perform no label
+           mutations — ``agent-ready`` is left intact so the issue remains
+           eligible for a future run.  Return ``0`` (the label state is
+           unchanged, not broken); ``main()`` is responsible for returning
+           non-zero to the caller.
+        0b. If ``_current_labels`` returns ``None`` (labels-fetch failure),
+           perform ZERO label mutations and return ``1`` so that ``main()``
+           returns non-zero.  Operating on an unknown label state would risk
+           violating the single-state invariant (MAJOR 2, #32).
         1. If ``blocked`` is already on the issue (applied mid-run by the
            agent), remove ``agent-ready`` and leave ``blocked``.  Do NOT add
            ``agent-done`` — the block overrides the F5 classification.
@@ -281,9 +413,34 @@ def _reconcile_labels(issue: int, outcome: RunOutcome) -> int:
         outcome: The F5 classification for the current run.
 
     Returns:
-        ``0`` on success, ``1`` if any label mutation fails.
+        ``0`` on success, ``1`` if any label mutation fails or if the
+        labels-fetch itself failed (to signal hook failure without mutations).
     """
+    # Priority 0: transient gh failure — leave all labels untouched (#32).
+    # agent-ready stays on the issue so the daemon can retry later.
+    if outcome == RunOutcome.TRANSIENT_ERROR:
+        log(
+            _HOOK,
+            issue,
+            "outcome=transient-error: skipping label mutations — "
+            "agent-ready left intact for future run.",
+        )
+        return 0
+
+    # MAJOR 2 (#32): fetch labels BEFORE any mutation path.  None signals a
+    # fetch failure (non-JSON or non-zero returncode) — distinct from [] which
+    # means the issue genuinely has no labels.  Operating on an unknown label
+    # state would risk violating the single-state invariant, so abort with
+    # zero mutations and return non-zero.
     labels = _current_labels(issue)
+    if labels is None:
+        err(
+            _HOOK,
+            issue,
+            "labels-fetch failed — aborting reconciliation with zero label "
+            "mutations to preserve the single-state invariant.",
+        )
+        return 1
 
     # Priority 1: blocked label wins regardless of F5 outcome.
     if LABEL_BLOCKED in labels:
@@ -441,6 +598,12 @@ def main(argv: list[str] | None = None) -> int:
     the run outcome (F5), and reconciles GitHub labels to a single state
     (harness-design.md §5 / H1 fix).
 
+    Transient failure handling (#32): if ``_classify`` returns
+    ``TRANSIENT_ERROR`` (all ``gh pr list`` attempts exhausted), this
+    function returns ``1`` after reconciling labels as a no-op.  The
+    non-zero exit signals the daemon/Baton that the hook did not complete
+    successfully, without altering the issue's label state.
+
     Args:
         argv: Unused; reserved for future CLI argument support.  Baton
             passes no env-var context to hooks (spike finding F2), so
@@ -448,7 +611,8 @@ def main(argv: list[str] | None = None) -> int:
 
     Returns:
         Exit code: ``0`` on success, ``1`` on any failure (unresolvable
-        issue number, or a label-edit error that must not be swallowed).
+        issue number, transient gh failure, or a label-edit error that
+        must not be swallowed).
     """
     issue = resolve_issue_number()
     if issue is None:
@@ -465,7 +629,22 @@ def main(argv: list[str] | None = None) -> int:
     outcome = _classify()
     log(_HOOK, issue, f"outcome={outcome.value}")
 
-    return _reconcile_labels(issue, outcome)
+    reconcile_rc = _reconcile_labels(issue, outcome)
+    if reconcile_rc != 0:
+        return reconcile_rc
+
+    # TRANSIENT_ERROR: _reconcile_labels is a no-op (agent-ready intact),
+    # but main() must still signal failure to the caller (#32).
+    if outcome == RunOutcome.TRANSIENT_ERROR:
+        err(
+            _HOOK,
+            issue,
+            "transient gh pr list failure — hook returning non-zero; "
+            "agent-ready is intact for a future run.",
+        )
+        return 1
+
+    return 0
 
 
 if __name__ == "__main__":
