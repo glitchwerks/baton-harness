@@ -4570,3 +4570,258 @@ class TestBackstopConvergence:
             " state labels + no open PR (no convergence target);"
             f" mark_parked_calls={mark_parked_calls}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Issue #31 P1 follow-up: _fetch_issue_labels None sentinel on fetch failure
+# ---------------------------------------------------------------------------
+# Background (#95 P1): _fetch_issue_labels currently returns set() on BOTH
+# gh failure (returncode != 0) AND parse error — indistinguishable from a
+# genuine empty label set.  The backstop convergence path triggers on zero
+# state labels, so a gh failure while the issue has ``blocked`` (or multiple
+# state labels) causes the daemon to wrongly read zero-state, converge to
+# ``agent-done``, and call merge_issue_branch — bypassing the block/park.
+#
+# Required fix (code-writer, next phase):
+#   _fetch_issue_labels returns None on fetch failure (not set()).
+#   The backstop caller (daemon.py:913) must, when it receives None, NOT
+#   converge — it must conservatively park+alert ("labels unreadable /
+#   unknown state"), since the single-state invariant cannot be verified.
+#
+# Seam: patch("baton_harness.chain.daemon._fetch_issue_labels", ...) is the
+# same approach used by the #76/#31 tests above.  Unit test drives
+# daemon._fetch_issue_labels directly via patch.object(daemon_mod, "_run").
+# ---------------------------------------------------------------------------
+
+
+def test_backstop_does_not_converge_when_labels_unreadable() -> None:
+    """Unreadable labels (None sentinel) must not converge to agent-done.
+
+    This is the core contract for the #95 P1 fix.  When
+    ``_fetch_issue_labels`` returns ``None`` (fetch failure — gh call
+    returned non-zero), the backstop MUST NOT attempt convergence even
+    though ``_find_issue_pr`` returns a real open PR (which would
+    otherwise qualify as convergence evidence).
+
+    The daemon cannot verify the single-state invariant when labels are
+    unreadable, so it must take the conservative path: park + alert, and
+    clear ``agent-in-progress``.
+
+    Assertions:
+    - ``--add-label agent-done`` is NOT issued (no convergence).
+    - ``merge_issue_branch`` is NOT called (PR not eligible for CI gate
+      when label state is unknown).
+    - ``alert(severity='critical'`` or ``severity='elevated')`` IS fired
+      (conservative park+alert path).
+    - ``sched.mark_parked(10)`` IS called (conservative park).
+    - ``agent-in-progress`` IS removed (invariant C-I4: cleared on every
+      terminal branch).
+
+    This test MUST FAIL on current code because the current implementation
+    returns ``set()`` on fetch failure, which the backstop interprets as
+    zero-state → converges to agent-done → calls merge_issue_branch.
+    """
+    label_edits: list[list[str]] = []
+    mock_alert = MagicMock(return_value=True)
+    mark_parked_calls: list[int] = []
+    mock_merge_fn = MagicMock(return_value=MergeOutcome.MERGED)
+
+    def recording_mark_parked(
+        self_sched: Any,  # noqa: ANN401
+        issue: int,
+    ) -> None:
+        """Spy: record which issues are parked."""
+        mark_parked_calls.append(issue)
+        # Mirror the real method so is_active() stays coherent.
+        self_sched.parked.add(issue)
+
+    ready_issues = [
+        {
+            "number": 10,
+            "title": "Issue 10",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/10",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        }
+    ]
+
+    def recording_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        if "issue" in cmd and "edit" in cmd:
+            label_edits.append(list(cmd))
+        return _make_run_side_effect(
+            ready_issues=ready_issues,
+            pr_head_sha="abc123",
+            issue_branch="baton/issue-10-10",
+            feature_branch_exists=False,
+        )(cmd)
+
+    with (
+        patch.object(daemon_mod, "_run", side_effect=recording_run),
+        # Simulate fetch failure: None sentinel (not set()).
+        patch(
+            "baton_harness.chain.daemon._fetch_issue_labels",
+            return_value=None,
+        ),
+        # PR exists — this would cause convergence if None were not
+        # handled conservatively.
+        patch(
+            "baton_harness.chain.daemon._find_issue_pr",
+            return_value=("baton/issue-10-10", "abc123"),
+        ),
+        patch("baton_harness.chain.daemon.alert", mock_alert),
+        patch(
+            "baton_harness.chain.scheduler.IssueScheduler.mark_parked",
+            autospec=True,
+            side_effect=recording_mark_parked,
+        ),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            return_value=[],
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            mock_merge_fn,
+        ),
+        _patch_run_worker("pr_created"),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    # Must NOT converge: no --add-label agent-done.
+    add_agent_done = [
+        c for c in label_edits if "--add-label" in c and "agent-done" in c
+    ]
+    assert not add_agent_done, (
+        "Backstop must NOT issue '--add-label agent-done' when labels are"
+        " unreadable (None sentinel) — cannot verify single-state invariant;"
+        f" label_edits={label_edits}"
+    )
+
+    # Must NOT call merge_issue_branch (convergence → CI gate skipped).
+    assert not mock_merge_fn.called, (
+        "Backstop must NOT call merge_issue_branch when _fetch_issue_labels"
+        " returns None — label state is unknown, so CI-gate convergence"
+        " must be suppressed."
+    )
+
+    # Must fire a conservative alert (critical or elevated).
+    conservative_alerts = [
+        c
+        for c in mock_alert.call_args_list
+        if c.kwargs.get("severity") in ("critical", "elevated")
+    ]
+    assert conservative_alerts, (
+        "Backstop must fire alert(severity='critical'|'elevated') when"
+        " labels are unreadable — conservative park+alert path required;"
+        f" all alert calls: {mock_alert.call_args_list}"
+    )
+
+    # Must park the issue conservatively.
+    assert 10 in mark_parked_calls, (
+        "Backstop must call sched.mark_parked(10) when _fetch_issue_labels"
+        " returns None — unreadable label state is park-worthy;"
+        f" mark_parked_calls={mark_parked_calls}"
+    )
+
+    # Must clear agent-in-progress (C-I4: cleared on every terminal branch).
+    remove_in_progress = [
+        c
+        for c in label_edits
+        if "--remove-label" in c and "agent-in-progress" in c
+    ]
+    assert remove_in_progress, (
+        "Backstop must clear agent-in-progress even on the unreadable-labels"
+        " park path (invariant C-I4);"
+        f" label_edits={label_edits}"
+    )
+
+
+def test_fetch_issue_labels_returns_none_on_failure() -> None:
+    """_fetch_issue_labels returns None on error; set() only for genuine empty.
+
+    This pins the sentinel contract directly:
+
+    (a) returncode != 0 (gh call fails) → must return None.
+    (b) stdout is non-JSON (parse error) → must return None.
+    (c) valid JSON with empty labels list → must return set() (not None).
+
+    Cases (a) and (b) are fetch failures — the caller cannot distinguish
+    these from a blocked issue that gh failed to describe; returning None
+    forces callers to handle them conservatively.  Case (c) is a genuine
+    empty label set and must be distinct from failure.
+
+    This test MUST FAIL on current code because the implementation returns
+    set() in all three cases (None is never returned).
+    """
+    # (a) returncode != 0 → None.
+    with patch.object(
+        daemon_mod,
+        "_run",
+        return_value=subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="gh error"
+        ),
+    ):
+        result_a = daemon_mod._fetch_issue_labels("owner", "repo", 10)
+
+    assert result_a is None, (
+        "_fetch_issue_labels must return None when the gh call fails"
+        f" (returncode=1); got {result_a!r}"
+    )
+
+    # (b) non-JSON stdout → None.
+    with patch.object(
+        daemon_mod,
+        "_run",
+        return_value=subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="not valid json {{", stderr=""
+        ),
+    ):
+        result_b = daemon_mod._fetch_issue_labels("owner", "repo", 10)
+
+    assert result_b is None, (
+        "_fetch_issue_labels must return None when gh stdout is not valid"
+        f" JSON; got {result_b!r}"
+    )
+
+    # (c) valid JSON with empty labels → set() (genuine empty, not failure).
+    import json as _json
+
+    empty_labels_json = _json.dumps({"labels": []})
+    with patch.object(
+        daemon_mod,
+        "_run",
+        return_value=subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=empty_labels_json, stderr=""
+        ),
+    ):
+        result_c = daemon_mod._fetch_issue_labels("owner", "repo", 10)
+
+    assert result_c == set(), (
+        "_fetch_issue_labels must return set() (not None) when gh returns"
+        " a valid issue with an empty labels list (genuine empty is"
+        f" distinct from fetch failure); got {result_c!r}"
+    )
