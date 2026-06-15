@@ -354,6 +354,8 @@ bh-daemon           # continuous
 | Variable | Default | Purpose |
 |---|---|---|
 | `BH_SLACK_WEBHOOK_URL` | (unset) | If set, escalation notices are POSTed to Slack. If unset, Slack is skipped silently and the GitHub issue comment is the only durable escalation record. |
+| `BH_HEARTBEAT_PING_URL` | (unset) | Healthchecks.io-style ping URL. When set, the daemon GETs this URL once per heartbeat tick (nominally every 30 s; actual interval is 30 s plus ping latency, as the ping runs synchronously last in each tick) so an external dead-man's-switch service can alarm if pings stop. Unset = no external ping; local heartbeat file is still written. See [docs/harness-design.md §11](docs/harness-design.md) for setup and threshold guidance. |
+| `BH_HEARTBEAT_FILE` | `${BH_PROJECT_ROOT}/.baton-harness/heartbeat` | Path for the local liveness file written on each heartbeat tick. Override to direct the file to a location convenient for your monitoring setup. |
 
 `bin/init-sandbox.sh` provisions a throwaway sandbox repo for a first smoke test — it
 creates the required labels, a trivial trigger issue, a `hello-feature` DAG milestone, and

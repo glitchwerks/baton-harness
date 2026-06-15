@@ -33,6 +33,8 @@ import logging
 import os
 import tempfile
 import threading
+import urllib.parse
+import urllib.request
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -47,6 +49,10 @@ _log = logging.getLogger(__name__)
 # liveness updates arrive well before any external stall threshold
 # triggers.
 _DEFAULT_HEARTBEAT_CADENCE_S: float = 30.0
+
+# Ping timeout — must be well under _DEFAULT_HEARTBEAT_CADENCE_S so a
+# hung ping cannot stall the beat.
+_DEFAULT_PING_TIMEOUT_S: float = 5.0
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +163,52 @@ def _write_heartbeat(path: Path, timestamp: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Ping-URL seam
+# ---------------------------------------------------------------------------
+
+
+def _ping_url(url: str, *, timeout: float = _DEFAULT_PING_TIMEOUT_S) -> None:
+    """Perform a best-effort GET ping to *url*.
+
+    This is the **sole network-ping surface** for Healthchecks.io-style
+    dead-man's-switch monitors.  Tests can patch this single symbol to
+    intercept all outbound pings.
+
+    Non-http/https schemes (e.g. ``file://``, ``ftp://``) are rejected
+    before ``urlopen`` is called: a warning is logged and the function
+    returns without making any network call.  This closes the SSRF-ish
+    hole that arises from a misconfigured ``BH_HEARTBEAT_PING_URL``.
+
+    The response body is read and discarded inside a context manager so
+    the underlying connection is released even if ``read()`` raises.
+    Any exception from ``urlopen`` is allowed to propagate to the
+    caller, which is responsible for swallowing it.
+
+    Args:
+        url: Target URL for the GET request (e.g.
+            ``"https://hc-ping.com/abc-123"``).  Must use the
+            ``http`` or ``https`` scheme; other schemes are
+            rejected and the function returns without opening
+            a connection.
+        timeout: Socket timeout in seconds.  Defaults to
+            ``_DEFAULT_PING_TIMEOUT_S`` (5 s), well under the
+            30 s heartbeat cadence so a hung ping cannot stall
+            the beat.
+    """
+    scheme = urllib.parse.urlsplit(url).scheme.lower()
+    if scheme not in ("http", "https"):
+        _log.warning(
+            "_ping_url: rejecting non-http/https scheme %r in URL %r",
+            scheme,
+            url,
+        )
+        return
+
+    with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310
+        resp.read()
+
+
+# ---------------------------------------------------------------------------
 # Per-tick work (deterministic, no sleeping, fully guarded)
 # ---------------------------------------------------------------------------
 
@@ -190,6 +242,13 @@ def _heartbeat_tick(
        ``severity="critical"`` and ``kind="debug"``, emit a
        ``{"event": "stall", ...}`` runlog event, and set the debounce
        flag.
+    5. If ``obs.heartbeat_ping_url`` is not ``None``, call
+       ``_ping_url(obs.heartbeat_ping_url)`` — a best-effort GET to an
+       external dead-man's-switch monitor (e.g. Healthchecks.io).
+       Ping is the **last** step so its latency can never delay stall
+       alerting.  Exceptions are logged and swallowed.  When
+       ``heartbeat_ping_url`` is ``None``, this step is skipped
+       entirely.
 
     Args:
         obs: Observability configuration (heartbeat_file, stall_s).
@@ -197,7 +256,7 @@ def _heartbeat_tick(
         runlog: Optional run-log handle for best-effort event emission.
         now: UTC ``datetime`` factory (injectable for tests).
     """
-    # ---- Step 1 & 2: capture time, write liveness signal (guarded). ----
+    # ---- Steps 1-2: capture time, write liveness signal (guarded). -----
     try:
         t = now()
     except Exception as exc:  # noqa: BLE001
@@ -299,6 +358,14 @@ def _heartbeat_tick(
                             "_heartbeat_tick: runlog.emit(stall) failed: %s",
                             exc,
                         )
+
+    # ---- Step 5: ping external dead-man's-switch (best-effort, last). --
+    # Placed last so ping latency can never delay stall alerting.
+    if obs.heartbeat_ping_url is not None:
+        try:
+            _ping_url(obs.heartbeat_ping_url)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("_heartbeat_tick: _ping_url failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
