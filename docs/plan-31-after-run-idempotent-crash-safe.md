@@ -4,8 +4,61 @@
 across the 60s hook timeout (torn label state)". Milestone: *Failure-mode hardening*.
 Blocker #1, High blast radius × Medium likelihood.
 
-**Status:** planning only. This file drives a test-first code-writer pass; no
-implementation code is written here.
+**Status:** implementation complete. See addendum below for a correction to the
+original Shape A reasoning; all phases committed on branch
+`fix-31-after-run-idempotent`.
+
+---
+
+## Addendum — Codex P1 correction to the Shape A convergence claim (PR #95)
+
+**The original "converges for free via the orphan scan" argument was incorrect.**
+
+Section 1 below argued that a zero-state torn issue (kill between `agent-ready`
+remove and `agent-done` add) is an `agent-in-progress` orphan that the existing
+orphan scan re-dispatches, and that once `after_run` is idempotent the re-run
+converges — so Option B (modifying the daemon backstop) was unnecessary.
+
+A Codex P1 review on PR #95 falsified that claim with the following race:
+
+1. `after_run` is killed between the `agent-ready` remove and the `agent-done`
+   add. The issue is left with labels `{agent-in-progress}` — zero state labels.
+2. `_run_worker` returns `pr_created` (the worker finished; the kill only hit the
+   hook).
+3. On the next daemon poll tick, the **single-state backstop**
+   (`daemon.py:912-959`) fires: it detects zero state labels as a violation,
+   clears `agent-in-progress`, and **parks** the issue — all in the same tick.
+4. The orphan scan (`daemon.py:1434-1556`) keys on the `agent-in-progress`
+   label. Because the backstop removed it in step 3, the scan finds no orphan.
+   Re-dispatch never fires.
+5. The issue sits at zero state labels with a closed `agent-in-progress` and an
+   open PR — parked forever. This is the exact #31 failure mode, unfixed by
+   Shape A alone.
+
+**The implemented fix — a narrow, evidence-gated slice of Option B**
+(commit `7b8555c`, `daemon.py` backstop at lines 912-959):
+
+The backstop now calls `labels.target_state_from_observed` (Phase 3's pure
+helper, now wired) before deciding whether to park. For the specific case of
+**zero state labels + open PR + not blocked**, it converges the issue directly to
+`agent-done` (adds the label, clears `agent-in-progress`, emits a
+`label_invariant_converged` runlog event) rather than parking. The next poll
+tick re-classifies via the existing ci-gate-reentry path (reconstruction rule
+3a).
+
+All other violations — no open PR, `blocked` present, or 2+ state labels —
+preserve the existing critical-alert + park behavior unchanged.
+
+This touches the serial poll loop (B-I3) only on the violation branch, and is
+gated on definite terminal evidence (an open PR exists) to avoid re-dispatch
+loops. The test `TestBackstopConvergence` in `tests/chain/test_daemon.py`
+covers the convergence path directly.
+
+The original §1 reasoning (A-vs-B trade-off, YAGNI, latency argument) is
+preserved below as written — it reflects the state of analysis before the Codex
+P1 review identified the backstop-clears-before-scan race.
+
+---
 
 **CI gate set the code-writer must pass (all four):**
 `ruff check .` · `ruff format --check .` · `mypy src` · `pytest` (full suite).
