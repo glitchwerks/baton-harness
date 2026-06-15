@@ -295,7 +295,7 @@ One daemon per repo. The binding constraint is the GitHub dependency API (`block
 
 ## 11. Daemon liveness monitoring [implemented — issue #79]
 
-The heartbeat thread (`src/baton_harness/chain/heartbeat.py`) provides two independent liveness signals on every tick. The cadence is 30 s (`_DEFAULT_HEARTBEAT_CADENCE_S`).
+The heartbeat thread (`src/baton_harness/chain/heartbeat.py`) provides two independent liveness signals on every tick. The nominal cadence is 30 s (`_DEFAULT_HEARTBEAT_CADENCE_S`); when `BH_HEARTBEAT_PING_URL` is set, the actual interval between consecutive ping arrivals is 30 s plus the ping's own latency, because the ping runs synchronously as the last step of each tick.
 
 ### Two monitoring modes
 
@@ -320,7 +320,7 @@ When to use: unattended server deployments where you want an alert delivered wit
    export BH_HEARTBEAT_PING_URL=https://hc-ping.com/<uuid>
    bin/run-daemon.sh
    ```
-4. The daemon will GET that URL every 30 s. When pings stop arriving, the service fires its configured alarm after the grace period expires.
+4. The daemon will GET that URL once per heartbeat tick (nominally every 30 s; the actual interval is 30 s plus the ping's own latency). When pings stop arriving, the service fires its configured alarm after the grace period expires.
 
 The same approach works with any service that accepts a GET ping and alarms on silence: UptimeRobot (heartbeat monitor type), Better Uptime (heartbeat), or a self-hosted equivalent.
 
@@ -330,16 +330,16 @@ Set the external monitor's expected-period to the heartbeat cadence:
 
 | Parameter | Recommended value | Derivation |
 |---|---|---|
-| Expected period | 30 s | `_DEFAULT_HEARTBEAT_CADENCE_S` (`heartbeat.py` line 50) |
-| Grace / alert threshold | 105 s (≈ 3 × 30 s + 15 s margin) | 3 missed beats + one ping-timeout (`_DEFAULT_PING_TIMEOUT_S` = 5 s, `heartbeat.py` line 54) + a 15 s fudge for system scheduling jitter |
+| Expected period | 30 s | `_DEFAULT_HEARTBEAT_CADENCE_S` (`heartbeat.py` line 51) |
+| Grace / alert threshold | 105 s (≈ 3 × 30 s + 15 s margin) | 3 missed beats + one ping-timeout (`_DEFAULT_PING_TIMEOUT_S` = 5 s, `heartbeat.py` line 55) + a 15 s fudge for system scheduling jitter; the grace window naturally absorbs the extra latency added by synchronous pings |
 
 A threshold of one or two missed beats produces spurious alarms from ordinary scheduling jitter or transient network delays. Three missed beats (90 s) plus a 15 s margin (105 s) is a practical minimum before declaring the daemon dead.
 
 ### Failure semantics
 
-**Ping failures are non-fatal.** A transient network error, DNS timeout, or unreachable endpoint is logged as a WARNING and swallowed (`heartbeat.py` lines 256–259). The heartbeat thread continues; the ping timeout is 5 s (`_DEFAULT_PING_TIMEOUT_S`) — well under the 30 s cadence, so a hung connection cannot stall the beat. A silent ping failure therefore means only that the external service missed one check-in, not that the daemon has crashed. Verify against the local heartbeat file before treating a single missed ping as an incident.
+**Ping failures are non-fatal.** A transient network error, DNS timeout, or unreachable endpoint is logged as a WARNING and swallowed (`heartbeat.py` lines 365–368). The heartbeat thread continues. The 5 s timeout (`_DEFAULT_PING_TIMEOUT_S`) bounds normal HTTP socket waits; it does not cover all of URL handling (DNS resolution, TLS negotiation, redirects), so the actual delay from a slow ping can exceed the timeout in edge cases. Because the ping is the last step of `_heartbeat_tick` (after stall-alert detection), a slow ping can only delay the next tick's start — stall alerting is never affected, and the 105 s grace threshold readily absorbs the added jitter. A silent ping failure therefore means only that the external service missed one check-in, not that the daemon has crashed. Verify against the local heartbeat file before treating a single missed ping as an incident.
 
-**Local file failures are also non-fatal.** A filesystem error during `_write_heartbeat` is likewise logged and swallowed (`heartbeat.py` lines 249–252); the thread continues. On Windows, `os.replace` is not guaranteed atomic — a crash between the write and the rename may leave an absent or partial file. External monitors must treat a missing or unreadable heartbeat file as *stale*, not as a parse error. The `_write_heartbeat` docstring (`heartbeat.py` lines 133–143) records this caveat.
+**Local file failures are also non-fatal.** A filesystem error during `_write_heartbeat` is likewise logged and swallowed (`heartbeat.py` lines 266–269); the thread continues. On Windows, `os.replace` is not guaranteed atomic — a crash between the write and the rename may leave an absent or partial file. External monitors must treat a missing or unreadable heartbeat file as *stale*, not as a parse error. The `_write_heartbeat` docstring (`heartbeat.py` lines 133–143) records this caveat.
 
 **Summary of the two-signal interpretation:**
 
