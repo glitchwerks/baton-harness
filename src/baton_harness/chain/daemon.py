@@ -1358,6 +1358,38 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
 
 
 # ---------------------------------------------------------------------------
+# Startup checks
+# ---------------------------------------------------------------------------
+
+
+def warn_if_async_escalation_unconfigured(obs: ObsConfig) -> None:
+    """Emit a WARNING when both async escalation channels are unconfigured.
+
+    Checks two async failure-signal channels at daemon startup:
+
+    - ``BH_SLACK_WEBHOOK_URL`` environment variable (unset or empty string
+      counts as unconfigured).
+    - ``obs.heartbeat_ping_url`` (``None`` counts as unconfigured).
+
+    Emits a single WARNING via ``_log`` when **both** are absent.  Stays
+    silent when either channel is configured.  Never raises — this is a
+    best-effort startup hint only.
+
+    Args:
+        obs: Loaded observability config (used to read ``heartbeat_ping_url``).
+    """
+    slack_configured = bool(os.environ.get("BH_SLACK_WEBHOOK_URL"))
+    ping_configured = obs.heartbeat_ping_url is not None
+    if not slack_configured and not ping_configured:
+        _log.warning(
+            "async failure-signal escalation is unconfigured: neither"
+            " BH_SLACK_WEBHOOK_URL nor BH_HEARTBEAT_PING_URL is set;"
+            " an overnight stall will only surface as a GitHub comment."
+            " Set one to get a push signal."
+        )
+
+
+# ---------------------------------------------------------------------------
 # Outer daemon loop
 # ---------------------------------------------------------------------------
 
@@ -1401,6 +1433,7 @@ async def run_daemon(
     tally: RedispatchTally | None = None
     try:
         obs = load_obs_config()
+        warn_if_async_escalation_unconfigured(obs)  # risk R2 — never raises
         runlog = RunLog(obs.runlog_path)
         runlog.emit(
             {
