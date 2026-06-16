@@ -1043,11 +1043,14 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                             )
                         except Exception:  # noqa: BLE001
                             pass
-                    if liveness_state is not None:
-                        liveness_state.clear()
                     # Do NOT mark_parked; do NOT fire critical alert.
                     # Fall through to the CI gate below so the converged
                     # issue's open PR is merged in this tick (#31 P1).
+                    # NOTE: do NOT clear liveness here — the CI gate
+                    # (merge_issue_branch) can block for minutes; clearing
+                    # early blinds the heartbeat stall monitor.  Every
+                    # CI-gate terminal path clears liveness at its own exit
+                    # point (Refs #31 P2).
                     _converged = True
             if not _converged:
                 _log.error(
