@@ -489,29 +489,38 @@ def _reconcile_labels(issue: int, outcome: RunOutcome) -> int:
         log(
             _HOOK,
             issue,
-            "outcome=pr-opened: removing 'agent-ready' first, then adding "
-            "'agent-done'. "
+            "outcome=pr-opened: removing 'agent-ready' first (if present), "
+            "then adding 'agent-done'. "
             "CAVEAT(F10): agent-done means a PR exists, NOT that CI is green"
             " — human verifies at review.",
         )
-        remove_result = _run(
-            [
-                "gh",
-                "issue",
-                "edit",
-                str(issue),
-                "--remove-label",
-                LABEL_AGENT_READY,
-            ]
-        )
-        if remove_result.returncode != 0:
-            err(
-                _HOOK,
-                issue,
-                f"failed to remove {LABEL_AGENT_READY!r}: "
-                f"{remove_result.stderr.strip()}",
+        # Idempotency guard (#31 AC1): only remove agent-ready when it is
+        # actually present.  On a re-run after a kill-between-remove-and-add,
+        # agent-ready is already gone; issuing an unconditional remove causes
+        # gh to exit non-zero, which aborts the function before agent-done is
+        # added and leaves torn state intact across re-runs.  Mirrors the
+        # guard pattern already used in Priority 1 (:456) and Priority 3
+        # (:549).  The remove-before-add ordering (Finding B / #21) is
+        # preserved: when agent-ready IS present, remove still precedes add.
+        if LABEL_AGENT_READY in labels:
+            remove_result = _run(
+                [
+                    "gh",
+                    "issue",
+                    "edit",
+                    str(issue),
+                    "--remove-label",
+                    LABEL_AGENT_READY,
+                ]
             )
-            return 1
+            if remove_result.returncode != 0:
+                err(
+                    _HOOK,
+                    issue,
+                    f"failed to remove {LABEL_AGENT_READY!r}: "
+                    f"{remove_result.stderr.strip()}",
+                )
+                return 1
         add_result = _run(
             [
                 "gh",
