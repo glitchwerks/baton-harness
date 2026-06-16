@@ -37,6 +37,7 @@ import baton_harness.chain.daemon as daemon_mod
 from baton_harness.chain.daemon import run_daemon
 from baton_harness.chain.heartbeat import LivenessState
 from baton_harness.chain.merge import MergeOutcome
+from baton_harness.chain.obs_config import ObsConfig
 from baton_harness.chain.recovery import RecoveryResult
 from baton_harness.chain.registry import RepoConfig
 from baton_harness.vendor.symphony.config import WorkflowConfig
@@ -5581,3 +5582,227 @@ def test_fetch_issue_labels_returns_none_on_failure() -> None:
         " a valid issue with an empty labels list (genuine empty is"
         f" distinct from fetch failure); got {result_c!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Issue #34 AC3: async escalation startup warning
+# ---------------------------------------------------------------------------
+
+
+def _minimal_obs_config(
+    *,
+    heartbeat_ping_url: str | None = None,
+) -> ObsConfig:
+    """Return a minimal ObsConfig for startup-warning tests.
+
+    Args:
+        heartbeat_ping_url: Value for the heartbeat ping URL field.
+            Defaults to None (ping disabled).
+
+    Returns:
+        A valid ObsConfig instance with sensible sentinel paths.
+    """
+    from pathlib import Path
+
+    return ObsConfig(
+        runlog_path=Path("/tmp/test-runlog.jsonl"),
+        heartbeat_file=Path("/tmp/test-heartbeat"),
+        redispatch_window_ticks=10,
+        redispatch_max=3,
+        heartbeat_stall_s=7200.0,
+        heartbeat_ping_url=heartbeat_ping_url,
+        redispatch_counts_path=Path("/tmp/test-dispatch-counts.json"),
+    )
+
+
+class TestAsyncEscalationStartupWarning:
+    """Tests for warn_if_async_escalation_unconfigured.
+
+    The helper must emit a single WARNING when both async escalation
+    channels (Slack webhook + heartbeat ping URL) are absent, and must
+    stay silent when either channel is configured.
+    """
+
+    def test_warns_when_both_channels_unconfigured(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Single WARNING emitted when both channels are absent.
+
+        Slack env var deleted from environment, heartbeat_ping_url=None
+        → exactly one WARNING record containing the expected substring.
+        """
+        import logging
+
+        from baton_harness.chain.daemon import (
+            warn_if_async_escalation_unconfigured,
+        )
+
+        monkeypatch.delenv("BH_SLACK_WEBHOOK_URL", raising=False)
+        obs = _minimal_obs_config(heartbeat_ping_url=None)
+
+        with caplog.at_level(
+            logging.WARNING, logger="baton_harness.chain.daemon"
+        ):
+            warn_if_async_escalation_unconfigured(obs)
+
+        warning_records = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING
+            and r.name == "baton_harness.chain.daemon"
+        ]
+        assert len(warning_records) == 1, (
+            "Expected exactly 1 WARNING from warn_if_async_escalation"
+            "_unconfigured when both channels absent; "
+            f"got {len(warning_records)}: {warning_records}"
+        )
+        msg = warning_records[0].getMessage()
+        assert (
+            "async" in msg.lower()
+            or "escalation" in msg.lower()
+            or ("unconfigured" in msg.lower())
+        ), (
+            f"Warning message must mention async escalation being "
+            f"unconfigured; got: {msg!r}"
+        )
+
+    def test_silent_when_ping_url_configured(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """No WARNING when heartbeat_ping_url is set (Slack absent).
+
+        Slack env deleted, obs.heartbeat_ping_url non-None
+        → zero WARNING records from this helper.
+        """
+        import logging
+
+        from baton_harness.chain.daemon import (
+            warn_if_async_escalation_unconfigured,
+        )
+
+        monkeypatch.delenv("BH_SLACK_WEBHOOK_URL", raising=False)
+        obs = _minimal_obs_config(
+            heartbeat_ping_url="https://uptime.example/ping"
+        )
+
+        with caplog.at_level(
+            logging.WARNING, logger="baton_harness.chain.daemon"
+        ):
+            warn_if_async_escalation_unconfigured(obs)
+
+        warning_records = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING
+            and r.name == "baton_harness.chain.daemon"
+        ]
+        assert len(warning_records) == 0, (
+            "Expected zero WARNINGs when heartbeat_ping_url is configured; "
+            f"got {len(warning_records)}: {warning_records}"
+        )
+
+    def test_silent_when_slack_webhook_configured(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """No WARNING when BH_SLACK_WEBHOOK_URL is set (ping URL absent).
+
+        Slack env set to a non-empty URL, obs.heartbeat_ping_url=None
+        → zero WARNING records from this helper.
+        """
+        import logging
+
+        from baton_harness.chain.daemon import (
+            warn_if_async_escalation_unconfigured,
+        )
+
+        monkeypatch.setenv(
+            "BH_SLACK_WEBHOOK_URL", "https://hooks.slack.test/x"
+        )
+        obs = _minimal_obs_config(heartbeat_ping_url=None)
+
+        with caplog.at_level(
+            logging.WARNING, logger="baton_harness.chain.daemon"
+        ):
+            warn_if_async_escalation_unconfigured(obs)
+
+        warning_records = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING
+            and r.name == "baton_harness.chain.daemon"
+        ]
+        assert len(warning_records) == 0, (
+            "Expected zero WARNINGs when BH_SLACK_WEBHOOK_URL is set; "
+            f"got {len(warning_records)}: {warning_records}"
+        )
+
+    def test_silent_when_both_channels_configured(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """No WARNING when both channels are configured.
+
+        Slack env set and heartbeat_ping_url non-None
+        → zero WARNING records.
+        """
+        import logging
+
+        from baton_harness.chain.daemon import (
+            warn_if_async_escalation_unconfigured,
+        )
+
+        monkeypatch.setenv(
+            "BH_SLACK_WEBHOOK_URL", "https://hooks.slack.test/x"
+        )
+        obs = _minimal_obs_config(
+            heartbeat_ping_url="https://uptime.example/ping"
+        )
+
+        with caplog.at_level(
+            logging.WARNING, logger="baton_harness.chain.daemon"
+        ):
+            warn_if_async_escalation_unconfigured(obs)
+
+        warning_records = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING
+            and r.name == "baton_harness.chain.daemon"
+        ]
+        assert len(warning_records) == 0, (
+            "Expected zero WARNINGs when both channels are configured; "
+            f"got {len(warning_records)}: {warning_records}"
+        )
+
+    def test_empty_slack_env_treated_as_unconfigured(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Empty BH_SLACK_WEBHOOK_URL is treated as unconfigured.
+
+        monkeypatch sets BH_SLACK_WEBHOOK_URL to empty string with
+        heartbeat_ping_url=None → WARNS (empty == unconfigured).
+        """
+        import logging
+
+        from baton_harness.chain.daemon import (
+            warn_if_async_escalation_unconfigured,
+        )
+
+        monkeypatch.setenv("BH_SLACK_WEBHOOK_URL", "")
+        obs = _minimal_obs_config(heartbeat_ping_url=None)
+
+        with caplog.at_level(
+            logging.WARNING, logger="baton_harness.chain.daemon"
+        ):
+            warn_if_async_escalation_unconfigured(obs)
+
+        warning_records = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING
+            and r.name == "baton_harness.chain.daemon"
+        ]
+        assert len(warning_records) == 1, (
+            "Expected exactly 1 WARNING when BH_SLACK_WEBHOOK_URL is empty "
+            "(empty string must be treated as unconfigured); "
+            f"got {len(warning_records)}: {warning_records}"
+        )
