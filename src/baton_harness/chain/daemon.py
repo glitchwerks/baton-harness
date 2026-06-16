@@ -57,7 +57,10 @@ from baton_harness.chain.gh_deps import (
     fetch_blocked_by,
 )
 from baton_harness.chain.heartbeat import LivenessState, run_heartbeat_loop
-from baton_harness.chain.labels import assert_single_state
+from baton_harness.chain.labels import (
+    assert_single_state,
+    target_state_from_observed,
+)
 from baton_harness.chain.merge import MergeOutcome, merge_issue_branch
 from baton_harness.chain.obs_config import ObsConfig, load_obs_config
 from baton_harness.chain.recovery import RecoveryResult
@@ -263,8 +266,17 @@ def _fetch_issue_labels(
     owner: str,
     repo: str,
     issue: int,
-) -> set[str]:
+) -> set[str] | None:
     """Fetch current labels for an issue (lowercase).
+
+    Returns ``None`` on any fetch failure so callers can distinguish
+    an unreadable state from a genuinely empty label set.  This mirrors
+    the sentinel pattern used by ``after_run._current_labels`` (#32).
+
+    On a ``gh`` call failure (``returncode != 0``) the issue may still
+    carry ``blocked`` or other state labels that we cannot see — returning
+    ``None`` forces the caller to handle the unknown state conservatively
+    rather than treating it as zero-state and triggering convergence.
 
     Args:
         owner: The GitHub repository owner.
@@ -272,7 +284,13 @@ def _fetch_issue_labels(
         issue: The issue number.
 
     Returns:
-        A set of lowercase label name strings; empty on error.
+        A ``set[str]`` of lowercase label name strings when the fetch
+        succeeds (possibly empty — a genuine empty set is distinct from
+        failure).  ``None`` when the ``gh`` call returns a non-zero exit
+        code or when the response cannot be parsed (``JSONDecodeError``,
+        ``KeyError``, or ``TypeError``).  Callers must guard on ``None``
+        and must NOT attempt single-state convergence on an unknown state
+        (Codex P1 #3, PR #95).
     """
     proc = _run(
         [
@@ -287,12 +305,12 @@ def _fetch_issue_labels(
         ]
     )
     if proc.returncode != 0:
-        return set()
+        return None
     try:
         data = json.loads(proc.stdout)
         return {lbl["name"].lower() for lbl in data.get("labels", [])}
     except (json.JSONDecodeError, KeyError, TypeError):
-        return set()
+        return None
 
 
 def _fetch_issue_obj(
@@ -911,29 +929,30 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
 
         # Re-read labels after _run_worker (after_run may have set blocked).
         post_labels = _fetch_issue_labels(owner, repo, n)
-        has_blocked = "blocked" in post_labels
 
-        # Single-state invariant backstop (#34 P2 / #76).
-        # Must run BEFORE the outcome-protocol branches so torn or zero-state
-        # label sets are caught early rather than dispatched to logic that
-        # assumes a clean state.
-        _inv_violation = assert_single_state(post_labels)
-        if _inv_violation is not None:
+        # Guard: None sentinel means the gh call failed or stdout was
+        # unparsable.  The single-state invariant CANNOT be verified and
+        # convergence MUST NOT fire on an unknown state (Codex P1 #3,
+        # PR #95).  Take the conservative path: park + alert.
+        if post_labels is None:
             _log.error(
-                "daemon: label invariant violated for #%d: %s; parking",
+                "daemon: label fetch failed for #%d"
+                " (gh error / unparsable); parking conservatively",
                 n,
-                _inv_violation,
             )
             if runlog is not None:
                 try:
                     runlog.emit(
                         {
                             "ts": datetime.now(timezone.utc).isoformat(),
-                            "event": "label_invariant_violation",
+                            "event": "label_fetch_failed",
                             "issue": n,
                             "outcome": None,
                             "severity": "critical",
-                            "detail": _inv_violation,
+                            "detail": (
+                                f"Issue #{n} labels unreadable;"
+                                " cannot verify single-state invariant"
+                            ),
                             "tick_id": None,
                         }
                     )
@@ -944,8 +963,8 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 repo,
                 n,
                 (
-                    f"Issue #{n} failed the single-state"
-                    f" label invariant: {_inv_violation}"
+                    f"Issue #{n} labels unreadable; cannot verify"
+                    " single-state invariant — parking."
                 ),
                 severity="critical",
                 kind="block",
@@ -955,8 +974,126 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
             if liveness_state is not None:
                 liveness_state.clear()
             sched.mark_parked(n)
-            parked_reasons[n] = f"label invariant violation: {_inv_violation}"
+            parked_reasons[n] = "labels unreadable"
             continue
+
+        has_blocked = "blocked" in post_labels
+
+        # Single-state invariant backstop (#34 P2 / #76).
+        # Must run BEFORE the outcome-protocol branches so torn or zero-state
+        # label sets are caught early rather than dispatched to logic that
+        # assumes a clean state.
+        _inv_violation = assert_single_state(post_labels)
+        if _inv_violation is not None:
+            # Convergence path (#31 P1): zero state labels + open PR +
+            # not blocked → re-derive target and apply it instead of
+            # parking.  This handles the torn-state window where a 60s
+            # kill between after_run's remove-agent-ready and
+            # add-agent-done leaves the issue in {agent-in-progress}
+            # only.
+            _converged = False
+            _state_labels_present = post_labels & set(
+                ["agent-ready", "agent-done", "blocked"]
+            )
+            _zero_state = len(_state_labels_present) == 0
+            if _zero_state and not has_blocked:
+                _conv_branch, _conv_sha = _find_issue_pr(owner, repo, n)
+                if _conv_branch is not None:
+                    # Definite completion evidence: derive target via
+                    # the pure helper (avoids hard-coding "agent-done").
+                    _target = target_state_from_observed(
+                        blocked=False, pr_open=True
+                    )
+                    _log.warning(
+                        "daemon: backstop converging #%d to %r"
+                        " (zero state labels + open PR); skipping park",
+                        n,
+                        _target,
+                    )
+                    # Remove only the labels that are actually present to
+                    # keep the edit idempotent.
+                    _remove = ["agent-in-progress"] + [
+                        lbl for lbl in _state_labels_present if lbl != _target
+                    ]
+                    _label_edit(
+                        owner,
+                        repo,
+                        n,
+                        add=[_target],
+                        remove=_remove,
+                    )
+                    if runlog is not None:
+                        try:
+                            runlog.emit(
+                                {
+                                    "ts": datetime.now(
+                                        timezone.utc
+                                    ).isoformat(),
+                                    "event": "label_invariant_converged",
+                                    "issue": n,
+                                    "outcome": None,
+                                    "severity": "warning",
+                                    "detail": (
+                                        f"backstop converged #%d"
+                                        f" to {_target!r}: {_inv_violation}"
+                                        % n
+                                    ),
+                                    "tick_id": None,
+                                }
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
+                    # Do NOT mark_parked; do NOT fire critical alert.
+                    # Fall through to the CI gate below so the converged
+                    # issue's open PR is merged in this tick (#31 P1).
+                    # NOTE: do NOT clear liveness here — the CI gate
+                    # (merge_issue_branch) can block for minutes; clearing
+                    # early blinds the heartbeat stall monitor.  Every
+                    # CI-gate terminal path clears liveness at its own exit
+                    # point (Refs #31 P2).
+                    _converged = True
+            if not _converged:
+                _log.error(
+                    "daemon: label invariant violated for #%d: %s; parking",
+                    n,
+                    _inv_violation,
+                )
+                if runlog is not None:
+                    try:
+                        runlog.emit(
+                            {
+                                "ts": datetime.now(timezone.utc).isoformat(),
+                                "event": "label_invariant_violation",
+                                "issue": n,
+                                "outcome": None,
+                                "severity": "critical",
+                                "detail": _inv_violation,
+                                "tick_id": None,
+                            }
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+                alert(
+                    owner,
+                    repo,
+                    n,
+                    (
+                        f"Issue #{n} failed the single-state"
+                        f" label invariant: {_inv_violation}"
+                    ),
+                    severity="critical",
+                    kind="block",
+                    runlog=runlog,
+                )
+                _label_edit(owner, repo, n, remove=["agent-in-progress"])
+                if liveness_state is not None:
+                    liveness_state.clear()
+                sched.mark_parked(n)
+                parked_reasons[n] = (
+                    f"label invariant violation: {_inv_violation}"
+                )
+                continue
+            # _converged=True → fall through to §3.5 CI gate below.
 
         # Apply §3.5 outcome protocol.
         if worker_result == "pr_created" and not has_blocked:
