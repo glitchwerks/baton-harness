@@ -4822,9 +4822,7 @@ class TestBackstopConvergence:
             self_sched.parked.add(issue)
 
         mock_merge_fn = MagicMock(return_value=MergeOutcome.MERGED)
-        mock_find_pr = MagicMock(
-            return_value=("baton/issue-10-10", "abc123")
-        )
+        mock_find_pr = MagicMock(return_value=("baton/issue-10-10", "abc123"))
 
         with (
             patch.object(
