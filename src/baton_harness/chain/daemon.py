@@ -57,7 +57,10 @@ from baton_harness.chain.gh_deps import (
     fetch_blocked_by,
 )
 from baton_harness.chain.heartbeat import LivenessState, run_heartbeat_loop
-from baton_harness.chain.labels import assert_single_state
+from baton_harness.chain.labels import (
+    assert_single_state,
+    target_state_from_observed,
+)
 from baton_harness.chain.merge import MergeOutcome, merge_issue_branch
 from baton_harness.chain.obs_config import ObsConfig, load_obs_config
 from baton_harness.chain.recovery import RecoveryResult
@@ -263,8 +266,17 @@ def _fetch_issue_labels(
     owner: str,
     repo: str,
     issue: int,
-) -> set[str]:
+) -> set[str] | None:
     """Fetch current labels for an issue (lowercase).
+
+    Returns ``None`` on any fetch failure so callers can distinguish
+    an unreadable state from a genuinely empty label set.  This mirrors
+    the sentinel pattern used by ``after_run._current_labels`` (#32).
+
+    On a ``gh`` call failure (``returncode != 0``) the issue may still
+    carry ``blocked`` or other state labels that we cannot see — returning
+    ``None`` forces the caller to handle the unknown state conservatively
+    rather than treating it as zero-state and triggering convergence.
 
     Args:
         owner: The GitHub repository owner.
@@ -272,7 +284,13 @@ def _fetch_issue_labels(
         issue: The issue number.
 
     Returns:
-        A set of lowercase label name strings; empty on error.
+        A ``set[str]`` of lowercase label name strings when the fetch
+        succeeds (possibly empty — a genuine empty set is distinct from
+        failure).  ``None`` when the ``gh`` call returns a non-zero exit
+        code or when the response cannot be parsed (``JSONDecodeError``,
+        ``KeyError``, or ``TypeError``).  Callers must guard on ``None``
+        and must NOT attempt single-state convergence on an unknown state
+        (Codex P1 #3, PR #95).
     """
     proc = _run(
         [
@@ -287,12 +305,12 @@ def _fetch_issue_labels(
         ]
     )
     if proc.returncode != 0:
-        return set()
+        return None
     try:
         data = json.loads(proc.stdout)
         return {lbl["name"].lower() for lbl in data.get("labels", [])}
     except (json.JSONDecodeError, KeyError, TypeError):
-        return set()
+        return None
 
 
 def _fetch_issue_obj(
@@ -406,6 +424,127 @@ def _fetch_full_milestone_members(
             exc,
         )
         return frozenset()
+
+
+def _run_ci_gate(
+    *,
+    owner: str,
+    repo: str,
+    n: int,
+    issue_branch: str,
+    pr_head_sha: str,
+    repo_root: Any,  # noqa: ANN401
+    branch_name: str,
+    sched: Any,  # noqa: ANN401
+    liveness_state: LivenessState | None,
+    runlog: RunLog | None,
+    merged_issues: list[int],
+    parked_reasons: dict[int, str],
+    ci_poll_interval: float,
+    ci_timeout: float,
+) -> None:
+    """Run the CI gate and apply the merge/park terminal for one issue.
+
+    Shared entry point for both the normal ``pr_created`` path and the
+    converged path.  Callers supply the ``(issue_branch, pr_head_sha)``
+    observation directly — no second ``_find_issue_pr`` call is made
+    inside this helper.
+
+    Handles every terminal outcome:
+
+    * ``MergeOutcome.MERGED`` — removes labels, clears liveness, calls
+      ``sched.mark_done``, appends to ``merged_issues``.
+    * Any other ``MergeOutcome`` (CI_FAILED, CI_TIMEOUT, CONFLICT) —
+      removes labels, clears liveness, calls ``sched.mark_parked``,
+      fires ``alert``.
+    * Exception from ``merge_issue_branch`` — same park path with the
+      exception message in the park reason.
+
+    Args:
+        owner: GitHub repository owner.
+        repo: GitHub repository name.
+        n: Issue number being processed.
+        issue_branch: The PR head branch name (e.g.
+            ``"baton/issue-10-10"``).
+        pr_head_sha: The PR head commit SHA.
+        repo_root: Absolute ``Path`` to the repository root.
+        branch_name: The feature branch name for the work unit; used for
+            logging and forwarded to ``merge_issue_branch`` as the
+            ``feature_branch`` argument.
+        sched: The ``IssueScheduler`` instance for this work unit.
+        liveness_state: Optional ``LivenessState`` shared with the
+            heartbeat monitor; cleared on every terminal branch (C-I4).
+        runlog: Optional ``RunLog`` handle for best-effort event
+            emission.
+        merged_issues: Mutable list accumulating merged issue numbers.
+        parked_reasons: Mutable dict accumulating park reasons.
+        ci_poll_interval: Seconds between CI status polls.
+        ci_timeout: Hard ceiling for the CI gate in seconds.
+    """
+    try:
+        outcome = merge_issue_branch(
+            repo_root=repo_root,
+            owner=owner,
+            repo=repo,
+            issue=n,
+            pr_head_sha=pr_head_sha,
+            issue_branch=issue_branch,
+            feature_branch=branch_name,
+            poll_interval=ci_poll_interval,
+            timeout=ci_timeout,
+        )
+    except Exception as exc:
+        _log.error(
+            "daemon: merge_issue_branch raised for #%d: %s; parking",
+            n,
+            exc,
+        )
+        _label_edit(owner, repo, n, remove=["agent-in-progress"])
+        if liveness_state is not None:
+            liveness_state.clear()
+        sched.mark_parked(n)
+        parked_reasons[n] = f"merge exception: {exc}"
+        alert(
+            owner,
+            repo,
+            n,
+            f"Issue #{n} merge raised an exception: {exc}",
+            severity="warn",
+            kind="debug",
+            runlog=runlog,
+        )
+        return
+
+    if outcome == MergeOutcome.MERGED:
+        # merge_issue_branch already added agent-merged + marker.
+        _label_edit(owner, repo, n, remove=["agent-in-progress", "agent-done"])
+        if liveness_state is not None:
+            liveness_state.clear()
+        sched.mark_done(n)
+        merged_issues.append(n)
+        _log.info("daemon: issue #%d merged into %r", n, branch_name)
+    else:
+        _label_edit(owner, repo, n, remove=["agent-in-progress"])
+        if liveness_state is not None:
+            liveness_state.clear()
+        sched.mark_parked(n)
+        parked_reasons[n] = f"CI gate: {outcome.name}"
+        reason = (
+            "CI check failed"
+            if outcome == MergeOutcome.CI_FAILED
+            else "CI timed out"
+            if outcome == MergeOutcome.CI_TIMEOUT
+            else "merge conflict"
+        )
+        alert(
+            owner,
+            repo,
+            n,
+            f"Issue #{n} parked: {reason} ({outcome.name}).",
+            severity="critical",
+            kind="debug",
+            runlog=runlog,
+        )
 
 
 def _open_draft_pr(
@@ -911,6 +1050,54 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
 
         # Re-read labels after _run_worker (after_run may have set blocked).
         post_labels = _fetch_issue_labels(owner, repo, n)
+
+        # Guard: None sentinel means the gh call failed or stdout was
+        # unparsable.  The single-state invariant CANNOT be verified and
+        # convergence MUST NOT fire on an unknown state (Codex P1 #3,
+        # PR #95).  Take the conservative path: park + alert.
+        if post_labels is None:
+            _log.error(
+                "daemon: label fetch failed for #%d"
+                " (gh error / unparsable); parking conservatively",
+                n,
+            )
+            if runlog is not None:
+                try:
+                    runlog.emit(
+                        {
+                            "ts": datetime.now(timezone.utc).isoformat(),
+                            "event": "label_fetch_failed",
+                            "issue": n,
+                            "outcome": None,
+                            "severity": "critical",
+                            "detail": (
+                                f"Issue #{n} labels unreadable;"
+                                " cannot verify single-state invariant"
+                            ),
+                            "tick_id": None,
+                        }
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+            alert(
+                owner,
+                repo,
+                n,
+                (
+                    f"Issue #{n} labels unreadable; cannot verify"
+                    " single-state invariant — parking."
+                ),
+                severity="critical",
+                kind="block",
+                runlog=runlog,
+            )
+            _label_edit(owner, repo, n, remove=["agent-in-progress"])
+            if liveness_state is not None:
+                liveness_state.clear()
+            sched.mark_parked(n)
+            parked_reasons[n] = "labels unreadable"
+            continue
+
         has_blocked = "blocked" in post_labels
 
         # Single-state invariant backstop (#34 P2 / #76).
@@ -919,6 +1106,92 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
         # assumes a clean state.
         _inv_violation = assert_single_state(post_labels)
         if _inv_violation is not None:
+            # Convergence path (#31 P1 / #96): zero state labels + open PR +
+            # not blocked → re-derive target and apply it instead of
+            # parking.  This handles the torn-state window where a 60s
+            # kill between after_run's remove-agent-ready and
+            # add-agent-done leaves the issue in {agent-in-progress}
+            # only.
+            _state_labels_present = post_labels & set(
+                ["agent-ready", "agent-done", "blocked"]
+            )
+            _zero_state = len(_state_labels_present) == 0
+            if _zero_state and not has_blocked:
+                _conv_branch, _conv_sha = _find_issue_pr(owner, repo, n)
+                if _conv_branch is not None:
+                    # Definite completion evidence: derive target via
+                    # the pure helper (avoids hard-coding "agent-done").
+                    _target = target_state_from_observed(
+                        blocked=False, pr_open=True
+                    )
+                    _log.warning(
+                        "daemon: backstop converging #%d to %r"
+                        " (zero state labels + open PR); skipping park",
+                        n,
+                        _target,
+                    )
+                    # Remove only the labels that are actually present to
+                    # keep the edit idempotent.
+                    _remove = ["agent-in-progress"] + [
+                        lbl for lbl in _state_labels_present if lbl != _target
+                    ]
+                    _label_edit(
+                        owner,
+                        repo,
+                        n,
+                        add=[_target],
+                        remove=_remove,
+                    )
+                    if runlog is not None:
+                        try:
+                            runlog.emit(
+                                {
+                                    "ts": datetime.now(
+                                        timezone.utc
+                                    ).isoformat(),
+                                    "event": "label_invariant_converged",
+                                    "issue": n,
+                                    "outcome": None,
+                                    "severity": "warning",
+                                    "detail": (
+                                        f"backstop converged #{n}"
+                                        f" to {_target!r}:"
+                                        f" {_inv_violation}"
+                                    ),
+                                    "tick_id": None,
+                                }
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
+                    # Do NOT mark_parked; do NOT fire critical alert.
+                    # Reuse the convergence observation (no TOCTOU second
+                    # _find_issue_pr call) and route directly through the
+                    # shared CI-gate helper (#96 redesign).
+                    # NOTE: do NOT clear liveness before _run_ci_gate —
+                    # the CI gate (merge_issue_branch) can block for
+                    # minutes; clearing early blinds the heartbeat stall
+                    # monitor.  Every CI-gate terminal path clears
+                    # liveness at its own exit point (Refs #31 P2).
+                    assert _conv_sha is not None  # _conv_branch is not None
+                    _run_ci_gate(
+                        owner=owner,
+                        repo=repo,
+                        n=n,
+                        issue_branch=_conv_branch,
+                        pr_head_sha=_conv_sha,
+                        repo_root=repo_root,
+                        branch_name=branch_name,
+                        sched=sched,
+                        liveness_state=liveness_state,
+                        runlog=runlog,
+                        merged_issues=merged_issues,
+                        parked_reasons=parked_reasons,
+                        ci_poll_interval=ci_poll_interval,
+                        ci_timeout=ci_timeout,
+                    )
+                    continue
+            # No convergence target found (no open PR, or blocked):
+            # invariant violated — park + alert (existing behavior).
             _log.error(
                 "daemon: label invariant violated for #%d: %s; parking",
                 n,
@@ -960,7 +1233,8 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
 
         # Apply §3.5 outcome protocol.
         if worker_result == "pr_created" and not has_blocked:
-            # CI gate.
+            # Normal CI gate: locate the PR once, then delegate to the
+            # shared merge entry point (_run_ci_gate).
             issue_branch, pr_head_sha = _find_issue_pr(owner, repo, n)
             if issue_branch is None or pr_head_sha is None:
                 _log.warning(
@@ -983,75 +1257,22 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 )
                 continue
 
-            # FIX 2: wrap merge_issue_branch in a per-issue try/except so a
-            # transient git/gh error parks this issue but does not kill the
-            # daemon.
-            try:
-                outcome = merge_issue_branch(
-                    repo_root=repo_root,
-                    owner=owner,
-                    repo=repo,
-                    issue=n,
-                    pr_head_sha=pr_head_sha,
-                    issue_branch=issue_branch,
-                    feature_branch=branch_name,
-                    poll_interval=ci_poll_interval,
-                    timeout=ci_timeout,
-                )
-            except Exception as exc:
-                _log.error(
-                    "daemon: merge_issue_branch raised for #%d: %s; parking",
-                    n,
-                    exc,
-                )
-                _label_edit(owner, repo, n, remove=["agent-in-progress"])
-                if liveness_state is not None:
-                    liveness_state.clear()
-                sched.mark_parked(n)
-                parked_reasons[n] = f"merge exception: {exc}"
-                alert(
-                    owner,
-                    repo,
-                    n,
-                    f"Issue #{n} merge raised an exception: {exc}",
-                    severity="warn",
-                    kind="debug",
-                    runlog=runlog,
-                )
-                continue
-
-            if outcome == MergeOutcome.MERGED:
-                # merge_issue_branch already added agent-merged + marker.
-                _label_edit(
-                    owner, repo, n, remove=["agent-in-progress", "agent-done"]
-                )
-                if liveness_state is not None:
-                    liveness_state.clear()
-                sched.mark_done(n)
-                merged_issues.append(n)
-                _log.info("daemon: issue #%d merged into %r", n, branch_name)
-            else:
-                _label_edit(owner, repo, n, remove=["agent-in-progress"])
-                if liveness_state is not None:
-                    liveness_state.clear()
-                sched.mark_parked(n)
-                parked_reasons[n] = f"CI gate: {outcome.name}"
-                reason = (
-                    "CI check failed"
-                    if outcome == MergeOutcome.CI_FAILED
-                    else "CI timed out"
-                    if outcome == MergeOutcome.CI_TIMEOUT
-                    else "merge conflict"
-                )
-                alert(
-                    owner,
-                    repo,
-                    n,
-                    f"Issue #{n} parked: {reason} ({outcome.name}).",
-                    severity="critical",
-                    kind="debug",
-                    runlog=runlog,
-                )
+            _run_ci_gate(
+                owner=owner,
+                repo=repo,
+                n=n,
+                issue_branch=issue_branch,
+                pr_head_sha=pr_head_sha,
+                repo_root=repo_root,
+                branch_name=branch_name,
+                sched=sched,
+                liveness_state=liveness_state,
+                runlog=runlog,
+                merged_issues=merged_issues,
+                parked_reasons=parked_reasons,
+                ci_poll_interval=ci_poll_interval,
+                ci_timeout=ci_timeout,
+            )
         else:
             # Park path: blocked or no_pr.
             kind = "block" if has_blocked else "debug"

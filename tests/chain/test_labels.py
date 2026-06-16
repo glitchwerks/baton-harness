@@ -248,3 +248,122 @@ class TestAssertSingleStateNeverRaises:
             "Expected a non-empty string when input contains unhashable"
             f" members (list of dicts); got {result!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Issue #31 — Phase 3: target_state_from_observed (AC2 pure reconciler)
+# ---------------------------------------------------------------------------
+
+
+class TestTargetStateFromObserved:
+    """Truth-table tests for the pure ``target_state_from_observed`` helper.
+
+    ``target_state_from_observed(blocked, pr_open) -> str`` re-derives the
+    correct single-state label from observable facts, independent of which
+    hook last ran.  Precedence per harness-design.md §5:
+
+    - ``blocked=True``  (any ``pr_open``)   → LABEL_BLOCKED
+    - ``blocked=False, pr_open=True``        → LABEL_AGENT_DONE
+    - ``blocked=False, pr_open=False``       → LABEL_AGENT_READY
+
+    All four ``(blocked, pr_open)`` combinations must be covered; the
+    return value must always be a member of ``STATE_LABELS``.
+    """
+
+    def _import_fn(self):  # noqa: ANN202
+        """Import the function under test.
+
+        Deferred so collection does not fail before the function exists;
+        the AttributeError/ImportError becomes a test failure rather than a
+        collection error.
+
+        Returns:
+            The ``target_state_from_observed`` callable.
+
+        Raises:
+            AttributeError: If the function has not yet been implemented in
+                ``baton_harness.chain.labels``.
+        """
+        from baton_harness.chain import labels as labels_mod
+
+        return labels_mod.target_state_from_observed
+
+    def test_blocked_true_pr_open_true_returns_label_blocked(self) -> None:
+        """blocked=True, pr_open=True → LABEL_BLOCKED (blocked takes priority).
+
+        Even when a PR is open, the blocked condition dominates — the issue
+        must not be marked done until the blocking condition is resolved.
+        """
+        fn = self._import_fn()
+        result = fn(blocked=True, pr_open=True)
+        assert result == LABEL_BLOCKED, (
+            f"blocked=True, pr_open=True must return {LABEL_BLOCKED!r}; "
+            f"got {result!r}"
+        )
+
+    def test_blocked_true_pr_open_false_returns_label_blocked(self) -> None:
+        """blocked=True, pr_open=False → LABEL_BLOCKED.
+
+        The blocked condition is independent of PR state.
+        """
+        fn = self._import_fn()
+        result = fn(blocked=True, pr_open=False)
+        assert result == LABEL_BLOCKED, (
+            f"blocked=True, pr_open=False must return {LABEL_BLOCKED!r}; "
+            f"got {result!r}"
+        )
+
+    def test_blocked_false_pr_open_true_returns_label_agent_done(
+        self,
+    ) -> None:
+        """blocked=False, pr_open=True → LABEL_AGENT_DONE.
+
+        A PR is open and no blocker is active; the issue has moved to the
+        done state.
+        """
+        fn = self._import_fn()
+        result = fn(blocked=False, pr_open=True)
+        assert result == LABEL_AGENT_DONE, (
+            f"blocked=False, pr_open=True must return {LABEL_AGENT_DONE!r};"
+            f" got {result!r}"
+        )
+
+    def test_blocked_false_pr_open_false_returns_label_agent_ready(
+        self,
+    ) -> None:
+        """blocked=False, pr_open=False → LABEL_AGENT_READY.
+
+        No PR and no blocker: the issue is ready for another agent run.
+        """
+        fn = self._import_fn()
+        result = fn(blocked=False, pr_open=False)
+        assert result == LABEL_AGENT_READY, (
+            f"blocked=False, pr_open=False must return "
+            f"{LABEL_AGENT_READY!r}; got {result!r}"
+        )
+
+    def test_return_is_always_a_member_of_state_labels_blocked_true(
+        self,
+    ) -> None:
+        """Return value is always in STATE_LABELS (blocked=True cases)."""
+        fn = self._import_fn()
+        for pr_open in (True, False):
+            result = fn(blocked=True, pr_open=pr_open)
+            assert result in STATE_LABELS, (
+                f"target_state_from_observed(blocked=True, pr_open={pr_open})"
+                f" returned {result!r}, which is not in STATE_LABELS "
+                f"({sorted(STATE_LABELS)})"
+            )
+
+    def test_return_is_always_a_member_of_state_labels_blocked_false(
+        self,
+    ) -> None:
+        """Return value is always in STATE_LABELS (blocked=False cases)."""
+        fn = self._import_fn()
+        for pr_open in (True, False):
+            result = fn(blocked=False, pr_open=pr_open)
+            assert result in STATE_LABELS, (
+                f"target_state_from_observed(blocked=False, "
+                f"pr_open={pr_open}) returned {result!r}, which is not in "
+                f"STATE_LABELS ({sorted(STATE_LABELS)})"
+            )

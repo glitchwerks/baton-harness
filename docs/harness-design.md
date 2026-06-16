@@ -134,7 +134,7 @@ agent-ready ──▶ (run) ──▶ agent-done       (PR opened; pilot: human 
                       └──▶ agent-ready      (retryable failure; left for Baton's own retry)
 ```
 
-Reconciliation is enforced in `after_run.py` to maintain a single state label (the H1 bug — both `agent-ready` and `blocked` present — is the open implementation issue to fix here).
+Reconciliation is enforced in `after_run.py` to maintain a single state label (the H1 bug — both `agent-ready` and `blocked` present — is the open implementation issue to fix here). `_reconcile_labels` is idempotent: re-running it against any label set, including a torn or zero-state set left by a mid-run kill, converges to the correct single state (#31). A pure helper `labels.target_state_from_observed(blocked, pr_open) -> str` re-derives the target single-state label from observable facts independent of which hook last ran (#31).
 
 ---
 
@@ -269,7 +269,7 @@ This definition is the `REQUIRED_CHECKS` constant in `src/baton_harness/chain/me
 2. **`parked`** = issues carrying `blocked` within the work unit's membership, plus their transitive dependents.
 3. **Intermediate-state rules:**
    - **(3a) `agent-done` + open PR + no daemon-provenance merge commit** → the agent finished but the CI-gate/merge was interrupted. Re-enter the CI gate (`merge.py`) without re-running `_run_worker`.
-   - **(3b) `agent-in-progress` orphan** (crash mid-`_run_worker`) → clear the orphan label; treat the issue as not-yet-dispatched; let `get_ready()` re-dispatch it. Worker is idempotent — re-cuts the worker branch fresh.
+   - **(3b) `agent-in-progress` orphan** (crash mid-`_run_worker`) → clear the orphan label; treat the issue as not-yet-dispatched; let `get_ready()` re-dispatch it. Worker is idempotent — re-cuts the worker branch fresh. Torn label state from a kill between the `agent-ready` remove and the `agent-done` add (the #31 failure mode) is handled by the single-state backstop: when it detects zero state labels with an open PR and no `blocked` label, it converges directly to `agent-done` via `labels.target_state_from_observed` (rather than parking) and falls through to the in-tick CI gate (`worker_result == "pr_created"` → `merge_issue_branch`), merging the PR in the same tick; all other violations still alert and park (#31, PR #95).
 4. **Ready frontier** = `get_ready()` after seeding `done`/`parked` from (1)/(2) and routing (3a)/(3b).
 
 ### Why this resolves the merge-gating tension
