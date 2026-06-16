@@ -435,7 +435,6 @@ def _run_ci_gate(
     pr_head_sha: str,
     repo_root: Any,  # noqa: ANN401
     branch_name: str,
-    feature_branch: str,
     sched: Any,  # noqa: ANN401
     liveness_state: LivenessState | None,
     runlog: RunLog | None,
@@ -469,9 +468,9 @@ def _run_ci_gate(
             ``"baton/issue-10-10"``).
         pr_head_sha: The PR head commit SHA.
         repo_root: Absolute ``Path`` to the repository root.
-        branch_name: The feature branch name for the work unit.
-        feature_branch: Alias for ``branch_name`` passed to
-            ``merge_issue_branch``.
+        branch_name: The feature branch name for the work unit; used for
+            logging and forwarded to ``merge_issue_branch`` as the
+            ``feature_branch`` argument.
         sched: The ``IssueScheduler`` instance for this work unit.
         liveness_state: Optional ``LivenessState`` shared with the
             heartbeat monitor; cleared on every terminal branch (C-I4).
@@ -490,7 +489,7 @@ def _run_ci_gate(
             issue=n,
             pr_head_sha=pr_head_sha,
             issue_branch=issue_branch,
-            feature_branch=feature_branch,
+            feature_branch=branch_name,
             poll_interval=ci_poll_interval,
             timeout=ci_timeout,
         )
@@ -1182,7 +1181,6 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                         pr_head_sha=_conv_sha,
                         repo_root=repo_root,
                         branch_name=branch_name,
-                        feature_branch=branch_name,
                         sched=sched,
                         liveness_state=liveness_state,
                         runlog=runlog,
@@ -1267,7 +1265,6 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 pr_head_sha=pr_head_sha,
                 repo_root=repo_root,
                 branch_name=branch_name,
-                feature_branch=branch_name,
                 sched=sched,
                 liveness_state=liveness_state,
                 runlog=runlog,
