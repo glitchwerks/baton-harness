@@ -518,9 +518,7 @@ def _run_ci_gate(
 
     if outcome == MergeOutcome.MERGED:
         # merge_issue_branch already added agent-merged + marker.
-        _label_edit(
-            owner, repo, n, remove=["agent-in-progress", "agent-done"]
-        )
+        _label_edit(owner, repo, n, remove=["agent-in-progress", "agent-done"])
         if liveness_state is not None:
             liveness_state.clear()
         sched.mark_done(n)
@@ -1232,9 +1230,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
             if liveness_state is not None:
                 liveness_state.clear()
             sched.mark_parked(n)
-            parked_reasons[n] = (
-                f"label invariant violation: {_inv_violation}"
-            )
+            parked_reasons[n] = f"label invariant violation: {_inv_violation}"
             continue
 
         # Apply §3.5 outcome protocol.
