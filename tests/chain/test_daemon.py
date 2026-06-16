@@ -35,6 +35,7 @@ import pytest
 
 import baton_harness.chain.daemon as daemon_mod
 from baton_harness.chain.daemon import run_daemon
+from baton_harness.chain.heartbeat import LivenessState
 from baton_harness.chain.merge import MergeOutcome
 from baton_harness.chain.recovery import RecoveryResult
 from baton_harness.chain.registry import RepoConfig
@@ -4333,6 +4334,17 @@ class TestBackstopConvergence:
                 "baton_harness.chain.daemon.merge_issue_branch",
                 mock_merge_fn,
             ),
+            # Spy on LivenessState.clear so we can assert call_count.
+            # With the current (unfixed) code the converge branch clears
+            # liveness at daemon.py:1046-1047 AND the MERGED terminal
+            # clears it again at daemon.py:1162-1163 → call_count == 2.
+            # After the fix (converge branch clear removed) it fires
+            # exactly once at the MERGED terminal → call_count == 1.
+            patch.object(
+                LivenessState,
+                "clear",
+                autospec=True,
+            ) as mock_liveness_clear,
             _patch_run_worker("pr_created"),
         ):
             asyncio.run(
@@ -4440,6 +4452,26 @@ class TestBackstopConvergence:
             "On MergeOutcome.MERGED the daemon must remove"
             " agent-in-progress (merge-success label cleanup);"
             f" label_edits={label_edits}"
+        )
+
+        # NEW (P2 fix pin): liveness_state.clear() must fire EXACTLY ONCE
+        # — at the MERGED terminal (daemon.py:1162-1163).  The premature
+        # clear in the backstop converge branch (daemon.py:1046-1047) must
+        # be removed by the code-implementer so the heartbeat stall monitor
+        # stays active through the CI gate wait.
+        #
+        # CURRENT (unfixed) behaviour: clear() fires twice (converge branch
+        # AND MERGED terminal) → call_count == 2.
+        # EXPECTED (fixed) behaviour: clear() fires once (MERGED terminal
+        # only) → call_count == 1.
+        #
+        # This assertion is RED on the current code and GREEN after the fix.
+        assert mock_liveness_clear.call_count == 1, (
+            "liveness_state.clear() must be called exactly once"
+            " (at the MERGED terminal), not also in the backstop converge"
+            " branch.  A premature clear would leave the heartbeat stall"
+            " monitor idle during the CI gate wait."
+            f" Got call_count={mock_liveness_clear.call_count}."
         )
 
     # ------------------------------------------------------------------
