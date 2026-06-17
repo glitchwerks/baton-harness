@@ -28,6 +28,7 @@ Coverage:
 from __future__ import annotations
 
 import asyncio
+import json
 import subprocess
 from collections.abc import Callable
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -137,7 +138,26 @@ def _make_git_seam(
             if wt_path in unpushed_paths:
                 return _ok("abc1234 some unpushed commit\n")
             return _ok("")
-        # gh issue view --json labels for label checks
+        # gh issue view <N> --repo <owner>/<repo> --json labels
+        # Contract: scan_orphan_worktrees calls _fetch_labels(owner, repo, N)
+        # which emits: ["gh","issue","view",str(N),"--repo","<o>/<r>",
+        #               "--json","labels"]
+        # Response shape: {"labels": [{"name": "<label>"}]}
+        if (
+            len(cmd) >= 5
+            and cmd[0] == "gh"
+            and cmd[1] == "issue"
+            and cmd[2] == "view"
+            and "--json" in cmd
+            and "labels" in cmd
+        ):
+            try:
+                issue_num = int(cmd[3])
+            except (IndexError, ValueError):
+                return _ok('{"labels": []}')
+            names = issue_labels.get(issue_num, [])
+            payload = json.dumps({"labels": [{"name": n} for n in names]})
+            return _ok(payload)
         return _ok("{}")
 
     return _run
