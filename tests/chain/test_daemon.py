@@ -5895,15 +5895,36 @@ class TestP2MarkInProgressCallSites:
             )
             original_mark(self_state, owner, repo, issue, now, **kwargs)
 
+        # Issue 77 must appear in the agent-ready list so Phase 1 of
+        # _poll_and_run builds a work unit with membership={77} and calls
+        # _run_work_unit.  Inside that call reconstruct() returns
+        # ci_gate_reentry={77}, routing issue 77 through the reentry branch
+        # (daemon.py L825) which is the call-site under test.
+        ci_reentry_issue = [
+            {
+                "number": 77,
+                "title": "CI reentry issue",
+                "state": "open",
+                "body": "",
+                "url": "https://github.com/o/r/issues/77",
+                "labels": [{"name": "agent-ready"}],
+                "milestone": None,
+                "assignees": [],
+            }
+        ]
+
         with (
             patch.object(
-                LivenessState, "mark_in_progress", side_effect=spy_mark
+                LivenessState,
+                "mark_in_progress",
+                autospec=True,
+                side_effect=spy_mark,
             ),
             patch.object(
                 daemon_mod,
                 "_run",
                 side_effect=_make_run_side_effect(
-                    ready_issues=[],
+                    ready_issues=ci_reentry_issue,
                     pr_head_sha="abc123",
                     issue_branch="baton/issue-77-77",
                     feature_branch_exists=False,
@@ -6007,7 +6028,10 @@ class TestP2MarkInProgressCallSites:
 
         with (
             patch.object(
-                LivenessState, "mark_in_progress", side_effect=spy_mark
+                LivenessState,
+                "mark_in_progress",
+                autospec=True,
+                side_effect=spy_mark,
             ),
             patch.object(
                 daemon_mod,
