@@ -850,11 +850,8 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
             # to ci_timeout=1800s).  worker_active=False: no worker turns
             # occur during a CI gate wait, so the progress predicate must
             # NOT fire here (IS-1).
-            # NOTE: unbound-method call so patch.object(LivenessState,
-            # 'mark_in_progress', side_effect=spy) tests can capture self.
             if liveness_state is not None:
-                LivenessState.mark_in_progress(
-                    liveness_state,
+                liveness_state.mark_in_progress(
                     owner,
                     repo,
                     n,
@@ -987,11 +984,8 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
         # Liveness tracking: record that this issue is now in-progress so
         # heartbeat_monitor can detect a stall.  worker_active=True enables
         # the per-turn progress-stall predicate (P2 / IS-1).
-        # NOTE: unbound-method call so patch.object(LivenessState,
-        # 'mark_in_progress', side_effect=spy) tests can capture self.
         if liveness_state is not None:
-            LivenessState.mark_in_progress(
-                liveness_state,
+            liveness_state.mark_in_progress(
                 owner,
                 repo,
                 n,
