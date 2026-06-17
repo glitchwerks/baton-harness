@@ -39,8 +39,15 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING, Literal
+
+from baton_harness.chain.escalation import alert
+
+if TYPE_CHECKING:
+    from baton_harness.chain.runlog import RunLog
 
 _log = logging.getLogger(__name__)
 
@@ -373,3 +380,232 @@ def reconstruct(
         ci_gate_reentry=ci_gate_reentry,
         redispatch=redispatch,
     )
+
+
+# ---------------------------------------------------------------------------
+# Worktree orphan-GC (IS-5 detect-first) — P1 / #33
+# ---------------------------------------------------------------------------
+
+# Label that marks an issue as actively in-flight (IS-5 predicate b).
+_AGENT_IN_PROGRESS_LABEL = "agent-in-progress"
+
+# Branch prefix written by WorkspaceManager for issue worktrees
+# (e.g. "refs/heads/baton/42").
+_BATON_BRANCH_PREFIX = "refs/heads/baton/"
+
+
+def _parse_worktree_list(
+    porcelain: str,
+) -> list[tuple[str, int | None]]:
+    """Parse ``git worktree list --porcelain`` output.
+
+    Extracts ``(worktree_path, issue_number)`` pairs from each block.
+    Issue number is parsed from branch lines matching
+    ``refs/heads/baton/<N>``.  Blocks without a matching branch are
+    silently skipped (main worktree, detached HEADs).
+
+    Args:
+        porcelain: Raw stdout from ``git worktree list --porcelain``.
+
+    Returns:
+        A list of ``(worktree_path, issue_number)`` pairs for worktrees
+        whose branch name encodes an issue number.
+    """
+    results: list[tuple[str, int | None]] = []
+    current_path: str | None = None
+    current_issue: int | None = None
+
+    for raw_line in porcelain.splitlines():
+        line = raw_line.strip()
+        if line.startswith("worktree "):
+            # Flush previous block if it had a path + issue.
+            if current_path is not None and current_issue is not None:
+                results.append((current_path, current_issue))
+            current_path = line[len("worktree ") :]
+            current_issue = None
+        elif line.startswith("branch "):
+            branch = line[len("branch ") :]
+            if branch.startswith(_BATON_BRANCH_PREFIX):
+                tail = branch[len(_BATON_BRANCH_PREFIX) :]
+                try:
+                    current_issue = int(tail)
+                except ValueError:
+                    current_issue = None
+
+    # Flush the final block.
+    if current_path is not None and current_issue is not None:
+        results.append((current_path, current_issue))
+
+    return results
+
+
+def _is_worktree_live(worktree_path: str) -> bool:
+    """Return True if the worktree has uncommitted or unpushed changes.
+
+    IS-5 predicate (c): a worktree is live (not reclaimable) if:
+    - ``git -C <path> status --porcelain`` returns non-empty output
+      (dirty working tree), OR
+    - ``git -C <path> log @{u}.. --oneline`` returns non-empty output
+      (unpushed commits), OR
+    - the upstream check returns non-zero (no upstream configured →
+      treat as unpushed, i.e. live).
+
+    Args:
+        worktree_path: Absolute path to the worktree directory.
+
+    Returns:
+        ``True`` if the worktree has local work that must be preserved.
+        ``False`` only when both the tree is clean AND all commits are
+        pushed to an upstream branch.
+    """
+    # Check for uncommitted changes.
+    status_proc = _run(["git", "-C", worktree_path, "status", "--porcelain"])
+    if status_proc.returncode == 0 and status_proc.stdout.strip():
+        return True  # Dirty tree → live.
+
+    # Check for unpushed commits (non-zero exit = no upstream → live).
+    log_proc = _run(["git", "-C", worktree_path, "log", "@{u}..", "--oneline"])
+    if log_proc.returncode != 0:
+        # No upstream configured → treat as unpushed → live.
+        return True
+    if log_proc.stdout.strip():
+        # Unpushed commits present → live.
+        return True
+
+    return False
+
+
+async def scan_orphan_worktrees(
+    owner: str,
+    repo: str,
+    *,
+    running_issues: frozenset[int],
+    terminal_issues: frozenset[int],
+    worktree_gc: Literal["detect", "reclaim"] = "detect",
+    cleanup_worktree: (Callable[[int], Awaitable[None]] | None) = None,
+    runlog: RunLog | None = None,
+) -> set[int]:
+    """Scan for orphaned worktrees and optionally reclaim them.
+
+    Reads ``git worktree list --porcelain`` from the daemon's CWD,
+    applies the IS-5 liveness predicate to each baton-issue worktree,
+    and returns the set of confirmed orphan issue numbers.
+
+    A worktree is an orphan only if ALL of the following hold:
+
+    1. Its issue is in ``terminal_issues`` (confirmed done/merged).
+    2. Its issue is NOT in ``running_issues`` (IS-5 predicate a).
+    3. The issue does NOT carry the ``agent-in-progress`` label
+       (IS-5 predicate b), checked via the existing ``_fetch_labels``
+       seam.
+    4. The worktree is clean: no uncommitted changes and no unpushed
+       commits (IS-5 predicate c).
+
+    The conservatism guarantee: any worktree that fails the terminal
+    check OR any live predicate is kept.
+
+    GC vs redispatch set: the returned orphan set is disjoint from
+    ``running_issues`` by construction (predicate a).  Callers that
+    manage a redispatch set must separately exclude any issue that
+    appears in both sets — this function only guarantees the
+    ``running_issues`` exclusion.
+
+    Args:
+        owner: GitHub repository owner (for ``_fetch_labels``).
+        repo: GitHub repository name (for ``_fetch_labels``).
+        running_issues: Issue numbers currently in the running or
+            membership set; these are never classified as orphans.
+        terminal_issues: Issue numbers confirmed as terminal
+            (done/merged); only terminal issues are candidates.
+        worktree_gc: ``"detect"`` (default) — report orphans, no
+            cleanup; ``"reclaim"`` — also call ``cleanup_worktree``
+            for each confirmed orphan.
+        cleanup_worktree: Async callable that removes the worktree for
+            a given issue number.  Only called in ``"reclaim"`` mode.
+            Must be ``None`` in ``"detect"`` mode.
+        runlog: Optional ``RunLog`` handle for best-effort emission
+            of ``orphan_worktree`` events.  When ``None``, emission
+            is skipped.
+
+    Returns:
+        A ``set[int]`` of confirmed orphan issue numbers.  An empty
+        set is returned when the git command fails (sweep is guarded —
+        callers never see an exception).
+    """
+    orphans: set[int] = set()
+
+    try:
+        list_proc = _run(["git", "worktree", "list", "--porcelain"])
+        if list_proc.returncode != 0:
+            _log.debug(
+                "recovery: git worktree list failed (exit %d): %s",
+                list_proc.returncode,
+                list_proc.stderr,
+            )
+            return orphans
+
+        worktrees = _parse_worktree_list(list_proc.stdout)
+
+        for wt_path, issue_num in worktrees:
+            if issue_num is None:
+                continue
+
+            # IS-5 predicate (a): issue in running/membership set → live.
+            if issue_num in running_issues:
+                continue
+
+            # Conservative: only reclaim confirmed terminal issues.
+            if issue_num not in terminal_issues:
+                continue
+
+            # IS-5 predicate (b): agent-in-progress label → live.
+            # Uses _fetch_labels (the existing seam) — lower-cased names.
+            labels = _fetch_labels(owner, repo, issue_num)
+            if _AGENT_IN_PROGRESS_LABEL in labels:
+                continue
+
+            # IS-5 predicate (c): dirty or unpushed → live.
+            if _is_worktree_live(wt_path):
+                continue
+
+            # All live predicates clear → confirmed orphan.
+            orphans.add(issue_num)
+
+            alert(
+                owner,
+                repo,
+                issue_num,
+                (
+                    f"Orphaned worktree detected for issue #{issue_num}"
+                    f" at {wt_path}; terminal and no live work present."
+                ),
+                severity="warn",
+                kind="debug",
+                runlog=runlog,
+            )
+
+            if runlog is not None:
+                try:
+                    runlog.emit(
+                        {
+                            "event": "orphan_worktree",
+                            "issue": issue_num,
+                            "worktree": wt_path,
+                        }
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+
+            # Reclaim only in explicit opt-in mode and only confirmed
+            # orphans — never in detect mode (IS-5 GC-vs-redispatch
+            # guarantee).
+            if worktree_gc == "reclaim" and cleanup_worktree is not None:
+                await cleanup_worktree(issue_num)
+
+    except Exception as exc:  # noqa: BLE001
+        _log.debug(
+            "recovery: scan_orphan_worktrees failed: %s; returning empty set",
+            exc,
+        )
+
+    return orphans
