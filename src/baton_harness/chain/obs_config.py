@@ -48,6 +48,13 @@ BH_REDISPATCH_COUNTS_PATH : str, optional
     Default: ``${BH_PROJECT_ROOT}/.baton-harness/dispatch-counts.json``
     (or CWD-relative ``.baton-harness/dispatch-counts.json`` when
     ``BH_PROJECT_ROOT`` is unset).
+
+BH_WORKTREE_GC : str, optional
+    Worktree orphan-GC mode.  Accepted values: ``detect`` (default),
+    ``reclaim``.  ``detect`` logs orphans but never removes them (safe
+    default, IS-5 detect-first).  ``reclaim`` additionally calls
+    ``cleanup_worktree`` for confirmed orphans.  Any unrecognised value
+    logs a WARNING and falls back to ``detect``.
 """
 
 from __future__ import annotations
@@ -56,6 +63,7 @@ import dataclasses
 import logging
 import os
 from pathlib import Path
+from typing import Literal
 
 _log = logging.getLogger(__name__)
 
@@ -70,6 +78,8 @@ _DEFAULT_DISPATCH_COUNTS_NAME = "dispatch-counts.json"
 _DEFAULT_REDISPATCH_WINDOW_TICKS = 10
 _DEFAULT_REDISPATCH_MAX = 3
 _DEFAULT_HEARTBEAT_STALL_S = 7200.0
+_DEFAULT_WORKTREE_GC: Literal["detect", "reclaim"] = "detect"
+_VALID_WORKTREE_GC = frozenset({"detect", "reclaim"})
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +104,8 @@ class ObsConfig:
         heartbeat_ping_url: Optional URL pinged on each heartbeat write.
         redispatch_counts_path: Path to the durable re-dispatch tally
             JSON file used for loop detection.
+        worktree_gc: Worktree orphan-GC mode.  ``"detect"`` (default)
+            logs orphans only; ``"reclaim"`` enables opt-in cleanup.
     """
 
     runlog_path: Path
@@ -103,6 +115,7 @@ class ObsConfig:
     heartbeat_stall_s: float
     heartbeat_ping_url: str | None
     redispatch_counts_path: Path
+    worktree_gc: Literal["detect", "reclaim"] = "detect"
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +224,23 @@ def load_obs_config() -> ObsConfig:
         Path(_rdc_raw) if _rdc_raw is not None else _default_dispatch_counts
     )
 
+    # Worktree orphan-GC mode (detect | reclaim).  Unrecognised values log
+    # a WARNING and fall back to "detect" (consistent with the never-raise
+    # contract and the guarded-parse pattern used for numeric fields above).
+    _wgc_raw = os.environ.get("BH_WORKTREE_GC")
+    if _wgc_raw is not None:
+        if _wgc_raw in _VALID_WORKTREE_GC:
+            worktree_gc: Literal["detect", "reclaim"] = _wgc_raw  # type: ignore[assignment]
+        else:
+            _log.warning(
+                "load_obs_config: BH_WORKTREE_GC=%r is not a valid value"
+                " (expected 'detect' or 'reclaim'); using default 'detect'",
+                _wgc_raw,
+            )
+            worktree_gc = _DEFAULT_WORKTREE_GC
+    else:
+        worktree_gc = _DEFAULT_WORKTREE_GC
+
     return ObsConfig(
         runlog_path=runlog_path,
         heartbeat_file=heartbeat_file,
@@ -219,4 +249,5 @@ def load_obs_config() -> ObsConfig:
         heartbeat_stall_s=heartbeat_stall_s,
         heartbeat_ping_url=heartbeat_ping_url,
         redispatch_counts_path=redispatch_counts_path,
+        worktree_gc=worktree_gc,
     )

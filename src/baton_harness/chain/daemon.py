@@ -63,7 +63,7 @@ from baton_harness.chain.labels import (
 )
 from baton_harness.chain.merge import MergeOutcome, merge_issue_branch
 from baton_harness.chain.obs_config import ObsConfig, load_obs_config
-from baton_harness.chain.recovery import RecoveryResult
+from baton_harness.chain.recovery import RecoveryResult, scan_orphan_worktrees
 from baton_harness.chain.redispatch import RedispatchTally
 from baton_harness.chain.registry import RepoConfig
 from baton_harness.chain.runlog import RunLog
@@ -71,6 +71,7 @@ from baton_harness.chain.scheduler import IssueScheduler
 from baton_harness.vendor.symphony.config import WorkflowConfig
 from baton_harness.vendor.symphony.orchestrator import Orchestrator
 from baton_harness.vendor.symphony.tracker import Issue
+from baton_harness.vendor.symphony.workspace import WorkspaceManager
 
 _log = logging.getLogger(__name__)
 
@@ -1512,6 +1513,7 @@ async def run_daemon(
                         runlog=runlog,
                         tally=tally,
                         liveness_state=liveness_state,
+                        obs=obs,
                     )
                 except Exception as exc:
                     _log.error(
@@ -1557,10 +1559,11 @@ async def _poll_and_run(
     runlog: RunLog | None = None,
     tally: RedispatchTally | None = None,
     liveness_state: LivenessState | None = None,
+    obs: ObsConfig | None = None,
 ) -> None:
     """Poll one repo for a ready work unit and run it if found.
 
-    The poll cycle has two sequential phases (B-I3 serial invariant —
+    The poll cycle has three sequential phases (B-I3 serial invariant —
     no concurrent tasks are spawned):
 
     1. **Primary scan** — query ``agent-ready`` issues, select one work
@@ -1575,6 +1578,12 @@ async def _poll_and_run(
        crash-orphaned issues that have no ``agent-ready`` sibling.
        Un-milestoned orphans are deduped by issue number.
 
+    3. **Worktree orphan-GC sweep** — call ``scan_orphan_worktrees``
+       to detect (and optionally reclaim) worktrees whose issue is
+       terminal and has no live work.  Guarded: never raises into the
+       daemon loop.  Mode is read from ``obs.worktree_gc`` (default
+       ``"detect"``).
+
     Args:
         config: The loaded ``WorkflowConfig``.
         repo_cfg: The repo registry entry.
@@ -1586,6 +1595,9 @@ async def _poll_and_run(
             detection.  When ``None``, loop detection is skipped.
         liveness_state: Optional ``LivenessState`` shared with the
             heartbeat monitor.  Passed through to ``_run_work_unit``.
+        obs: Optional loaded ``ObsConfig`` used to read
+            ``worktree_gc`` mode for Phase 3.  When ``None``, Phase 3
+            runs in ``"detect"`` mode (no reclaim).
     """
     owner = repo_cfg.owner
     repo = repo_cfg.repo
@@ -1807,6 +1819,32 @@ async def _poll_and_run(
             tally=tally,
             liveness_state=liveness_state,
         )
+
+    # ------------------------------------------------------------------
+    # Phase 3: worktree orphan-GC sweep (IS-5 detect-first).
+    #
+    # Scans git worktrees for entries whose issue is terminal and has no
+    # live work.  Guarded: exceptions never escape to the daemon loop.
+    # Mode is "detect" by default; set BH_WORKTREE_GC=reclaim to opt
+    # in to cleanup.
+    # ------------------------------------------------------------------
+    worktree_gc_mode = obs.worktree_gc if obs is not None else "detect"
+    try:
+        # WorkspaceManager provides cleanup_worktree(issue_number) — the
+        # same implementation used by the Orchestrator.  A fresh instance
+        # is cheap (no I/O in __init__) and avoids exposing orch outside
+        # _run_work_unit (B-I3 serial invariant).
+        _ws = WorkspaceManager(str(repo_cfg.project_root))
+        await scan_orphan_worktrees(
+            owner=owner,
+            repo=repo,
+            running_issues=frozenset(processed_issue_nums),
+            worktree_gc=worktree_gc_mode,
+            cleanup_worktree=_ws.cleanup_worktree,
+            runlog=runlog,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log.debug("daemon: worktree GC sweep raised (suppressed): %s", exc)
 
 
 def _select_work_unit(
