@@ -475,12 +475,67 @@ def _is_worktree_live(worktree_path: str) -> bool:
     return False
 
 
+def _fetch_issue_state_and_labels(
+    owner: str,
+    repo: str,
+    issue: int,
+) -> tuple[str | None, set[str]]:
+    """Fetch state and labels for an issue in a single gh call.
+
+    Calls ``gh issue view <N> --json state,labels`` and returns a
+    ``(state, labels)`` tuple.  The ``state`` is the raw GitHub string
+    (``"CLOSED"`` or ``"OPEN"``); labels are lowercase strings.
+
+    On any failure (non-zero returncode, parse error) returns
+    ``(None, set())`` — callers treat ``None`` state as NOT terminal
+    (conservative/live).
+
+    Args:
+        owner: The GitHub repository owner.
+        repo: The repository name.
+        issue: The issue number.
+
+    Returns:
+        A ``(state, labels)`` tuple.  ``state`` is ``"CLOSED"``,
+        ``"OPEN"``, or ``None`` on failure.  ``labels`` is a set of
+        lowercase label name strings (empty on failure).
+    """
+    proc = _run(
+        [
+            "gh",
+            "issue",
+            "view",
+            str(issue),
+            "--repo",
+            f"{owner}/{repo}",
+            "--json",
+            "state,labels",
+        ]
+    )
+    if proc.returncode != 0:
+        _log.debug(
+            "recovery: gh issue view (state+labels) failed for"
+            " #%d (exit %d): %s",
+            issue,
+            proc.returncode,
+            proc.stderr,
+        )
+        return None, set()
+    try:
+        data = json.loads(proc.stdout)
+        state: str | None = data.get("state")
+        labels = {lbl["name"].lower() for lbl in data.get("labels", [])}
+        return state, labels
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        _log.debug("recovery: state+label parse error for #%d: %s", issue, exc)
+        return None, set()
+
+
 async def scan_orphan_worktrees(
     owner: str,
     repo: str,
     *,
     running_issues: frozenset[int],
-    terminal_issues: frozenset[int],
     worktree_gc: Literal["detect", "reclaim"] = "detect",
     cleanup_worktree: (Callable[[int], Awaitable[None]] | None) = None,
     runlog: RunLog | None = None,
@@ -488,41 +543,43 @@ async def scan_orphan_worktrees(
     """Scan for orphaned worktrees and optionally reclaim them.
 
     Reads ``git worktree list --porcelain`` from the daemon's CWD,
-    applies the IS-5 liveness predicate to each baton-issue worktree,
-    and returns the set of confirmed orphan issue numbers.
+    fetches each worktree's issue state from GitHub, applies the IS-5
+    liveness predicate, and returns confirmed orphan issue numbers.
 
-    A worktree is an orphan only if ALL of the following hold:
+    Terminal-ness is determined per-worktree by fetching issue state
+    with ``gh issue view --json state,labels``:
 
-    1. Its issue is in ``terminal_issues`` (confirmed done/merged).
-    2. Its issue is NOT in ``running_issues`` (IS-5 predicate a).
-    3. The issue does NOT carry the ``agent-in-progress`` label
-       (IS-5 predicate b), checked via the existing ``_fetch_labels``
-       seam.
+    - ``state == "CLOSED"`` → terminal (orphan-eligible, subject to
+      live predicates).
+    - ``state == "OPEN"`` → NOT terminal → live (conservative).  This
+      includes ``agent-done`` + OPEN (Rule-4 ci_gate_reentry in-flight
+      case — worktree still needed).
+    - Fetch failure (non-zero returncode or parse error) → NOT terminal
+      → live (conservative: unknown state is safe).
+
+    A worktree is a confirmed orphan only when ALL hold:
+
+    1. Issue state is ``"CLOSED"`` (terminal).
+    2. Issue is NOT in ``running_issues`` (IS-5 predicate a).
+    3. Issue does NOT carry the ``agent-in-progress`` label
+       (IS-5 predicate b — label is returned by the same gh call).
     4. The worktree is clean: no uncommitted changes and no unpushed
        commits (IS-5 predicate c).
 
-    The conservatism guarantee: any worktree that fails the terminal
-    check OR any live predicate is kept.
-
-    GC vs redispatch set: the returned orphan set is disjoint from
-    ``running_issues`` by construction (predicate a).  Callers that
-    manage a redispatch set must separately exclude any issue that
-    appears in both sets — this function only guarantees the
-    ``running_issues`` exclusion.
+    The conservatism guarantee: any worktree that is OPEN, fetch-failed,
+    running, in-progress-labelled, dirty, or has unpushed commits is
+    kept.
 
     Args:
-        owner: GitHub repository owner (for ``_fetch_labels``).
-        repo: GitHub repository name (for ``_fetch_labels``).
+        owner: GitHub repository owner (for ``gh issue view``).
+        repo: GitHub repository name (for ``gh issue view``).
         running_issues: Issue numbers currently in the running or
             membership set; these are never classified as orphans.
-        terminal_issues: Issue numbers confirmed as terminal
-            (done/merged); only terminal issues are candidates.
         worktree_gc: ``"detect"`` (default) — report orphans, no
             cleanup; ``"reclaim"`` — also call ``cleanup_worktree``
             for each confirmed orphan.
         cleanup_worktree: Async callable that removes the worktree for
             a given issue number.  Only called in ``"reclaim"`` mode.
-            Must be ``None`` in ``"detect"`` mode.
         runlog: Optional ``RunLog`` handle for best-effort emission
             of ``orphan_worktree`` events.  When ``None``, emission
             is skipped.
@@ -554,13 +611,16 @@ async def scan_orphan_worktrees(
             if issue_num in running_issues:
                 continue
 
-            # Conservative: only reclaim confirmed terminal issues.
-            if issue_num not in terminal_issues:
+            # Fetch issue state + labels in one gh call.
+            # OPEN or fetch-failure → NOT terminal → live (conservative).
+            state, labels = _fetch_issue_state_and_labels(
+                owner, repo, issue_num
+            )
+            if state != "CLOSED":
                 continue
 
             # IS-5 predicate (b): agent-in-progress label → live.
-            # Uses _fetch_labels (the existing seam) — lower-cased names.
-            labels = _fetch_labels(owner, repo, issue_num)
+            # Labels already returned by the state+labels fetch above.
             if _AGENT_IN_PROGRESS_LABEL in labels:
                 continue
 

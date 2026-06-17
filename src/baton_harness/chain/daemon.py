@@ -71,6 +71,7 @@ from baton_harness.chain.scheduler import IssueScheduler
 from baton_harness.vendor.symphony.config import WorkflowConfig
 from baton_harness.vendor.symphony.orchestrator import Orchestrator
 from baton_harness.vendor.symphony.tracker import Issue
+from baton_harness.vendor.symphony.workspace import WorkspaceManager
 
 _log = logging.getLogger(__name__)
 
@@ -1829,13 +1830,17 @@ async def _poll_and_run(
     # ------------------------------------------------------------------
     worktree_gc_mode = obs.worktree_gc if obs is not None else "detect"
     try:
+        # WorkspaceManager provides cleanup_worktree(issue_number) — the
+        # same implementation used by the Orchestrator.  A fresh instance
+        # is cheap (no I/O in __init__) and avoids exposing orch outside
+        # _run_work_unit (B-I3 serial invariant).
+        _ws = WorkspaceManager(str(repo_cfg.project_root))
         await scan_orphan_worktrees(
             owner=owner,
             repo=repo,
             running_issues=frozenset(processed_issue_nums),
-            terminal_issues=frozenset(),  # No terminal set at poll time;
-            # scan is a best-effort detection pass.
             worktree_gc=worktree_gc_mode,
+            cleanup_worktree=_ws.cleanup_worktree,
             runlog=runlog,
         )
     except Exception as exc:  # noqa: BLE001
