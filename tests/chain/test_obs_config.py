@@ -37,6 +37,7 @@ _BH_REDISPATCH_MAX = "BH_REDISPATCH_MAX"
 _BH_HEARTBEAT_STALL_S = "BH_HEARTBEAT_STALL_S"
 _BH_HEARTBEAT_PING_URL = "BH_HEARTBEAT_PING_URL"
 _BH_REDISPATCH_COUNTS_PATH = "BH_REDISPATCH_COUNTS_PATH"
+_BH_WORKTREE_GC = "BH_WORKTREE_GC"
 
 _ALL_OBS_VARS = (
     _BH_PROJECT_ROOT,
@@ -47,6 +48,7 @@ _ALL_OBS_VARS = (
     _BH_HEARTBEAT_STALL_S,
     _BH_HEARTBEAT_PING_URL,
     _BH_REDISPATCH_COUNTS_PATH,
+    _BH_WORKTREE_GC,
 )
 
 
@@ -471,3 +473,85 @@ def test_load_obs_config_still_never_raises_with_new_field(
     cfg = load_obs_config()
 
     assert hasattr(cfg, "redispatch_counts_path")
+
+
+# ---------------------------------------------------------------------------
+# worktree_gc field (new for #33 P1)
+# ---------------------------------------------------------------------------
+
+
+def test_load_obs_config_worktree_gc_default_is_detect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BH_WORKTREE_GC unset → worktree_gc defaults to 'detect'.
+
+    The default must be the conservative detect-only mode (IS-5: detect,
+    not destroy). Destructive reclaim is opt-in only.
+
+    Args:
+        monkeypatch: pytest fixture for hermetic env-var injection.
+    """
+    _clear_all_obs_vars(monkeypatch)
+    monkeypatch.setenv(_BH_PROJECT_ROOT, "/r")
+
+    cfg = load_obs_config()
+
+    assert cfg.worktree_gc == "detect", (
+        f"Expected worktree_gc='detect' when BH_WORKTREE_GC is unset; "
+        f"got {cfg.worktree_gc!r}"
+    )
+
+
+def test_load_obs_config_worktree_gc_reclaim_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BH_WORKTREE_GC=reclaim → worktree_gc is 'reclaim'.
+
+    The 'reclaim' value must be parsed and stored as the literal string
+    'reclaim', enabling the opt-in destructive GC path.
+
+    Args:
+        monkeypatch: pytest fixture for hermetic env-var injection.
+    """
+    _clear_all_obs_vars(monkeypatch)
+    monkeypatch.setenv(_BH_PROJECT_ROOT, "/r")
+    monkeypatch.setenv(_BH_WORKTREE_GC, "reclaim")
+
+    cfg = load_obs_config()
+
+    assert cfg.worktree_gc == "reclaim", (
+        f"Expected worktree_gc='reclaim' when BH_WORKTREE_GC=reclaim; "
+        f"got {cfg.worktree_gc!r}"
+    )
+
+
+def test_load_obs_config_worktree_gc_garbage_warns_and_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """BH_WORKTREE_GC=<invalid> warns and falls back to 'detect'.
+
+    An unrecognised value (not 'detect' or 'reclaim') must:
+    - NOT raise (consistent with the never-raise contract).
+    - Fall back to the safe default 'detect'.
+    - Log a WARNING mentioning BH_WORKTREE_GC (consistent with the
+      guarded-parse pattern used for malformed int/float env vars).
+
+    Args:
+        monkeypatch: pytest fixture for hermetic env-var injection.
+        caplog: pytest fixture to assert a WARNING was logged.
+    """
+    _clear_all_obs_vars(monkeypatch)
+    monkeypatch.setenv(_BH_PROJECT_ROOT, "/r")
+    monkeypatch.setenv(_BH_WORKTREE_GC, "destroy-everything")
+
+    with caplog.at_level(logging.WARNING):
+        cfg = load_obs_config()
+
+    assert cfg.worktree_gc == "detect", (
+        f"Expected fallback worktree_gc='detect' for invalid "
+        f"BH_WORKTREE_GC; got {cfg.worktree_gc!r}"
+    )
+    assert "BH_WORKTREE_GC" in caplog.text, (
+        "Expected a WARNING mentioning BH_WORKTREE_GC for the invalid value"
+    )
