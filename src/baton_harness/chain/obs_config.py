@@ -55,6 +55,13 @@ BH_WORKTREE_GC : str, optional
     default, IS-5 detect-first).  ``reclaim`` additionally calls
     ``cleanup_worktree`` for confirmed orphans.  Any unrecognised value
     logs a WARNING and falls back to ``detect``.
+
+BH_WORKER_PROGRESS_STALL_S : float, optional
+    Seconds without a turn-progress signal during the worker-active
+    phase before a progress-stall alert is fired.  Default: ``1800.0``
+    (6× the 300 s per-turn timeout at ``config.py:L31``; see
+    ``max_retry_backoff_ms``).  Any non-numeric value logs a WARNING
+    and falls back to the default (never-raise contract).
 """
 
 from __future__ import annotations
@@ -80,6 +87,8 @@ _DEFAULT_REDISPATCH_MAX = 3
 _DEFAULT_HEARTBEAT_STALL_S = 7200.0
 _DEFAULT_WORKTREE_GC: Literal["detect", "reclaim"] = "detect"
 _VALID_WORKTREE_GC = frozenset({"detect", "reclaim"})
+# 1800 s = 6× the 300 s per-turn timeout (max_retry_backoff_ms / config.py:L31)
+_DEFAULT_WORKER_PROGRESS_STALL_S = 1800.0
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +115,10 @@ class ObsConfig:
             JSON file used for loop detection.
         worktree_gc: Worktree orphan-GC mode.  ``"detect"`` (default)
             logs orphans only; ``"reclaim"`` enables opt-in cleanup.
+        worker_progress_stall_s: Seconds without a turn-progress signal
+            (worker-active phase only) before a progress-stall alert
+            fires.  Default ``1800.0`` s (6× the 300 s per-turn timeout
+            at ``config.py:L31``; see ``max_retry_backoff_ms``).
     """
 
     runlog_path: Path
@@ -116,6 +129,7 @@ class ObsConfig:
     heartbeat_ping_url: str | None
     redispatch_counts_path: Path
     worktree_gc: Literal["detect", "reclaim"] = "detect"
+    worker_progress_stall_s: float = 1800.0
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +255,24 @@ def load_obs_config() -> ObsConfig:
     else:
         worktree_gc = _DEFAULT_WORKTREE_GC
 
+    # Worker-active progress-stall threshold.  Env: BH_WORKER_PROGRESS_STALL_S.
+    # Default 1800.0 s = 6× the 300 s per-turn timeout (max_retry_backoff_ms /
+    # config.py:L31).  Guarded parse: never raises; malformed value → WARNING.
+    _wps_raw = os.environ.get("BH_WORKER_PROGRESS_STALL_S")
+    if _wps_raw is not None:
+        try:
+            worker_progress_stall_s = float(_wps_raw)
+        except ValueError:
+            _log.warning(
+                "load_obs_config: BH_WORKER_PROGRESS_STALL_S=%r is not a"
+                " valid float; using default %.1f",
+                _wps_raw,
+                _DEFAULT_WORKER_PROGRESS_STALL_S,
+            )
+            worker_progress_stall_s = _DEFAULT_WORKER_PROGRESS_STALL_S
+    else:
+        worker_progress_stall_s = _DEFAULT_WORKER_PROGRESS_STALL_S
+
     return ObsConfig(
         runlog_path=runlog_path,
         heartbeat_file=heartbeat_file,
@@ -250,4 +282,5 @@ def load_obs_config() -> ObsConfig:
         heartbeat_ping_url=heartbeat_ping_url,
         redispatch_counts_path=redispatch_counts_path,
         worktree_gc=worktree_gc,
+        worker_progress_stall_s=worker_progress_stall_s,
     )

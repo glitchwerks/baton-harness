@@ -38,6 +38,10 @@ class Orchestrator:
         self.worker = Worker(config)
         self._running_tasks: dict[int, asyncio.Task] = {}
         self._stop_event = asyncio.Event()
+        # VENDOR-PATCH VP-3: per-turn progress callback (issue #33)
+        # Optional callable(issue_number, turn) injected by the daemon.
+        # Attribute injection — zero changes to any existing method signature.
+        self.progress_cb = None  # VENDOR-PATCH VP-3: per-turn progress callback (issue #33)
 
     def _should_dispatch(self, issue: Issue) -> bool:
         if self.state.is_claimed(issue.number):
@@ -146,6 +150,19 @@ class Orchestrator:
                 )
 
             log.info(f"RUN  #{issue.number} turn {turn}/{self.config.max_turns}")
+
+            # VENDOR-PATCH VP-3: per-turn progress callback (issue #33)
+            # Best-effort: a callback exception is logged and swallowed so
+            # it can never crash the worker run.
+            if self.progress_cb is not None:  # VENDOR-PATCH VP-3: per-turn progress callback (issue #33)
+                try:
+                    self.progress_cb(issue.number, turn)
+                except Exception:
+                    log.exception(
+                        "progress_cb raised for issue #%s turn %s — swallowed",
+                        issue.number,
+                        turn,
+                    )
 
             # Run claude
             result = await self.worker.run_turn(
