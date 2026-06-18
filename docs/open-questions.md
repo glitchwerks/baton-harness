@@ -28,9 +28,9 @@
 ### S1.2 — Baton + Claude Code integration behavior is unverified
 **RESOLVED — spike and pilot validation complete.**
 
-The external-process integration was validated in the smoke-test spike (Scenario A — viability verdict: yes; see spike-findings.md) and the pilot dry run (T1, T2 — see pilot-validation-findings.md). The specific unknowns (`--dangerously-skip-permissions`, hook firing, exit codes) were answered empirically.
+The external-process integration was validated in the smoke-test spike (Scenario A — viability verdict: yes; see spike-findings.md) and the pilot dry run (T1, T2 — issue #6). The specific unknowns (`--dangerously-skip-permissions`, hook firing, exit codes) were answered empirically.
 
-Under the vendored-symphony model [implemented, issue #27 P0], this concern dissolves: there is no Baton subprocess integration seam. Integration is `Orchestrator._run_worker(issue)` — a direct Python call to vendored source, validated via the deep-dive analysis (`docs/baton-deepdive-findings.md`). No integration spike is needed for the subprocess path; the vendored interface is a clean callable.
+Under the vendored-symphony model [implemented, issue #27 P0], this concern dissolves: there is no Baton subprocess integration seam. Integration is `Orchestrator._run_worker(issue)` — a direct Python call to vendored source, validated via the deep-dive analysis (see `harness-design.md §1` and issue #27). No integration spike is needed for the subprocess path; the vendored interface is a clean callable.
 
 ---
 

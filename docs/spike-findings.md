@@ -1,7 +1,7 @@
 # Spike findings — smoke test
 
 **Status:** Living document, updated as the spike progresses. Source for the eventual findings memo and the architecture spec revisions.
-**Companion docs:** [smoke-test-spike.md](./smoke-test-spike.md), [architecture-spec.md](./architecture-spec.md), [open-questions.md](./open-questions.md)
+**Companion docs:** [architecture-spec.md](./architecture-spec.md), [open-questions.md](./open-questions.md)
 **Last updated:** Spike day 1 — viability established. Core loop confirmed end-to-end (Scenario A merged on green CI); graceful degradation confirmed (B, C).
 
 ## Viability verdict
