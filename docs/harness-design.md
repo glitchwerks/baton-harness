@@ -10,7 +10,7 @@
 
 ## Decision — Implementation language: Python (2026-06-04, closes #11)
 
-The harness implementation language is **Python**. This supersedes the shell-script approach used in the spike. `bin/run.sh` (the launcher, issue #1, already merged) **stays shell** — it only resolves the harness root and `exec`s Baton. Everything else — the lifecycle hooks (`after_create`, `before_run`, `after_run`) and all future stateful components — is Python.
+The harness implementation language is **Python**. This supersedes the shell-script approach used in the spike. `bin/run-daemon.sh` (the launcher, originally `bin/run.sh` issue #1; superseded by `bin/run-daemon.sh` under vendoring — see §4.1) **stays shell** — it resolves the harness root, runs an env/label preflight, and `exec`s the `bh-daemon` entry point. Everything else — the lifecycle hooks (`after_create`, `before_run`, `after_run`) and all future stateful components — is Python.
 
 **Rationale:**
 
