@@ -42,6 +42,7 @@ import asyncio
 import json
 import logging
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -63,6 +64,7 @@ from baton_harness.chain.labels import (
 )
 from baton_harness.chain.merge import MergeOutcome, merge_issue_branch
 from baton_harness.chain.obs_config import ObsConfig, load_obs_config
+from baton_harness.chain.reconcile import reconcile_startup
 from baton_harness.chain.recovery import RecoveryResult, scan_orphan_worktrees
 from baton_harness.chain.redispatch import RedispatchTally
 from baton_harness.chain.registry import RepoConfig
@@ -1488,6 +1490,35 @@ async def run_daemon(
         _log.warning("daemon: redispatch tally init failed: %s", exc)
         tally = None
 
+    # --- Startup reconciliation sweep (G3 creds, G2 marker, G1 orphans). ---
+    # reconcile_startup may raise SystemExit on fatal credential failure —
+    # that propagates out of run_daemon intentionally (the daemon cannot
+    # operate without valid credentials).  All other failures are suppressed
+    # inside reconcile_startup itself.
+    await reconcile_startup(registry, obs, runlog)
+
+    # --- SIGTERM handler (Fix 3 / PR #107): graceful shutdown clears marker.
+    # Build the marker path once so both the handler and the finally block
+    # reference the same path (single source of truth).
+    _daemon_marker = (
+        Path(registry[0].project_root) / ".baton-harness" / "daemon.alive"
+    )
+
+    def _sigterm_handler(signum: int, frame: object) -> None:  # noqa: ARG001
+        """Clear the daemon.alive marker then raise SystemExit."""
+        try:
+            _daemon_marker.unlink(missing_ok=True)
+        except Exception:  # noqa: BLE001
+            pass
+        raise SystemExit(0)
+
+    try:
+        signal.signal(signal.SIGTERM, _sigterm_handler)
+    except (OSError, ValueError):
+        # signal.signal may fail if called from a non-main thread (e.g.
+        # certain test harnesses); degrade gracefully rather than crashing.
+        pass
+
     # --- Heartbeat monitor setup. ----------------------------------------
     # Construct liveness state shared between the daemon and the monitor.
     #
@@ -1572,6 +1603,12 @@ async def run_daemon(
         stop_event.set()
         if monitor_thread is not None:
             monitor_thread.join(timeout=5.0)
+        # Clear the G2 ungraceful-exit marker on graceful shutdown so the
+        # next startup does not misread a clean stop as a crash.
+        try:
+            _daemon_marker.unlink(missing_ok=True)
+        except Exception:  # noqa: BLE001
+            pass  # best-effort; never raise in finally
 
     _log.info("daemon: stopped")
 

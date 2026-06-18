@@ -67,17 +67,17 @@ The merged #27 spec resolves the transition. On a parked/blocked issue, the **hu
 ---
 
 ### S2.3 — No failure-recovery story above the container
-**PARTIALLY RESOLVED.**
+**RESOLVED (v1) — #40 merged.**
 
 **In-flight / stuck-state recovery: RESOLVED by design.** The merged spec's `recovery.py` reconstruction (§11.5) re-derives the scheduler `done`/`parked`/frontier state from git provenance and labels on each daemon start. The `agent-in-progress` orphan rule (§8 / §11.5 rule 3b) handles issues stuck in-progress at crash time: the daemon re-evaluates them and re-dispatches rather than treating them as done. `after_run` crash-safety is tracked in **#31**; liveness in **#33**; failure notification in **#34**.
 
-**Operational hardening: tracked in issue #40** (within the Failure-mode-hardening milestone, alongside #31 / #33 / #34).
+**Operational hardening: resolved by #40** — startup reconciliation sweep (`src/baton_harness/chain/reconcile.py`) wired into `run_daemon` at `daemon.py:1497`, before the poll loop.
 
-**Specific gaps — where each is covered:**
-- One `claude -p` segfaults — `agent-in-progress` orphan rule (§11.5 rule 3b) re-dispatches on next start. → resolved by design.
-- Container OOMs → all in-flight work lost, no notification fires. → tracked in #40.
-- Harness exits between dispatching `claude` and registering it internally → orphan `claude` process. → tracked in #40.
-- Credentials file corrupted mid-run → every subsequent run fails silently. → tracked in #40.
+**Specific gaps — resolution status:**
+- **Orphan `claude` process** → **resolved (#40).** Startup `pgrep -f 'claude -p'` detect-only sweep (`reconcile.py:161-177`): if stray processes are found at boot, `alert(severity="warn")` fires with the PID list. Auto-reclaim is deferred behind a future `BH_ORPHAN_PROC_GC` flag, mirroring the `BH_WORKTREE_GC` shape from #33.
+- **Container OOM / ungraceful exit** → **resolved (#40).** A `.baton-harness/daemon.alive` marker is written at startup and cleared on graceful shutdown. If the marker is present on the next boot, the prior run ended ungracefully (likely OOM-kill or hard crash) — `alert(severity="critical")` fires (`reconcile.py:138-154`). SIGTERM now also clears the marker before exit (`daemon.py:1500-1520`), so a graceful `docker stop` does not leave the marker in place and false-alarm on next boot. The harness cannot self-report an uncatchable SIGKILL; next-boot detection is the tractable notification.
+- **Credential corruption / missing credentials** → **resolved (#40).** Two startup gates run before the poll loop (`reconcile.py:105-135`): (1) `validate_github_token()` — fatal if the GitHub token is missing or invalid (`reconcile.py:105-116`); (2) `ANTHROPIC_API_KEY` guard — **fatal if the key IS set** (`reconcile.py:119-135`). The architecture mandates OAuth via a mounted credentials volume (`architecture-spec.md` L318); a non-empty `ANTHROPIC_API_KEY` means per-token billing is active, which must be refused at startup. Either failure emits `alert(severity="critical")` then calls `sys.exit(1)`. The OAuth credential-volume health-check (presence/readability of the mounted `~/.claude/.credentials.json` — the actual file-corruption gap #40 named) is **deferred to issue #108**.
+- **`state.json` load-on-startup (retry-queue continuity)** → **deferred to issue #106.** `state.py` has `persist()` but no `load()`; the daemon starts with a fresh retry queue on each restart. In-flight issues are recoverable from labels + git provenance (`recovery.py`), so this is a state-continuity gap rather than a failure-mode gap. Tracked separately from #40.
 
 ---
 
@@ -156,10 +156,10 @@ Three patterns emerged across the items above:
 
 2. **Plumbing carries policy.** The outcome router (S2.1) and startup reconciliation (S2.3) turned out to be first-class components; both are implemented. S2.2 (Slack-to-GitHub round trip) is resolved for v1: the human drives the label transition directly on the GitHub issue.
 
-3. **Failure recovery above the container.** Stuck-state recovery is resolved by design (`recovery.py`, issue #27 §11.5); operational hardening (OOM, orphan processes, credential corruption) remains tracked in issue #40.
+3. **Failure recovery above the container.** Stuck-state recovery is resolved by design (`recovery.py`, issue #27 §11.5); operational hardening (OOM, orphan processes, credential gates) resolved by #40 (`reconcile.py` startup sweep). Two explicit residuals remain: `state.json` load-on-startup for retry-queue continuity (issue #106) and the OAuth credential-volume health-check (issue #108).
 
 ---
 
 ## Process for resolution
 
-**As of 2026-06-09 (post-#27 merge):** S1.1 (ToS) accepted risk (issue #37). S1.2 (Baton integration) dissolved by vendoring (issue #27 P0). S1.3 (rate limits) remains open — tracked in issue #39; measure before raising concurrency above 1. S2.1 (outcome router) implemented. S2.2 (Slack-to-requeue) resolved for v1 (human drives label transition — spec §9). S2.3 (failure recovery): stuck-state recovery implemented (`recovery.py`, issue #27 §11.5); operational hardening (OOM/orphan processes/credential corruption) tracked in issue #40. S2.4 (worktree isolation) resolved for v1 by serialization. Severity 3 and 4 remain valid monitors for rollout.
+**As of 2026-06-09 (post-#27 merge):** S1.1 (ToS) accepted risk (issue #37). S1.2 (Baton integration) dissolved by vendoring (issue #27 P0). S1.3 (rate limits) remains open — tracked in issue #39; measure before raising concurrency above 1. S2.1 (outcome router) implemented. S2.2 (Slack-to-requeue) resolved for v1 (human drives label transition — spec §9). S2.3 (failure recovery): stuck-state recovery implemented (`recovery.py`, issue #27 §11.5); operational hardening (OOM/orphan processes/credential gates) resolved by #40 (`reconcile.py` startup sweep); two residuals deferred — retry-queue continuity (`state.json` load-on-startup, issue #106) and OAuth credential-volume health-check (issue #108). S2.4 (worktree isolation) resolved for v1 by serialization. Severity 3 and 4 remain valid monitors for rollout.
