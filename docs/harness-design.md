@@ -293,7 +293,7 @@ One daemon per repo. The binding constraint is the GitHub dependency API (`block
 
 ---
 
-## 11. Daemon liveness monitoring [implemented — issue #79]
+## 11. Daemon liveness monitoring [implemented — issues #79, #33]
 
 The heartbeat thread (`src/baton_harness/chain/heartbeat.py`) provides two independent liveness signals on every tick. The nominal cadence is 30 s (`_DEFAULT_HEARTBEAT_CADENCE_S`); when `BH_HEARTBEAT_PING_URL` is set, the actual interval between consecutive ping arrivals is 30 s plus the ping's own latency, because the ping runs synchronously as the last step of each tick.
 
@@ -349,3 +349,70 @@ A threshold of one or two missed beats produces spurious alarms from ordinary sc
 | Yes | No | Transient ping failure — likely network; wait one more interval before alarming |
 | No | Yes | File write failed — unusual; check daemon logs |
 | No | No | Likely crash or process exit — treat as down |
+
+### Progress-bound stall detection (worker-active phase) [issue #33]
+
+Issue #33 (P2) added a second stall predicate that is sensitive to per-turn worker progress rather than only wall-clock time. This is implemented alongside the existing wall-clock predicate inside `_heartbeat_tick` (`heartbeat.py` lines 395–464).
+
+**Two logical phases controlled by `_worker_active`**
+
+The `LivenessState` dataclass (`heartbeat.py` lines 63–153) carries a `_worker_active` boolean field (line 89) that the daemon sets at the two `mark_in_progress` call sites to encode which logical phase an issue is in:
+
+| Phase | `worker_active=` | Set at | Stall predicates active |
+|---|---|---|---|
+| WORKER_ACTIVE | `True` | Fresh dispatch (`daemon.py` line 993) | Wall-clock AND progress-bound |
+| NON_WORKER | `False` | CI-gate re-entry (`daemon.py` line 859) | Wall-clock only |
+
+**WORKER_ACTIVE phase** (`worker_active=True`, set by fresh dispatch at `daemon.py` line 993): the issue is actively running Claude Code worker turns. In this phase both stall predicates apply. The progress-bound predicate fires when `(now - last_progress_at) > obs.worker_progress_stall_s` (`heartbeat.py` lines 401–415), where `last_progress_at` is stamped by the VP-3 `progress_cb` hook at each turn-loop entry in the vendored orchestrator (`orchestrator.py` lines 154–165; `note_progress` is `heartbeat.py` lines 141–153). The default threshold is 1800 s (6× the 300 s per-turn timeout; derivation: `max_retry_backoff_ms=300_000` at `config.py` line 31; see `obs_config.py` lines 90–91). Override with `BH_WORKER_PROGRESS_STALL_S` (`obs_config.py` lines 59–64, 261–274).
+
+**NON_WORKER phase** (`worker_active=False`, set by `ci_gate_reentry` at `daemon.py` line 859): the issue is waiting on a CI gate poll. No worker turns occur, so `progress_cb` never fires — `last_progress_at` is not updated. The progress-bound predicate is explicitly gated off in this phase (`heartbeat.py` line 401: `if worker_active_snap and ...`) so a CI poll wait, which can block up to `ci_timeout` seconds, can never false-fire a progress-stall alert (IS-1).
+
+**Wall-clock backstop (`heartbeat_stall_s`, default 7200 s)**
+
+The original wall-clock predicate (`heartbeat.py` lines 347–393) — present since issue #79 — fires when `(now - in_progress_since) > obs.heartbeat_stall_s`. It applies in BOTH phases. Override with `BH_HEARTBEAT_STALL_S`.
+
+NIT-1: the 7200 s backstop is meaningful primarily in NON_WORKER phase (where the progress predicate is off) and as a catch-all if the VP-3 progress signal itself breaks. During WORKER_ACTIVE the 1800 s progress threshold always latches first (1800 s « 7200 s), so in practice the backstop is a safety net rather than the primary signal.
+
+**Shared `_stall_alerted` debounce latch (IS-4)**
+
+Both predicates share the `_stall_alerted` boolean (`heartbeat.py` line 87). Once either predicate fires and the alert is delivered, `_stall_alerted` is set to `True` (`heartbeat.py` lines 372 and 440), preventing a second alert for the same stuck episode regardless of which predicate fires second. The latch resets only when `mark_in_progress` or `clear` is called (`heartbeat.py` lines 123, 138). Each predicate emits a distinguishable `detail` string in the runlog stall event so the two causes are identifiable from logs (`heartbeat.py` lines 383–388 and 451–456).
+
+**Progress signal source (VP-3)**
+
+`last_progress_at` is updated via the `progress_cb` attribute injected into the vendored `Orchestrator` at dispatch time (`daemon.py` lines 737–747; `orchestrator.py` line 44). The callback is invoked at the top of each turn loop iteration (`orchestrator.py` lines 154–165) and calls `LivenessState.note_progress` (`heartbeat.py` lines 141–153). The callback is best-effort: any exception is logged and swallowed by the VP-3 guard (`orchestrator.py` lines 160–165) so a callback failure cannot crash the worker run.
+
+**Failure semantics**
+
+Progress-stall failures are non-fatal. They fire a `severity="critical"` alert via the same `alert()` path as the wall-clock predicate and emit a `{"event": "stall", ...}` runlog event. The heartbeat thread continues; no automatic recovery action is taken (the operator must inspect and intervene).
+
+---
+
+### Worktree orphan-GC (AC2) [issue #33]
+
+After each poll tick's work units complete, the daemon runs a worktree orphan-GC sweep (`daemon.py` lines 1607–1873) by calling `scan_orphan_worktrees` (`recovery.py` lines 534–671). The sweep detects — and optionally reclaims — worktrees whose associated issue has become terminal without the normal cleanup path running (e.g. after a daemon crash mid-run).
+
+**IS-5 liveness predicate**
+
+A worktree is an orphan only when ALL four conditions hold (`recovery.py` lines 606–632):
+
+1. The issue's GitHub state is `"CLOSED"` (terminal). OPEN issues and any fetch failure are treated as live (conservative).
+2. The issue number is not in `running_issues` — the set of issues processed in the current tick (IS-5 predicate a; `recovery.py` line 611).
+3. The issue does not carry the `agent-in-progress` label (IS-5 predicate b; `recovery.py` lines 622–625). The label and state are fetched together in a single `gh issue view --json state,labels` call (`recovery.py` lines 478–531).
+4. The worktree has no uncommitted changes and no unpushed commits (IS-5 predicate c; `recovery.py` lines 627–629; `_is_worktree_live` at `recovery.py` lines 442–475).
+
+The conservatism guarantee: a worktree that is OPEN, fetch-failed, currently running, carries `agent-in-progress`, has a dirty tree, or has unpushed commits is always kept.
+
+**Detect vs reclaim modes**
+
+The mode is read from `obs.worktree_gc` (`obs_config.py` lines 52–57, 131) and defaults to `"detect"`. Override with `BH_WORKTREE_GC`.
+
+| `BH_WORKTREE_GC` | Behaviour |
+|---|---|
+| `detect` (default) | Logs a `severity="warn"` alert and emits an `orphan_worktree` runlog event for each confirmed orphan; never removes the worktree (`recovery.py` lines 634–657). Safe default — IS-5 detect-first. |
+| `reclaim` | As above, then calls `cleanup_worktree(issue_num)` to remove the worktree (`recovery.py` lines 659–663). Opt-in; destructive. |
+
+Any unrecognised value logs a WARNING and falls back to `"detect"` (`obs_config.py` lines 249–254).
+
+**Failure semantics**
+
+The sweep is guarded: the entire `scan_orphan_worktrees` body is wrapped in a `try/except` (`recovery.py` lines 594–670), returning an empty set on any exception. The daemon's call site adds a further outer guard (`daemon.py` lines 1872–1873) so a sweep failure is logged at DEBUG and never disrupts the daemon loop.
