@@ -103,7 +103,7 @@ async def reconcile_startup(
     # G3a: GitHub token validation — FATAL.
     # ------------------------------------------------------------------
     try:
-        validate_github_token(sleep_fn=lambda _: None)
+        validate_github_token()
     except TokenValidationError as exc:
         alert(
             owner,
@@ -116,16 +116,19 @@ async def reconcile_startup(
         sys.exit(1)
 
     # ------------------------------------------------------------------
-    # G3b: ANTHROPIC_API_KEY presence — FATAL.
+    # G3b: ANTHROPIC_API_KEY guard — FATAL if SET.
+    # Architecture mandates OAuth-via-mounted-volume; a non-empty key
+    # means per-token billing is active, which must be refused at startup.
     # Structural check only: presence and non-empty.  Value never
     # inspected or logged (CLAUDE.md § Credentials and Secrets).
     # ------------------------------------------------------------------
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    if os.environ.get("ANTHROPIC_API_KEY"):
         alert(
             owner,
             repo,
             None,
-            "Startup credential check failed: ANTHROPIC_API_KEY is not set",
+            "ANTHROPIC_API_KEY must not be set (OAuth/subscription deployment;"
+            " prevents per-token billing)",
             severity="critical",
             runlog=runlog,
         )

@@ -42,6 +42,7 @@ import asyncio
 import json
 import logging
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -1496,6 +1497,28 @@ async def run_daemon(
     # inside reconcile_startup itself.
     await reconcile_startup(registry, obs, runlog)
 
+    # --- SIGTERM handler (Fix 3 / PR #107): graceful shutdown clears marker.
+    # Build the marker path once so both the handler and the finally block
+    # reference the same path (single source of truth).
+    _daemon_marker = (
+        Path(registry[0].project_root) / ".baton-harness" / "daemon.alive"
+    )
+
+    def _sigterm_handler(signum: int, frame: object) -> None:  # noqa: ARG001
+        """Clear the daemon.alive marker then raise SystemExit."""
+        try:
+            _daemon_marker.unlink(missing_ok=True)
+        except Exception:  # noqa: BLE001
+            pass
+        raise SystemExit(0)
+
+    try:
+        signal.signal(signal.SIGTERM, _sigterm_handler)
+    except (OSError, ValueError):
+        # signal.signal may fail if called from a non-main thread (e.g.
+        # certain test harnesses); degrade gracefully rather than crashing.
+        pass
+
     # --- Heartbeat monitor setup. ----------------------------------------
     # Construct liveness state shared between the daemon and the monitor.
     #
@@ -1583,15 +1606,7 @@ async def run_daemon(
         # Clear the G2 ungraceful-exit marker on graceful shutdown so the
         # next startup does not misread a clean stop as a crash.
         try:
-            for repo_cfg in registry:
-                _marker = (
-                    Path(repo_cfg.project_root)
-                    / ".baton-harness"
-                    / "daemon.alive"
-                )
-                if _marker.exists():
-                    _marker.unlink(missing_ok=True)
-                break  # v1 single-repo; clear for repo_cfgs[0] only
+            _daemon_marker.unlink(missing_ok=True)
         except Exception:  # noqa: BLE001
             pass  # best-effort; never raise in finally
 
