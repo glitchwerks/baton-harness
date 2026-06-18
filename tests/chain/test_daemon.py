@@ -5806,3 +5806,290 @@ class TestAsyncEscalationStartupWarning:
             "(empty string must be treated as unconfigured); "
             f"got {len(warning_records)}: {warning_records}"
         )
+
+
+# ===========================================================================
+# Phase P2 (#33) — mark_in_progress call-site contracts
+# ===========================================================================
+#
+# These tests pin the CALL-SITE contracts described in plan-33 §P2:
+#
+#   daemon.py ~L837  (ci_gate_reentry path):
+#       mark_in_progress(..., worker_active=False)
+#
+#   daemon.py ~L966  (fresh-dispatch path, before _run_worker):
+#       mark_in_progress(..., worker_active=True)
+#
+# At authoring time no implementation of the worker_active keyword exists.
+# The tests are intentionally RED — they will fail with TypeError (unexpected
+# keyword argument) until the implementation lands.  That is the correct
+# failing state.
+# ===========================================================================
+
+
+def _minimal_obs_config_p2(
+    *,
+    heartbeat_ping_url: str | None = None,
+) -> ObsConfig:
+    """Minimal ObsConfig with the P2 worker_progress_stall_s field.
+
+    Args:
+        heartbeat_ping_url: Optional ping URL.
+
+    Returns:
+        An ObsConfig with worker_progress_stall_s=1800.0 in addition to
+        the existing fields used by daemon tests.
+    """
+    return ObsConfig(
+        runlog_path=Path("/tmp/test-runlog.jsonl"),
+        heartbeat_file=Path("/tmp/test-heartbeat"),
+        redispatch_window_ticks=10,
+        redispatch_max=3,
+        heartbeat_stall_s=7200.0,
+        heartbeat_ping_url=heartbeat_ping_url,
+        redispatch_counts_path=Path("/tmp/test-dispatch-counts.json"),
+        worker_progress_stall_s=1800.0,  # type: ignore[call-arg]
+    )
+
+
+class TestP2MarkInProgressCallSites:
+    """Pins the worker_active keyword at each daemon call-site.
+
+    Each test asserts the KEYWORD VALUE passed to mark_in_progress at its
+    respective daemon call site.  The tests spy on the LivenessState
+    instance bound to the daemon to capture actual keyword args.
+    """
+
+    def test_ci_gate_reentry_calls_mark_in_progress_worker_active_false(
+        self,
+    ) -> None:
+        """ci_gate_reentry path calls mark_in_progress(worker_active=False).
+
+        The ci_gate_reentry path (~daemon.py:L837) must NOT set
+        worker_active=True — that would cause the progress predicate to fire
+        during a CI poll wait, producing a false IS-1 stall alert.
+
+        Strategy: patch LivenessState.mark_in_progress as a spy; run the
+        daemon with a single ci_gate_reentry issue; assert the spy was called
+        with worker_active=False (not True, and not the absent-keyword
+        default if the keyword was never added).
+        """
+        mark_calls: list[dict[str, Any]] = []
+        original_mark = LivenessState.mark_in_progress
+
+        def spy_mark(
+            self_state: LivenessState,
+            owner: str,
+            repo: str,
+            issue: int,
+            now: Any,  # noqa: ANN401
+            **kwargs: Any,  # noqa: ANN401
+        ) -> None:
+            mark_calls.append(
+                {
+                    "owner": owner,
+                    "repo": repo,
+                    "issue": issue,
+                    "kwargs": kwargs,
+                }
+            )
+            original_mark(self_state, owner, repo, issue, now, **kwargs)
+
+        # Issue 77 must appear in the agent-ready list so Phase 1 of
+        # _poll_and_run builds a work unit with membership={77} and calls
+        # _run_work_unit.  Inside that call reconstruct() returns
+        # ci_gate_reentry={77}, routing issue 77 through the reentry branch
+        # (daemon.py L825) which is the call-site under test.
+        ci_reentry_issue = [
+            {
+                "number": 77,
+                "title": "CI reentry issue",
+                "state": "open",
+                "body": "",
+                "url": "https://github.com/o/r/issues/77",
+                "labels": [{"name": "agent-ready"}],
+                "milestone": None,
+                "assignees": [],
+            }
+        ]
+
+        with (
+            patch.object(
+                LivenessState,
+                "mark_in_progress",
+                autospec=True,
+                side_effect=spy_mark,
+            ),
+            patch.object(
+                daemon_mod,
+                "_run",
+                side_effect=_make_run_side_effect(
+                    ready_issues=ci_reentry_issue,
+                    pr_head_sha="abc123",
+                    issue_branch="baton/issue-77-77",
+                    feature_branch_exists=False,
+                ),
+            ),
+            patch(
+                "baton_harness.chain.daemon.fetch_blocked_by",
+                return_value=[],
+            ),
+            patch("baton_harness.chain.branches.create_feature_branch"),
+            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch(
+                "baton_harness.chain.branches.record_cut_point",
+                return_value="deadbeef" * 5,
+            ),
+            patch(
+                "baton_harness.chain.recovery.reconstruct",
+                return_value=RecoveryResult(
+                    done=set(),
+                    parked_seed=set(),
+                    ci_gate_reentry={77},
+                    redispatch=set(),
+                ),
+            ),
+            patch(
+                "baton_harness.chain.daemon.merge_issue_branch",
+                return_value=MergeOutcome.MERGED,
+            ),
+            patch("baton_harness.chain.daemon.alert", return_value=True),
+            _patch_run_worker("pr_created"),
+        ):
+            asyncio.run(
+                run_daemon(
+                    _minimal_wf_config(),
+                    [_repo_cfg()],
+                    once=True,
+                    poll_interval_s=0,
+                )
+            )
+
+        # Filter for the call that handled issue 77 on the ci_gate_reentry
+        # path (issue_snap == 77).
+        reentry_calls = [c for c in mark_calls if c.get("issue") == 77]
+        assert reentry_calls, (
+            "Expected mark_in_progress to be called for issue 77 "
+            "(ci_gate_reentry path); got no calls for that issue. "
+            f"All calls: {mark_calls}"
+        )
+        # The ci_gate_reentry call must carry worker_active=False.
+        for c in reentry_calls:
+            worker_active_val = c["kwargs"].get("worker_active")
+            assert worker_active_val is False, (
+                "ci_gate_reentry path must call "
+                "mark_in_progress(..., worker_active=False); "
+                f"got worker_active={worker_active_val!r} "
+                f"(kwargs={c['kwargs']!r})"
+            )
+
+    def test_fresh_dispatch_calls_mark_in_progress_worker_active_true(
+        self,
+    ) -> None:
+        """Fresh-dispatch path calls mark_in_progress(worker_active=True).
+
+        The fresh-dispatch path (~daemon.py:L966, before _run_worker) must
+        call mark_in_progress with worker_active=True so the progress-stall
+        predicate is enabled for the actual worker turn.
+        """
+        mark_calls: list[dict[str, Any]] = []
+        original_mark = LivenessState.mark_in_progress
+
+        def spy_mark(
+            self_state: LivenessState,
+            owner: str,
+            repo: str,
+            issue: int,
+            now: Any,  # noqa: ANN401
+            **kwargs: Any,  # noqa: ANN401
+        ) -> None:
+            mark_calls.append(
+                {
+                    "owner": owner,
+                    "repo": repo,
+                    "issue": issue,
+                    "kwargs": kwargs,
+                }
+            )
+            original_mark(self_state, owner, repo, issue, now, **kwargs)
+
+        ready_issues = [
+            {
+                "number": 55,
+                "title": "Fresh dispatch issue",
+                "state": "open",
+                "body": "",
+                "url": "https://github.com/o/r/issues/55",
+                "labels": [{"name": "agent-ready"}],
+                "milestone": None,
+                "assignees": [],
+            }
+        ]
+
+        with (
+            patch.object(
+                LivenessState,
+                "mark_in_progress",
+                autospec=True,
+                side_effect=spy_mark,
+            ),
+            patch.object(
+                daemon_mod,
+                "_run",
+                side_effect=_make_run_side_effect(
+                    ready_issues=ready_issues,
+                    pr_head_sha="abc123",
+                    issue_branch="baton/issue-55-55",
+                    feature_branch_exists=False,
+                ),
+            ),
+            patch(
+                "baton_harness.chain.daemon.fetch_blocked_by",
+                return_value=[],
+            ),
+            patch("baton_harness.chain.branches.create_feature_branch"),
+            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch(
+                "baton_harness.chain.branches.record_cut_point",
+                return_value="deadbeef" * 5,
+            ),
+            patch(
+                "baton_harness.chain.recovery.reconstruct",
+                return_value=RecoveryResult(
+                    done=set(),
+                    parked_seed=set(),
+                    ci_gate_reentry=set(),
+                    redispatch=set(),
+                ),
+            ),
+            patch(
+                "baton_harness.chain.daemon.merge_issue_branch",
+                return_value=MergeOutcome.MERGED,
+            ),
+            patch("baton_harness.chain.daemon.alert", return_value=True),
+            _patch_run_worker("pr_created"),
+        ):
+            asyncio.run(
+                run_daemon(
+                    _minimal_wf_config(),
+                    [_repo_cfg()],
+                    once=True,
+                    poll_interval_s=0,
+                )
+            )
+
+        # The fresh-dispatch call for issue 55 must use worker_active=True.
+        dispatch_calls = [c for c in mark_calls if c.get("issue") == 55]
+        assert dispatch_calls, (
+            "Expected mark_in_progress to be called for issue 55 "
+            "(fresh-dispatch path); got no calls for that issue. "
+            f"All calls: {mark_calls}"
+        )
+        for c in dispatch_calls:
+            worker_active_val = c["kwargs"].get("worker_active")
+            assert worker_active_val is True, (
+                "Fresh-dispatch path must call "
+                "mark_in_progress(..., worker_active=True); "
+                f"got worker_active={worker_active_val!r} "
+                f"(kwargs={c['kwargs']!r})"
+            )

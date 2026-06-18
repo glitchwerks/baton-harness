@@ -85,6 +85,10 @@ class LivenessState:
     in_progress_issue: int | None = None
     in_progress_since: datetime | None = None
     _stall_alerted: bool = dataclasses.field(default=False, repr=False)
+    # P2 (#33): worker-active phase flag (False = NON_WORKER / ci_gate).
+    _worker_active: bool = dataclasses.field(default=False, repr=False)
+    # P2 (#33): last turn-progress timestamp; None until first callback.
+    last_progress_at: datetime | None = None
 
     def mark_in_progress(
         self,
@@ -92,36 +96,61 @@ class LivenessState:
         repo: str,
         issue: int,
         now: datetime,
+        *,
+        worker_active: bool = True,
     ) -> None:
         """Record that ``issue`` is now in progress.
 
         Resets the stall-debounce flag so a new stall episode can fire
-        an alert.
+        an alert.  The ``worker_active`` keyword controls whether the
+        progress-stall predicate is enabled for this episode: pass
+        ``worker_active=False`` for the CI-gate re-entry path so the
+        progress predicate cannot fire while waiting on a CI gate.
 
         Args:
             owner: GitHub repository owner.
             repo: GitHub repository name.
             issue: Issue number now in progress.
             now: UTC-aware datetime at which in-progress began.
+            worker_active: ``True`` (default) for a fresh-dispatch
+                worker run; ``False`` for a NON_WORKER phase such as
+                ``ci_gate_reentry``.  Controls the progress-stall gate.
         """
         self.in_progress_owner = owner
         self.in_progress_repo = repo
         self.in_progress_issue = issue
         self.in_progress_since = now
         self._stall_alerted = False
+        self._worker_active = worker_active
 
     def clear(self) -> None:
         """Clear the in-progress state.
 
-        Nulls all four public fields and resets the stall-debounce flag.
-        After ``clear()``, a subsequent ``mark_in_progress`` starts a
-        fresh episode that can fire a stall alert.
+        Nulls all four public fields and resets the stall-debounce flag
+        and the ``_worker_active`` phase flag.  After ``clear()``, a
+        subsequent ``mark_in_progress`` starts a fresh episode that can
+        fire a stall alert.
         """
         self.in_progress_owner = None
         self.in_progress_repo = None
         self.in_progress_issue = None
         self.in_progress_since = None
         self._stall_alerted = False
+        self._worker_active = False
+
+    def note_progress(self, now: datetime) -> None:
+        """Record a turn-progress signal from the worker callback.
+
+        Called by the ``progress_cb`` closure injected into the
+        vendored ``Orchestrator`` at each turn-loop head.  Sets
+        ``last_progress_at`` so the progress-stall predicate has a
+        reference time.  The first call initialises the field; subsequent
+        calls overwrite it (not accumulated).
+
+        Args:
+            now: UTC-aware datetime at the time of the progress signal.
+        """
+        self.last_progress_at = now
 
 
 # ---------------------------------------------------------------------------
@@ -301,6 +330,10 @@ def _heartbeat_tick(
     owner_snap: str | None = state.in_progress_owner
     repo_snap: str | None = state.in_progress_repo
     issue_snap: int | None = state.in_progress_issue
+    # P2 (#33): snapshot worker-active flag and last-progress timestamp
+    # AFTER since_snap so the ordering mirrors the daemon write order.
+    worker_active_snap: bool = state._worker_active
+    last_progress_at_snap: datetime | None = state.last_progress_at
 
     if since_snap is not None and not alerted_snap:
         try:
@@ -358,6 +391,77 @@ def _heartbeat_tick(
                             "_heartbeat_tick: runlog.emit(stall) failed: %s",
                             exc,
                         )
+
+        # P2 (#33): progress-stall predicate — WORKER_ACTIVE phase only.
+        # Gate: _worker_active=True (not NON_WORKER / ci_gate_reentry)
+        # and last_progress_at set by progress_cb (IS-1).
+        # Shares the _stall_alerted latch with the wall-clock predicate (IS-4).
+        # Re-check alerted state from the live object so wall-clock firing in
+        # the same tick suppresses this predicate.
+        if (
+            worker_active_snap
+            and last_progress_at_snap is not None
+            and not state._stall_alerted
+        ):
+            try:
+                progress_elapsed = (t - last_progress_at_snap).total_seconds()
+            except Exception as exc:  # noqa: BLE001
+                _log.warning(
+                    "_heartbeat_tick: progress elapsed calc failed: %s",
+                    exc,
+                )
+                progress_elapsed = 0.0
+
+            if progress_elapsed > obs.worker_progress_stall_s:
+                progress_delivered = False
+                try:
+                    progress_delivered = alert(
+                        owner_snap or "",
+                        repo_snap or "",
+                        issue_snap,
+                        (
+                            f"Issue #{issue_snap} worker has made no"
+                            f" progress for {progress_elapsed:.0f}s"
+                            f" (progress threshold:"
+                            f" {obs.worker_progress_stall_s:.0f}s) —"
+                            " possible worker hang."
+                        ),
+                        severity="critical",
+                        kind="debug",
+                        runlog=runlog,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning(
+                        "_heartbeat_tick: progress alert() failed: %s",
+                        exc,
+                    )
+
+                if progress_delivered:
+                    state._stall_alerted = True
+
+                    if runlog is not None:
+                        try:
+                            runlog.emit(
+                                {
+                                    "ts": t.isoformat(),
+                                    "event": "stall",
+                                    "issue": issue_snap,
+                                    "outcome": None,
+                                    "severity": "critical",
+                                    "detail": (
+                                        f"worker progress stall after"
+                                        f" {progress_elapsed:.0f}s without"
+                                        f" progress"
+                                    ),
+                                    "tick_id": None,
+                                }
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            _log.warning(
+                                "_heartbeat_tick:"
+                                " runlog.emit(progress stall) failed: %s",
+                                exc,
+                            )
 
     # ---- Step 5: ping external dead-man's-switch (best-effort, last). --
     # Placed last so ping latency can never delay stall alerting.

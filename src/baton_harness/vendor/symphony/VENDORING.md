@@ -58,6 +58,20 @@ orchestration path.
   source — documented with a `# VENDOR-PATCH VP-2` comment).  Marker:
   `# VENDOR-PATCH VP-2: ...`.
 
+### VP-3 — per-turn progress callback
+
+- **File:** `orchestrator.py`
+- **Patch file:** `patches/VP-3-progress-callback.diff` (relative to repo root)
+- **Description:** Adds an optional `progress_cb` attribute (default `None`)
+  to `Orchestrator.__init__` via attribute injection — zero changes to any
+  existing method signature.  Adds one guarded call at the turn-loop head
+  (immediately after the `log.info(f"RUN  ...")` line) wrapped in
+  `try/except` so a callback exception is logged and swallowed, never
+  crashing the worker run.  The daemon injects a closure that calls
+  `liveness_state.note_progress(now)` so the heartbeat monitor can detect
+  a hung worker (P2 / IS-1, issue #33).  Marker:
+  `# VENDOR-PATCH VP-3: per-turn progress callback (issue #33)`.
+
 ### Vendoring-mechanics patches (not VP patches; no separate diff files)
 
 These are **structural edits required for re-packaging** — they change
@@ -97,6 +111,7 @@ When re-vendoring at a new upstream SHA, apply these steps in order:
    ```bash
    git apply patches/VP-1-run-hook-env.diff
    git apply patches/VP-2-exclude-labels-recheck.diff
+   git apply patches/VP-3-progress-callback.diff
    ```
 4. Re-apply the relative-import vendoring-mechanics patches manually (they
    are not in a diff file because they only depend on the module names, which
@@ -109,6 +124,7 @@ When re-vendoring at a new upstream SHA, apply these steps in order:
    Expected output must include at minimum:
    - `VP-1` in `hooks.py`
    - `VP-2` in `orchestrator.py`
+   - `VP-3` in `orchestrator.py`
    - `relative import for vendoring` in `orchestrator.py`, `cli.py`,
      `prompt.py`, `worker.py`
 6. Update the **Pinned SHA** and **Vendor date** fields at the top of this

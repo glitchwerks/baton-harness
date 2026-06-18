@@ -729,6 +729,23 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
         state_path=state_path,
     )
 
+    # P2 (#33): inject progress callback so per-turn liveness can detect a
+    # hung worker.  The callback is best-effort: a callback exception is
+    # logged and swallowed inside the vendored VP-3 guard and never crashes
+    # the worker run.  last_progress_at is initialised by the FIRST call
+    # at turn-loop entry — NOT before await orch._run_worker (IS-1).
+    if liveness_state is not None:
+        _ls_ref = liveness_state  # capture for closure
+
+        def _progress_cb(
+            issue_number: int,  # noqa: ARG001
+            turn: int,  # noqa: ARG001
+        ) -> None:
+            """Update last_progress_at on each turn-loop entry."""
+            _ls_ref.note_progress(datetime.now(timezone.utc))
+
+        orch.progress_cb = _progress_cb  # type: ignore[assignment]
+
     # FIX 4: set BH_VENV once before the loop.  If it is already set by
     # the launcher, leave it; if unset, derive from the running interpreter
     # so hooks can self-activate the venv.
@@ -830,12 +847,16 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
 
             # Liveness tracking: mark in-progress so heartbeat_monitor
             # can detect a stall during the CI poll (which may block up
-            # to ci_timeout=1800s).  Mirror the pattern in the fresh-
-            # dispatch path (see liveness_state.mark_in_progress call
-            # ~30 lines below in _run_work_unit).
+            # to ci_timeout=1800s).  worker_active=False: no worker turns
+            # occur during a CI gate wait, so the progress predicate must
+            # NOT fire here (IS-1).
             if liveness_state is not None:
                 liveness_state.mark_in_progress(
-                    owner, repo, n, datetime.now(timezone.utc)
+                    owner,
+                    repo,
+                    n,
+                    datetime.now(timezone.utc),
+                    worker_active=False,
                 )
 
             # FIX 2: wrap merge_issue_branch in a per-issue try/except so a
@@ -961,10 +982,15 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
             owner, repo, n, add=["agent-in-progress"], remove=["agent-ready"]
         )
         # Liveness tracking: record that this issue is now in-progress so
-        # heartbeat_monitor can detect a stall.
+        # heartbeat_monitor can detect a stall.  worker_active=True enables
+        # the per-turn progress-stall predicate (P2 / IS-1).
         if liveness_state is not None:
             liveness_state.mark_in_progress(
-                owner, repo, n, datetime.now(timezone.utc)
+                owner,
+                repo,
+                n,
+                datetime.now(timezone.utc),
+                worker_active=True,
             )
 
         # Thread cut-point base to hooks via env (VP-1 wiring).

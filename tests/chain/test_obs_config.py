@@ -555,3 +555,101 @@ def test_load_obs_config_worktree_gc_garbage_warns_and_falls_back(
     assert "BH_WORKTREE_GC" in caplog.text, (
         "Expected a WARNING mentioning BH_WORKTREE_GC for the invalid value"
     )
+
+
+# ---------------------------------------------------------------------------
+# worker_progress_stall_s field (new for #33 P2)
+# ---------------------------------------------------------------------------
+
+_BH_WORKER_PROGRESS_STALL_S = "BH_WORKER_PROGRESS_STALL_S"
+
+# Add to all-vars cleanup so monkeypatch isolation is complete.
+_ALL_OBS_VARS_P2 = _ALL_OBS_VARS + (_BH_WORKER_PROGRESS_STALL_S,)
+
+
+def _clear_all_obs_vars_p2(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Remove all BH_* observability env vars including the P2 addition."""
+    for var in _ALL_OBS_VARS_P2:
+        monkeypatch.delenv(var, raising=False)
+
+
+def test_load_obs_config_worker_progress_stall_s_default_is_1800(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BH_WORKER_PROGRESS_STALL_S unset → worker_progress_stall_s == 1800.0.
+
+    The default is 1800.0 s (6× the 300 s per-turn timeout at config.py:L31).
+    This pins the verified default from OQ-2 resolution.
+
+    Args:
+        monkeypatch: pytest fixture for hermetic env-var injection.
+    """
+    _clear_all_obs_vars_p2(monkeypatch)
+    monkeypatch.setenv(_BH_PROJECT_ROOT, "/r")
+
+    cfg = load_obs_config()
+
+    assert cfg.worker_progress_stall_s == 1800.0, (  # type: ignore[attr-defined]
+        f"Expected worker_progress_stall_s=1800.0 when "
+        f"BH_WORKER_PROGRESS_STALL_S is unset; got "
+        f"{cfg.worker_progress_stall_s!r}"  # type: ignore[attr-defined]
+    )
+
+
+def test_load_obs_config_worker_progress_stall_s_valid_env_parsed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Valid BH_WORKER_PROGRESS_STALL_S is parsed to float.
+
+    A well-formed numeric string must be parsed to the float value.
+
+    Args:
+        monkeypatch: pytest fixture for hermetic env-var injection.
+    """
+    _clear_all_obs_vars_p2(monkeypatch)
+    monkeypatch.setenv(_BH_PROJECT_ROOT, "/r")
+    monkeypatch.setenv(_BH_WORKER_PROGRESS_STALL_S, "900.0")
+
+    cfg = load_obs_config()
+
+    assert cfg.worker_progress_stall_s == 900.0, (  # type: ignore[attr-defined]
+        f"Expected worker_progress_stall_s=900.0; got "
+        f"{cfg.worker_progress_stall_s!r}"  # type: ignore[attr-defined]
+    )
+    assert isinstance(cfg.worker_progress_stall_s, float), (  # type: ignore[attr-defined]
+        f"worker_progress_stall_s must be float, not "
+        f"{type(cfg.worker_progress_stall_s)!r}"  # type: ignore[attr-defined]
+    )
+
+
+def test_load_obs_config_worker_progress_stall_s_garbage_warns_and_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """BH_WORKER_PROGRESS_STALL_S=<garbage> warns and falls back to 1800.0.
+
+    Consistent with the guarded-parse pattern used for all other numeric
+    env vars:
+    - Must NOT raise (never-raise contract).
+    - Falls back to the documented default 1800.0.
+    - Logs a WARNING mentioning BH_WORKER_PROGRESS_STALL_S.
+
+    Args:
+        monkeypatch: pytest fixture for hermetic env-var injection.
+        caplog: pytest fixture to assert a WARNING was logged.
+    """
+    _clear_all_obs_vars_p2(monkeypatch)
+    monkeypatch.setenv(_BH_PROJECT_ROOT, "/r")
+    monkeypatch.setenv(_BH_WORKER_PROGRESS_STALL_S, "not-a-number")
+
+    with caplog.at_level(logging.WARNING):
+        cfg = load_obs_config()
+
+    assert cfg.worker_progress_stall_s == 1800.0, (  # type: ignore[attr-defined]
+        f"Expected fallback 1800.0 for garbage BH_WORKER_PROGRESS_STALL_S; "
+        f"got {cfg.worker_progress_stall_s!r}"  # type: ignore[attr-defined]
+    )
+    assert "BH_WORKER_PROGRESS_STALL_S" in caplog.text, (
+        "Expected a WARNING mentioning BH_WORKER_PROGRESS_STALL_S for the "
+        "garbage value"
+    )

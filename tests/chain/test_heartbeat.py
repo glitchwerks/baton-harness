@@ -772,3 +772,581 @@ def test_stall_debounce_not_latched_on_delivery_failure(
             "Tick 4: alert must be suppressed after successful delivery "
             f"latched debounce; got {len(alert_calls)} total (expected 3)"
         )
+
+
+# ===========================================================================
+# Phase P2 — per-turn worker liveness (#33)
+# ===========================================================================
+#
+# These tests pin the contract for:
+#   - LivenessState._worker_active (new field, default False)
+#   - LivenessState.last_progress_at (new field, default None)
+#   - mark_in_progress(worker_active=True|False) — sets BOTH _worker_active
+#     AND in_progress_since in the same call; resets _stall_alerted.
+#   - clear() — clears BOTH _worker_active AND in_progress_since in the
+#     same call.
+#   - note_progress(now) mutator — updates last_progress_at.
+#   - _heartbeat_tick progress-stall: fires when _worker_active=True AND
+#     (now - last_progress_at).total_seconds() > obs.worker_progress_stall_s
+#     (strictly greater, matching existing wall-clock predicate), debounced
+#     via the SHARED _stall_alerted latch; silent when _worker_active=False
+#     (IS-1 regression guarantee).
+#   - Progress-stall detail string is distinguishable from wall-clock stall.
+#   - Shared-latch: one predicate fires -> suppresses the other in the same
+#     episode; mark_in_progress(worker_active=True) re-arms both.
+# ===========================================================================
+
+
+def _make_obs_p2(
+    heartbeat_file: Path,
+    *,
+    heartbeat_stall_s: float = 7200.0,
+    worker_progress_stall_s: float = 1800.0,
+    runlog_path: Path | None = None,
+    redispatch_counts_path: Path | None = None,
+) -> ObsConfig:
+    """Build an ObsConfig with the P2 worker_progress_stall_s field.
+
+    Args:
+        heartbeat_file: Path to the heartbeat file under test.
+        heartbeat_stall_s: Wall-clock stall threshold (seconds).
+        worker_progress_stall_s: Progress-stall threshold (seconds).
+        runlog_path: Path for the runlog; defaults to sibling runlog.jsonl.
+        redispatch_counts_path: Defaults to sibling dispatch-counts.json.
+
+    Returns:
+        A populated ObsConfig with the new worker_progress_stall_s field.
+    """
+    base = heartbeat_file.parent
+    if runlog_path is None:
+        runlog_path = base / "runlog.jsonl"
+    if redispatch_counts_path is None:
+        redispatch_counts_path = base / "dispatch-counts.json"
+    return ObsConfig(
+        runlog_path=runlog_path,
+        heartbeat_file=heartbeat_file,
+        redispatch_window_ticks=10,
+        redispatch_max=3,
+        heartbeat_stall_s=heartbeat_stall_s,
+        heartbeat_ping_url=None,
+        redispatch_counts_path=redispatch_counts_path,
+        worker_progress_stall_s=worker_progress_stall_s,
+    )
+
+
+# ---------------------------------------------------------------------------
+# P2-T1: LivenessState gains _worker_active field (default False)
+# ---------------------------------------------------------------------------
+
+
+def test_liveness_state_worker_active_default_is_false() -> None:
+    """LivenessState._worker_active defaults to False on construction.
+
+    The field must exist and be False before any call to mark_in_progress.
+    """
+    state = LivenessState()
+
+    assert hasattr(state, "_worker_active"), (
+        "LivenessState must have a '_worker_active' field (new in P2)"
+    )
+    assert state._worker_active is False, (  # type: ignore[attr-defined]
+        f"_worker_active must default to False; got {state._worker_active!r}"  # type: ignore[attr-defined]
+    )
+
+
+# ---------------------------------------------------------------------------
+# P2-T2: LivenessState gains last_progress_at field (default None)
+# ---------------------------------------------------------------------------
+
+
+def test_liveness_state_last_progress_at_default_is_none() -> None:
+    """LivenessState.last_progress_at defaults to None on construction.
+
+    The field must exist and be None before note_progress is ever called.
+    This pins the first-call-init contract: no timestamp before turn-loop
+    entry.
+    """
+    state = LivenessState()
+
+    assert hasattr(state, "last_progress_at"), (
+        "LivenessState must have a 'last_progress_at' field (new in P2)"
+    )
+    assert state.last_progress_at is None, (  # type: ignore[attr-defined]
+        "last_progress_at must be None before note_progress is called; "
+        f"got {state.last_progress_at!r}"  # type: ignore[attr-defined]
+    )
+
+
+# ---------------------------------------------------------------------------
+# P2-T3: mark_in_progress(worker_active=True) sets both fields atomically
+# ---------------------------------------------------------------------------
+
+
+def test_mark_in_progress_worker_active_true_sets_both_fields() -> None:
+    """mark_in_progress(worker_active=True) sets _worker_active AND since.
+
+    Both _worker_active=True and in_progress_since must be set in the same
+    call.  The latch (_stall_alerted) must be reset to False.
+    """
+    state = LivenessState()
+    ts = _utc(5000.0)
+
+    state.mark_in_progress("owner", "repo", 1, ts, worker_active=True)
+
+    assert state._worker_active is True, (  # type: ignore[attr-defined]
+        "_worker_active must be True after"
+        " mark_in_progress(worker_active=True);"
+        f" got {state._worker_active!r}"  # type: ignore[attr-defined]
+    )
+    assert state.in_progress_since == ts, (
+        "_in_progress_since must be set in same call as _worker_active"
+    )
+    assert state._stall_alerted is False, (
+        "mark_in_progress must reset the stall latch"
+    )
+
+
+# ---------------------------------------------------------------------------
+# P2-T4: mark_in_progress(worker_active=False) — NON_WORKER state
+# ---------------------------------------------------------------------------
+
+
+def test_mark_in_progress_worker_active_false_leaves_worker_inactive() -> None:
+    """mark_in_progress(worker_active=False) sets in_progress_since only.
+
+    _worker_active must remain False.  This is the NON_WORKER state
+    used by the ci_gate_reentry path.  in_progress_since must be set
+    (wall-clock backstop still applies), but _worker_active must remain
+    False so the progress predicate does not fire.
+    """
+    state = LivenessState()
+    ts = _utc(1000.0)
+
+    state.mark_in_progress("owner", "repo", 42, ts, worker_active=False)
+
+    assert state._worker_active is False, (  # type: ignore[attr-defined]
+        "mark_in_progress(worker_active=False) must leave"
+        " _worker_active False; "
+        f"got {state._worker_active!r}"  # type: ignore[attr-defined]
+    )
+    assert state.in_progress_since == ts, (
+        "in_progress_since must still be set even when worker_active=False "
+        "(wall-clock backstop must remain active)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# P2-T5: clear() clears _worker_active alongside in_progress_since
+# ---------------------------------------------------------------------------
+
+
+def test_clear_resets_worker_active_and_in_progress_since_together() -> None:
+    """clear() resets both _worker_active and in_progress_since in one call.
+
+    After a mark_in_progress(worker_active=True) followed by clear(), both
+    fields must be None/False.  The latch must also be cleared.
+    """
+    state = LivenessState()
+    state.mark_in_progress("owner", "repo", 7, _utc(0.0), worker_active=True)
+
+    state.clear()
+
+    assert state._worker_active is False, (  # type: ignore[attr-defined]
+        "clear() must reset _worker_active to False; "
+        f"got {state._worker_active!r}"  # type: ignore[attr-defined]
+    )
+    assert state.in_progress_since is None, (
+        "clear() must set in_progress_since to None in the same call"
+    )
+    assert state._stall_alerted is False, (
+        "clear() must also reset the stall latch"
+    )
+
+
+# ---------------------------------------------------------------------------
+# P2-T6: note_progress(now) updates last_progress_at
+# ---------------------------------------------------------------------------
+
+
+def test_note_progress_updates_last_progress_at() -> None:
+    """note_progress(now) sets last_progress_at to the supplied datetime.
+
+    Calling note_progress twice must update last_progress_at to the second
+    value (not accumulate).
+    """
+    state = LivenessState()
+    t1 = _utc(100.0)
+    t2 = _utc(200.0)
+
+    state.note_progress(t1)  # type: ignore[attr-defined]
+    assert state.last_progress_at == t1, (  # type: ignore[attr-defined]
+        f"last_progress_at must be {t1!r} after first note_progress; "
+        f"got {state.last_progress_at!r}"  # type: ignore[attr-defined]
+    )
+
+    state.note_progress(t2)  # type: ignore[attr-defined]
+    assert state.last_progress_at == t2, (  # type: ignore[attr-defined]
+        f"last_progress_at must update to {t2!r} on second call; "
+        f"got {state.last_progress_at!r}"  # type: ignore[attr-defined]
+    )
+
+
+# ---------------------------------------------------------------------------
+# P2-T7: mark_in_progress resets _stall_alerted so latch is re-armed
+# ---------------------------------------------------------------------------
+
+
+def test_mark_in_progress_worker_active_true_resets_stall_latch() -> None:
+    """mark_in_progress(worker_active=True) re-arms both stall predicates.
+
+    After a prior stall episode latched _stall_alerted=True, a fresh
+    mark_in_progress(worker_active=True) must reset the latch so the next
+    episode can alert again.  This is the shared-latch re-arm contract.
+    """
+    state = LivenessState()
+    state.mark_in_progress("o", "r", 1, _utc(0.0), worker_active=True)
+    # Manually engage the latch (simulating a prior alert delivery).
+    state._stall_alerted = True  # type: ignore[attr-defined]
+
+    # Re-mark as in-progress (new episode).
+    state.mark_in_progress("o", "r", 1, _utc(9999.0), worker_active=True)
+
+    assert state._stall_alerted is False, (
+        "mark_in_progress must reset _stall_alerted to False; "
+        "the latch must be re-armed for the new episode"
+    )
+
+
+# ---------------------------------------------------------------------------
+# ★ P2-T8 (IS-1 REGRESSION): _heartbeat_tick progress-stall gated on
+#   _worker_active — fires when True, silent when False.
+# ---------------------------------------------------------------------------
+
+
+def test_progress_stall_fires_when_worker_active_and_stale_progress(
+    tmp_path: Path,
+) -> None:
+    """★ IS-1 REGRESSION: progress-stall fires when _worker_active=True.
+
+    With _worker_active=True and last_progress_at stale beyond
+    worker_progress_stall_s, the progress-stall alert must fire exactly
+    once (debounced via _stall_alerted).  This is one half of the IS-1
+    regression test.
+    """
+    owner, repo, issue_num = "glitchwerks", "baton-harness", 33
+    progress_stall_s = 300.0
+    obs = _make_obs_p2(
+        tmp_path / "heartbeat",
+        heartbeat_stall_s=7200.0,
+        worker_progress_stall_s=progress_stall_s,
+    )
+    state = LivenessState()
+    t0 = _utc(0.0)
+    state.mark_in_progress(owner, repo, issue_num, t0, worker_active=True)
+    # Set last_progress_at to t0 (stale — progress_stall_s seconds ago).
+    state.note_progress(t0)  # type: ignore[attr-defined]
+
+    # now = progress_stall_s + 1 → progress elapsed > threshold.
+    t_breach = _utc(progress_stall_s + 1.0)
+
+    alert_calls: list[dict[str, Any]] = []
+
+    def fake_alert(*args: Any, **kwargs: Any) -> bool:  # noqa: ANN401
+        alert_calls.append({"args": args, "kwargs": kwargs})
+        return True
+
+    with (
+        patch("baton_harness.chain.heartbeat._write_heartbeat"),
+        patch(
+            "baton_harness.chain.heartbeat.alert",
+            side_effect=fake_alert,
+        ),
+    ):
+        # First tick — must fire.
+        _heartbeat_tick(obs, state, now=lambda: t_breach)
+        assert len(alert_calls) == 1, (
+            "Progress-stall must fire once when _worker_active=True and "
+            f"progress is stale; got {len(alert_calls)} alert(s)"
+        )
+        # Second tick — must NOT fire again (debounce).
+        _heartbeat_tick(obs, state, now=lambda: t_breach)
+        assert len(alert_calls) == 1, (
+            "Progress-stall must be debounced (only 1 alert per episode); "
+            f"got {len(alert_calls)} alert(s) after second tick"
+        )
+
+
+def test_progress_stall_silent_when_worker_inactive_same_stale_progress(
+    tmp_path: Path,
+) -> None:
+    """★ IS-1 REGRESSION: progress-stall is SILENT when _worker_active=False.
+
+    With the same stale last_progress_at that would fire when
+    _worker_active=True, setting _worker_active=False (the NON_WORKER /
+    ci_gate_reentry state) must produce NO progress-stall alert.
+
+    This is the critical IS-1 proof: CI-gate wait can never false-fire a
+    progress stall.
+    """
+    owner, repo, issue_num = "glitchwerks", "baton-harness", 33
+    progress_stall_s = 300.0
+    obs = _make_obs_p2(
+        tmp_path / "heartbeat",
+        heartbeat_stall_s=7200.0,
+        worker_progress_stall_s=progress_stall_s,
+    )
+    state = LivenessState()
+    t0 = _utc(0.0)
+    # ci_gate_reentry path: worker_active=False.
+    state.mark_in_progress(owner, repo, issue_num, t0, worker_active=False)
+    # Same stale progress timestamp as the True case.
+    state.note_progress(t0)  # type: ignore[attr-defined]
+
+    # Clock is past the progress threshold — would fire if _worker_active=True.
+    t_breach = _utc(progress_stall_s + 1.0)
+
+    alert_calls: list[dict[str, Any]] = []
+
+    def fake_alert(*args: Any, **kwargs: Any) -> bool:  # noqa: ANN401
+        alert_calls.append({"args": args, "kwargs": kwargs})
+        return True
+
+    with (
+        patch("baton_harness.chain.heartbeat._write_heartbeat"),
+        patch(
+            "baton_harness.chain.heartbeat.alert",
+            side_effect=fake_alert,
+        ),
+    ):
+        _heartbeat_tick(obs, state, now=lambda: t_breach)
+        _heartbeat_tick(obs, state, now=lambda: t_breach)
+
+    # No progress-stall alert must have fired.
+    assert not alert_calls, (
+        "Progress-stall must NOT fire when _worker_active=False "
+        "(ci_gate_reentry NON_WORKER state); "
+        f"got {len(alert_calls)} alert(s): {alert_calls}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# P2-T9: progress-stall exact boundary does NOT alert (strictly >)
+# ---------------------------------------------------------------------------
+
+
+def test_progress_stall_exact_boundary_does_not_alert(
+    tmp_path: Path,
+) -> None:
+    """At elapsed == worker_progress_stall_s exactly, no progress alert fires.
+
+    Mirrors the wall-clock exact-boundary test (P1 Test 4).  The predicate
+    is strictly > (not >=).
+    """
+    progress_stall_s = 300.0
+    obs = _make_obs_p2(
+        tmp_path / "heartbeat",
+        heartbeat_stall_s=7200.0,
+        worker_progress_stall_s=progress_stall_s,
+    )
+    state = LivenessState()
+    t0 = _utc(0.0)
+    state.mark_in_progress("o", "r", 1, t0, worker_active=True)
+    state.note_progress(t0)  # type: ignore[attr-defined]
+
+    # Exactly at the boundary.
+    t_exact = _utc(progress_stall_s)
+
+    alert_calls: list[dict[str, Any]] = []
+
+    def fake_alert(*args: Any, **kwargs: Any) -> bool:  # noqa: ANN401
+        alert_calls.append({})
+        return True
+
+    with (
+        patch("baton_harness.chain.heartbeat._write_heartbeat"),
+        patch(
+            "baton_harness.chain.heartbeat.alert",
+            side_effect=fake_alert,
+        ),
+    ):
+        _heartbeat_tick(obs, state, now=lambda: t_exact)
+
+    assert not alert_calls, (
+        "Progress-stall predicate is strictly > (not >=); "
+        f"elapsed == worker_progress_stall_s must NOT alert; "
+        f"got {len(alert_calls)} alert(s)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# P2-T10: progress-stall detail string distinguishable from wall-clock stall
+# ---------------------------------------------------------------------------
+
+
+def test_progress_stall_detail_string_distinguishable_from_wall_clock(
+    tmp_path: Path,
+) -> None:
+    """Progress-stall detail string must differ from wall-clock stall (IS-4).
+
+    The wall-clock stall detail contains 'stall detected after'.  The
+    progress-stall detail must NOT use the same substring so that the two
+    stall types are distinguishable in the runlog and alert payload.
+    """
+    progress_stall_s = 300.0
+    wall_stall_s = 7200.0
+    obs = _make_obs_p2(
+        tmp_path / "heartbeat",
+        heartbeat_stall_s=wall_stall_s,
+        worker_progress_stall_s=progress_stall_s,
+    )
+    state = LivenessState()
+    t0 = _utc(0.0)
+    state.mark_in_progress("o", "r", 5, t0, worker_active=True)
+    state.note_progress(t0)  # type: ignore[attr-defined]
+
+    # Breach the progress threshold only (not the wall-clock threshold).
+    t_progress_breach = _utc(progress_stall_s + 1.0)
+
+    alert_payloads: list[tuple[Any, ...]] = []
+
+    def capturing_alert(*args: Any, **kwargs: Any) -> bool:  # noqa: ANN401
+        alert_payloads.append(args)
+        return True
+
+    with (
+        patch("baton_harness.chain.heartbeat._write_heartbeat"),
+        patch(
+            "baton_harness.chain.heartbeat.alert",
+            side_effect=capturing_alert,
+        ),
+    ):
+        _heartbeat_tick(obs, state, now=lambda: t_progress_breach)
+
+    assert alert_payloads, "Expected a progress-stall alert to fire"
+
+    # The 4th positional arg to alert() is the detail/message string.
+    detail_str: str = alert_payloads[0][3]
+    wall_clock_detail_marker = "stall detected after"
+    assert wall_clock_detail_marker not in detail_str, (
+        f"Progress-stall detail must NOT contain the wall-clock stall "
+        f"marker {wall_clock_detail_marker!r}; "
+        f"got detail: {detail_str!r}"
+    )
+    # Must mention progress in some form (impl-flexible substring check).
+    assert "progress" in detail_str.lower(), (
+        f"Progress-stall detail must mention 'progress'; got: {detail_str!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# P2-T11: Shared-latch — wall-clock stall fires first → progress suppressed
+# ---------------------------------------------------------------------------
+
+
+def test_shared_latch_wall_clock_fires_suppresses_progress_stall(
+    tmp_path: Path,
+) -> None:
+    """Wall-clock stall firing first suppresses progress stall in same episode.
+
+    Both predicates share _stall_alerted.  If the wall-clock stall fires
+    first (elapsed > heartbeat_stall_s), it latches _stall_alerted=True,
+    and the progress predicate must NOT fire in the same episode.
+    """
+    progress_stall_s = 300.0
+    wall_stall_s = 200.0  # Wall-clock threshold smaller → fires first.
+    obs = _make_obs_p2(
+        tmp_path / "heartbeat",
+        heartbeat_stall_s=wall_stall_s,
+        worker_progress_stall_s=progress_stall_s,
+    )
+    state = LivenessState()
+    t0 = _utc(0.0)
+    state.mark_in_progress("o", "r", 3, t0, worker_active=True)
+    state.note_progress(t0)  # type: ignore[attr-defined]
+
+    # Elapsed 250s: past wall-clock (200s) but not past progress (300s).
+    # One alert fires (wall-clock).  Then at 350s both thresholds are
+    # breached but _stall_alerted is already latched — only ONE total.
+    t_wall_breach = _utc(wall_stall_s + 50.0)  # 250s — only wall fires.
+    t_both_breach = _utc(progress_stall_s + 50.0)  # 350s — both would fire.
+
+    alert_calls: list[int] = []
+
+    def fake_alert(*args: Any, **kwargs: Any) -> bool:  # noqa: ANN401
+        alert_calls.append(1)
+        return True
+
+    with (
+        patch("baton_harness.chain.heartbeat._write_heartbeat"),
+        patch(
+            "baton_harness.chain.heartbeat.alert",
+            side_effect=fake_alert,
+        ),
+    ):
+        # Tick at t_wall_breach: wall-clock predicate fires and latches.
+        _heartbeat_tick(obs, state, now=lambda: t_wall_breach)
+        assert len(alert_calls) == 1, (
+            "Wall-clock stall must fire exactly once at t_wall_breach"
+        )
+        # Tick at t_both_breach: latch already held — no second alert.
+        _heartbeat_tick(obs, state, now=lambda: t_both_breach)
+        assert len(alert_calls) == 1, (
+            "Shared latch must suppress progress-stall after "
+            "wall-clock fired; "
+            f"got {len(alert_calls)} total alerts (expected 1)"
+        )
+
+
+def test_shared_latch_rearms_after_mark_in_progress_worker_active_true(
+    tmp_path: Path,
+) -> None:
+    """mark_in_progress(worker_active=True) re-arms both latch predicates.
+
+    After one episode's latch is held, a fresh mark_in_progress(
+    worker_active=True) must reset _stall_alerted so both predicates can
+    fire again in the new episode.
+    """
+    progress_stall_s = 100.0
+    wall_stall_s = 200.0
+    obs = _make_obs_p2(
+        tmp_path / "heartbeat",
+        heartbeat_stall_s=wall_stall_s,
+        worker_progress_stall_s=progress_stall_s,
+    )
+    state = LivenessState()
+    t0 = _utc(0.0)
+    state.mark_in_progress("o", "r", 1, t0, worker_active=True)
+    state.note_progress(t0)  # type: ignore[attr-defined]
+
+    alert_calls: list[int] = []
+
+    def fake_alert(*args: Any, **kwargs: Any) -> bool:  # noqa: ANN401
+        alert_calls.append(1)
+        return True
+
+    with (
+        patch("baton_harness.chain.heartbeat._write_heartbeat"),
+        patch(
+            "baton_harness.chain.heartbeat.alert",
+            side_effect=fake_alert,
+        ),
+    ):
+        # Episode 1: progress fires and latches.
+        _heartbeat_tick(obs, state, now=lambda: _utc(progress_stall_s + 1.0))
+        assert len(alert_calls) == 1, "Episode 1 must fire once"
+
+        # Re-arm: fresh mark_in_progress with worker_active=True.
+        t_new = _utc(progress_stall_s + 2.0)
+        state.mark_in_progress("o", "r", 1, t_new, worker_active=True)
+        state.note_progress(t_new)  # type: ignore[attr-defined]
+
+        # Episode 2: both predicates re-armed; progress fires again.
+        _heartbeat_tick(
+            obs,
+            state,
+            now=lambda: _utc(progress_stall_s * 2 + 3.0),
+        )
+        assert len(alert_calls) == 2, (
+            "mark_in_progress(worker_active=True) must re-arm the latch; "
+            f"expected 2nd alert, got {len(alert_calls)} total"
+        )
