@@ -6286,3 +6286,232 @@ def test_run_daemon_reconcile_startup_called_before_heartbeat_thread() -> None:
         f"(reconcile at index {first_reconcile}, "
         f"heartbeat_thread at index {first_heartbeat})"
     )
+
+
+# ---------------------------------------------------------------------------
+# Issue #40 / PR #107 Fix 3: SIGTERM must install a graceful-shutdown handler
+# ---------------------------------------------------------------------------
+#
+# The code-writer must call ``signal.signal(signal.SIGTERM, <handler>)``
+# inside ``run_daemon`` startup so that a docker/systemd ``stop`` (SIGTERM)
+# triggers the same graceful-shutdown path as KeyboardInterrupt, clearing the
+# ``daemon.alive`` marker before exit.
+#
+# Seam chosen: patch ``signal.signal`` and assert it is called with
+# ``signal.SIGTERM`` as the first argument and a callable (non-SIG_DFL,
+# non-SIG_IGN) handler as the second argument.  This is the minimal
+# tractable assertion: it pins the registration call without actually sending
+# a signal to the test process.
+# ---------------------------------------------------------------------------
+
+
+def test_run_daemon_registers_sigterm_handler_on_startup() -> None:
+    """★ SIGTERM wiring: run_daemon calls signal.signal(SIGTERM, handler).
+
+    The code-writer must install a SIGTERM handler inside ``run_daemon``
+    startup.  This test patches ``signal.signal`` and asserts:
+    - It is called at least once with ``signal.SIGTERM`` as the first arg.
+    - The second arg (handler) is callable and is not the default
+      (``signal.SIG_DFL``) or ignore (``signal.SIG_IGN``) disposition.
+
+    Seam: ``signal.signal`` is patched at the daemon module import level
+    (``baton_harness.chain.daemon.signal.signal`` or the stdlib module
+    used by daemon.py — we patch the stdlib directly so the daemon's import
+    always resolves to the spy).
+    """
+    import signal as _signal
+
+    ready_issues: list[Any] = []
+    signal_calls: list[tuple[Any, Any]] = []
+
+    _real_signal = _signal.signal
+
+    def spy_signal(
+        signum: int,
+        handler: Any,  # noqa: ANN401
+    ) -> Any:  # noqa: ANN401
+        signal_calls.append((signum, handler))
+        # Delegate to the real signal() so other handlers install correctly.
+        return _real_signal(signum, handler)
+
+    with (
+        patch("signal.signal", side_effect=spy_signal),
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=_make_run_side_effect(
+                ready_issues=ready_issues,
+                pr_head_sha="abc123",
+                issue_branch="baton/issue-10-10",
+                feature_branch_exists=False,
+            ),
+        ),
+        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch(
+            "baton_harness.chain.daemon.reconcile_startup",
+            side_effect=lambda *a, **kw: None,
+        ),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    sigterm_calls = [
+        (signum, handler)
+        for signum, handler in signal_calls
+        if signum == _signal.SIGTERM
+    ]
+    assert sigterm_calls, (
+        "run_daemon must call signal.signal(signal.SIGTERM, handler) during "
+        "startup so SIGTERM triggers graceful shutdown (clears daemon.alive); "
+        f"signal.signal calls recorded: {signal_calls}"
+    )
+    _, handler = sigterm_calls[0]
+    assert callable(handler), (
+        f"SIGTERM handler must be callable; got {handler!r}"
+    )
+    assert handler not in (_signal.SIG_DFL, _signal.SIG_IGN), (
+        "SIGTERM handler must not be SIG_DFL or SIG_IGN — "
+        "a real graceful-shutdown callable is required; "
+        f"got {handler!r}"
+    )
+
+
+def test_sigterm_handler_clears_marker_on_invocation(
+    tmp_path: pytest.TempPathFactory,
+) -> None:
+    """★ SIGTERM handler: invoking it clears the daemon.alive marker.
+
+    Captures the handler registered by ``run_daemon`` via ``signal.signal``
+    spy, then calls it directly (simulating SIGTERM delivery without killing
+    the test process).  After the call, the marker must be absent.
+
+    Seam: same ``signal.signal`` spy as the registration test.  The handler
+    is called with a fake signum and frame (standard handler signature).
+    """
+    import signal as _signal
+    import tempfile
+    from pathlib import Path as _Path
+
+    from baton_harness.chain.registry import RepoConfig
+
+    # Build a real tmp dir for the marker path so the handler can unlink it.
+    real_tmp = _Path(tempfile.mkdtemp())
+    harness_dir = real_tmp / ".baton-harness"
+    harness_dir.mkdir(parents=True, exist_ok=True)
+    marker = harness_dir / "daemon.alive"
+
+    repo_cfg = RepoConfig(
+        owner=_OWNER,
+        repo=_REPO_NAME,
+        project_root=real_tmp,
+    )
+
+    ready_issues: list[Any] = []
+    registered_handler: list[Any] = []
+    _real_signal = _signal.signal
+
+    def spy_signal(
+        signum: int,
+        handler: Any,  # noqa: ANN401
+    ) -> Any:  # noqa: ANN401
+        if signum == _signal.SIGTERM:
+            registered_handler.append(handler)
+        return _real_signal(signum, handler)
+
+    with (
+        patch("signal.signal", side_effect=spy_signal),
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=_make_run_side_effect(
+                ready_issues=ready_issues,
+                pr_head_sha="abc123",
+                issue_branch="baton/issue-10-10",
+                feature_branch_exists=False,
+            ),
+        ),
+        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch(
+            "baton_harness.chain.daemon.reconcile_startup",
+            side_effect=lambda *a, **kw: None,
+        ),
+    ):
+        # Suppress the SystemExit that the SIGTERM handler may raise.
+        try:
+            asyncio.run(
+                run_daemon(
+                    _minimal_wf_config(),
+                    [repo_cfg],
+                    once=True,
+                    poll_interval_s=0,
+                )
+            )
+        except SystemExit:
+            pass
+
+    assert registered_handler, (
+        "run_daemon must register a SIGTERM handler via signal.signal; "
+        "none was captured"
+    )
+
+    # Simulate SIGTERM: write the marker, then invoke the handler.
+    marker.write_text("alive", encoding="utf-8")
+    assert marker.exists(), "Precondition: marker must exist before SIGTERM"
+
+    handler = registered_handler[0]
+    try:
+        handler(_signal.SIGTERM, None)
+    except SystemExit:
+        # Handler may raise SystemExit to stop the loop — that is acceptable.
+        pass
+
+    assert not marker.exists(), (
+        "daemon.alive marker must be removed when the SIGTERM handler fires; "
+        "a docker/systemd stop must not leave a false ungraceful-exit marker"
+    )

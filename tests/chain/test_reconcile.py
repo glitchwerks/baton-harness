@@ -101,11 +101,15 @@ class TestG3CredentialValidation:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Valid token + ANTHROPIC_API_KEY present → no alert, no halt."""
+        """Valid token + ANTHROPIC_API_KEY absent → no alert, no halt.
+
+        The architecture mandates OAuth-via-mounted-volume; ANTHROPIC_API_KEY
+        must NOT be set.  Absent (or empty) is the correct happy-path state.
+        """
         reconcile = _import_reconcile()
 
         monkeypatch.setenv("GH_TOKEN", _FINE_GRAINED_TOKEN)
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
         mock_alert = MagicMock(return_value=True)
         obs = _make_obs(tmp_path)
@@ -142,7 +146,8 @@ class TestG3CredentialValidation:
 
         monkeypatch.delenv("GH_TOKEN", raising=False)
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        # ANTHROPIC_API_KEY must be absent (OAuth path); this is correct state.
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
         from baton_harness._auth import TokenValidationError
 
@@ -182,16 +187,22 @@ class TestG3CredentialValidation:
             f"Expected severity='critical', got {kwargs!r}"
         )
 
-    def test_anthropic_key_absent_emits_critical_alert_and_halts(
+    def test_anthropic_key_present_emits_critical_alert_and_halts(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """ANTHROPIC_API_KEY absent → critical alert + SystemExit."""
+        """ANTHROPIC_API_KEY set and non-empty → critical alert + SystemExit.
+
+        Architecture (docs/architecture-spec.md §L318): refuse to start if
+        ANTHROPIC_API_KEY is set — prevents accidental per-token billing on
+        a subscription-OAuth deployment.
+        """
         reconcile = _import_reconcile()
 
         monkeypatch.setenv("GH_TOKEN", _FINE_GRAINED_TOKEN)
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        # Set the key — this MUST trigger the guard.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-value")
 
         mock_alert = MagicMock(return_value=True)
         obs = _make_obs(tmp_path)
@@ -217,22 +228,27 @@ class TestG3CredentialValidation:
                 )
 
         assert exc_info.value.code != 0, (
-            "SystemExit code must be non-zero on missing ANTHROPIC_API_KEY"
+            "SystemExit code must be non-zero when ANTHROPIC_API_KEY is set"
         )
         assert mock_alert.called, (
-            "alert() must be called before halting on absent ANTHROPIC_API_KEY"
+            "alert() must be called before halting when "
+            "ANTHROPIC_API_KEY is set"
         )
         _, kwargs = mock_alert.call_args
         assert kwargs.get("severity") == "critical", (
             f"Expected severity='critical', got {kwargs!r}"
         )
 
-    def test_anthropic_key_empty_string_emits_critical_alert_and_halts(
+    def test_anthropic_key_empty_string_treated_as_absent_no_halt(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """ANTHROPIC_API_KEY set but empty → critical alert + SystemExit."""
+        """ANTHROPIC_API_KEY set to empty string → treated as absent; no halt.
+
+        An empty string is equivalent to the variable being unset.  The
+        guard must only fire for non-empty values (a real key was injected).
+        """
         reconcile = _import_reconcile()
 
         monkeypatch.setenv("GH_TOKEN", _FINE_GRAINED_TOKEN)
@@ -256,26 +272,38 @@ class TestG3CredentialValidation:
                 return_value=[],
             ),
         ):
-            with pytest.raises(SystemExit) as exc_info:
-                asyncio.run(
-                    reconcile.reconcile_startup(repo_cfgs, obs, runlog=None)
-                )
+            # Must NOT raise — empty string is treated as absent.
+            asyncio.run(
+                reconcile.reconcile_startup(repo_cfgs, obs, runlog=None)
+            )
 
-        assert exc_info.value.code != 0
-        assert mock_alert.called
-        _, kwargs = mock_alert.call_args
-        assert kwargs.get("severity") == "critical"
+        # No critical alert for the ANTHROPIC_API_KEY guard must have fired.
+        critical_calls = [
+            c
+            for c in mock_alert.call_args_list
+            if c.kwargs.get("severity") == "critical"
+        ]
+        assert not critical_calls, (
+            "Empty ANTHROPIC_API_KEY must not trigger the per-token-billing "
+            f"guard; got critical alerts: {critical_calls}"
+        )
 
     def test_alert_passes_issue_none_for_credential_failure(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Credential-failure alert passes issue=None (repo-level)."""
+        """Credential-failure alert passes issue=None (repo-level).
+
+        Uses the G3b guard path: ANTHROPIC_API_KEY present → halt, and the
+        alert emitted before the halt must carry issue=None (repo-level,
+        not tied to any specific issue).
+        """
         reconcile = _import_reconcile()
 
         monkeypatch.setenv("GH_TOKEN", _FINE_GRAINED_TOKEN)
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        # Set the key to trigger the G3b billing guard.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-value")
 
         mock_alert = MagicMock(return_value=True)
         obs = _make_obs(tmp_path)
@@ -331,7 +359,7 @@ class TestG3FatalOrdering:
 
         monkeypatch.delenv("GH_TOKEN", raising=False)
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
         from baton_harness._auth import TokenValidationError
 
@@ -365,16 +393,22 @@ class TestG3FatalOrdering:
         # Process lister must NOT have been called.
         mock_lister.assert_not_called()
 
-    def test_anthropic_key_absent_prevents_marker_write_and_process_scan(
+    def test_anthropic_key_present_prevents_marker_write_and_process_scan(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """★ G3 fatal: missing ANTHROPIC_API_KEY; marker and lister skipped."""
+        """★ G3 fatal: ANTHROPIC_API_KEY set; marker and lister skipped.
+
+        When ANTHROPIC_API_KEY is non-empty (per-token-billing guard fires),
+        the marker file for G2 must NOT be written and the G1 process lister
+        must NOT be called — G3 halts before them.
+        """
         reconcile = _import_reconcile()
 
         monkeypatch.setenv("GH_TOKEN", _FINE_GRAINED_TOKEN)
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        # Set the key to trigger the G3b guard.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-value")
 
         mock_lister = MagicMock(return_value=[])
         obs = _make_obs(tmp_path)
@@ -400,7 +434,7 @@ class TestG3FatalOrdering:
 
         assert not marker.exists(), (
             "daemon.alive marker must NOT be created when ANTHROPIC_API_KEY "
-            "is absent"
+            "is set (G3b billing guard fires before G2)"
         )
         mock_lister.assert_not_called()
 
@@ -422,7 +456,7 @@ class TestG2UngracefulExitDetection:
         reconcile = _import_reconcile()
 
         monkeypatch.setenv("GH_TOKEN", _FINE_GRAINED_TOKEN)
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
         obs = _make_obs(tmp_path)
         repo_cfgs = [_make_repo_cfg(tmp_path)]
@@ -470,7 +504,7 @@ class TestG2UngracefulExitDetection:
         reconcile = _import_reconcile()
 
         monkeypatch.setenv("GH_TOKEN", _FINE_GRAINED_TOKEN)
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
         obs = _make_obs(tmp_path)
         repo_cfgs = [_make_repo_cfg(tmp_path)]
@@ -530,7 +564,7 @@ class TestG2UngracefulExitDetection:
         reconcile = _import_reconcile()
 
         monkeypatch.setenv("GH_TOKEN", _FINE_GRAINED_TOKEN)
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
         obs = _make_obs(tmp_path)
         repo_cfgs = [_make_repo_cfg(tmp_path)]
@@ -576,7 +610,7 @@ class TestG2UngracefulExitDetection:
         reconcile = _import_reconcile()
 
         monkeypatch.setenv("GH_TOKEN", _FINE_GRAINED_TOKEN)
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
         obs = _make_obs(tmp_path)
         repo_cfgs = [_make_repo_cfg(tmp_path)]
@@ -625,7 +659,7 @@ class TestG1OrphanProcessSweep:
         reconcile = _import_reconcile()
 
         monkeypatch.setenv("GH_TOKEN", _FINE_GRAINED_TOKEN)
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
         obs = _make_obs(tmp_path)
         repo_cfgs = [_make_repo_cfg(tmp_path)]
@@ -666,7 +700,7 @@ class TestG1OrphanProcessSweep:
         reconcile = _import_reconcile()
 
         monkeypatch.setenv("GH_TOKEN", _FINE_GRAINED_TOKEN)
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
         obs = _make_obs(tmp_path)
         repo_cfgs = [_make_repo_cfg(tmp_path)]
@@ -714,7 +748,7 @@ class TestG1OrphanProcessSweep:
         reconcile = _import_reconcile()
 
         monkeypatch.setenv("GH_TOKEN", _FINE_GRAINED_TOKEN)
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
         obs = _make_obs(tmp_path)
         repo_cfgs = [_make_repo_cfg(tmp_path)]
@@ -755,7 +789,7 @@ class TestG1OrphanProcessSweep:
         reconcile = _import_reconcile()
 
         monkeypatch.setenv("GH_TOKEN", _FINE_GRAINED_TOKEN)
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
         obs = _make_obs(tmp_path)
         repo_cfgs = [_make_repo_cfg(tmp_path)]
@@ -801,7 +835,7 @@ class TestPerCheckIsolation:
         reconcile = _import_reconcile()
 
         monkeypatch.setenv("GH_TOKEN", _FINE_GRAINED_TOKEN)
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
         obs = _make_obs(tmp_path)
         repo_cfgs = [_make_repo_cfg(tmp_path)]
@@ -853,7 +887,7 @@ class TestPerCheckIsolation:
         reconcile = _import_reconcile()
 
         monkeypatch.setenv("GH_TOKEN", _FINE_GRAINED_TOKEN)
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
         obs = _make_obs(tmp_path)
         repo_cfgs = [_make_repo_cfg(tmp_path)]
