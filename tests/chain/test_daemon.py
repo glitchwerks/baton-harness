@@ -5812,7 +5812,8 @@ class TestAsyncEscalationStartupWarning:
 # Phase P2 (#33) — mark_in_progress call-site contracts
 # ===========================================================================
 #
-# These tests pin the CALL-SITE contracts described in issue #33 (P2 phase, PR #103):
+# These tests pin the CALL-SITE contracts described in issue #33
+# (P2 phase, PR #103):
 #
 #   daemon.py ~L837  (ci_gate_reentry path):
 #       mark_in_progress(..., worker_active=False)
