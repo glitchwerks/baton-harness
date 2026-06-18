@@ -338,7 +338,7 @@ Items 1–9 from the original post-spec checklist are complete. Remaining phase-
 1. Docker containerization (Dockerfile + entrypoint, credentials volume) — not yet started.
 2. Full Slack Bolt bot (Block Kit decision cards, button handler, thread reply handler) — minimal webhook escalation implemented; interactive bot deferred.
 3. Subscription rate-limit measurement under real representative load (issue #39) — gates raising concurrency above 1.
-4. Operational hardening: OOM recovery, orphan process cleanup, credential corruption (issue #40).
+4. Operational hardening (issue #40) — **DONE** (startup reconciliation sweep: OOM detection, orphan process scan, credential gates; merged PR #107). Two residuals remain open: `state.json` load-on-startup (issue #106) and OAuth credential-volume health-check (issue #108).
 5. ToS posture: monitor terms at major Anthropic updates; fall back to API-key billing if subscription path is ever explicitly closed (issue #37 — ongoing, no action required now).
 
 ---
