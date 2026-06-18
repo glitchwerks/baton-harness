@@ -4,7 +4,7 @@
 
 **Vendoring status [implemented]:** `symphony/` (the `mraza007/baton` Python package) is vendored into `src/baton_harness/vendor/symphony/` and called directly as a library (issue #27, P0). §1 and §2 describe the implemented model.
 
-**Companion docs:** [architecture-spec.md](./architecture-spec.md) (overall system), [spike-findings.md](./spike-findings.md) (what the spike established — referenced here, not restated), [problem-statement.md](./problem-statement.md) (constraints).
+**Companion docs:** [architecture-spec.md](./architecture-spec.md) (overall system). The spike findings that ground design decisions are inlined in [§ Decision records](#decision-records) below. Project constraints are in [§ Constraints](#constraints) below.
 
 ---
 
@@ -18,7 +18,7 @@ The harness implementation language is **Python**. This supersedes the shell-scr
 
 2. **Matches the project's toolchain and standards.** The project's Python standards (PEP 8, type hints, Google docstrings, `uv`, pytest) apply directly. No equivalent tooling exists for shell here.
 
-3. **The load-bearing components are error-prone in bash.** The outcome router parses `gh --json` output; the spike's closed shell implementation (PR #9) grepped JSON rather than parsing it. The router is explicitly "production code, not glue" (open-questions.md S2.1), and the future async CI-trigger carries the C1/C2/C3 concerns (spike-findings.md — "design it as a real component, not a webhook one-liner"). Proper JSON parsing, data structures, and pytest coverage matter there.
+3. **The load-bearing components are error-prone in bash.** The outcome router parses `gh --json` output; the spike's closed shell implementation (PR #9) grepped JSON rather than parsing it. The router is explicitly "production code, not glue" (open-questions.md S2.1), and the future async CI-trigger carries the C1/C2/C3 concerns (see [§ Constraints — Design concerns C1–C3](#constraints) — "design it as a real component, not a webhook one-liner"). Proper JSON parsing, data structures, and pytest coverage matter there.
 
 4. **Matches the vendored `symphony` source language.** `symphony` is Python; shared tooling (ruff, mypy, pytest) applies uniformly across harness and vendor tree. (The original rationale was "aids the D2 contribute-upstream path" — superseded by the vendoring decision; see §1.)
 
@@ -32,7 +32,7 @@ A standalone, version-controlled repo that holds the *reusable policy and toolin
 
 **Vendoring decision [implemented]:** `symphony/` (the `mraza007/baton` Python package, MIT licensed, ~1120 lines) is vendored at `src/baton_harness/vendor/symphony/` (issue #27, P0). The harness calls `Orchestrator._run_worker(issue)` directly — no subprocess, no `baton start` invocation. Upstream `mraza007/baton` is frozen/dormant (3 commits, Mar 2026, zero external PRs ever merged); vendoring makes the harness the de facto maintainer of the orchestrator source.
 
-**Relationship to D2:** Decision D2 ("harness is its own repo, not a Baton fork") is not violated — the harness repo remains independent. D2's "fork only as a last resort" framing is superseded: vendoring the source into a subdirectory of the harness package is the selected path, chosen over both external-dependency management and a full fork. D2 as a historical decision record is preserved in [spike-findings.md](./spike-findings.md) with a supersession note.
+**Relationship to D2:** Decision D2 ("harness is its own repo, not a Baton fork") is not violated — the harness repo remains independent. D2's "fork only as a last resort" framing is superseded: vendoring the source into a subdirectory of the harness package is the selected path, chosen over both external-dependency management and a full fork. D2 as a historical decision record is preserved in [§ Decision records — D2](#d2--harness-is-its-own-repo-not-a-baton-fork) with a supersession note.
 
 **Two fixes vendoring unlocked [implemented]:**
 1. Thread `env=` through `run_hook` (VP-1, P0) — fixes the `before_run` rebase-onto-main bug; `BH_VENV` also threaded.
@@ -44,7 +44,7 @@ Issue #23 (terminal-block / upstream-dependency framing) is **closed**: the work
 
 ## 2. Integration model
 
-**Historical pilot (superseded by vendoring):** The external-process model (validated in the spike and pilot — see spike-findings F11 and issue #6 dry-run results). Baton runs project-local; the harness config lives here and is pointed at via `baton start -w`:
+**Historical pilot (superseded by vendoring):** The external-process model (validated in the spike and pilot — see [§ Decision records — F11](#f11--baton-capabilities-from-docs) and issue #6 dry-run results). Baton runs project-local; the harness config lives here and is pointed at via `baton start -w`:
 
 ```bash
 cd <project-repo> && baton start -w /agent-harness/config/WORKFLOW.md
@@ -140,7 +140,7 @@ Reconciliation is enforced in `after_run.py` to maintain a single state label (t
 
 ## 6. Inherited design constraints
 
-These come from the spike and must be honoured by the harness as it grows. They are *not* re-argued here; see spike-findings for the reasoning.
+These come from the spike and must be honoured by the harness as it grows. The full reasoning is in [§ Constraints — Design concerns C1–C3](#c1--single-writer-claim-authority-multi-writer-race) below.
 
 - **C1 — single-writer claim authority.** When the async CI/review layer is added, exactly one component may mutate claim/state. (Deferred — not in pilot.)
 - **C2 — provenance allowlist.** The harness acts only on agent-authored branches/PRs and owner-labeled issues; never on arbitrary-author content. (Deferred — not in pilot, since the pilot has no event-driven trigger.)
@@ -416,3 +416,223 @@ Any unrecognised value logs a WARNING and falls back to `"detect"` (`obs_config.
 **Failure semantics**
 
 The sweep is guarded: the entire `scan_orphan_worktrees` body is wrapped in a `try/except` (`recovery.py` lines 594–670), returning an empty set on any exception. The daemon's call site adds a further outer guard (`daemon.py` lines 1872–1873) so a sweep failure is logged at DEBUG and never disrupts the daemon loop.
+
+---
+
+## Decision records
+
+Historical decisions made during the spike that ground the design. These were previously in `docs/spike-findings.md` (deleted — content moved here, issue #114).
+
+### D1 — ToS posture: risk accepted (revisit at terms changes)
+
+Reviewed the current Claude Code / consumer terms. No explicit verbiage was found prohibiting headless, orchestrator-driven use of the first-party `claude` binary on subscription auth. The ambiguity appears deliberate (Anthropic retaining flexibility). Absence of prohibition is not permission, but it is not prohibition either.
+
+**Decision:** Risk accepted for a personal project. This is a *monitored assumption*, not a closed gate — terms moved twice in 2026, so re-check at any major Claude Code or consumer-terms update. The API-key fallback (architecture-spec.md §8 risk table) stays designed-in as the escape hatch: a terms change closing the subscription path becomes a cost increase, not a dead end.
+
+> See also open-questions.md S1.1 for the fuller resolved treatment: proceeding accepted as known and bounded risk, with re-examination at each major Anthropic terms revision.
+
+### D2 — Harness is its own repo, not a Baton fork
+
+The policy layer (outcome router, hooks, prompts, templates, eventual Slack bot + Dockerfile) lives in a standalone version-controlled repo with the orchestrator as an upstream dependency. Fork only as a last resort, after "work around it" and "contribute upstream" are exhausted. *Detailed harness architecture deferred until the spike completes.*
+
+> **[SUPERSEDED 2026-06-06 by option-(c) vendoring — see §1]** D2's "own repo, not a Baton fork" framing is not violated, but its "upstream dependency" and "contribute upstream" premises are superseded: `symphony/` is vendored into `src/baton_harness/vendor/symphony/` and called directly. The harness remains its own repo; D2 as a historical decision record is preserved here.
+
+---
+
+### Spike viability verdict
+
+**The smoke test's core question — "could this work?" — is answered: yes.**
+- **Scenario A:** a labeled issue produced a correct PR that passed pytest CI and was merged. The core loop closes end-to-end.
+- **Scenarios B & C:** ambiguous and impossible work degrade into graceful blocks with actionable questions — not wrong guesses or garbage output.
+- Repeated headless runs throughout the spike did not hit a rate-limit wall — **but see the rate-limits caveat below; this evidence is weak.**
+
+**Rate limits are NOT validated.** The runs that didn't throttle were trivial (`add()`, `greet()`, blocks): tiny context, few turns, minimal tokens, concurrency 1. Subscription limits are typically keyed on token throughput over rolling windows, so the drivers that push toward the ceiling — large per-run context (real repo + CLAUDE.md + multiple files + accumulated tool results), high turn counts (15–30 for a real feature vs 2 for a toy), concurrency > 1, and sustained overnight load — were all minimized or absent. The spike supports only the narrow claim "low-demand headless runs at concurrency 1 don't immediately throttle," not "the subscription supports the intended workload." This is a **pilot-phase** question: it can only be answered by running genuinely representative issues against a real project and watching token consumption and throttling. It matters more than the deferred robustness items because it can break the *cost model* (forcing reduced concurrency or the per-token API-key fallback).
+
+This clears the viability bar. Everything beyond it — CI auto-detection (F10), stuck-run / crash recovery (Scenarios E, F), and the C1–C3 harness concerns — is robustness and design, **not** viability, and belongs to the harness-design phase.
+
+**Remaining viability-grade question — rate limits under real load.** Tracked in issue #39 (pilot-phase measurement; gates raising concurrency above 1; non-acute for serial v1). If realistic load throttles hard, the fallback is reduced concurrency (slower) or the API-key path (per-token cost).
+
+---
+
+### Spike findings
+
+Empirical results from the smoke-test spike.
+
+#### F1 — Tool identity: CLOSED — it is `mraza007/baton`
+The README confirms it: "inspired by OpenAI's Symphony spec, rebuilt from scratch for Claude Code." The `.symphony/worktrees/` path is simply Baton's Python package name (`symphony/orchestrator.py`, `symphony/config.py`, etc.) — its worktree directory, not a different tool. Resolved via docs; no test needed. The D2 fork-vs-dependency reasoning and all Baton docs apply.
+
+#### F2 — Env vars not passed to hooks
+`$ISSUE_NUMBER` and `$EXIT_CODE` come back empty in `before_run`/`after_run`. The orchestrator does not export the variable names the spec's WORKFLOW.md assumed.
+**Workaround (retired):** derive issue number from `basename "$PWD"` (worktree dir is named by issue number); use shell `$?` for exit status.
+
+> **Forward state [implemented, VP-1, issue #27 P0]:** Under vendoring, the `env=` threading fix inside `run_hook` passes `ISSUE_NUMBER` directly. The `basename "$PWD"` workaround is retired.
+
+#### F3 — Orchestrator does NOT manage GitHub labels for run state
+It tracks run state internally (the `.symphony` state machine), and does not mutate GitHub labels on dispatch. Confirmed by observing `agent-ready` persist (not transition to `agent-in-progress`) during a run.
+**Design implication (significant):** the architecture assumed the orchestrator owned the `agent-ready → agent-in-progress → terminal` label machine. It does not. **Label lifecycle must be owned by the harness hook layer.** (See §5 for the implemented label state machine.)
+
+#### F4 — Agent writes code but not the closing git/PR steps
+Without explicit instruction, the agent implements and verifies, then stops — leaving changes unstaged, no commit, no PR.
+**Fix:** mechanical, numbered REQUIRED STEPS in the prompt (stage → commit → push → `gh pr create --draft`), with "report which step failed and STOP" framing.
+**Design implication:** the agent prompt must be more mechanical than drafted. Implementation is the agent's default "done"; shipping is a separate, explicitly-instructed phase.
+
+#### F5 — Outcome states are richer than the spec's done/blocked/failed
+Real terminal states observed: `uncommitted-changes`, `no-commits`, `committed-no-pr`, `pr-opened`. "No PR" is not a single failure — it has multiple distinct causes that need distinct handling.
+**Design implication:** the outcome router (Dial 2) must distinguish more states than the spec listed. The `after_run` classifier now detects these four; the done/blocked/failed model in architecture-spec §3.3 is too coarse.
+
+#### F6 — Dial 1 soft-confidence works (PASS)
+In Scenario B, the agent recognized genuine ambiguity, declined to guess, applied `blocked`, and left an *actionable* comment stating what it needed. Prompt-based "stop if unsure" held — which was a real open question, since soft instructions don't always survive contact with an eager model.
+**Design implication:** validates that Dial 1 can be partly carried by the prompt. Deterministic PreToolUse hooks still needed for hard invariants, but soft-confidence for judgment calls is viable.
+
+#### F7 — `max_turns` is retries-per-issue, not turns-within-a-session
+Hitting the cap produced fresh restarts of the whole run, not continued reasoning. Each retry is a separate `claude` invocation against the same issue.
+**Design implication:** `max_turns` calibration is about retry budget and cost, not reasoning depth.
+
+#### F8 — Hooks can call external script files (confirmed pattern)
+Hooks invoke standalone scripts that take the issue number as an argument and are independently testable. The testability principle carries forward.
+
+> **Forward note (2026-06-04):** the shell-script convenience established here was superseded by the implementation-language decision: hooks are now Python modules in the `baton_harness` package. The testability principle holds; the language does not.
+
+#### F9 — Agent funnels underspecified/impossible work to BLOCK, not FAIL
+The agent converts "I can't do this confidently" into block-and-ask, not into failure or garbage output. Underspecified / contradictory / impossible inputs reliably surface as *questions*. This is excellent for the async model — imperfectly-scoped work degrades into "needs input," not "wasted run." It also means the block→respond→requeue loop (S2.2) is the **dominant** path for anything less than perfectly specified, not an edge case — raising its design priority.
+**Reframes S2.1:** the important distinction is **block vs done**, not block vs fail.
+
+#### F10 — Outcome classifier marks pr-opened as done WITHOUT checking CI
+The `after_run` classifier treats any opened PR as `agent-done`. It does not check CI status. A PR with red CI would currently be marked done. This is the silent-bad-merge risk (S3.3) made concrete: "done" presently means "a PR exists," not "a correct PR exists."
+**Design implication:** Dial 2's `done` determination must incorporate CI status, or introduce a distinct `needs-review-ci-red` state. (In the implemented daemon, CI green is gated before merging — see §10.)
+
+#### F11 — Baton capabilities (from docs)
+Authoritative facts from the README, relevant to the harness:
+- **Config-by-path:** `baton start -w <path>` accepts a custom WORKFLOW.md path. (Superseded by vendoring — the `-w` path is no longer used.)
+- **`after_create` hook:** runs once after worktree creation (e.g. `npm install`). Partial mitigation for S2.4 isolation (deps, not ports/services).
+- **`{{ attempt }}` variable:** retry attempt number available in the prompt.
+- **Hook timeout:** `hooks.timeout_ms` default 60s.
+- **`permission_mode: bypassPermissions`** is a documented valid value — confirms the F4 fix direction.
+- **CLAUDE.md is project-local:** Baton doesn't manage it; Claude Code discovers it from the worktree (a repo checkout), so it must be committed to the project repo.
+
+---
+
+### H-note (cost) — a block costs up to `max_turns` runs
+
+A block produces no PR, so Baton retries it as a continuation up to `max_turns`. A blocked issue therefore consumes up to `max_turns` full Claude runs before settling — a cost-model factor, not just the H1 label bug.
+
+The open sub-question (does the continuation check re-read labels and respect `exclude_labels: ["blocked"]`?) was answered by the #6 dry run: **no**. Baton evaluates `exclude_labels` at poll time only. Once a run is dispatched, it is not halted between turns. Block costs `max_turns`, not ~1 run.
+
+Pilot decision: accept the `max_turns` cost as a known bound; keep `max_turns` modest. Full decision record: §8 above — "[design] H1 fix — terminal-block decision."
+
+> **[SUPERSEDED 2026-06-06 by option-(c) vendoring — see §1]** Under vendoring, this fix is ~10 lines inside the vendored `_run_worker` turn loop — a harness-internal change with no upstream dependency. The `max_turns: 2` workaround is retireable post-vendoring. Issue #23 is closed.
+
+---
+
+## Constraints
+
+Project constraints that bound the harness. Previously in `docs/problem-statement.md` (deleted — content moved here, issue #114).
+
+### Context
+
+I am a senior software engineer starting a new job that will significantly reduce my available time for personal project development. The system must operate without requiring my attention during working hours.
+
+### Infrastructure
+
+- Self-hosted. I have a server. No cloud-hosted agent systems.
+- GitHub is the single source of truth. Issues, PRs, and milestones are the interface. No external task files or parallel tracking systems.
+
+### Cost
+
+- Core agent work (planning, decomposition, coding, review) must run on subscription to avoid per-token costs at scale. Target: Claude Code Max 20x ($200/mo), which includes API credits for lightweight orchestration use.
+- Orchestration harness (queue polling, label transitions, notifications, dispatch logic) may use API calls. These are cheap, infrequent, and covered by the Max 20x credit allocation.
+
+### Terms of service
+
+- Executor must be Anthropic's first-party Claude Code binary (`claude` CLI). OAuth tokens from Claude subscription accounts cannot be used in third-party tools or agents per Anthropic's 2026 consumer terms — using a third-party agent with an extracted OAuth token violates the terms of service.
+- Only compliant paths: (1) running the real Claude Code binary (subscription-authenticated), or (2) using an API key with per-token billing. Since subscription is the cost model, the executor must be the first-party binary.
+- The [D1 decision record](#d1--tos-posture-risk-accepted-revisit-at-terms-changes) above records the specific risk assessment made during the spike.
+
+### Time
+
+- Morning setup: up to 30 minutes to define and approve the starting point before work.
+- Evening review: available to review output, respond to blocked issues, and approve PRs.
+- During the day: minimally available. The system may surface threshold-crossing questions via Slack and wait for async guidance; it must not surface every minor question. [implemented — daemon escalates blocked sub-trees via Slack + GitHub issue comment]
+
+### Accountability model
+
+The system operates between two human checkpoints that I own:
+
+**Starting point — approved by me**
+I define the milestone or feature scope, write acceptance criteria, and explicitly signal that the work is ready to be planned and executed. Nothing runs without this approval.
+
+**Mid-run escalation — answered async by me [implemented]**
+When the agent hits a threshold-crossing question it cannot resolve, it posts the question as a comment on the issue and applies the `blocked` label. The orchestrator pings me on Slack with a stall summary. I post guidance on the issue and remove `blocked`; the daemon's next poll resumes the parked sub-tree. The GitHub issue is the durable record; Slack is the notification channel. Questions that fall below the threshold do not reach me — the system handles them autonomously.
+
+**End point — approved by me**
+All PRs are draft until I review and merge. Blocked issues sit idle until I respond. Nothing ships without my sign-off.
+
+> **Note on chain-driver orchestration [implemented, issue #27]:** The always-on daemon performs `git merge --no-ff` of completed per-issue branches into the feature branch without per-issue human review. This is an intra-feature-branch operation — analogous to a developer's own local `git merge` while building a feature. The "human owns merge" checkpoint operates at the `feature → main` boundary: the harness opens a single draft `feature → main` PR; the human reviews and merges that. The daemon never merges to `main`.
+
+Everything between those two checkpoints is the agent's responsibility, with threshold-crossing questions escalated asynchronously as described above.
+
+### Non-goals
+
+- Not fully autonomous end-to-end. Human approval is required at both ends of every work unit, with minimal async guidance on threshold-crossing questions the system escalates during a run.
+- Not zero-setup. Reasonable morning prep time (up to 30 minutes) is acceptable.
+- Not a team workflow. This is a solo developer working on personal projects.
+- Not perfectly pre-scoped work. The system must handle ambiguity gracefully — surfacing it rather than guessing — rather than requiring pristine issue backlogs upfront.
+
+### Assumptions
+
+**Work scope**
+- Unattended agent runs are restricted to application-layer work only. Infrastructure changes — cloud resources, deployment configuration, IaC (e.g. Azure, Terraform) — are explicitly out of scope and will not be included in any milestone handed to the system.
+- UI implementation is in scope. Design decisions (layout, visual direction, component choices) are not — those must be resolved by me before a milestone is handed off. The agent implements against a defined design, it does not make design decisions.
+
+**Authentication and credentials**
+- Any service the agent needs to call during a run must have authentication pre-configured before the run starts. The agent will not be asked to acquire, rotate, or manage credentials.
+- GitHub API access is pre-configured via a personal access token available to the harness. Other service credentials (e.g. a third-party API a project depends on) are set up per-project in the environment before that project is onboarded to the workflow.
+
+### Success criteria
+
+- I can define a milestone before leaving in the morning and return to PRs and/or clearly articulated blocked questions at end of day.
+- No action is required from me between kickoff and review, beyond answering the rare, threshold-crossing questions the system escalates.
+- The system fails safely — ambiguity surfaces as a blocked issue, not silent wrong output or wasted compute.
+- Core work cost stays within subscription bounds regardless of how many issues run in a day.
+
+---
+
+### Design concerns C1–C3
+
+These surfaced during the spike while designing the async CI-completion trigger (the second outcome-routing stage from F10). Both are consequences of having a second process that reacts to PR/CI events outside the orchestrator's own run loop. Neither is an edge case. All three are deferred from the pilot (§7).
+
+#### C1 — Single-writer claim authority (multi-writer race)
+
+The CI-completion trigger is a separate process from the orchestrator. When a PR fails CI and must be reworked, something re-routes it. If that means re-labeling the issue `agent-ready`, the poller re-grabs it — but:
+- GitHub labels are **not an atomic lock**; check-then-set races. Two workers, or a worker and the CI-trigger, can both claim the same item.
+- The orchestrator's internal claim tracking (the `.symphony` state machine) only covers its own single-process runs — it does not coordinate with an external CI-trigger or with multiple instances.
+- A failed PR is a **different work unit** than a fresh issue (rework the existing branch, don't start fresh); claiming must account for that.
+
+**Risk:** multiple agents grab the same failed PR at once → duplicated work, wasted subscription quota, conflicting pushes to the same branch.
+
+**Solution shape (to design):** single-writer claim authority. The CI-trigger should *signal* the orchestrator rather than re-queue directly; the orchestrator solely owns claim/state mutation. Alternative: an atomically-applied lock label or an external lock. Principle: exactly one component mutates claim state.
+
+#### C2 — PR provenance / authorization filter (security + burn)
+
+A harness that reacts to PR/CI events must act **only** on PRs the agent itself created — never on PRs from human contributors or external parties.
+
+**Risks if provenance isn't checked:**
+- **Burn:** agent spends subscription quota reworking PRs it should never touch.
+- **Security:** an external PR or issue is an untrusted-input vector — an autonomous agent with repo write access acting on stranger-supplied content (instructions embedded in a PR body, malicious code it then "fixes" and pushes). Acute on public repos, where anyone can open a PR or issue.
+
+**Solution shape (to design):** provenance allowlist. Only agent-authored branches/PRs — identifiable by branch prefix (`agent/issue-N`) or the agent's bot identity — are eligible for harness action. Human/external PRs, and issues from non-trusted authors, are ignored by the harness entirely. The agent only works items labeled by the trusted owner; it never auto-engages on arbitrary-author PRs or issues. Directly tied to the instruction-source-boundary principle: observed content (a stranger's PR) is data, not a command.
+
+#### C3 — Bounded rework with escalation (avoid infinite fix→fail→fix loops)
+
+When a PR fails CI (or fails review), the trigger re-engages an agent to fix it. Without a budget this can loop indefinitely: fix → CI red → fix → CI red → … burning subscription quota and never converging.
+
+**Distinct from `max_turns` (F7):** `max_turns` bounds retries to get a PR *open*, inside the orchestrator's run loop. This bounds rework attempts *after* a PR exists, driven by the async CI/review trigger across multiple CI cycles. The orchestrator considers the issue done once the PR opened, so its budget doesn't cover this loop. They do not compose automatically — the rework loop needs its own budget and counter.
+
+**Requirements:**
+- A per-PR rework counter stored in GitHub (source of truth) — marker comment or label — mutated only by the single claim authority (ties C1).
+- After N rework attempts: stop auto-reworking, mark blocked/failed, notify via Slack (escalate to human).
+- Ideally distinguish fixable failures (lint, test) from environmental/infra failures (runner down, flaky network) — retrying the latter is pure waste. (Refinement, not required for v1.)
+
+**General principle (applies system-wide):** every autonomous retry loop needs (a) a bounded budget and (b) a defined human-escalation exit when exhausted. Applies to CI-rework, review-feedback rework, and any future loop. Escalation target is always: stop, mark blocked/failed, notify human. Converts infinite machine loops into finite loops that terminate at a human.
+
+> C1, C2, and C3 are all requirements on the *same* component — the async CI/review-completion trigger (outcome-routing stage 2). That component is non-trivial: it needs claim coordination (C1), a provenance filter (C2), and rework-budget tracking (C3). Design it as a real component, not a webhook one-liner.

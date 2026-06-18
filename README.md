@@ -102,10 +102,9 @@ baton-harness/
 │   └── WORKFLOW.md              # generic harness config + agent prompt (max_turns: 8)
 ├── templates/
 │   └── CLAUDE.md.template       # source for each project's committed CLAUDE.md
-└── docs/                        # design docs, spike findings, research
-    ├── harness-design.md        # architecture, vendoring decision, daemon design (§10)
+└── docs/                        # design docs, research
+    ├── harness-design.md        # architecture, vendoring decision, daemon design (§10), decision records, constraints
     ├── smoke-test-daemon.md     # first-run walkthrough, env vars, required labels
-    ├── spike-findings.md
     └── ...
 ```
 
@@ -398,7 +397,6 @@ git -C /path/to/project add CLAUDE.md && git -C /path/to/project commit -m "Add 
 
 See `docs/` for the full design:
 
-- `docs/harness-design.md` — architecture, vendoring decision (§1), daemon design (§10), component descriptions
+- `docs/harness-design.md` — architecture, vendoring decision (§1), daemon design (§10), component descriptions, decision records (D1/D2, spike findings), project constraints
 - `docs/smoke-test-daemon.md` — first-run walkthrough, env vars, required labels, CI-gate subtleties
-- `docs/spike-findings.md` — empirical findings from the smoke-test spike that ground the design decisions
 - `docs/architecture-spec.md` — overall system architecture

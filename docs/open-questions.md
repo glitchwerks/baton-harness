@@ -28,14 +28,14 @@
 ### S1.2 — Baton + Claude Code integration behavior is unverified
 **RESOLVED — spike and pilot validation complete.**
 
-The external-process integration was validated in the smoke-test spike (Scenario A — viability verdict: yes; see spike-findings.md) and the pilot dry run (T1, T2 — issue #6). The specific unknowns (`--dangerously-skip-permissions`, hook firing, exit codes) were answered empirically.
+The external-process integration was validated in the smoke-test spike (Scenario A — viability verdict: yes; see [harness-design.md § Spike viability verdict](./harness-design.md#spike-viability-verdict)) and the pilot dry run (T1, T2 — issue #6). The specific unknowns (`--dangerously-skip-permissions`, hook firing, exit codes) were answered empirically.
 
 Under the vendored-symphony model [implemented, issue #27 P0], this concern dissolves: there is no Baton subprocess integration seam. Integration is `Orchestrator._run_worker(issue)` — a direct Python call to vendored source, validated via the deep-dive analysis (see `harness-design.md §1` and issue #27). No integration spike is needed for the subprocess path; the vendored interface is a clean callable.
 
 ---
 
 ### S1.3 — Subscription rate limits are unmeasured
-**STILL OPEN.** Now tracked in **issue #39** (pilot-phase measurement; gates raising concurrency above 1; non-acute for serial v1). Rate limits remain unvalidated under real representative load. The spike ran only at concurrency 1 with trivial issues (spike-findings.md viability caveat). This concern is not affected by vendoring or chain-driver design.
+**STILL OPEN.** Now tracked in **issue #39** (pilot-phase measurement; gates raising concurrency above 1; non-acute for serial v1). Rate limits remain unvalidated under real representative load. The spike ran only at concurrency 1 with trivial issues (see [harness-design.md § Spike viability verdict](./harness-design.md#spike-viability-verdict) — rate-limits caveat). This concern is not affected by vendoring or chain-driver design.
 
 **Chain-driver context:** the chain driver is serial in v1 (concurrency = 1 during a chain run), which makes this less acute for v1 chain workloads but leaves general concurrency behavior unvalidated.
 

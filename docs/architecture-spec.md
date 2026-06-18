@@ -1,7 +1,7 @@
 # Architecture spec — autonomous agent development workflow
 
 **Status:** Reformed 2026-06-07 (issue #28); status markers updated 2026-06-09 (issue #53) to reflect #27 shipped (P0–P3). Sections tagged `[implemented]` describe the current state; sections tagged `[deferred to v2]` remain genuinely open.
-**Companion docs:** [problem-statement.md](./problem-statement.md)
+**Companion docs:** [harness-design.md § Constraints](./harness-design.md#constraints) (project constraints, cost model, accountability model)
 
 ---
 
