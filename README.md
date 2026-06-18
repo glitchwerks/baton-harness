@@ -402,4 +402,3 @@ See `docs/` for the full design:
 - `docs/smoke-test-daemon.md` — first-run walkthrough, env vars, required labels, CI-gate subtleties
 - `docs/spike-findings.md` — empirical findings from the smoke-test spike that ground the design decisions
 - `docs/architecture-spec.md` — overall system architecture
-- `docs/pilot-validation-findings.md` — pilot dry-run findings
