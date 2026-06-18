@@ -63,6 +63,7 @@ from baton_harness.chain.labels import (
 )
 from baton_harness.chain.merge import MergeOutcome, merge_issue_branch
 from baton_harness.chain.obs_config import ObsConfig, load_obs_config
+from baton_harness.chain.reconcile import reconcile_startup
 from baton_harness.chain.recovery import RecoveryResult, scan_orphan_worktrees
 from baton_harness.chain.redispatch import RedispatchTally
 from baton_harness.chain.registry import RepoConfig
@@ -1488,6 +1489,13 @@ async def run_daemon(
         _log.warning("daemon: redispatch tally init failed: %s", exc)
         tally = None
 
+    # --- Startup reconciliation sweep (G3 creds, G2 marker, G1 orphans). ---
+    # reconcile_startup may raise SystemExit on fatal credential failure —
+    # that propagates out of run_daemon intentionally (the daemon cannot
+    # operate without valid credentials).  All other failures are suppressed
+    # inside reconcile_startup itself.
+    await reconcile_startup(registry, obs, runlog)
+
     # --- Heartbeat monitor setup. ----------------------------------------
     # Construct liveness state shared between the daemon and the monitor.
     #
@@ -1572,6 +1580,20 @@ async def run_daemon(
         stop_event.set()
         if monitor_thread is not None:
             monitor_thread.join(timeout=5.0)
+        # Clear the G2 ungraceful-exit marker on graceful shutdown so the
+        # next startup does not misread a clean stop as a crash.
+        try:
+            for repo_cfg in registry:
+                _marker = (
+                    Path(repo_cfg.project_root)
+                    / ".baton-harness"
+                    / "daemon.alive"
+                )
+                if _marker.exists():
+                    _marker.unlink(missing_ok=True)
+                break  # v1 single-repo; clear for repo_cfgs[0] only
+        except Exception:  # noqa: BLE001
+            pass  # best-effort; never raise in finally
 
     _log.info("daemon: stopped")
 
