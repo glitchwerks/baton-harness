@@ -271,7 +271,10 @@ accepts `GITHUB_TOKEN` as a fallback, consistent with standard CI conventions):
 
 ```bash
 export GH_TOKEN=github_pat_<your-token>
-bin/run.sh /path/to/project
+export BH_REPO_OWNER=<owner>
+export BH_REPO_NAME=<repo>
+export BH_PROJECT_ROOT=/path/to/local/clone
+bin/run-daemon.sh
 ```
 
 ### Known limitation — fine-grained PAT scope introspection

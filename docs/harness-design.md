@@ -44,7 +44,7 @@ Issue #23 (terminal-block / upstream-dependency framing) is **closed**: the work
 
 ## 2. Integration model
 
-**Current pilot [implemented]:** The external-process model (validated in the spike and pilot — see spike-findings F11 and pilot-validation-findings.md). Baton runs project-local; the harness config lives here and is pointed at via `baton start -w`:
+**Historical pilot (superseded by vendoring):** The external-process model (validated in the spike and pilot — see spike-findings F11 and pilot-validation-findings.md). Baton runs project-local; the harness config lives here and is pointed at via `baton start -w`:
 
 ```bash
 cd <project-repo> && baton start -w /agent-harness/config/WORKFLOW.md
@@ -100,10 +100,10 @@ agent-harness/
 
 ## 4. Components
 
-### 4.1 Launcher — `bin/run.sh` (shell — stays shell) [implemented]
-Encapsulates the project-local invocation so it isn't retyped or misremembered. Resolves the harness directory, `cd`s into the target project, and starts Baton pointed at that project's config. Exports `BATON_HARNESS_DIR` so hook entry points can locate the package without hardcoding a path. This launcher is a thin shell wrapper (`exec baton …`) and is not part of the Python package — it was implemented in issue #1 and is already merged.
+### 4.1 Launcher — `bin/run-daemon.sh` (shell — active launcher) [implemented]
+Starts the always-on daemon. Validates that `BH_REPO_OWNER`, `BH_REPO_NAME`, and `BH_PROJECT_ROOT` are set, runs label and sandbox preflight checks, exports `BATON_HARNESS_DIR` so hook entry points can locate the package without hardcoding a path, then invokes the `bh-daemon` Python entry point. This launcher is a thin shell wrapper and is not part of the Python package.
 
-> **Post-vendoring [implemented]:** `bin/run.sh` (the `baton start -w` launcher) was deleted when `bin/run-daemon.sh` landed in P3. The `BATON_HARNESS_DIR` export pattern is preserved in `bin/run-daemon.sh` for backward compatibility with existing per-project `CLAUDE.md` setups.
+> **Historical note:** The original `bin/run.sh` encapsulated the `baton start -w` external-process invocation (issue #1). It was deleted when `bin/run-daemon.sh` landed in P3 (vendoring). The `BATON_HARNESS_DIR` export pattern is preserved in `bin/run-daemon.sh` for backward compatibility with existing per-project `CLAUDE.md` setups.
 
 ### 4.2 Hooks — `src/baton_harness/` (Python)
 Standalone, independently testable Python modules (spike F8 confirmed the testability pattern), each invoked as an entry point and taking the issue number as an argument derived from the worktree path (`basename "$PWD"` — F2: Baton passes no env-var context to hooks) [implemented]. Issue number parsing, GitHub API calls, and JSON handling are all done in Python — no shell grepping of JSON output.
@@ -166,9 +166,9 @@ Explicitly deferred so the pilot stays minimal:
 
 Two are docs-can't-answer test targets; the rest are design decisions to make as the harness evolves.
 
-- **[test] Absolute `-w` path:** confirm `baton start -w <absolute-path-outside-project>` works (docs show only a relative example). ~2 min.
+- ~~**[test] Absolute `-w` path:** confirm `baton start -w <absolute-path-outside-project>` works (docs show only a relative example). ~2 min.~~ **Obsolete under vendoring** — `baton start -w` is retired; the active launcher is `bin/run-daemon.sh`.
 - ~~**[test] Block cost:** does Baton's continuation retry respect `exclude_labels: ["blocked"]` and stop after the first blocked turn, or burn all `max_turns`?~~ **Resolved — #6 dry run (T2).** `exclude_labels` is checked at poll time only; Baton does not halt an in-flight run. Block costs up to `max_turns`. See §8 terminal-block decision and pilot-validation-findings.md finding 5.
-- **[design] Script path resolution:** ~~do hooks hardcode the harness path, or read it from an env var exported by the launcher?~~ **Resolved.** The launcher (`bin/run.sh`, issue #1) exports `BATON_HARNESS_DIR`; hook entry points read it from the environment. Hardcoding is no longer needed.
+- **[design] Script path resolution:** ~~do hooks hardcode the harness path, or read it from an env var exported by the launcher?~~ **Resolved.** The launcher (`bin/run-daemon.sh`) exports `BATON_HARNESS_DIR`; hook entry points read it from the environment. Hardcoding is no longer needed.
 - **[design] CLAUDE.md sync:** how does the template become the project's committed CLAUDE.md — manual copy for the pilot, or a small generate step? Manual is fine for one project.
 - **[design] H1 fix — terminal-block decision (2026-06-06, closes AC3 of #4):** The block path is implemented: `after_run` enforces the single-state invariant (Priority 1 in `_reconcile_labels` — removes `agent-ready`, leaves `blocked`). This was validated live in the #6 dry run (T2, pilot-validation-findings.md finding 5).
 
@@ -307,7 +307,7 @@ When to use: local deployments where a network endpoint is unavailable or unwant
 
 **Mode B — external dead-man's-switch webhook ping (`BH_HEARTBEAT_PING_URL`)**
 
-When `BH_HEARTBEAT_PING_URL` is set, the daemon issues a best-effort HTTP GET to that URL on every tick. If the env var is unset, no ping is sent and Mode A is the only liveness signal. The mechanism is compatible with any Healthchecks.io-style ping-URL service (`obs_config.py` line 206: `os.environ.get("BH_HEARTBEAT_PING_URL") or None`).
+When `BH_HEARTBEAT_PING_URL` is set, the daemon issues a best-effort HTTP GET to that URL on every tick. If the env var is unset, no ping is sent and Mode A is the only liveness signal. The mechanism is compatible with any Healthchecks.io-style ping-URL service (`obs_config.py` line 233: `os.environ.get("BH_HEARTBEAT_PING_URL") or None`).
 
 When to use: unattended server deployments where you want an alert delivered without polling a local filesystem; the hosted service handles the alerting logic and silencing.
 
