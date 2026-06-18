@@ -329,6 +329,12 @@ bin/run-daemon.sh --once
 
 The `--once` flag runs exactly one poll-dispatch tick then exits — safe for a first run.
 
+**Startup reconciliation sweep (as of #40):** before entering the poll loop, the daemon runs a one-time reconciliation sweep:
+
+- **Fatal credential validation.** `validate_github_token()` is called to confirm the GitHub token is present and valid; `ANTHROPIC_API_KEY` is checked for presence. If either check fails, the daemon emits a critical alert and **exits non-zero** rather than starting. Previously, missing or invalid credentials caused every worker dispatch to fail silently.
+- **Ungraceful-prior-exit detection.** A `.baton-harness/daemon.alive` marker is written at startup and removed on graceful shutdown. If the marker is present at boot, the prior run ended ungracefully (likely OOM-kill) — a critical alert fires. This is the only tractable notification for an uncatchable SIGKILL: the harness reports it on the next boot.
+- **Orphan `claude` process sweep.** A `pgrep`-based scan detects any `claude -p` processes left over from a crashed prior run. Matches emit a warn alert with the PID list. Detection only — no auto-kill in v1.
+
 **Continuous operation:**
 
 ```bash
