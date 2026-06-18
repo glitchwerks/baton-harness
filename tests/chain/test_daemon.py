@@ -6094,3 +6094,195 @@ class TestP2MarkInProgressCallSites:
                 f"got worker_active={worker_active_val!r} "
                 f"(kwargs={c['kwargs']!r})"
             )
+
+
+# ---------------------------------------------------------------------------
+# Issue #40: reconcile_startup wiring in run_daemon
+# ---------------------------------------------------------------------------
+
+
+def test_run_daemon_calls_reconcile_startup_exactly_once() -> None:
+    """★ Daemon wiring: run_daemon calls reconcile_startup exactly once.
+
+    reconcile_startup must be called during the startup phase —
+    after obs init and before the heartbeat thread starts.  We patch
+    reconcile_startup as a spy and assert it is called exactly once
+    per run_daemon invocation (once=True → one daemon lifecycle).
+    """
+    ready_issues: list[Any] = []
+
+    reconcile_call_count = 0
+
+    async def fake_reconcile_startup(
+        repo_cfgs: Any,  # noqa: ANN401
+        obs: Any,  # noqa: ANN401
+        runlog: Any,  # noqa: ANN401
+    ) -> None:
+        nonlocal reconcile_call_count
+        reconcile_call_count += 1
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=_make_run_side_effect(
+                ready_issues=ready_issues,
+                pr_head_sha="abc123",
+                issue_branch="baton/issue-10-10",
+                feature_branch_exists=False,
+            ),
+        ),
+        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch(
+            "baton_harness.chain.daemon.reconcile_startup",
+            side_effect=fake_reconcile_startup,
+        ),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    assert reconcile_call_count == 1, (
+        "reconcile_startup must be called exactly once per run_daemon "
+        f"invocation; called {reconcile_call_count} time(s)"
+    )
+
+
+def test_run_daemon_reconcile_startup_called_before_heartbeat_thread() -> None:
+    """★ Daemon wiring: reconcile_startup before heartbeat thread start.
+
+    The ordering invariant: startup reconciliation (credential check,
+    marker write, process sweep) must complete before the background
+    heartbeat thread is spawned.  We log an event for each and verify
+    the sequence.
+    """
+    ready_issues: list[Any] = []
+    event_log: list[str] = []  # "reconcile" | "heartbeat_thread"
+
+    async def fake_reconcile_startup(
+        repo_cfgs: Any,  # noqa: ANN401
+        obs: Any,  # noqa: ANN401
+        runlog: Any,  # noqa: ANN401
+    ) -> None:
+        event_log.append("reconcile")
+
+    import threading
+
+    _real_thread_cls = threading.Thread
+
+    class _SpyThread:
+        """Records heartbeat thread start events."""
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:  # noqa: ANN401
+            self._inner = _real_thread_cls(*args, **kwargs)
+
+        def start(self) -> None:
+            event_log.append("heartbeat_thread")
+            self._inner.start()
+
+        def join(self, *args: Any, **kwargs: Any) -> None:  # noqa: ANN401
+            self._inner.join(*args, **kwargs)
+
+        def is_alive(self) -> bool:
+            return self._inner.is_alive()
+
+        @property
+        def daemon(self) -> bool:
+            return self._inner.daemon
+
+        @daemon.setter
+        def daemon(self, value: bool) -> None:
+            self._inner.daemon = value
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=_make_run_side_effect(
+                ready_issues=ready_issues,
+                pr_head_sha="abc123",
+                issue_branch="baton/issue-10-10",
+                feature_branch_exists=False,
+            ),
+        ),
+        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch(
+            "baton_harness.chain.daemon.reconcile_startup",
+            side_effect=fake_reconcile_startup,
+        ),
+        patch("threading.Thread", _SpyThread),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    # Filter for the events we care about.
+    reconcile_events = [e for e in event_log if e == "reconcile"]
+    heartbeat_events = [e for e in event_log if e == "heartbeat_thread"]
+
+    assert reconcile_events, (
+        "reconcile_startup must be called during run_daemon startup; "
+        f"event_log={event_log}"
+    )
+    assert heartbeat_events, (
+        f"Heartbeat thread start must be recorded; event_log={event_log}"
+    )
+
+    first_reconcile = event_log.index("reconcile")
+    first_heartbeat = event_log.index("heartbeat_thread")
+    assert first_reconcile < first_heartbeat, (
+        "reconcile_startup must be called BEFORE heartbeat thread start; "
+        f"event_log={event_log} "
+        f"(reconcile at index {first_reconcile}, "
+        f"heartbeat_thread at index {first_heartbeat})"
+    )
