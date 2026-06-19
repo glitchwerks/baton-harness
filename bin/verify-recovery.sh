@@ -216,13 +216,29 @@ echo "baton-harness: GitHub token env var present (structural check only)"
 # reach the poll loop (G2, G1, SIGTERM).
 echo "baton-harness: checking sandbox for open agent-ready issues (safety gate)..."
 _ready_count=0
-_ready_out="$(gh issue list \
+# Fail CLOSED: if gh cannot run (auth error, network error, wrong repo, etc.)
+# we must NOT proceed — a failed query cannot prove the sandbox is empty, so
+# allowing the scenarios that reach the poll loop would silently disable the
+# safety guarantee.  Only a successful query returning exactly 0 may continue.
+if ! _ready_out="$(gh issue list \
     --repo "${BH_REPO_OWNER}/${BH_REPO_NAME}" \
     --label "agent-ready" \
     --state open \
     --json number \
-    --jq 'length' 2>/dev/null)" || _ready_out="0"
-_ready_count="${_ready_out:-0}"
+    --jq 'length' 2>&1)"; then
+    echo "baton-harness: ABORT: gh issue list failed — cannot prove sandbox has zero" >&2
+    echo "  agent-ready issues; refusing to run recovery scenarios that reach the" >&2
+    echo "  poll loop.  Check BH_REPO_OWNER/BH_REPO_NAME, GH_TOKEN, and network." >&2
+    echo "  gh output: ${_ready_out}" >&2
+    exit 1
+fi
+# Guard against non-numeric output (e.g. jq parse error)
+if ! [[ "${_ready_out}" =~ ^[0-9]+$ ]]; then
+    echo "baton-harness: ABORT: gh issue list returned non-integer output '${_ready_out}'" >&2
+    echo "  Cannot prove sandbox has zero agent-ready issues — refusing to proceed." >&2
+    exit 1
+fi
+_ready_count="${_ready_out}"
 
 if [[ "${_ready_count}" -gt 0 ]]; then
     echo "baton-harness: ABORT: sandbox has ${_ready_count} open agent-ready issue(s)." >&2
@@ -434,18 +450,22 @@ fi
 echo ""
 
 # ===========================================================================
-# SCENARIO G2 — Stale daemon.alive marker → critical alert; marker re-written
+# SCENARIO G2 — Stale daemon.alive marker → critical alert fired
 # ===========================================================================
 #
 # Gate: reconcile.py ~line 141: `if marker.exists():` → critical alert
 #   ("Prior daemon run ended ungracefully (possible OOM); in-flight work may
-#    have been lost"), then marker is (re)written.  NON-FATAL.
+#    have been lost"), then marker is (re)written mid-reconcile.  NON-FATAL.
 #
 # Setup: pre-create the marker file before running the daemon.
 # Assertions:
 #   1. Daemon exits 0 (non-fatal — daemon continues normally).
 #   2. Daemon output contains "Prior daemon run ended ungracefully".
-#   3. Marker still exists after startup (was re-written by daemon).
+#
+# NOTE: the marker is NOT asserted post-exit.  daemon.py's `finally` block
+#   calls _daemon_marker.unlink(missing_ok=True) on every clean exit including
+#   --once, so the marker is always absent after a successful run.  The gate
+#   fired correctly if and only if the exit is 0 AND the alert text is present.
 #
 # SAFETY: daemon runs --once; sandbox has zero agent-ready issues (verified
 #   in preflight), so the poll loop finds no work and dispatches nothing.
@@ -477,18 +497,12 @@ if ! echo "${_g2_out}" | grep -q "Prior daemon run ended ungracefully"; then
     _g2_passed=0
 fi
 
-# Marker should still exist (daemon re-writes it on startup)
-if [[ ! -f "${MARKER_PATH}" ]]; then
-    fail "G2" "daemon.alive marker was NOT re-written after G2 detection"
-    _g2_passed=0
-fi
-
 if [[ "${_g2_passed}" -eq 1 ]]; then
     pass "G2"
 fi
 
-# Clean up: the daemon --once run does NOT clear the marker on graceful exit
-# through --once (the finally block runs, clears marker).  Either way, clean up.
+# Clean up any marker left by setup (daemon --once finally block removes it on
+# graceful exit; rm -f here is a belt-and-suspenders no-op in the happy path).
 rm -f "${MARKER_PATH}" || true
 _MARKER_WAS_CREATED_BY_US=0
 
