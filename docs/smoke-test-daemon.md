@@ -256,3 +256,185 @@ To smoke-test the **full merge path**, add a GitHub Actions workflow to the sand
 - **Continuous mode**: send Ctrl-C. The daemon catches `KeyboardInterrupt` and exits cleanly.
 - **Parked issues**: an issue that hit CI_TIMEOUT or a merge conflict carries the `blocked` label and an escalation comment on the GitHub issue. Inspect the daemon logs to see the exact outcome. Clear the `blocked` label and re-add `agent-ready` to re-queue an issue.
 - **Branches created**: the agent creates `baton/<slug>-<N>` per-issue branches and a `feature/<slug>` integration branch. Delete them when done: `git -C $BH_PROJECT_ROOT branch -d <branch>` or via the GitHub UI.
+
+---
+
+## Running on a Linux server
+
+### Credentials and auth on the server
+
+The deployment model mandates OAuth/subscription auth for Claude — `ANTHROPIC_API_KEY` **must not be set** in the daemon's environment (`architecture-spec.md` §2, §5). The startup reconciliation sweep (G3b, `src/baton_harness/chain/reconcile.py`) checks for this at every daemon start and exits non-zero with a critical alert if the key is present. This is the most important thing to get right on a server:
+
+- Mount the OAuth credentials volume at `/home/agent/.claude/` (or wherever the container user's home is). Do not supply an API key.
+- `gh` must be authenticated via `GH_TOKEN` set to a fine-grained PAT (prefix `github_pat_`). See `architecture-spec.md` §2 and the README's GitHub token setup section.
+- `git` must be configured with a user name and email in the daemon's environment.
+
+Do not export `ANTHROPIC_API_KEY` — not in `.env` files, not in systemd `EnvironmentFile=`, not in the Docker entrypoint. Its presence at daemon startup is treated as a misconfiguration and causes an immediate hard abort.
+
+### First run on the server
+
+Follow the same `--once` safe-first-run approach described in the [Run it](#run-it) section above. Provision the sandbox and its labels first (see [Prerequisites](#prerequisites) and the `bin/init-sandbox.sh` automation). Then:
+
+```bash
+export BH_REPO_OWNER=<owner>
+export BH_REPO_NAME=<repo>
+export BH_PROJECT_ROOT=/path/to/local/sandbox/clone
+
+bin/run-daemon.sh --once
+```
+
+This runs one poll-dispatch tick and exits, bounding blast radius.
+
+### Process supervision (continuous mode)
+
+For continuous operation, omit `--once`. The daemon polls indefinitely; stop it with SIGTERM (the handler in `src/baton_harness/chain/daemon.py` unlinks the `daemon.alive` marker and exits 0 cleanly) or Ctrl-C.
+
+Two common supervision patterns are shown below. Both are illustrative starting points — adapt them to your environment.
+
+#### systemd unit (recommended)
+
+Create `/etc/systemd/system/bh-daemon.service`. The environment variables can also be placed in a separate `EnvironmentFile=` — keep the file root-readable only and make sure `ANTHROPIC_API_KEY` never appears in it.
+
+```ini
+[Unit]
+Description=baton-harness daemon
+After=network.target
+
+[Service]
+Type=simple
+User=agent
+Environment=BH_REPO_OWNER=<owner>
+Environment=BH_REPO_NAME=<repo>
+Environment=BH_PROJECT_ROOT=/path/to/sandbox/clone
+Environment=GH_TOKEN=<fine-grained-pat>
+ExecStart=/path/to/harness/.venv/bin/bh-daemon --workflow /path/to/harness/config/WORKFLOW.md
+Restart=on-failure
+RestartSec=15
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Key points:
+- `Restart=on-failure` re-launches the daemon after an unexpected crash (SIGKILL, OOM). G2 at startup will detect and alert on the ungraceful exit.
+- Do NOT add `KillSignal=SIGKILL` — the default `KillSignal=SIGTERM` lets the handler clear the `daemon.alive` marker before exit.
+- Graceful shutdown: `systemctl stop bh-daemon` sends SIGTERM; the handler fires and exits 0.
+
+Enable and start:
+
+```bash
+systemctl daemon-reload
+systemctl enable --now bh-daemon
+journalctl -u bh-daemon -f   # stream logs
+```
+
+#### tmux / nohup (lightweight alternative)
+
+For a non-systemd environment or a quick deploy:
+
+```bash
+export BH_REPO_OWNER=<owner>
+export BH_REPO_NAME=<repo>
+export BH_PROJECT_ROOT=/path/to/sandbox/clone
+export GH_TOKEN=<fine-grained-pat>
+
+# In a persistent tmux session:
+tmux new-session -d -s bh 'bin/run-daemon.sh >> /var/log/bh-daemon.log 2>&1'
+
+# Or with nohup:
+nohup bin/run-daemon.sh >> /var/log/bh-daemon.log 2>&1 &
+```
+
+Send SIGTERM to stop cleanly: `kill -TERM <pid>`.
+
+---
+
+## #40 recovery-path verification (`bin/verify-recovery.sh`)
+
+Issue #40 (merged PR #107) added a startup reconciliation sweep to the daemon. `bin/verify-recovery.sh` exercises each gate in that sweep against a live sandbox to confirm the recovery behavior is intact after a deploy or server reboot.
+
+### What it verifies and why it matters
+
+At every startup the daemon runs four checks (`src/baton_harness/chain/reconcile.py`):
+
+| Gate | What it checks | Fatal? |
+|---|---|---|
+| G3a | GitHub token is a valid fine-grained PAT | Yes — exits 1 |
+| G3b | `ANTHROPIC_API_KEY` is NOT set | Yes — exits 1 |
+| G2 | `daemon.alive` marker absent (no ungraceful prior exit) | No — critical alert, continues |
+| G1 | No orphan `claude -p` processes from a prior crashed run | No — warn alert, continues |
+
+The script also exercises graceful SIGTERM shutdown to confirm the `daemon.alive` marker is cleared cleanly, preventing a false-positive G2 alert on the next start.
+
+### Prerequisites
+
+> **Safety: the sandbox must have zero `agent-ready` issues before running this script.** Scenarios G2, G1, and SIGTERM start the daemon in continuous mode (or `--once` with no early-exit gate). Any open `agent-ready` issue could be dispatched during those scenarios. The script checks for this condition at startup and aborts if any are found. Close or re-label all `agent-ready` issues in the sandbox before proceeding.
+
+**Platform:** Linux only. The script uses `pgrep`, `kill -TERM`, and `/proc`-based POSIX semantics. It does not run on Windows or Git-Bash dev hosts — run it on the server where the daemon is deployed.
+
+**Environment requirements:**
+
+```bash
+export BH_REPO_OWNER=<owner>
+export BH_REPO_NAME=<repo>
+export BH_PROJECT_ROOT=/path/to/local/sandbox/clone
+# GH_TOKEN or GITHUB_TOKEN must be set (fine-grained PAT; structural check only)
+# ANTHROPIC_API_KEY must NOT be set (the script sets and unsets it for G3b; aborts if already present)
+# bh-daemon must be on PATH
+```
+
+**`ANTHROPIC_API_KEY` must not be set in the caller's shell.** The script needs to set it temporarily for the G3b scenario. If it is already set, the script aborts before running any scenario.
+
+Usage and options:
+
+```bash
+bin/verify-recovery.sh [--help|-h]
+```
+
+### Scenario table
+
+Each scenario listed in the order the script runs them. "Alert text" refers to the substring grepped from daemon stderr (via the `escalate()` WARNING log line — see script header for observability note).
+
+| Scenario | Gate exercised | Setup | Expected exit code | Expected alert text in output |
+|---|---|---|---|---|
+| G3b | `ANTHROPIC_API_KEY` set | Script sets `ANTHROPIC_API_KEY=dummy-value-for-test` inline | Non-zero (exit 1) | `ANTHROPIC_API_KEY must not be set` |
+| G3a | Bogus `GH_TOKEN` | Script replaces `GH_TOKEN` with `ghp_BOGUS_TOKEN_FOR_TESTING` (classic-PAT prefix — rejected offline by `_auth.py` before any network call) | Non-zero (exit 1) | `Startup credential check failed` |
+| G2 | Stale `daemon.alive` marker | Script pre-creates `.baton-harness/daemon.alive` before starting daemon `--once` | 0 (non-fatal) | `Prior daemon run ended ungracefully` |
+| G1 | Orphan `claude -p` process | Script spawns `sleep 999` with argv containing `claude -p` so `pgrep -f` matches it | 0 (non-fatal) | `Orphan claude processes detected at startup` |
+| SIGTERM | Graceful shutdown | Daemon starts in continuous mode; script waits for `daemon.alive` to appear, then sends SIGTERM | 0 (SystemExit(0) from handler) | Marker absent after exit |
+
+Notes on specific scenarios:
+- **G3b is the inverted gate**: the daemon refuses startup when `ANTHROPIC_API_KEY` IS set. This is the expected, correct behavior for OAuth/subscription deployment — the key's presence signals a misconfiguration.
+- **G3a token format**: the script uses a `ghp_BOGUS_TOKEN_FOR_TESTING` value (classic PAT prefix `ghp_`) because `_auth.py` rejects classic-PAT-prefixed tokens immediately without a network call. A fine-grained PAT has prefix `github_pat_`; anything else is rejected. The inline substitution is deterministic and fast.
+- **G2 marker path**: `$BH_PROJECT_ROOT/.baton-harness/daemon.alive` — pre-created by the script, then re-written by the daemon on startup (non-fatal path). The marker is cleaned up by the script in an EXIT trap.
+- **G1 decoy**: the "orphan" process is `sleep 999` with its argv set to `sleep 999 claude -p`. No real Claude binary is invoked. The script reaps it immediately after the scenario.
+- **SIGTERM exit code**: Python's SIGTERM handler in `daemon.py` calls `raise SystemExit(0)`, so the daemon exits 0 — not 143 (which would indicate the process was killed externally without the handler firing).
+
+### Reading the output
+
+The script prints a per-scenario `[PASS]` or `[FAIL]` line as each scenario completes, then a summary:
+
+```
+baton-harness: [PASS] G3b
+baton-harness: [PASS] G3a
+baton-harness: [PASS] G2
+baton-harness: [PASS] G1
+baton-harness: [PASS] SIGTERM
+baton-harness: ==============================
+baton-harness: Recovery verification summary
+baton-harness: ==============================
+baton-harness:   PASSED: 5
+baton-harness:   FAILED: 0
+baton-harness: RESULT: PASS
+```
+
+A `[FAIL]` line includes the reason. `FAILED` scenarios are listed again in the summary. The script exits non-zero if any scenario fails.
+
+### When to run it
+
+- After deploying the daemon to a new server for the first time.
+- After a server reboot, before restarting the daemon in continuous mode.
+- When validating the #40 recovery behavior after a harness upgrade.
+- As part of a post-deploy smoke test alongside the `--once` dispatch check.
