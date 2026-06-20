@@ -319,8 +319,9 @@ echo "baton-harness:   issue B database ID: ${ISSUE_B_DB_ID}"
 # string.  Use -F (typed field) not -f (string field); -f sends "4706609246"
 # which the API rejects with 422 "not of type integer".
 #
-# Empty GET output (no edges yet) is the normal first-run case — assign via
-# an intermediate variable with || true so set -e / pipefail does not abort.
+# Empty GET output (no edges yet) is the normal first-run case — the API
+# returns an empty array with exit 0, so set -e / pipefail do not abort.
+# A genuine non-zero GET failure IS caught by the || { … exit 1; } handler.
 echo "baton-harness: wiring dependency: issue B blocked_by issue A ..."
 _dep_existing=""
 _dep_existing="$(gh api "repos/${REPO_SLUG}/issues/${ISSUE_B_NUMBER}/dependencies/blocked_by" \
