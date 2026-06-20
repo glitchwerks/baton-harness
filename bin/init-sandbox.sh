@@ -309,15 +309,22 @@ echo "baton-harness:   issue A database ID: ${ISSUE_A_DB_ID}"
 echo "baton-harness:   issue B database ID: ${ISSUE_B_DB_ID}"
 
 # Wire B blocked_by A (idempotent — tolerate 422 if link already exists)
+#
+# IMPORTANT: the dependencies API requires issue_id as a JSON integer, not a
+# string.  Use -F (typed field) not -f (string field); -f sends "4706609246"
+# which the API rejects with 422 "not of type integer" — a 422 that the old
+# grep-on-"422" tolerance check then misidentified as "already exists".
 echo "baton-harness: wiring dependency: issue B blocked_by issue A ..."
 _dep_output=""
 _dep_rc=0
 _dep_output="$(gh api "repos/${REPO_SLUG}/issues/${ISSUE_B_NUMBER}/dependencies/blocked_by" \
     --method POST \
-    -f "issue_id=${ISSUE_A_DB_ID}" 2>&1)" || _dep_rc=$?
+    -F "issue_id=${ISSUE_A_DB_ID}" 2>&1)" || _dep_rc=$?
 if [[ ${_dep_rc} -ne 0 ]]; then
-    # Tolerate 422 (dependency already exists); any other failure is fatal.
-    if printf '%s' "${_dep_output}" | grep -q "422\|already exists\|already blocked"; then
+    # Tolerate only a true duplicate-link 422 (body contains "already" keyword).
+    # Do NOT match bare "422" — that string also appears in non-duplicate errors
+    # (e.g. type-validation failures) and would mask them as false successes.
+    if printf '%s' "${_dep_output}" | grep -qi "already exists\|already blocked"; then
         echo "baton-harness:   dependency already present, skipping"
     else
         echo "baton-harness: error wiring dependency: ${_dep_output}" >&2
@@ -325,6 +332,25 @@ if [[ ${_dep_rc} -ne 0 ]]; then
     fi
 else
     echo "baton-harness:   dependency wired (B blocked_by A)"
+fi
+
+# Verify the edge round-trips: GET blocked_by must contain issue A.
+# This catches any silent no-op (wrong token scope, API limitation, etc.).
+echo "baton-harness: verifying dependency edge via GET ..."
+_dep_verify=""
+_dep_verify="$(gh api "repos/${REPO_SLUG}/issues/${ISSUE_B_NUMBER}/dependencies/blocked_by" \
+    --jq ".[].number" 2>&1)" || {
+    echo "baton-harness: error: GET /dependencies/blocked_by failed: ${_dep_verify}" >&2
+    exit 1
+}
+if printf '%s' "${_dep_verify}" | grep -qx "${ISSUE_A_NUMBER}"; then
+    echo "baton-harness:   dependency verified: #${ISSUE_B_NUMBER} is blocked_by #${ISSUE_A_NUMBER}"
+else
+    echo "baton-harness: error: dependency POST appeared to succeed but GET returned no edge." >&2
+    echo "  B (#${ISSUE_B_NUMBER}) blocked_by list: [$(printf '%s' "${_dep_verify}" | tr '\n' ' ')]" >&2
+    echo "  Expected issue A number: ${ISSUE_A_NUMBER}" >&2
+    echo "  Check: token scope, repo-level issue-dependencies feature, API request shape." >&2
+    exit 1
 fi
 
 # ---------------------------------------------------------------------------
