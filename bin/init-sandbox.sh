@@ -203,6 +203,11 @@ _find_open_issue_url() {
 # Create trivial trigger issue (single agent-ready, no milestone)
 # ---------------------------------------------------------------------------
 
+# NOTE: the trivial-trigger title is the idempotency key for reuse. If a
+# sandbox was previously seeded under an older title, this run will not
+# dedup against it and will create a fresh trivial issue. Sandboxes are
+# disposable — tear down and re-seed from clean rather than relying on
+# reuse across a title change.
 echo "baton-harness: creating trivial trigger issue ..."
 
 _trivial_title="add a greet() function"
@@ -213,7 +218,7 @@ else
     TRIVIAL_ISSUE_URL="$(gh issue create \
         --repo "${REPO_SLUG}" \
         --title "${_trivial_title}" \
-        --body "Add a Python file (greet.py) with a greet() function that prints 'hello'." \
+        --body "Add a Python file (greet.py) with a greet() function that prints 'greetings'." \
         --label "agent-ready")"
     echo "baton-harness:   trivial issue created: ${TRIVIAL_ISSUE_URL}"
 fi
