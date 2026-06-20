@@ -24,22 +24,42 @@ Required-check set (C-I2 finding):
     override it without editing this file.
 
 CRITICAL — no vacuous green:
-    ``evaluate_ci`` NEVER treats "zero matching checks found" as green.  If a
-    configured required check is absent from the check-runs response, that is
+    ``evaluate_ci`` NEVER treats "zero matching jobs found" as green.  If a
+    configured required job is absent from the Actions API response, that is
     NOT-YET → the poller continues until the hard timeout, then returns RED
-    (``CiResult.RED`` with ``MergeOutcome.CI_TIMEOUT``).  An empty check-run
-    set or a set with no required checks present is therefore always a timeout
+    (``CiResult.RED`` with ``MergeOutcome.CI_TIMEOUT``).  An empty job
+    list or a list with no required jobs present is therefore always a timeout
     → RED outcome, never a pass.
 
 Green predicate (§3.3.1):
-    - GREEN: every required check has ``status: completed`` AND
+    - GREEN: every required job has ``status: completed`` AND
       ``conclusion`` ∈ {``success``, ``neutral``, ``skipped``}.
-    - RED: any required check with ``conclusion`` ∈ {``failure``,
+    - RED: any required job with ``conclusion`` ∈ {``failure``,
       ``cancelled``, ``timed_out``, ``action_required``}.
-    - NOT-YET: any required check is ``queued`` or ``in_progress``, or a
-      configured required check is absent from the response.  Poll with
+    - NOT-YET: any required job is ``queued`` or ``in_progress``, or a
+      configured required job is absent from the response.  Poll with
       bounded backoff; on hard timeout → RED (``ci-timeout``).
-    - Non-required checks are **ignored entirely** (pass or fail).
+    - Non-required jobs are **ignored entirely** (pass or fail).
+
+Data source (#121 — Actions API):
+    CI job data is sourced from the GitHub Actions API via two calls per
+    poll:
+
+    1. ``repos/{owner}/{repo}/actions/runs?head_sha={sha}`` — returns a
+       ``workflow_runs`` list (each with an ``id`` field).
+    2. ``repos/{owner}/{repo}/actions/runs/{id}/jobs`` — returns a
+       ``jobs`` list (each with ``name``, ``status``, ``conclusion``).
+
+    ``_query_action_jobs`` flattens the jobs from all runs into the same
+    ``[{name, status, conclusion}]`` shape that ``_classify_check_runs``
+    already consumes.  Re-run dedup: when the same job ``name`` appears in
+    multiple workflow runs for the SHA, the job from the run with the
+    highest ``id`` wins.
+
+    403 fail-fast (#119 hardening): ``CiAuthError`` is raised immediately on
+    any permission error (non-zero exit with ``Resource not accessible`` or
+    ``403`` in stderr).  ``evaluate_ci`` does NOT catch ``CiAuthError``;
+    it propagates to the caller to avoid a 30-minute timeout loop.
 
 Merge safety:
     This module ONLY merges per-issue branches INTO ``feature/<slug>``.  It
@@ -56,7 +76,7 @@ Provenance (§11.5 / B-I2):
        fact.
 
     These three signals are what ``chain/recovery.py`` (P3) uses to
-    reconstruct the ``done`` set without re-querying GC'd check-runs.
+    reconstruct the ``done`` set without re-querying GC'd jobs.
 
 Subprocess style follows the ``chain/gh_deps.py`` pattern: a single
 module-local ``_run`` function is the only subprocess seam, making it
@@ -132,6 +152,20 @@ class MergeOutcome(Enum):
 
 
 # ---------------------------------------------------------------------------
+# Exception types
+# ---------------------------------------------------------------------------
+
+
+class CiAuthError(RuntimeError):
+    """Raised when the Actions API returns a permission error.
+
+    Signals a 403 / ``Resource not accessible`` response from ``gh api``.
+    ``evaluate_ci`` does NOT catch this; it propagates immediately to avoid
+    a 30-minute timeout loop (#119 hardening).
+    """
+
+
+# ---------------------------------------------------------------------------
 # Subprocess helper (the sole I/O seam; patch this in tests)
 # ---------------------------------------------------------------------------
 
@@ -162,48 +196,125 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
 # ---------------------------------------------------------------------------
 
 
-def _query_check_runs(
+def _is_auth_error(proc: subprocess.CompletedProcess[str]) -> bool:
+    """Return True if ``proc`` represents a 403 / permission error.
+
+    Args:
+        proc: A completed process whose ``returncode`` is non-zero.
+
+    Returns:
+        ``True`` if stderr contains ``"Resource not accessible"`` or
+        ``"403"``, ``False`` otherwise.
+    """
+    return "Resource not accessible" in proc.stderr or "403" in proc.stderr
+
+
+def _query_action_jobs(
     owner: str,
     repo: str,
     sha: str,
 ) -> list[dict[str, object]]:
-    """Query the GitHub check-runs API for a commit SHA.
+    """Query the GitHub Actions API for jobs associated with a commit SHA.
 
-    Calls ``gh api repos/{owner}/{repo}/commits/{sha}/check-runs`` and
-    returns the ``check_runs`` array from the response.
+    Issues two ``gh api`` calls per invocation:
+
+    1. ``repos/{owner}/{repo}/actions/runs?head_sha={sha}`` — returns the
+       ``workflow_runs`` list (each entry has an ``id`` field).
+    2. ``repos/{owner}/{repo}/actions/runs/{id}/jobs`` — returns the
+       ``jobs`` list (each entry has ``name``, ``status``, ``conclusion``).
+
+    All jobs from all runs are flattened into a single list in the same
+    ``[{name, status, conclusion}]`` shape that ``_classify_check_runs``
+    consumes.
+
+    Re-run dedup: when the same job ``name`` appears in multiple workflow
+    runs, the job from the run with the highest ``id`` wins.  This is
+    implemented by processing runs in ascending ``id`` order (lowest-id
+    first), so later writes in the by-name dict overwrite earlier ones.
 
     Args:
         owner: The GitHub repository owner.
         repo: The repository name.
-        sha: The commit SHA whose check-runs are queried.
+        sha: The commit SHA whose Actions jobs are queried.
 
     Returns:
-        A list of check-run dicts, each containing at minimum ``name``,
-        ``status``, and ``conclusion`` fields.
+        A flat list of job dicts, each containing at minimum ``name``,
+        ``status``, and ``conclusion``.  Returns ``[]`` when no workflow
+        runs are found for ``sha``.
 
     Raises:
-        RuntimeError: If the ``gh api`` call returns a non-zero exit code.
+        CiAuthError: If either ``gh api`` call returns a non-zero exit
+            with ``"Resource not accessible"`` or ``"403"`` in stderr.
+        RuntimeError: If either ``gh api`` call returns a non-zero exit
+            for a reason other than a permission error.
         ValueError: If the response JSON cannot be parsed or lacks the
-            expected ``check_runs`` key.
+            expected keys.
     """
-    url = f"repos/{owner}/{repo}/commits/{sha}/check-runs"
-    proc = _run(["gh", "api", url])
-    if proc.returncode != 0:
+    # Step 1: list workflow runs for this SHA.
+    runs_url = (
+        f"repos/{owner}/{repo}/actions/runs?head_sha={sha}"
+    )
+    runs_proc = _run(["gh", "api", runs_url])
+    if runs_proc.returncode != 0:
+        if _is_auth_error(runs_proc):
+            raise CiAuthError(
+                f"gh api actions/runs permission denied"
+                f" (exit {runs_proc.returncode}): {runs_proc.stderr}"
+            )
         raise RuntimeError(
-            f"gh api check-runs failed (exit {proc.returncode}): {proc.stderr}"
+            f"gh api actions/runs failed"
+            f" (exit {runs_proc.returncode}): {runs_proc.stderr}"
         )
-    data: dict[str, object] = json.loads(proc.stdout)
-    runs_raw = data.get("check_runs")
-    if runs_raw is None:
+    runs_data: dict[str, object] = json.loads(runs_proc.stdout)
+    workflow_runs_raw = runs_data.get("workflow_runs")
+    if not isinstance(workflow_runs_raw, list):
         raise ValueError(
-            f"Unexpected check-runs API response (missing 'check_runs'):"
-            f" {proc.stdout[:200]}"
+            f"Expected 'workflow_runs' list in Actions API response:"
+            f" {runs_proc.stdout[:200]}"
         )
-    if not isinstance(runs_raw, list):
-        raise ValueError(
-            f"Expected 'check_runs' to be a list, got: {type(runs_raw)}"
-        )
-    return [dict(r) for r in runs_raw]
+    # Narrow element type after isinstance guard.
+    workflow_runs: list[dict[str, object]] = [
+        dict(r) for r in workflow_runs_raw
+    ]
+
+    if not workflow_runs:
+        return []
+
+    # Step 2: for each run, fetch its jobs.  Process in ascending id order
+    # so that higher-id runs overwrite lower-id runs in by_name (dedup).
+    sorted_runs = sorted(
+        workflow_runs, key=lambda r: int(str(r["id"]))
+    )
+
+    by_name: dict[str, dict[str, object]] = {}
+    for run in sorted_runs:
+        run_id = run["id"]
+        jobs_url = f"repos/{owner}/{repo}/actions/runs/{run_id}/jobs"
+        jobs_proc = _run(["gh", "api", jobs_url])
+        if jobs_proc.returncode != 0:
+            if _is_auth_error(jobs_proc):
+                raise CiAuthError(
+                    f"gh api actions/runs/{run_id}/jobs permission denied"
+                    f" (exit {jobs_proc.returncode}): {jobs_proc.stderr}"
+                )
+            raise RuntimeError(
+                f"gh api actions/runs/{run_id}/jobs failed"
+                f" (exit {jobs_proc.returncode}): {jobs_proc.stderr}"
+            )
+        jobs_data: dict[str, object] = json.loads(jobs_proc.stdout)
+        jobs_raw = jobs_data.get("jobs")
+        if not isinstance(jobs_raw, list):
+            raise ValueError(
+                f"Expected 'jobs' list in Actions runs/{run_id}/jobs"
+                f" response: {jobs_proc.stdout[:200]}"
+            )
+        # Higher-id run overwrites lower-id run for duplicate job names.
+        for job in jobs_raw:
+            job_dict: dict[str, object] = dict(job)
+            name = str(job_dict.get("name", ""))
+            by_name[name] = job_dict
+
+    return list(by_name.values())
 
 
 _PASS_CONCLUSIONS: frozenset[str] = frozenset(
@@ -287,13 +398,16 @@ def evaluate_ci(
 ) -> CiResult:
     """Evaluate the §3.3.1 CI green predicate for a commit SHA.
 
-    Queries the check-runs API repeatedly until all required checks are
-    green, any required check is definitively red, or the hard timeout
-    elapses.
+    Queries the Actions API (via ``_query_action_jobs``) repeatedly until
+    all required jobs are green, any required job is definitively red, or
+    the hard timeout elapses.
 
-    CRITICAL: Never returns GREEN when no required checks are found in the
-    response (no vacuous pass).  An absent required check counts as NOT-YET
+    CRITICAL: Never returns GREEN when no required jobs are found in the
+    response (no vacuous pass).  An absent required job counts as NOT-YET
     → keeps polling → RED on timeout.
+
+    ``CiAuthError`` from ``_query_action_jobs`` is NOT caught here; it
+    propagates immediately to avoid looping to the 30-minute timeout.
 
     Args:
         owner: The GitHub repository owner.
@@ -317,7 +431,7 @@ def evaluate_ci(
     deadline = time.monotonic() + timeout
 
     while True:
-        runs = _query_check_runs(owner, repo, sha)
+        runs = _query_action_jobs(owner, repo, sha)
         result = _classify_check_runs(runs, required)
 
         if result == CiResult.GREEN:
