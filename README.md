@@ -254,7 +254,18 @@ incompatible with per-repo least privilege.
 | Clone repo, push feature branches | Contents: Read & write |
 | Read issue body, edit labels, post comments | Issues: Read & write |
 | `gh pr list` / `gh pr create` | Pull requests: Read & write |
+| CI merge gate (read workflow-run/job conclusions) | Actions: Read |
 | Baseline (granted automatically) | Metadata: Read |
+
+**Why `Actions: Read` and not `Checks: Read`:** GitHub disabled the `Checks`
+permission for fine-grained PATs as of mid-2026 — it is now App-only and cannot
+be granted to a PAT at all. The CI merge gate therefore reads CI state from the
+Actions API (`repos/{owner}/{repo}/actions/runs` + `.../jobs`) instead of the
+Checks API. `Actions: Read` is what makes this possible. Do not request `Checks`
+— it will not be available and is not needed (#121, `src/baton_harness/chain/merge.py`).
+
+`Commit statuses: Read` is useful as a diagnostic supplement when running
+`gh pr checks` to inspect PR state, but is not required by the harness itself.
 
 Additional settings:
 
@@ -262,8 +273,8 @@ Additional settings:
   grant organization-wide access.
 - **Expiry:** set the shortest expiry you can operationally manage; rotate on
   schedule.
-- **Explicitly not granted:** Workflows, Administration, Secrets, any
-  org-level scope.
+- **Explicitly not granted:** Workflows, Administration, Secrets, Checks (App-only
+  — cannot be granted to a fine-grained PAT), any org-level scope.
 
 Export the token as `GH_TOKEN` before running the harness (the gate also
 accepts `GITHUB_TOKEN` as a fallback, consistent with standard CI conventions):

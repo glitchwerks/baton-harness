@@ -24,7 +24,7 @@ The architecture is bounded by two human checkpoints (morning approval, evening 
 | Comms | **Slack Bolt bot (Socket Mode)** + official GitHub→Slack app | Two channels, two purposes — active decisions + passive activity |
 | CI | **GitHub Actions** (per-project precondition) | Verification is the project's responsibility, not the pipeline's |
 | Auth (Claude) | **OAuth via mounted volume** — no `ANTHROPIC_API_KEY` | Subscription-only; prevents accidental per-token billing |
-| Auth (GitHub) | **Fine-grained PAT** (prefix `github_pat_`) under a dedicated bot/machine account; supplied via `GH_TOKEN` | Defense-in-depth gate added in issue #35; see [GitHub token: least-privilege setup](../README.md#github-token-least-privilege-setup) in README |
+| Auth (GitHub) | **Fine-grained PAT** (prefix `github_pat_`) under a dedicated bot/machine account; supplied via `GH_TOKEN`; requires **`Actions: Read`** for the CI merge gate | Defense-in-depth gate added in issue #35; see [GitHub token: least-privilege setup](../README.md#github-token-least-privilege-setup) in README. CI state is sourced from the Actions API (`repos/…/actions/runs` + `/jobs`, `merge.py`) rather than the Checks API because GitHub disabled the `Checks` permission for fine-grained PATs as of mid-2026 — that permission is App-only (#121). |
 
 ---
 

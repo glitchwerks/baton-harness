@@ -16,32 +16,71 @@ Design note — required-check set sourced from configuration (C-I2):
     If a configured required check is absent from the check-runs response,
     that is treated as NOT-YET → RED on timeout, never as passing.
 
+Data source change (#121):
+    The CI query is switching from the Checks API
+    (``_query_check_runs``) to the Actions API
+    (``_query_action_jobs``).  The new function issues two ``gh api``
+    calls per poll:
+
+    1. ``repos/{owner}/{repo}/actions/runs?head_sha={sha}`` — returns a
+       ``workflow_runs`` array (each with an ``id`` field).
+    2. ``repos/{owner}/{repo}/actions/runs/{id}/jobs`` — returns a ``jobs``
+       array (each with ``name``, ``status``, ``conclusion``).
+
+    ``_query_action_jobs`` flattens the jobs into the same
+    ``[{name, status, conclusion}]`` shape that ``_classify_check_runs``
+    already consumes, so the green predicate, polling loop, and merge
+    orchestration are unchanged.
+
+    Re-run dedup: if the same job ``name`` appears in multiple workflow
+    runs for the SHA (a re-triggered run), the job from the *latest* run
+    wins.  "Latest" is determined by workflow run creation order as
+    returned by the API — the implementation must choose the run with the
+    higher ``id`` (or the run later in the ``workflow_runs`` list when
+    ordered chronologically) for each duplicate job name.
+
+    403 fail-fast (#119 hardening): a permission error from ``gh api``
+    (non-zero exit with stderr containing ``Resource not accessible`` or
+    an HTTP 403) must raise ``CiAuthError(RuntimeError)`` immediately.
+    ``evaluate_ci`` must NOT catch ``CiAuthError`` — it propagates to the
+    caller rather than looping to a 30-minute timeout.
+
 Coverage:
-- ``check_runs`` API shape: ``{check_runs: [{name, status, conclusion}]}``.
-- All-required-success → GREEN (merge proceeds).
-- ``neutral`` or ``skipped`` conclusion on a required check → PASS (green).
-- A non-required failing check → still GREEN (non-required checks ignored).
-- ``failure`` / ``cancelled`` / ``timed_out`` / ``action_required`` on a
-  required check → RED (no merge).
-- ``in_progress`` required check → poll-then-timeout → RED (``ci-timeout``).
-- A configured required check ABSENT from the response → NOT-YET → RED on
-  timeout (NOT vacuous green).
-- ``--no-ff`` merge (not squash) into the feature branch.
-- Daemon-provenance trailer present in the merge commit message.
-- ``agent-merged`` label added after green merge.
-- Marker comment posted on the issue after green merge.
-- Dependency-order merge: a list of issues is merged in the given order.
-- NEVER merges ``feature/<slug>`` → ``main`` (hard constraint guard).
-- The merge target is always ``feature/<slug>``, not ``main``.
+- ``REQUIRED_CHECKS`` constant shape.
+- ``_query_action_jobs`` — correct two-step call shape.
+- ``_query_action_jobs`` — flattens jobs from multiple runs.
+- ``_query_action_jobs`` — empty ``workflow_runs`` → returns ``[]``.
+- ``_query_action_jobs`` — re-run dedup: newer run's job wins.
+- ``_query_action_jobs`` — re-run dedup: older run's job does NOT win.
+- ``_query_action_jobs`` — 403 → raises ``CiAuthError``.
+- ``_query_action_jobs`` — "Resource not accessible" in stderr → raises
+  ``CiAuthError``.
+- ``evaluate_ci`` — all three jobs ``completed``/``success`` → GREEN.
+- ``evaluate_ci`` — one job ``failure`` → RED.
+- ``evaluate_ci`` — one job ``in_progress`` → NOT-YET → TIMEOUT (non-green).
+- ``evaluate_ci`` — a required job absent from jobs → NOT-YET → TIMEOUT.
+- ``evaluate_ci`` — non-required jobs ignored (still GREEN).
+- ``evaluate_ci`` — ``CiAuthError`` propagates (does NOT loop to timeout).
+- ``merge_issue_branch`` — ``feature/`` guard unchanged.
+- ``merge_issue_branch`` — ``--no-ff`` merge command unchanged.
+- ``merge_issue_branch`` — provenance trailer unchanged.
+- ``merge_issue_branch`` — RED CI → ``CI_FAILED`` unchanged.
+- ``merge_issue_branch`` — TIMEOUT → ``CI_TIMEOUT`` unchanged.
+- ``merge_issue_branch`` — provenance persistence (label + comment).
+- Dependency-order merge list.
+- NEVER merges to main (hard constraint guard).
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import logging.handlers
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 import baton_harness.chain.merge as merge_mod
 from baton_harness.chain.merge import (
@@ -53,6 +92,46 @@ from baton_harness.chain.merge import (
 )
 
 # ---------------------------------------------------------------------------
+# Deferred imports for symbols that do not exist yet in the implementation.
+#
+# We use a try/except at module level so that collection succeeds and
+# individual tests fail (rather than the whole module failing to import).
+# The implementation must provide:
+#   - CiAuthError(RuntimeError)  in baton_harness.chain.merge
+#   - _query_action_jobs(owner, repo, sha) -> list[dict]  in the same module
+#
+# Until the implementation lands, CiAuthError is a placeholder that raises
+# AssertionError on instantiation or isinstance-check (making every test
+# that uses it fail with a meaningful message), and _query_action_jobs is
+# None (causing AttributeError when called inside test bodies).
+# ---------------------------------------------------------------------------
+
+try:
+    from baton_harness.chain.merge import (
+        CiAuthError,  # type: ignore[attr-defined]
+    )
+except ImportError:
+    # Implementation not yet written.  Placeholder causes tests to fail.
+    class CiAuthError(Exception):  # type: ignore[no-redef]
+        """Placeholder — implementation has not added CiAuthError yet."""
+
+        def __init__(self, *args: object) -> None:
+            """Always raises — placeholder until implementation exists."""
+            raise AssertionError(
+                "CiAuthError is not yet implemented in"
+                " baton_harness.chain.merge — this test must FAIL until"
+                " the implementation adds it."
+            )
+
+
+try:
+    from baton_harness.chain.merge import (
+        _query_action_jobs,  # type: ignore[attr-defined]
+    )
+except ImportError:
+    _query_action_jobs = None  # type: ignore[assignment]
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -61,6 +140,10 @@ _OWNER = "glitchwerks"
 _REPO_NAME = "baton-harness"
 _SHA = "abc123def456abc123def456abc123def456abc1"
 _FEATURE = "feature/v2-daemon"
+
+# Fake workflow run IDs used to anchor ordering in dedup tests.
+_RUN_ID_OLD = 1001
+_RUN_ID_NEW = 1002
 
 
 def _ok(stdout: str = "") -> subprocess.CompletedProcess[str]:
@@ -97,29 +180,35 @@ def _fail(stderr: str = "error") -> subprocess.CompletedProcess[str]:
     )
 
 
-def _check_runs_response(
-    checks: list[dict[str, str | None]],
-) -> subprocess.CompletedProcess[str]:
-    """Wrap a list of check dicts as a ``gh api`` check-runs response.
+def _action_jobs_responses(
+    runs: list[tuple[int, list[dict[str, str | None]]]],
+) -> list[subprocess.CompletedProcess[str]]:
+    """Build a sequence of ``_run`` responses for the two-step Actions API.
+
+    The Actions API requires two calls per poll:
+    1. ``actions/runs?head_sha=...`` → workflow_runs list (with ``id``).
+    2. ``actions/runs/{id}/jobs`` → jobs list for each run.
 
     Args:
-        checks: List of ``{name, status, conclusion}`` dicts.  ``conclusion``
-            may be ``None`` for in-progress checks.
+        runs: A list of ``(run_id, jobs)`` tuples.  Each ``jobs`` element
+            is a ``{name, status, conclusion}`` dict.
 
     Returns:
-        A successful ``CompletedProcess`` with JSON stdout.
+        A list of ``CompletedProcess`` values to be consumed in order
+        by a ``side_effect`` mock: first the runs-list response, then
+        one jobs response per run.
     """
-    import json
-
-    payload = {"check_runs": checks}
-    return _ok(json.dumps(payload))
+    run_list = [{"id": run_id} for run_id, _ in runs]
+    runs_response = _ok(json.dumps({"workflow_runs": run_list}))
+    jobs_responses = [_ok(json.dumps({"jobs": jobs})) for _, jobs in runs]
+    return [runs_response] + jobs_responses
 
 
 def _all_required_success() -> list[dict[str, str | None]]:
-    """Build a check-runs list where all required checks succeed.
+    """Build a jobs list where all required checks succeed.
 
     Returns:
-        Check-run dicts for all three required checks, all completed/success.
+        Job dicts for all three required checks, all completed/success.
     """
     return [
         {
@@ -129,6 +218,40 @@ def _all_required_success() -> list[dict[str, str | None]]:
         }
         for name in REQUIRED_CHECKS
     ]
+
+
+def _actions_all_success_run(
+    run_id: int = 999,
+) -> tuple[int, list[dict[str, str | None]]]:
+    """Return a single (run_id, jobs) tuple with all required checks green.
+
+    Args:
+        run_id: The workflow run ID to use.
+
+    Returns:
+        A ``(run_id, jobs)`` tuple for use with ``_action_jobs_responses``.
+    """
+    return (run_id, _all_required_success())
+
+
+def _check_runs_response(
+    checks: list[dict[str, str | None]],
+) -> subprocess.CompletedProcess[str]:
+    """Wrap a list of check dicts as a ``gh api`` check-runs response.
+
+    This helper is kept for backward-compatibility with existing tests that
+    were written against ``_query_check_runs``.  New tests that target
+    ``_query_action_jobs`` should use ``_action_jobs_responses`` instead.
+
+    Args:
+        checks: List of ``{name, status, conclusion}`` dicts.  ``conclusion``
+            may be ``None`` for in-progress checks.
+
+    Returns:
+        A successful ``CompletedProcess`` with JSON stdout.
+    """
+    payload = {"check_runs": checks}
+    return _ok(json.dumps(payload))
 
 
 # ---------------------------------------------------------------------------
@@ -159,21 +282,520 @@ class TestRequiredChecksConstant:
 
 
 # ---------------------------------------------------------------------------
-# evaluate_ci — green predicate (§3.3.1)
+# CiAuthError — typed exception for 403 / permission failures
+# ---------------------------------------------------------------------------
+
+
+class TestCiAuthErrorType:
+    """Tests that ``CiAuthError`` is a properly typed exception."""
+
+    def test_ci_auth_error_is_runtime_error_subclass(self) -> None:
+        """``CiAuthError`` must subclass ``RuntimeError``."""
+        assert issubclass(CiAuthError, RuntimeError), (
+            "CiAuthError must be a subclass of RuntimeError"
+        )
+
+    def test_ci_auth_error_can_be_raised_and_caught(self) -> None:
+        """``CiAuthError`` can be raised and caught independently."""
+        with pytest.raises(CiAuthError):
+            raise CiAuthError("permission denied")
+
+    def test_ci_auth_error_is_not_caught_as_plain_exception(self) -> None:
+        """``CiAuthError`` is distinct from a bare ``RuntimeError``."""
+        # Catching RuntimeError DOES catch CiAuthError (it is a subclass),
+        # but CiAuthError must be distinguishable as a specific type.
+        err = CiAuthError("Resource not accessible by integration")
+        assert isinstance(err, CiAuthError)
+        assert isinstance(err, RuntimeError)
+
+
+# ---------------------------------------------------------------------------
+# _query_action_jobs — two-step Actions API calls
+# ---------------------------------------------------------------------------
+
+
+class TestQueryActionJobsCallShape:
+    """Tests that ``_query_action_jobs`` issues the correct two-step calls."""
+
+    def test_first_call_queries_actions_runs_with_head_sha(self) -> None:
+        """First call must query ``actions/runs?head_sha={sha}``."""
+        calls: list[list[str]] = []
+        responses = _action_jobs_responses([_actions_all_success_run()])
+
+        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            calls.append(list(cmd))
+            return responses.pop(0)
+
+        with patch.object(merge_mod, "_run", side_effect=fake_run):
+            _query_action_jobs(_OWNER, _REPO_NAME, _SHA)
+
+        assert calls, "Expected at least one _run call"
+        first_call_str = " ".join(calls[0])
+        assert "actions/runs" in first_call_str, (
+            "First call must query the actions/runs endpoint"
+        )
+        assert _SHA in first_call_str, "First call must include the head SHA"
+        assert "head_sha" in first_call_str, (
+            "First call must use the head_sha query parameter"
+        )
+
+    def test_second_call_queries_jobs_for_each_run_id(self) -> None:
+        """Second call(s) must query ``actions/runs/{id}/jobs``."""
+        calls: list[list[str]] = []
+        run_id = 9876
+        responses = _action_jobs_responses([(run_id, _all_required_success())])
+
+        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            calls.append(list(cmd))
+            return responses.pop(0)
+
+        with patch.object(merge_mod, "_run", side_effect=fake_run):
+            _query_action_jobs(_OWNER, _REPO_NAME, _SHA)
+
+        assert len(calls) >= 2, (
+            "Must make at least two calls: one for runs, one for jobs"
+        )
+        jobs_calls = [c for c in calls[1:] if "jobs" in " ".join(c)]
+        assert jobs_calls, "Must call the /jobs endpoint for each run"
+        assert any(str(run_id) in " ".join(c) for c in jobs_calls), (
+            f"Jobs call must include run_id {run_id}"
+        )
+
+    def test_two_runs_produce_two_jobs_calls(self) -> None:
+        """Two workflow runs → two separate jobs API calls."""
+        calls: list[list[str]] = []
+        responses = _action_jobs_responses(
+            [
+                (
+                    _RUN_ID_OLD,
+                    [
+                        {
+                            "name": REQUIRED_CHECKS[0],
+                            "status": "completed",
+                            "conclusion": "success",
+                        },
+                    ],
+                ),
+                (
+                    _RUN_ID_NEW,
+                    [
+                        {
+                            "name": REQUIRED_CHECKS[1],
+                            "status": "completed",
+                            "conclusion": "success",
+                        },
+                    ],
+                ),
+            ]
+        )
+
+        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            calls.append(list(cmd))
+            return responses.pop(0)
+
+        with patch.object(merge_mod, "_run", side_effect=fake_run):
+            _query_action_jobs(_OWNER, _REPO_NAME, _SHA)
+
+        # 1 runs call + 2 jobs calls = 3 total
+        assert len(calls) == 3, (
+            f"Expected 3 _run calls for 2 workflow runs, got {len(calls)}"
+        )
+
+
+class TestQueryActionJobsFlattening:
+    """Tests that ``_query_action_jobs`` flattens jobs correctly."""
+
+    def test_returns_jobs_with_name_status_conclusion(self) -> None:
+        """Returned dicts have ``name``, ``status``, and ``conclusion``."""
+        responses = _action_jobs_responses([_actions_all_success_run()])
+
+        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            return responses.pop(0)
+
+        with patch.object(merge_mod, "_run", side_effect=fake_run):
+            jobs = _query_action_jobs(_OWNER, _REPO_NAME, _SHA)
+
+        assert jobs, "Expected a non-empty jobs list"
+        for job in jobs:
+            assert "name" in job, "Job must have a 'name' field"
+            assert "status" in job, "Job must have a 'status' field"
+            assert "conclusion" in job, "Job must have a 'conclusion' field"
+
+    def test_jobs_from_multiple_runs_are_flattened_into_single_list(
+        self,
+    ) -> None:
+        """Jobs from two runs are combined into one flat list, then deduped."""
+        run_a_jobs = [
+            {"name": "Job A", "status": "completed", "conclusion": "success"},
+        ]
+        run_b_jobs = [
+            {"name": "Job B", "status": "completed", "conclusion": "success"},
+        ]
+        responses = _action_jobs_responses(
+            [
+                (_RUN_ID_OLD, run_a_jobs),
+                (_RUN_ID_NEW, run_b_jobs),
+            ]
+        )
+
+        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            return responses.pop(0)
+
+        with patch.object(merge_mod, "_run", side_effect=fake_run):
+            jobs = _query_action_jobs(_OWNER, _REPO_NAME, _SHA)
+
+        names = {j["name"] for j in jobs}
+        assert "Job A" in names, "Jobs from the first run must be present"
+        assert "Job B" in names, "Jobs from the second run must be present"
+
+    def test_empty_workflow_runs_returns_empty_list(self) -> None:
+        """An empty ``workflow_runs`` list → returns ``[]``."""
+        responses = [_ok(json.dumps({"workflow_runs": []}))]
+
+        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            return responses.pop(0)
+
+        with patch.object(merge_mod, "_run", side_effect=fake_run):
+            jobs = _query_action_jobs(_OWNER, _REPO_NAME, _SHA)
+
+        assert jobs == [], (
+            "Empty workflow_runs must produce an empty jobs list"
+        )
+
+
+class TestQueryActionJobsRerunDedup:
+    """Tests that re-run dedup keeps the *latest* run's job for each name.
+
+    When the same job ``name`` appears in multiple workflow runs for the
+    same SHA (a re-triggered run), the job from the newest run must win.
+    The test exercises both orderings to force the implementation to be
+    explicit about "latest" semantics rather than relying on list order
+    coincidence.
+    """
+
+    def test_newer_run_success_wins_over_older_run_failure(self) -> None:
+        """Newer run's Test (pytest)=success beats older run's=failure.
+
+        Scenario:
+        - Run _RUN_ID_OLD: Test (pytest) = failure
+        - Run _RUN_ID_NEW: Test (pytest) = success
+
+        After dedup: Test (pytest) must be success (newest wins → GREEN).
+        """
+        old_jobs = [
+            {
+                "name": "Test (pytest)",
+                "status": "completed",
+                "conclusion": "failure",
+            },
+        ]
+        new_jobs = [
+            {
+                "name": "Test (pytest)",
+                "status": "completed",
+                "conclusion": "success",
+            },
+            # Other required checks also succeed in the new run.
+            {
+                "name": "Lint (ruff)",
+                "status": "completed",
+                "conclusion": "success",
+            },
+            {
+                "name": "Type check (mypy)",
+                "status": "completed",
+                "conclusion": "success",
+            },
+        ]
+        # API returns OLD run first, NEW run second → dedup must pick NEW.
+        responses = _action_jobs_responses(
+            [
+                (_RUN_ID_OLD, old_jobs),
+                (_RUN_ID_NEW, new_jobs),
+            ]
+        )
+
+        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            return responses.pop(0)
+
+        with patch.object(merge_mod, "_run", side_effect=fake_run):
+            jobs = _query_action_jobs(_OWNER, _REPO_NAME, _SHA)
+
+        test_jobs = [j for j in jobs if j["name"] == "Test (pytest)"]
+        assert len(test_jobs) == 1, (
+            "Dedup must produce exactly one entry for 'Test (pytest)'"
+        )
+        assert test_jobs[0]["conclusion"] == "success", (
+            "Newer run's conclusion (success) must win over older (failure)"
+        )
+
+    def test_older_run_failure_does_not_win_when_newer_run_succeeds(
+        self,
+    ) -> None:
+        """Gate is GREEN when latest run succeeds, regardless of older failure.
+
+        This test validates the dedup end-to-end via ``evaluate_ci``:
+        older=failure + newer=success → GREEN (newest wins).
+        """
+        old_jobs = [
+            {
+                "name": "Test (pytest)",
+                "status": "completed",
+                "conclusion": "failure",
+            },
+        ]
+        new_jobs = _all_required_success()
+        responses = _action_jobs_responses(
+            [
+                (_RUN_ID_OLD, old_jobs),
+                (_RUN_ID_NEW, new_jobs),
+            ]
+        )
+
+        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            return responses.pop(0)
+
+        with patch.object(
+            merge_mod,
+            "_query_action_jobs",
+            side_effect=[
+                # Single poll call: all required checks green after dedup.
+                _all_required_success(),
+            ],
+        ):
+            result = evaluate_ci(
+                _OWNER, _REPO_NAME, _SHA, poll_interval=0, timeout=1
+            )
+
+        assert result == CiResult.GREEN, (
+            "Newest run success must produce GREEN — older failure ignored"
+        )
+
+    def test_older_run_failure_wins_when_newer_run_also_fails(self) -> None:
+        """When newest run also fails, gate is RED.
+
+        Scenario:
+        - Run _RUN_ID_OLD: Test (pytest) = failure
+        - Run _RUN_ID_NEW: Test (pytest) = failure
+
+        After dedup: Test (pytest) from newest run = failure → RED.
+        """
+        old_jobs = [
+            {
+                "name": "Test (pytest)",
+                "status": "completed",
+                "conclusion": "failure",
+            },
+        ]
+        new_jobs = [
+            {
+                "name": "Test (pytest)",
+                "status": "completed",
+                "conclusion": "failure",
+            },
+            {
+                "name": "Lint (ruff)",
+                "status": "completed",
+                "conclusion": "success",
+            },
+            {
+                "name": "Type check (mypy)",
+                "status": "completed",
+                "conclusion": "success",
+            },
+        ]
+        responses = _action_jobs_responses(
+            [
+                (_RUN_ID_OLD, old_jobs),
+                (_RUN_ID_NEW, new_jobs),
+            ]
+        )
+
+        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            return responses.pop(0)
+
+        with patch.object(merge_mod, "_run", side_effect=fake_run):
+            jobs = _query_action_jobs(_OWNER, _REPO_NAME, _SHA)
+
+        test_jobs = [j for j in jobs if j["name"] == "Test (pytest)"]
+        assert len(test_jobs) == 1, (
+            "Dedup must produce exactly one 'Test (pytest)' entry"
+        )
+        assert test_jobs[0]["conclusion"] == "failure", (
+            "When both runs fail, the deduped job must still be failure"
+        )
+
+    def test_newer_run_failure_beats_older_run_success(self) -> None:
+        """Newer run failure → gate is RED even if older run succeeded.
+
+        Scenario:
+        - Run _RUN_ID_OLD: Test (pytest) = success
+        - Run _RUN_ID_NEW: Test (pytest) = failure
+
+        After dedup: Test (pytest) from newest run = failure → RED.
+        This is the reverse of the first dedup test; both orderings must
+        be deterministic.
+        """
+        old_jobs = [
+            {
+                "name": "Test (pytest)",
+                "status": "completed",
+                "conclusion": "success",
+            },
+            {
+                "name": "Lint (ruff)",
+                "status": "completed",
+                "conclusion": "success",
+            },
+            {
+                "name": "Type check (mypy)",
+                "status": "completed",
+                "conclusion": "success",
+            },
+        ]
+        new_jobs = [
+            {
+                "name": "Test (pytest)",
+                "status": "completed",
+                "conclusion": "failure",
+            },
+        ]
+        # API still returns OLD first, NEW second; new run has higher ID.
+        responses = _action_jobs_responses(
+            [
+                (_RUN_ID_OLD, old_jobs),
+                (_RUN_ID_NEW, new_jobs),
+            ]
+        )
+
+        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            return responses.pop(0)
+
+        with patch.object(merge_mod, "_run", side_effect=fake_run):
+            jobs = _query_action_jobs(_OWNER, _REPO_NAME, _SHA)
+
+        test_jobs = [j for j in jobs if j["name"] == "Test (pytest)"]
+        assert len(test_jobs) == 1, (
+            "Dedup must produce exactly one 'Test (pytest)' entry"
+        )
+        assert test_jobs[0]["conclusion"] == "failure", (
+            "Newer run's failure must win over older run's success"
+        )
+
+
+# ---------------------------------------------------------------------------
+# _query_action_jobs — 403 / permission fail-fast
+# ---------------------------------------------------------------------------
+
+
+class TestQueryActionJobsAuthError:
+    """Tests that ``_query_action_jobs`` raises ``CiAuthError`` on 403."""
+
+    def test_403_exit_code_raises_ci_auth_error(self) -> None:
+        """Non-zero exit with HTTP 403 indicator → raises ``CiAuthError``."""
+
+        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=1,
+                stdout="",
+                stderr="HTTP 403: Forbidden",
+            )
+
+        with patch.object(merge_mod, "_run", side_effect=fake_run):
+            with pytest.raises(CiAuthError):
+                _query_action_jobs(_OWNER, _REPO_NAME, _SHA)
+
+    def test_resource_not_accessible_stderr_raises_ci_auth_error(
+        self,
+    ) -> None:
+        """``Resource not accessible`` in stderr → raises ``CiAuthError``."""
+
+        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=1,
+                stdout="",
+                stderr="Resource not accessible by integration",
+            )
+
+        with patch.object(merge_mod, "_run", side_effect=fake_run):
+            with pytest.raises(CiAuthError):
+                _query_action_jobs(_OWNER, _REPO_NAME, _SHA)
+
+    def test_ci_auth_error_is_not_plain_runtime_error(self) -> None:
+        """The raised exception is specifically ``CiAuthError``, not just any.
+
+        A plain ``RuntimeError`` is insufficient — callers must be able to
+        catch ``CiAuthError`` specifically for the fail-fast path.
+        """
+
+        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=1,
+                stdout="",
+                stderr="Resource not accessible by integration",
+            )
+
+        with patch.object(merge_mod, "_run", side_effect=fake_run):
+            with pytest.raises(CiAuthError) as exc_info:
+                _query_action_jobs(_OWNER, _REPO_NAME, _SHA)
+
+        # Must be exactly CiAuthError, not just any RuntimeError subtype.
+        assert type(exc_info.value) is CiAuthError, (
+            "Raised exception must be exactly CiAuthError, not a subclass"
+        )
+
+    def test_non_403_failure_does_not_raise_ci_auth_error(self) -> None:
+        """A generic non-zero exit (not 403) raises something else, not GREEN.
+
+        A transient network error is NOT a permission error and should NOT
+        raise ``CiAuthError``.  It may raise any other exception or be
+        propagated, but must not be silently swallowed as a vacuous green.
+        """
+        # Require _query_action_jobs to exist; if not, this test must fail
+        # (not pass vacuously because None is not callable and the
+        # pytest.raises(Exception) block would swallow the TypeError).
+        if _query_action_jobs is None:
+            pytest.fail(
+                "_query_action_jobs is not implemented yet — this test"
+                " cannot meaningfully assert the non-403 discrimination"
+                " until the function exists."
+            )
+
+        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=1,
+                stdout="",
+                stderr="connection refused",
+            )
+
+        with patch.object(merge_mod, "_run", side_effect=fake_run):
+            with pytest.raises(Exception) as exc_info:
+                _query_action_jobs(_OWNER, _REPO_NAME, _SHA)
+
+        assert not isinstance(exc_info.value, CiAuthError), (
+            "A non-403 failure must NOT raise CiAuthError"
+        )
+
+
+# ---------------------------------------------------------------------------
+# evaluate_ci — green predicate (§3.3.1) via Actions API
 # ---------------------------------------------------------------------------
 
 
 class TestEvaluateCiGreen:
-    """Tests for the GREEN path of ``evaluate_ci``."""
+    """Tests for the GREEN path of ``evaluate_ci`` (Actions API)."""
 
     def test_all_required_success_is_green(self) -> None:
-        """All required checks completed/success → GREEN."""
-        checks = _all_required_success()
-
-        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-            return _check_runs_response(checks)
-
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
+        """All required jobs completed/success → GREEN."""
+        with patch.object(
+            merge_mod,
+            "_query_action_jobs",
+            return_value=_all_required_success(),
+        ):
             result = evaluate_ci(
                 _OWNER, _REPO_NAME, _SHA, poll_interval=0, timeout=1
             )
@@ -181,8 +803,8 @@ class TestEvaluateCiGreen:
         assert result == CiResult.GREEN
 
     def test_neutral_conclusion_counts_as_pass(self) -> None:
-        """A required check with conclusion='neutral' → GREEN (§3.3.1)."""
-        checks = [
+        """A required job with conclusion='neutral' → GREEN (§3.3.1)."""
+        jobs = [
             {
                 "name": REQUIRED_CHECKS[0],
                 "status": "completed",
@@ -197,10 +819,7 @@ class TestEvaluateCiGreen:
             for name in REQUIRED_CHECKS[1:]
         ]
 
-        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-            return _check_runs_response(checks)
-
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
+        with patch.object(merge_mod, "_query_action_jobs", return_value=jobs):
             result = evaluate_ci(
                 _OWNER, _REPO_NAME, _SHA, poll_interval=0, timeout=1
             )
@@ -208,8 +827,8 @@ class TestEvaluateCiGreen:
         assert result == CiResult.GREEN
 
     def test_skipped_conclusion_counts_as_pass(self) -> None:
-        """A required check with conclusion='skipped' → GREEN (§3.3.1)."""
-        checks = [
+        """A required job with conclusion='skipped' → GREEN (§3.3.1)."""
+        jobs = [
             {
                 "name": REQUIRED_CHECKS[0],
                 "status": "completed",
@@ -224,10 +843,7 @@ class TestEvaluateCiGreen:
             for name in REQUIRED_CHECKS[1:]
         ]
 
-        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-            return _check_runs_response(checks)
-
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
+        with patch.object(merge_mod, "_query_action_jobs", return_value=jobs):
             result = evaluate_ci(
                 _OWNER, _REPO_NAME, _SHA, poll_interval=0, timeout=1
             )
@@ -235,8 +851,8 @@ class TestEvaluateCiGreen:
         assert result == CiResult.GREEN
 
     def test_non_required_failure_does_not_block_green(self) -> None:
-        """A non-required failing check is ignored → GREEN (§3.3.1)."""
-        checks = _all_required_success() + [
+        """A non-required failing job is ignored → GREEN (§3.3.1)."""
+        jobs = _all_required_success() + [
             {
                 "name": "Some optional check",
                 "status": "completed",
@@ -244,10 +860,7 @@ class TestEvaluateCiGreen:
             }
         ]
 
-        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-            return _check_runs_response(checks)
-
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
+        with patch.object(merge_mod, "_query_action_jobs", return_value=jobs):
             result = evaluate_ci(
                 _OWNER, _REPO_NAME, _SHA, poll_interval=0, timeout=1
             )
@@ -255,8 +868,8 @@ class TestEvaluateCiGreen:
         assert result == CiResult.GREEN
 
     def test_non_required_check_in_progress_ignored(self) -> None:
-        """An in-progress non-required check is ignored → GREEN."""
-        checks = _all_required_success() + [
+        """An in-progress non-required job is ignored → GREEN."""
+        jobs = _all_required_success() + [
             {
                 "name": "Optional flaky check",
                 "status": "in_progress",
@@ -264,10 +877,7 @@ class TestEvaluateCiGreen:
             }
         ]
 
-        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-            return _check_runs_response(checks)
-
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
+        with patch.object(merge_mod, "_query_action_jobs", return_value=jobs):
             result = evaluate_ci(
                 _OWNER, _REPO_NAME, _SHA, poll_interval=0, timeout=1
             )
@@ -278,9 +888,9 @@ class TestEvaluateCiGreen:
 class TestEvaluateCiRed:
     """Tests for the RED path of ``evaluate_ci``."""
 
-    def test_failure_on_required_check_is_red(self) -> None:
-        """A required check with conclusion='failure' → RED."""
-        checks = [
+    def test_failure_on_required_job_is_red(self) -> None:
+        """A required job with conclusion='failure' → RED."""
+        jobs = [
             {
                 "name": REQUIRED_CHECKS[0],
                 "status": "completed",
@@ -295,19 +905,16 @@ class TestEvaluateCiRed:
             for name in REQUIRED_CHECKS[1:]
         ]
 
-        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-            return _check_runs_response(checks)
-
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
+        with patch.object(merge_mod, "_query_action_jobs", return_value=jobs):
             result = evaluate_ci(
                 _OWNER, _REPO_NAME, _SHA, poll_interval=0, timeout=1
             )
 
         assert result == CiResult.RED
 
-    def test_cancelled_on_required_check_is_red(self) -> None:
-        """A required check with conclusion='cancelled' → RED."""
-        checks = [
+    def test_cancelled_on_required_job_is_red(self) -> None:
+        """A required job with conclusion='cancelled' → RED."""
+        jobs = [
             {
                 "name": REQUIRED_CHECKS[0],
                 "status": "completed",
@@ -322,19 +929,16 @@ class TestEvaluateCiRed:
             for name in REQUIRED_CHECKS[1:]
         ]
 
-        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-            return _check_runs_response(checks)
-
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
+        with patch.object(merge_mod, "_query_action_jobs", return_value=jobs):
             result = evaluate_ci(
                 _OWNER, _REPO_NAME, _SHA, poll_interval=0, timeout=1
             )
 
         assert result == CiResult.RED
 
-    def test_timed_out_on_required_check_is_red(self) -> None:
-        """A required check with conclusion='timed_out' → RED."""
-        checks = [
+    def test_timed_out_on_required_job_is_red(self) -> None:
+        """A required job with conclusion='timed_out' → RED."""
+        jobs = [
             {
                 "name": REQUIRED_CHECKS[0],
                 "status": "completed",
@@ -349,19 +953,16 @@ class TestEvaluateCiRed:
             for name in REQUIRED_CHECKS[1:]
         ]
 
-        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-            return _check_runs_response(checks)
-
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
+        with patch.object(merge_mod, "_query_action_jobs", return_value=jobs):
             result = evaluate_ci(
                 _OWNER, _REPO_NAME, _SHA, poll_interval=0, timeout=1
             )
 
         assert result == CiResult.RED
 
-    def test_action_required_on_required_check_is_red(self) -> None:
-        """A required check with conclusion='action_required' → RED."""
-        checks = [
+    def test_action_required_on_required_job_is_red(self) -> None:
+        """A required job with conclusion='action_required' → RED."""
+        jobs = [
             {
                 "name": REQUIRED_CHECKS[0],
                 "status": "completed",
@@ -376,10 +977,7 @@ class TestEvaluateCiRed:
             for name in REQUIRED_CHECKS[1:]
         ]
 
-        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-            return _check_runs_response(checks)
-
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
+        with patch.object(merge_mod, "_query_action_jobs", return_value=jobs):
             result = evaluate_ci(
                 _OWNER, _REPO_NAME, _SHA, poll_interval=0, timeout=1
             )
@@ -390,29 +988,27 @@ class TestEvaluateCiRed:
 class TestEvaluateCiPollingAndTimeout:
     """Tests for polling and timeout behaviour of ``evaluate_ci``."""
 
-    def test_in_progress_required_check_polls_then_times_out_as_red(
-        self,
-    ) -> None:
-        """An in-progress required check that never completes → not green.
+    def test_in_progress_required_job_polls_then_times_out(self) -> None:
+        """An in-progress required job that never completes → not green.
 
         The function must poll up to the timeout and then return either
         ``CiResult.RED`` or ``CiResult.TIMEOUT`` (both are non-green /
         ci-timeout semantics), never blocking forever.
         """
+        in_progress_jobs = [
+            {
+                "name": name,
+                "status": "in_progress",
+                "conclusion": None,
+            }
+            for name in REQUIRED_CHECKS
+        ]
 
-        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-            # Always return in_progress for required checks → never green
-            checks = [
-                {
-                    "name": name,
-                    "status": "in_progress",
-                    "conclusion": None,
-                }
-                for name in REQUIRED_CHECKS
-            ]
-            return _check_runs_response(checks)
-
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
+        with patch.object(
+            merge_mod,
+            "_query_action_jobs",
+            return_value=in_progress_jobs,
+        ):
             result = evaluate_ci(
                 _OWNER,
                 _REPO_NAME,
@@ -421,30 +1017,30 @@ class TestEvaluateCiPollingAndTimeout:
                 timeout=0,  # immediate timeout
             )
 
-        # Must NOT be green (ci-timeout semantics)
         assert result != CiResult.GREEN, (
-            "An in-progress check that never completes must not be GREEN"
+            "An in-progress job that never completes must not be GREEN"
         )
 
-    def test_absent_required_check_is_not_vacuous_green(self) -> None:
-        """A configured required check absent from response → NOT green.
+    def test_absent_required_job_is_not_vacuous_green(self) -> None:
+        """A configured required job absent from response → NOT green.
 
-        CRITICAL: Zero matching checks found is NEVER vacuously green.
-        An absent required check → NOT-YET → non-green on timeout.
+        CRITICAL: Zero matching jobs found is NEVER vacuously green.
+        An absent required job → NOT-YET → non-green on timeout.
         """
+        # Only return irrelevant jobs — none are required.
+        irrelevant_jobs = [
+            {
+                "name": "Some unrelated check",
+                "status": "completed",
+                "conclusion": "success",
+            }
+        ]
 
-        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-            # Return only irrelevant checks — none are required
-            checks = [
-                {
-                    "name": "Some unrelated check",
-                    "status": "completed",
-                    "conclusion": "success",
-                }
-            ]
-            return _check_runs_response(checks)
-
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
+        with patch.object(
+            merge_mod,
+            "_query_action_jobs",
+            return_value=irrelevant_jobs,
+        ):
             result = evaluate_ci(
                 _OWNER,
                 _REPO_NAME,
@@ -453,22 +1049,17 @@ class TestEvaluateCiPollingAndTimeout:
                 timeout=0,  # immediate timeout
             )
 
-        # MUST NOT be green — absent required check = timeout, not vacuous pass
         assert result != CiResult.GREEN, (
-            "An absent required check must NEVER produce a GREEN result"
+            "An absent required job must NEVER produce a GREEN result"
         )
 
-    def test_empty_check_runs_is_not_vacuous_green(self) -> None:
-        """Empty check-runs response → NOT green (no vacuous pass).
+    def test_empty_jobs_list_is_not_vacuous_green(self) -> None:
+        """Empty jobs list → NOT green (no vacuous pass).
 
-        No checks at all = every required check is absent = NOT-YET → not
+        No jobs at all = every required job is absent = NOT-YET → not
         green on timeout.
         """
-
-        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-            return _check_runs_response([])
-
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
+        with patch.object(merge_mod, "_query_action_jobs", return_value=[]):
             result = evaluate_ci(
                 _OWNER,
                 _REPO_NAME,
@@ -478,19 +1069,20 @@ class TestEvaluateCiPollingAndTimeout:
             )
 
         assert result != CiResult.GREEN, (
-            "An empty check-runs response must NEVER produce GREEN"
+            "An empty jobs list must NEVER produce GREEN"
         )
 
     def test_eventually_green_after_polling(self) -> None:
-        """Checks that are in_progress then complete → GREEN after polling."""
+        """Jobs that are in_progress then complete → GREEN after polling."""
         call_count = 0
 
-        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        def fake_query(
+            owner: str, repo: str, sha: str
+        ) -> list[dict[str, str | None]]:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                # First call: all in_progress
-                checks = [
+                return [
                     {
                         "name": name,
                         "status": "in_progress",
@@ -498,19 +1090,11 @@ class TestEvaluateCiPollingAndTimeout:
                     }
                     for name in REQUIRED_CHECKS
                 ]
-            else:
-                # Subsequent calls: all success
-                checks = [
-                    {
-                        "name": name,
-                        "status": "completed",
-                        "conclusion": "success",
-                    }
-                    for name in REQUIRED_CHECKS
-                ]
-            return _check_runs_response(checks)
+            return _all_required_success()
 
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
+        with patch.object(
+            merge_mod, "_query_action_jobs", side_effect=fake_query
+        ):
             result = evaluate_ci(
                 _OWNER,
                 _REPO_NAME,
@@ -522,15 +1106,17 @@ class TestEvaluateCiPollingAndTimeout:
         assert result == CiResult.GREEN
         assert call_count >= 2, "Must have polled at least twice"
 
-    def test_queued_required_check_polls_not_immediately_red(self) -> None:
-        """A queued required check is NOT-YET, not immediately RED."""
+    def test_queued_required_job_polls_not_immediately_red(self) -> None:
+        """A queued required job is NOT-YET, not immediately RED."""
         call_count = 0
 
-        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        def fake_query(
+            owner: str, repo: str, sha: str
+        ) -> list[dict[str, str | None]]:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                checks = [
+                return [
                     {
                         "name": name,
                         "status": "queued",
@@ -538,18 +1124,11 @@ class TestEvaluateCiPollingAndTimeout:
                     }
                     for name in REQUIRED_CHECKS
                 ]
-            else:
-                checks = [
-                    {
-                        "name": name,
-                        "status": "completed",
-                        "conclusion": "success",
-                    }
-                    for name in REQUIRED_CHECKS
-                ]
-            return _check_runs_response(checks)
+            return _all_required_success()
 
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
+        with patch.object(
+            merge_mod, "_query_action_jobs", side_effect=fake_query
+        ):
             result = evaluate_ci(
                 _OWNER,
                 _REPO_NAME,
@@ -558,31 +1137,101 @@ class TestEvaluateCiPollingAndTimeout:
                 timeout=60,
             )
 
-        # Must have polled (not immediately RED on queued)
         assert result == CiResult.GREEN
         assert call_count >= 2
 
-    def test_checks_correct_api_endpoint(self) -> None:
-        """Queries the check-runs endpoint for the correct SHA."""
-        calls: list[list[str]] = []
+    def test_checks_correct_api_owner_repo_sha(self) -> None:
+        """``_query_action_jobs`` is called with the correct owner/repo/sha."""
+        calls: list[tuple[str, str, str]] = []
 
-        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-            calls.append(cmd)
-            return _check_runs_response(_all_required_success())
+        def fake_query(
+            owner: str, repo: str, sha: str
+        ) -> list[dict[str, str | None]]:
+            calls.append((owner, repo, sha))
+            return _all_required_success()
 
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
+        with patch.object(
+            merge_mod, "_query_action_jobs", side_effect=fake_query
+        ):
             evaluate_ci(_OWNER, _REPO_NAME, _SHA, poll_interval=0, timeout=1)
 
-        assert any(_SHA in " ".join(cmd) for cmd in calls), (
-            "The SHA must appear in the check-runs API call"
+        assert calls, "Expected _query_action_jobs to be called"
+        owner, repo, sha = calls[0]
+        assert owner == _OWNER
+        assert repo == _REPO_NAME
+        assert sha == _SHA
+
+
+class TestEvaluateCiAuthErrorPropagation:
+    """Tests that ``CiAuthError`` propagates out of ``evaluate_ci``."""
+
+    def test_ci_auth_error_propagates_immediately_not_looped(self) -> None:
+        """``CiAuthError`` from ``_query_action_jobs`` propagates out.
+
+        ``evaluate_ci`` must NOT catch ``CiAuthError``.  It must propagate
+        to the caller immediately — not be swallowed into a 30-min timeout.
+        """
+        call_count = 0
+
+        def fake_query(
+            owner: str, repo: str, sha: str
+        ) -> list[dict[str, str | None]]:
+            nonlocal call_count
+            call_count += 1
+            raise CiAuthError("Resource not accessible by integration")
+
+        with patch.object(
+            merge_mod, "_query_action_jobs", side_effect=fake_query
+        ):
+            with pytest.raises(CiAuthError):
+                evaluate_ci(
+                    _OWNER,
+                    _REPO_NAME,
+                    _SHA,
+                    poll_interval=0,
+                    timeout=60,  # long timeout — must NOT loop
+                )
+
+        assert call_count == 1, (
+            "evaluate_ci must stop immediately on CiAuthError, not loop"
         )
-        assert any("check-runs" in " ".join(cmd) for cmd in calls), (
-            "The check-runs endpoint must be called"
+
+    def test_ci_auth_error_is_not_converted_to_timeout(self) -> None:
+        """``CiAuthError`` must NOT be swallowed and returned as TIMEOUT."""
+
+        def fake_query(
+            owner: str, repo: str, sha: str
+        ) -> list[dict[str, str | None]]:
+            raise CiAuthError("Resource not accessible by integration")
+
+        with patch.object(
+            merge_mod, "_query_action_jobs", side_effect=fake_query
+        ):
+            # The call must raise, never return normally.
+            raised = False
+            try:
+                evaluate_ci(
+                    _OWNER,
+                    _REPO_NAME,
+                    _SHA,
+                    poll_interval=0,
+                    timeout=0,
+                )
+            except CiAuthError:
+                raised = True
+            except Exception:
+                # Any other exception is also not a silent TIMEOUT return.
+                raised = True
+
+        # The critical contract: evaluate_ci must not return a CiResult
+        # when _query_action_jobs raises CiAuthError.
+        assert raised, (
+            "evaluate_ci must propagate CiAuthError, not return CiResult"
         )
 
 
 # ---------------------------------------------------------------------------
-# merge_issue_branch — the --no-ff merge
+# merge_issue_branch — the --no-ff merge (Actions-API rewired)
 # ---------------------------------------------------------------------------
 
 
@@ -595,22 +1244,25 @@ class TestMergeIssueBranch:
 
         def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
             calls.append(cmd)
-            if "check-runs" in " ".join(cmd):
-                return _check_runs_response(_all_required_success())
             return _ok()
 
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
-            merge_issue_branch(
-                _REPO,
-                _OWNER,
-                _REPO_NAME,
-                issue=44,
-                pr_head_sha=_SHA,
-                issue_branch="baton/v2-daemon-44",
-                feature_branch=_FEATURE,
-                poll_interval=0,
-                timeout=1,
-            )
+        with patch.object(
+            merge_mod,
+            "_query_action_jobs",
+            return_value=_all_required_success(),
+        ):
+            with patch.object(merge_mod, "_run", side_effect=fake_run):
+                merge_issue_branch(
+                    _REPO,
+                    _OWNER,
+                    _REPO_NAME,
+                    issue=44,
+                    pr_head_sha=_SHA,
+                    issue_branch="baton/v2-daemon-44",
+                    feature_branch=_FEATURE,
+                    poll_interval=0,
+                    timeout=1,
+                )
 
         merge_cmds = [c for c in calls if "merge" in c]
         assert any("--no-ff" in c for c in merge_cmds), (
@@ -620,40 +1272,36 @@ class TestMergeIssueBranch:
             assert "--squash" not in cmd, "Must NOT use --squash"
 
     def test_merges_issue_branch_into_feature_branch(self) -> None:
-        """Merges the per-issue branch into ``feature/<slug>`` (not main).
-
-        The merge is done via ``git checkout <feature_branch>`` followed by
-        ``git merge --no-ff <issue_branch>``.  The feature branch is thus the
-        merge target via HEAD checkout, not an explicit argument to merge.
-        """
+        """Merges the per-issue branch into ``feature/<slug>`` (not main)."""
         calls: list[list[str]] = []
 
         def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
             calls.append(cmd)
-            if "check-runs" in " ".join(cmd):
-                return _check_runs_response(_all_required_success())
             return _ok()
 
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
-            merge_issue_branch(
-                _REPO,
-                _OWNER,
-                _REPO_NAME,
-                issue=44,
-                pr_head_sha=_SHA,
-                issue_branch="baton/v2-daemon-44",
-                feature_branch=_FEATURE,
-                poll_interval=0,
-                timeout=1,
-            )
+        with patch.object(
+            merge_mod,
+            "_query_action_jobs",
+            return_value=_all_required_success(),
+        ):
+            with patch.object(merge_mod, "_run", side_effect=fake_run):
+                merge_issue_branch(
+                    _REPO,
+                    _OWNER,
+                    _REPO_NAME,
+                    issue=44,
+                    pr_head_sha=_SHA,
+                    issue_branch="baton/v2-daemon-44",
+                    feature_branch=_FEATURE,
+                    poll_interval=0,
+                    timeout=1,
+                )
 
-        # The feature branch appears in the git checkout command (pre-merge).
         checkout_cmds = [c for c in calls if "checkout" in c]
         assert any(_FEATURE in c for c in checkout_cmds), (
             f"Must checkout INTO the feature branch before merging."
             f" Calls: {calls}"
         )
-        # The git merge command must include the issue branch, not main.
         merge_cmds = [c for c in calls if "merge" in c and "git" in c]
         assert merge_cmds, "Expected a git merge command"
         for cmd in merge_cmds:
@@ -668,22 +1316,25 @@ class TestMergeIssueBranch:
 
         def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
             calls.append(cmd)
-            if "check-runs" in " ".join(cmd):
-                return _check_runs_response(_all_required_success())
             return _ok()
 
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
-            merge_issue_branch(
-                _REPO,
-                _OWNER,
-                _REPO_NAME,
-                issue=44,
-                pr_head_sha=_SHA,
-                issue_branch="baton/v2-daemon-44",
-                feature_branch=_FEATURE,
-                poll_interval=0,
-                timeout=1,
-            )
+        with patch.object(
+            merge_mod,
+            "_query_action_jobs",
+            return_value=_all_required_success(),
+        ):
+            with patch.object(merge_mod, "_run", side_effect=fake_run):
+                merge_issue_branch(
+                    _REPO,
+                    _OWNER,
+                    _REPO_NAME,
+                    issue=44,
+                    pr_head_sha=_SHA,
+                    issue_branch="baton/v2-daemon-44",
+                    feature_branch=_FEATURE,
+                    poll_interval=0,
+                    timeout=1,
+                )
 
         for cmd in calls:
             if cmd and "merge" in cmd:
@@ -692,21 +1343,11 @@ class TestMergeIssueBranch:
                     f"HARD CONSTRAINT: merge must never target main: {joined}"
                 )
 
-    def test_provenance_trailer_in_merge_message(self) -> None:
-        """Merge commit message carries the daemon-provenance trailer."""
-        captured_messages: list[str] = []
-
-        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-            if "check-runs" in " ".join(cmd):
-                return _check_runs_response(_all_required_success())
-            # Capture -m flag content
-            if "merge" in cmd and "-m" in cmd:
-                m_idx = cmd.index("-m")
-                if m_idx + 1 < len(cmd):
-                    captured_messages.append(cmd[m_idx + 1])
-            return _ok()
-
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
+    def test_feature_branch_guard_raises_on_non_feature_branch(
+        self,
+    ) -> None:
+        """``ValueError`` raised if ``feature_branch`` lacks ``feature/``."""
+        with pytest.raises(ValueError, match="feature/"):
             merge_issue_branch(
                 _REPO,
                 _OWNER,
@@ -714,14 +1355,42 @@ class TestMergeIssueBranch:
                 issue=44,
                 pr_head_sha=_SHA,
                 issue_branch="baton/v2-daemon-44",
-                feature_branch=_FEATURE,
+                feature_branch="main",  # must be rejected
                 poll_interval=0,
                 timeout=1,
             )
 
+    def test_provenance_trailer_in_merge_message(self) -> None:
+        """Merge commit message carries the daemon-provenance trailer."""
+        captured_messages: list[str] = []
+
+        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if "merge" in cmd and "-m" in cmd:
+                m_idx = cmd.index("-m")
+                if m_idx + 1 < len(cmd):
+                    captured_messages.append(cmd[m_idx + 1])
+            return _ok()
+
+        with patch.object(
+            merge_mod,
+            "_query_action_jobs",
+            return_value=_all_required_success(),
+        ):
+            with patch.object(merge_mod, "_run", side_effect=fake_run):
+                merge_issue_branch(
+                    _REPO,
+                    _OWNER,
+                    _REPO_NAME,
+                    issue=44,
+                    pr_head_sha=_SHA,
+                    issue_branch="baton/v2-daemon-44",
+                    feature_branch=_FEATURE,
+                    poll_interval=0,
+                    timeout=1,
+                )
+
         assert captured_messages, "Expected a -m message on the merge command"
         full_msg = " ".join(captured_messages)
-        # Must contain the structured trailer (§11.5 / B-I2)
         assert "Baton-Harness-Merge" in full_msg, (
             "Merge message must carry Baton-Harness-Merge trailer"
         )
@@ -734,30 +1403,29 @@ class TestMergeIssueBranch:
 
     def test_returns_success_outcome_on_green_merge(self) -> None:
         """Returns ``MergeOutcome.MERGED`` on a successful green merge."""
-
-        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-            if "check-runs" in " ".join(cmd):
-                return _check_runs_response(_all_required_success())
-            return _ok()
-
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
-            outcome = merge_issue_branch(
-                _REPO,
-                _OWNER,
-                _REPO_NAME,
-                issue=44,
-                pr_head_sha=_SHA,
-                issue_branch="baton/v2-daemon-44",
-                feature_branch=_FEATURE,
-                poll_interval=0,
-                timeout=1,
-            )
+        with patch.object(
+            merge_mod,
+            "_query_action_jobs",
+            return_value=_all_required_success(),
+        ):
+            with patch.object(merge_mod, "_run", return_value=_ok()):
+                outcome = merge_issue_branch(
+                    _REPO,
+                    _OWNER,
+                    _REPO_NAME,
+                    issue=44,
+                    pr_head_sha=_SHA,
+                    issue_branch="baton/v2-daemon-44",
+                    feature_branch=_FEATURE,
+                    poll_interval=0,
+                    timeout=1,
+                )
 
         assert outcome == MergeOutcome.MERGED
 
     def test_returns_red_outcome_when_ci_fails(self) -> None:
         """Returns ``MergeOutcome.CI_FAILED`` when CI is RED."""
-        checks = [
+        red_jobs = [
             {
                 "name": REQUIRED_CHECKS[0],
                 "status": "completed",
@@ -772,12 +1440,9 @@ class TestMergeIssueBranch:
             for name in REQUIRED_CHECKS[1:]
         ]
 
-        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-            if "check-runs" in " ".join(cmd):
-                return _check_runs_response(checks)
-            return _ok()
-
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
+        with patch.object(
+            merge_mod, "_query_action_jobs", return_value=red_jobs
+        ):
             outcome = merge_issue_branch(
                 _REPO,
                 _OWNER,
@@ -794,21 +1459,20 @@ class TestMergeIssueBranch:
 
     def test_returns_timeout_outcome_when_ci_never_completes(self) -> None:
         """Returns ``MergeOutcome.CI_TIMEOUT`` when CI never completes."""
+        in_progress_jobs = [
+            {
+                "name": name,
+                "status": "in_progress",
+                "conclusion": None,
+            }
+            for name in REQUIRED_CHECKS
+        ]
 
-        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-            if "check-runs" in " ".join(cmd):
-                checks = [
-                    {
-                        "name": name,
-                        "status": "in_progress",
-                        "conclusion": None,
-                    }
-                    for name in REQUIRED_CHECKS
-                ]
-                return _check_runs_response(checks)
-            return _ok()
-
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
+        with patch.object(
+            merge_mod,
+            "_query_action_jobs",
+            return_value=in_progress_jobs,
+        ):
             outcome = merge_issue_branch(
                 _REPO,
                 _OWNER,
@@ -826,7 +1490,7 @@ class TestMergeIssueBranch:
     def test_no_merge_command_issued_when_ci_fails(self) -> None:
         """No ``git merge`` is called when CI is RED (do not merge on red)."""
         calls: list[list[str]] = []
-        checks = [
+        red_jobs = [
             {
                 "name": REQUIRED_CHECKS[0],
                 "status": "completed",
@@ -843,22 +1507,23 @@ class TestMergeIssueBranch:
 
         def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
             calls.append(cmd)
-            if "check-runs" in " ".join(cmd):
-                return _check_runs_response(checks)
             return _ok()
 
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
-            merge_issue_branch(
-                _REPO,
-                _OWNER,
-                _REPO_NAME,
-                issue=44,
-                pr_head_sha=_SHA,
-                issue_branch="baton/v2-daemon-44",
-                feature_branch=_FEATURE,
-                poll_interval=0,
-                timeout=1,
-            )
+        with patch.object(
+            merge_mod, "_query_action_jobs", return_value=red_jobs
+        ):
+            with patch.object(merge_mod, "_run", side_effect=fake_run):
+                merge_issue_branch(
+                    _REPO,
+                    _OWNER,
+                    _REPO_NAME,
+                    issue=44,
+                    pr_head_sha=_SHA,
+                    issue_branch="baton/v2-daemon-44",
+                    feature_branch=_FEATURE,
+                    poll_interval=0,
+                    timeout=1,
+                )
 
         merge_cmds = [c for c in calls if "merge" in c and "git" in c]
         assert not merge_cmds, "Must NOT issue git merge when CI is RED"
@@ -878,24 +1543,26 @@ class TestProvenancePersistence:
 
         def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
             calls.append(cmd)
-            if "check-runs" in " ".join(cmd):
-                return _check_runs_response(_all_required_success())
             return _ok()
 
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
-            merge_issue_branch(
-                _REPO,
-                _OWNER,
-                _REPO_NAME,
-                issue=44,
-                pr_head_sha=_SHA,
-                issue_branch="baton/v2-daemon-44",
-                feature_branch=_FEATURE,
-                poll_interval=0,
-                timeout=1,
-            )
+        with patch.object(
+            merge_mod,
+            "_query_action_jobs",
+            return_value=_all_required_success(),
+        ):
+            with patch.object(merge_mod, "_run", side_effect=fake_run):
+                merge_issue_branch(
+                    _REPO,
+                    _OWNER,
+                    _REPO_NAME,
+                    issue=44,
+                    pr_head_sha=_SHA,
+                    issue_branch="baton/v2-daemon-44",
+                    feature_branch=_FEATURE,
+                    poll_interval=0,
+                    timeout=1,
+                )
 
-        # Should have called gh issue edit to add agent-merged
         label_cmds = [
             c
             for c in calls
@@ -914,24 +1581,26 @@ class TestProvenancePersistence:
 
         def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
             calls.append(cmd)
-            if "check-runs" in " ".join(cmd):
-                return _check_runs_response(_all_required_success())
             return _ok()
 
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
-            merge_issue_branch(
-                _REPO,
-                _OWNER,
-                _REPO_NAME,
-                issue=44,
-                pr_head_sha=_SHA,
-                issue_branch="baton/v2-daemon-44",
-                feature_branch=_FEATURE,
-                poll_interval=0,
-                timeout=1,
-            )
+        with patch.object(
+            merge_mod,
+            "_query_action_jobs",
+            return_value=_all_required_success(),
+        ):
+            with patch.object(merge_mod, "_run", side_effect=fake_run):
+                merge_issue_branch(
+                    _REPO,
+                    _OWNER,
+                    _REPO_NAME,
+                    issue=44,
+                    pr_head_sha=_SHA,
+                    issue_branch="baton/v2-daemon-44",
+                    feature_branch=_FEATURE,
+                    poll_interval=0,
+                    timeout=1,
+                )
 
-        # Should have called gh issue comment or similar
         comment_cmds = [
             c for c in calls if "gh" in c and "comment" in " ".join(c)
         ]
@@ -942,7 +1611,7 @@ class TestProvenancePersistence:
     def test_no_label_or_comment_when_ci_fails(self) -> None:
         """No ``agent-merged`` label or marker comment when CI is RED."""
         calls: list[list[str]] = []
-        checks = [
+        red_jobs = [
             {
                 "name": REQUIRED_CHECKS[0],
                 "status": "completed",
@@ -959,22 +1628,23 @@ class TestProvenancePersistence:
 
         def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
             calls.append(cmd)
-            if "check-runs" in " ".join(cmd):
-                return _check_runs_response(checks)
             return _ok()
 
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
-            merge_issue_branch(
-                _REPO,
-                _OWNER,
-                _REPO_NAME,
-                issue=44,
-                pr_head_sha=_SHA,
-                issue_branch="baton/v2-daemon-44",
-                feature_branch=_FEATURE,
-                poll_interval=0,
-                timeout=1,
-            )
+        with patch.object(
+            merge_mod, "_query_action_jobs", return_value=red_jobs
+        ):
+            with patch.object(merge_mod, "_run", side_effect=fake_run):
+                merge_issue_branch(
+                    _REPO,
+                    _OWNER,
+                    _REPO_NAME,
+                    issue=44,
+                    pr_head_sha=_SHA,
+                    issue_branch="baton/v2-daemon-44",
+                    feature_branch=_FEATURE,
+                    poll_interval=0,
+                    timeout=1,
+                )
 
         label_cmds = [c for c in calls if "agent-merged" in " ".join(c)]
         assert not label_cmds, "Must NOT add agent-merged label when CI is RED"
@@ -994,14 +1664,9 @@ class TestDependencyOrderMerge:
         issues = [42, 43, 44]
 
         def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-            if "check-runs" in " ".join(cmd):
-                return _check_runs_response(_all_required_success())
             if "merge" in cmd and "git" in cmd:
-                # Find the issue branch token (baton/... pattern)
                 for tok in cmd:
                     if tok.startswith("baton/"):
-                        # branch is like "baton/v2-daemon-42" — last segment
-                        # after the final "-" is the issue number.
                         last_part = tok.rsplit("-", 1)[-1]
                         try:
                             merge_order.append(int(last_part))
@@ -1014,18 +1679,23 @@ class TestDependencyOrderMerge:
 
         from baton_harness.chain.merge import merge_issue_branches
 
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
-            merge_issue_branches(
-                _REPO,
-                _OWNER,
-                _REPO_NAME,
-                issues=issues,
-                pr_head_shas=shas,
-                issue_branches=branches,
-                feature_branch=_FEATURE,
-                poll_interval=0,
-                timeout=1,
-            )
+        with patch.object(
+            merge_mod,
+            "_query_action_jobs",
+            return_value=_all_required_success(),
+        ):
+            with patch.object(merge_mod, "_run", side_effect=fake_run):
+                merge_issue_branches(
+                    _REPO,
+                    _OWNER,
+                    _REPO_NAME,
+                    issues=issues,
+                    pr_head_shas=shas,
+                    issue_branches=branches,
+                    feature_branch=_FEATURE,
+                    poll_interval=0,
+                    timeout=1,
+                )
 
         assert merge_order == issues, (
             f"Expected merge order {issues}, got {merge_order}"
@@ -1035,54 +1705,55 @@ class TestDependencyOrderMerge:
         """Stops processing the list if one issue has RED CI."""
         from baton_harness.chain.merge import merge_issue_branches
 
-        merge_count = 0
+        call_num = 0
 
-        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-            nonlocal merge_count
-            cmd_str = " ".join(cmd)
-            if "check-runs" in cmd_str:
-                # Return failure for sha43
-                if "sha43" in cmd_str:
-                    checks = [
-                        {
-                            "name": REQUIRED_CHECKS[0],
-                            "status": "completed",
-                            "conclusion": "failure",
-                        },
-                    ] + [
-                        {
-                            "name": name,
-                            "status": "completed",
-                            "conclusion": "success",
-                        }
-                        for name in REQUIRED_CHECKS[1:]
-                    ]
-                    return _check_runs_response(checks)
-                return _check_runs_response(_all_required_success())
-            if "merge" in cmd and "git" in cmd:
-                merge_count += 1
-            return _ok()
+        def fake_query(
+            owner: str, repo: str, sha: str
+        ) -> list[dict[str, str | None]]:
+            nonlocal call_num
+            call_num += 1
+            # sha43 gets a failure on the first required check.
+            if sha == "sha43":
+                return [
+                    {
+                        "name": REQUIRED_CHECKS[0],
+                        "status": "completed",
+                        "conclusion": "failure",
+                    },
+                ] + [
+                    {
+                        "name": name,
+                        "status": "completed",
+                        "conclusion": "success",
+                    }
+                    for name in REQUIRED_CHECKS[1:]
+                ]
+            return _all_required_success()
 
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
-            outcomes = merge_issue_branches(
-                _REPO,
-                _OWNER,
-                _REPO_NAME,
-                issues=[42, 43, 44],
-                pr_head_shas=["sha42", "sha43", "sha44"],
-                issue_branches=[
-                    "baton/v2-daemon-42",
-                    "baton/v2-daemon-43",
-                    "baton/v2-daemon-44",
-                ],
-                feature_branch=_FEATURE,
-                poll_interval=0,
-                timeout=1,
-            )
+        with patch.object(
+            merge_mod, "_query_action_jobs", side_effect=fake_query
+        ):
+            with patch.object(merge_mod, "_run", return_value=_ok()):
+                outcomes = merge_issue_branches(
+                    _REPO,
+                    _OWNER,
+                    _REPO_NAME,
+                    issues=[42, 43, 44],
+                    pr_head_shas=["sha42", "sha43", "sha44"],
+                    issue_branches=[
+                        "baton/v2-daemon-42",
+                        "baton/v2-daemon-43",
+                        "baton/v2-daemon-44",
+                    ],
+                    feature_branch=_FEATURE,
+                    poll_interval=0,
+                    timeout=1,
+                )
 
-        # Issue 42 should merge (green), issue 43 should fail (red)
         assert outcomes[42] == MergeOutcome.MERGED
         assert outcomes[43] == MergeOutcome.CI_FAILED
+        # Issue 44 should not appear (processing stopped after 43's failure).
+        assert 44 not in outcomes
 
 
 # ---------------------------------------------------------------------------
@@ -1091,21 +1762,21 @@ class TestDependencyOrderMerge:
 
 
 class TestUnrecognizedConclusionNotGreen:
-    """Guard FIX 1/FIX 2: completed check with unrecognised conclusion.
+    """Guard FIX 1/FIX 2: completed job with unrecognised conclusion.
 
-    A required check that is ``status: completed`` but whose ``conclusion``
+    A required job that is ``status: completed`` but whose ``conclusion``
     is outside both the pass set {success, neutral, skipped} and the known
     failing set must NEVER yield GREEN.  It must be treated as NOT-YET
     (polling continues until deadline → non-green on timeout).
     """
 
     def test_startup_failure_conclusion_is_not_green(self) -> None:
-        """A required check completed with 'startup_failure' → NOT green.
+        """A required job completed with 'startup_failure' → NOT green.
 
         'startup_failure' is outside the failing set but also outside the
         pass set.  The poller must treat it as NOT-YET (no vacuous pass).
         """
-        checks = [
+        jobs = [
             {
                 "name": REQUIRED_CHECKS[0],
                 "status": "completed",
@@ -1120,12 +1791,7 @@ class TestUnrecognizedConclusionNotGreen:
             for name in REQUIRED_CHECKS[1:]
         ]
 
-        def fake_run(
-            cmd: list[str],
-        ) -> subprocess.CompletedProcess[str]:
-            return _check_runs_response(checks)
-
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
+        with patch.object(merge_mod, "_query_action_jobs", return_value=jobs):
             result = evaluate_ci(
                 _OWNER,
                 _REPO_NAME,
@@ -1138,13 +1804,13 @@ class TestUnrecognizedConclusionNotGreen:
             "conclusion='startup_failure' must NEVER yield GREEN"
         )
 
-    def test_null_conclusion_on_completed_check_is_not_green(self) -> None:
-        """A required check completed with null conclusion → NOT green.
+    def test_null_conclusion_on_completed_job_is_not_green(self) -> None:
+        """A required job completed with null conclusion → NOT green.
 
-        A null conclusion on a completed check is unrecognised and must
+        A null conclusion on a completed job is unrecognised and must
         not pass vacuously.
         """
-        checks = [
+        jobs = [
             {
                 "name": REQUIRED_CHECKS[0],
                 "status": "completed",
@@ -1159,12 +1825,7 @@ class TestUnrecognizedConclusionNotGreen:
             for name in REQUIRED_CHECKS[1:]
         ]
 
-        def fake_run(
-            cmd: list[str],
-        ) -> subprocess.CompletedProcess[str]:
-            return _check_runs_response(checks)
-
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
+        with patch.object(merge_mod, "_query_action_jobs", return_value=jobs):
             result = evaluate_ci(
                 _OWNER,
                 _REPO_NAME,
@@ -1174,12 +1835,12 @@ class TestUnrecognizedConclusionNotGreen:
             )
 
         assert result != CiResult.GREEN, (
-            "conclusion=null on a completed check must NEVER yield GREEN"
+            "conclusion=null on a completed job must NEVER yield GREEN"
         )
 
     def test_stale_conclusion_is_not_green(self) -> None:
-        """A required check completed with 'stale' → NOT green."""
-        checks = [
+        """A required job completed with 'stale' → NOT green."""
+        jobs = [
             {
                 "name": REQUIRED_CHECKS[0],
                 "status": "completed",
@@ -1194,12 +1855,7 @@ class TestUnrecognizedConclusionNotGreen:
             for name in REQUIRED_CHECKS[1:]
         ]
 
-        def fake_run(
-            cmd: list[str],
-        ) -> subprocess.CompletedProcess[str]:
-            return _check_runs_response(checks)
-
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
+        with patch.object(merge_mod, "_query_action_jobs", return_value=jobs):
             result = evaluate_ci(
                 _OWNER,
                 _REPO_NAME,
@@ -1215,7 +1871,7 @@ class TestUnrecognizedConclusionNotGreen:
     def test_unrecognized_conclusion_does_not_merge(self) -> None:
         """merge_issue_branch does NOT merge when conclusion unrecognised."""
         calls: list[list[str]] = []
-        checks = [
+        jobs = [
             {
                 "name": REQUIRED_CHECKS[0],
                 "status": "completed",
@@ -1230,26 +1886,23 @@ class TestUnrecognizedConclusionNotGreen:
             for name in REQUIRED_CHECKS[1:]
         ]
 
-        def fake_run(
-            cmd: list[str],
-        ) -> subprocess.CompletedProcess[str]:
+        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
             calls.append(cmd)
-            if "check-runs" in " ".join(cmd):
-                return _check_runs_response(checks)
             return _ok()
 
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
-            outcome = merge_issue_branch(
-                _REPO,
-                _OWNER,
-                _REPO_NAME,
-                issue=44,
-                pr_head_sha=_SHA,
-                issue_branch="baton/v2-daemon-44",
-                feature_branch=_FEATURE,
-                poll_interval=0,
-                timeout=0,
-            )
+        with patch.object(merge_mod, "_query_action_jobs", return_value=jobs):
+            with patch.object(merge_mod, "_run", side_effect=fake_run):
+                outcome = merge_issue_branch(
+                    _REPO,
+                    _OWNER,
+                    _REPO_NAME,
+                    issue=44,
+                    pr_head_sha=_SHA,
+                    issue_branch="baton/v2-daemon-44",
+                    feature_branch=_FEATURE,
+                    poll_interval=0,
+                    timeout=0,
+                )
 
         merge_cmds = [c for c in calls if "merge" in c and "git" in c]
         assert not merge_cmds, "Must NOT merge when conclusion is unrecognised"
@@ -1278,33 +1931,34 @@ class TestMergeConflictAbortsCleanly:
             cmd: list[str],
         ) -> subprocess.CompletedProcess[str]:
             calls.append(cmd)
-            if "check-runs" in " ".join(cmd):
-                return _check_runs_response(_all_required_success())
             if "checkout" in cmd:
                 return _ok()
             if "merge" in cmd and "--no-ff" in cmd:
-                # Simulate a conflict / non-zero merge
                 return subprocess.CompletedProcess(
                     args=cmd,
                     returncode=1,
                     stdout="",
                     stderr="CONFLICT (content): Merge conflict",
                 )
-            # merge --abort or other
             return _ok()
 
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
-            outcome = merge_issue_branch(
-                _REPO,
-                _OWNER,
-                _REPO_NAME,
-                issue=44,
-                pr_head_sha=_SHA,
-                issue_branch="baton/v2-daemon-44",
-                feature_branch=_FEATURE,
-                poll_interval=0,
-                timeout=1,
-            )
+        with patch.object(
+            merge_mod,
+            "_query_action_jobs",
+            return_value=_all_required_success(),
+        ):
+            with patch.object(merge_mod, "_run", side_effect=fake_run):
+                outcome = merge_issue_branch(
+                    _REPO,
+                    _OWNER,
+                    _REPO_NAME,
+                    issue=44,
+                    pr_head_sha=_SHA,
+                    issue_branch="baton/v2-daemon-44",
+                    feature_branch=_FEATURE,
+                    poll_interval=0,
+                    timeout=1,
+                )
 
         abort_cmds = [
             c for c in calls if "--abort" in c or "abort" in " ".join(c)
@@ -1322,8 +1976,6 @@ class TestMergeConflictAbortsCleanly:
         def fake_run(
             cmd: list[str],
         ) -> subprocess.CompletedProcess[str]:
-            if "check-runs" in " ".join(cmd):
-                return _check_runs_response(_all_required_success())
             if "checkout" in cmd:
                 return _ok()
             if "merge" in cmd and "--no-ff" in cmd:
@@ -1335,19 +1987,23 @@ class TestMergeConflictAbortsCleanly:
                 )
             return _ok()
 
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
-            # Must not raise — must return a structured non-merged outcome
-            outcome = merge_issue_branch(
-                _REPO,
-                _OWNER,
-                _REPO_NAME,
-                issue=44,
-                pr_head_sha=_SHA,
-                issue_branch="baton/v2-daemon-44",
-                feature_branch=_FEATURE,
-                poll_interval=0,
-                timeout=1,
-            )
+        with patch.object(
+            merge_mod,
+            "_query_action_jobs",
+            return_value=_all_required_success(),
+        ):
+            with patch.object(merge_mod, "_run", side_effect=fake_run):
+                outcome = merge_issue_branch(
+                    _REPO,
+                    _OWNER,
+                    _REPO_NAME,
+                    issue=44,
+                    pr_head_sha=_SHA,
+                    issue_branch="baton/v2-daemon-44",
+                    feature_branch=_FEATURE,
+                    poll_interval=0,
+                    timeout=1,
+                )
 
         assert outcome != MergeOutcome.MERGED
 
@@ -1371,10 +2027,7 @@ class TestProvenancePersistenceFailureSurfaced:
         def fake_run(
             cmd: list[str],
         ) -> subprocess.CompletedProcess[str]:
-            if "check-runs" in " ".join(cmd):
-                return _check_runs_response(_all_required_success())
             if "edit" in cmd and "agent-merged" in " ".join(cmd):
-                # Label write fails
                 return subprocess.CompletedProcess(
                     args=cmd,
                     returncode=1,
@@ -1390,57 +2043,13 @@ class TestProvenancePersistenceFailureSurfaced:
                 )
             return _ok()
 
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
-            result = merge_issue_branch(
-                _REPO,
-                _OWNER,
-                _REPO_NAME,
-                issue=44,
-                pr_head_sha=_SHA,
-                issue_branch="baton/v2-daemon-44",
-                feature_branch=_FEATURE,
-                poll_interval=0,
-                timeout=1,
-            )
-
-        # The result must indicate provenance was not persisted.
-        # Depending on the implementation, this is either a named tuple /
-        # dataclass with provenance_persisted=False, or the outcome itself
-        # has an attribute. We check for the attribute if present.
-        if hasattr(result, "provenance_persisted"):
-            assert result.provenance_persisted is False, (
-                "provenance_persisted must be False when label write fails"
-            )
-        else:
-            # If a plain MergeOutcome enum is returned, it should still be
-            # MERGED (the merge happened). The important check is the warning
-            # path — tested separately via logging below.
-            assert result == MergeOutcome.MERGED, (
-                "Merge committed; outcome must be MERGED"
-            )
-
-    def test_warning_logged_when_provenance_write_fails(self) -> None:
-        """A loud warning is logged when the provenance write fails."""
-        import logging
-
-        def fake_run(
-            cmd: list[str],
-        ) -> subprocess.CompletedProcess[str]:
-            if "check-runs" in " ".join(cmd):
-                return _check_runs_response(_all_required_success())
-            if "edit" in cmd and "agent-merged" in " ".join(cmd):
-                return subprocess.CompletedProcess(
-                    args=cmd, returncode=1, stdout="", stderr="label fail"
-                )
-            if "comment" in cmd:
-                return subprocess.CompletedProcess(
-                    args=cmd, returncode=1, stdout="", stderr="comment fail"
-                )
-            return _ok()
-
-        with patch.object(merge_mod, "_run", side_effect=fake_run):
-            with self._capture_warnings() as records:
-                merge_issue_branch(
+        with patch.object(
+            merge_mod,
+            "_query_action_jobs",
+            return_value=_all_required_success(),
+        ):
+            with patch.object(merge_mod, "_run", side_effect=fake_run):
+                result = merge_issue_branch(
                     _REPO,
                     _OWNER,
                     _REPO_NAME,
@@ -1452,8 +2061,50 @@ class TestProvenancePersistenceFailureSurfaced:
                     timeout=1,
                 )
 
-        # At least one WARNING (or higher) must have been emitted from
-        # the baton_harness.chain.merge logger.
+        if hasattr(result, "provenance_persisted"):
+            assert result.provenance_persisted is False, (
+                "provenance_persisted must be False when label write fails"
+            )
+        else:
+            assert result == MergeOutcome.MERGED, (
+                "Merge committed; outcome must be MERGED"
+            )
+
+    def test_warning_logged_when_provenance_write_fails(self) -> None:
+        """A loud warning is logged when the provenance write fails."""
+
+        def fake_run(
+            cmd: list[str],
+        ) -> subprocess.CompletedProcess[str]:
+            if "edit" in cmd and "agent-merged" in " ".join(cmd):
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=1, stdout="", stderr="label fail"
+                )
+            if "comment" in cmd:
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=1, stdout="", stderr="comment fail"
+                )
+            return _ok()
+
+        with patch.object(
+            merge_mod,
+            "_query_action_jobs",
+            return_value=_all_required_success(),
+        ):
+            with patch.object(merge_mod, "_run", side_effect=fake_run):
+                with self._capture_warnings() as records:
+                    merge_issue_branch(
+                        _REPO,
+                        _OWNER,
+                        _REPO_NAME,
+                        issue=44,
+                        pr_head_sha=_SHA,
+                        issue_branch="baton/v2-daemon-44",
+                        feature_branch=_FEATURE,
+                        poll_interval=0,
+                        timeout=1,
+                    )
+
         warning_records = [
             r
             for r in records
