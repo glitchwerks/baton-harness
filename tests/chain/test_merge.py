@@ -107,13 +107,16 @@ from baton_harness.chain.merge import (
 # ---------------------------------------------------------------------------
 
 try:
-    from baton_harness.chain.merge import CiAuthError  # type: ignore[attr-defined]
+    from baton_harness.chain.merge import (
+        CiAuthError,  # type: ignore[attr-defined]
+    )
 except ImportError:
     # Implementation not yet written.  Placeholder causes tests to fail.
     class CiAuthError(Exception):  # type: ignore[no-redef]
         """Placeholder — implementation has not added CiAuthError yet."""
 
         def __init__(self, *args: object) -> None:
+            """Always raises — placeholder until implementation exists."""
             raise AssertionError(
                 "CiAuthError is not yet implemented in"
                 " baton_harness.chain.merge — this test must FAIL until"
@@ -121,7 +124,9 @@ except ImportError:
             )
 
 try:
-    from baton_harness.chain.merge import _query_action_jobs  # type: ignore[attr-defined]
+    from baton_harness.chain.merge import (
+        _query_action_jobs,  # type: ignore[attr-defined]
+    )
 except ImportError:
     _query_action_jobs = None  # type: ignore[assignment]
 
@@ -390,7 +395,7 @@ class TestQueryActionJobsFlattening:
     """Tests that ``_query_action_jobs`` flattens jobs correctly."""
 
     def test_returns_jobs_with_name_status_conclusion(self) -> None:
-        """Returned dicts have at minimum ``name``, ``status``, ``conclusion``."""
+        """Returned dicts have ``name``, ``status``, and ``conclusion``."""
         responses = _action_jobs_responses([_actions_all_success_run()])
 
         def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
@@ -408,7 +413,7 @@ class TestQueryActionJobsFlattening:
     def test_jobs_from_multiple_runs_are_flattened_into_single_list(
         self,
     ) -> None:
-        """Jobs from two runs are combined into one flat list (before dedup)."""
+        """Jobs from two runs are combined into one flat list, then deduped."""
         run_a_jobs = [
             {"name": "Job A", "status": "completed", "conclusion": "success"},
         ]
@@ -757,7 +762,7 @@ class TestQueryActionJobsAuthError:
 
 
 class TestEvaluateCiGreen:
-    """Tests for the GREEN path of ``evaluate_ci`` (Actions-API data source)."""
+    """Tests for the GREEN path of ``evaluate_ci`` (Actions API)."""
 
     def test_all_required_success_is_green(self) -> None:
         """All required jobs completed/success → GREEN."""
