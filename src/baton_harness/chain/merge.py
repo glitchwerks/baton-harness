@@ -251,9 +251,7 @@ def _query_action_jobs(
             expected keys.
     """
     # Step 1: list workflow runs for this SHA.
-    runs_url = (
-        f"repos/{owner}/{repo}/actions/runs?head_sha={sha}"
-    )
+    runs_url = f"repos/{owner}/{repo}/actions/runs?head_sha={sha}"
     runs_proc = _run(["gh", "api", runs_url])
     if runs_proc.returncode != 0:
         if _is_auth_error(runs_proc):
@@ -282,9 +280,7 @@ def _query_action_jobs(
 
     # Step 2: for each run, fetch its jobs.  Process in ascending id order
     # so that higher-id runs overwrite lower-id runs in by_name (dedup).
-    sorted_runs = sorted(
-        workflow_runs, key=lambda r: int(str(r["id"]))
-    )
+    sorted_runs = sorted(workflow_runs, key=lambda r: int(str(r["id"])))
 
     by_name: dict[str, dict[str, object]] = {}
     for run in sorted_runs:

@@ -123,6 +123,7 @@ except ImportError:
                 " the implementation adds it."
             )
 
+
 try:
     from baton_harness.chain.merge import (
         _query_action_jobs,  # type: ignore[attr-defined]
@@ -199,9 +200,7 @@ def _action_jobs_responses(
     """
     run_list = [{"id": run_id} for run_id, _ in runs]
     runs_response = _ok(json.dumps({"workflow_runs": run_list}))
-    jobs_responses = [
-        _ok(json.dumps({"jobs": jobs})) for _, jobs in runs
-    ]
+    jobs_responses = [_ok(json.dumps({"jobs": jobs})) for _, jobs in runs]
     return [runs_response] + jobs_responses
 
 
@@ -335,9 +334,7 @@ class TestQueryActionJobsCallShape:
         assert "actions/runs" in first_call_str, (
             "First call must query the actions/runs endpoint"
         )
-        assert _SHA in first_call_str, (
-            "First call must include the head SHA"
-        )
+        assert _SHA in first_call_str, "First call must include the head SHA"
         assert "head_sha" in first_call_str, (
             "First call must use the head_sha query parameter"
         )
@@ -367,16 +364,30 @@ class TestQueryActionJobsCallShape:
     def test_two_runs_produce_two_jobs_calls(self) -> None:
         """Two workflow runs → two separate jobs API calls."""
         calls: list[list[str]] = []
-        responses = _action_jobs_responses([
-            (_RUN_ID_OLD, [
-                {"name": REQUIRED_CHECKS[0], "status": "completed",
-                 "conclusion": "success"},
-            ]),
-            (_RUN_ID_NEW, [
-                {"name": REQUIRED_CHECKS[1], "status": "completed",
-                 "conclusion": "success"},
-            ]),
-        ])
+        responses = _action_jobs_responses(
+            [
+                (
+                    _RUN_ID_OLD,
+                    [
+                        {
+                            "name": REQUIRED_CHECKS[0],
+                            "status": "completed",
+                            "conclusion": "success",
+                        },
+                    ],
+                ),
+                (
+                    _RUN_ID_NEW,
+                    [
+                        {
+                            "name": REQUIRED_CHECKS[1],
+                            "status": "completed",
+                            "conclusion": "success",
+                        },
+                    ],
+                ),
+            ]
+        )
 
         def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
             calls.append(list(cmd))
@@ -420,10 +431,12 @@ class TestQueryActionJobsFlattening:
         run_b_jobs = [
             {"name": "Job B", "status": "completed", "conclusion": "success"},
         ]
-        responses = _action_jobs_responses([
-            (_RUN_ID_OLD, run_a_jobs),
-            (_RUN_ID_NEW, run_b_jobs),
-        ])
+        responses = _action_jobs_responses(
+            [
+                (_RUN_ID_OLD, run_a_jobs),
+                (_RUN_ID_NEW, run_b_jobs),
+            ]
+        )
 
         def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
             return responses.pop(0)
@@ -495,10 +508,12 @@ class TestQueryActionJobsRerunDedup:
             },
         ]
         # API returns OLD run first, NEW run second → dedup must pick NEW.
-        responses = _action_jobs_responses([
-            (_RUN_ID_OLD, old_jobs),
-            (_RUN_ID_NEW, new_jobs),
-        ])
+        responses = _action_jobs_responses(
+            [
+                (_RUN_ID_OLD, old_jobs),
+                (_RUN_ID_NEW, new_jobs),
+            ]
+        )
 
         def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
             return responses.pop(0)
@@ -530,18 +545,24 @@ class TestQueryActionJobsRerunDedup:
             },
         ]
         new_jobs = _all_required_success()
-        responses = _action_jobs_responses([
-            (_RUN_ID_OLD, old_jobs),
-            (_RUN_ID_NEW, new_jobs),
-        ])
+        responses = _action_jobs_responses(
+            [
+                (_RUN_ID_OLD, old_jobs),
+                (_RUN_ID_NEW, new_jobs),
+            ]
+        )
 
         def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
             return responses.pop(0)
 
-        with patch.object(merge_mod, "_query_action_jobs", side_effect=[
-            # Single poll call: all required checks green after dedup.
-            _all_required_success(),
-        ]):
+        with patch.object(
+            merge_mod,
+            "_query_action_jobs",
+            side_effect=[
+                # Single poll call: all required checks green after dedup.
+                _all_required_success(),
+            ],
+        ):
             result = evaluate_ci(
                 _OWNER, _REPO_NAME, _SHA, poll_interval=0, timeout=1
             )
@@ -583,10 +604,12 @@ class TestQueryActionJobsRerunDedup:
                 "conclusion": "success",
             },
         ]
-        responses = _action_jobs_responses([
-            (_RUN_ID_OLD, old_jobs),
-            (_RUN_ID_NEW, new_jobs),
-        ])
+        responses = _action_jobs_responses(
+            [
+                (_RUN_ID_OLD, old_jobs),
+                (_RUN_ID_NEW, new_jobs),
+            ]
+        )
 
         def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
             return responses.pop(0)
@@ -638,10 +661,12 @@ class TestQueryActionJobsRerunDedup:
             },
         ]
         # API still returns OLD first, NEW second; new run has higher ID.
-        responses = _action_jobs_responses([
-            (_RUN_ID_OLD, old_jobs),
-            (_RUN_ID_NEW, new_jobs),
-        ])
+        responses = _action_jobs_responses(
+            [
+                (_RUN_ID_OLD, old_jobs),
+                (_RUN_ID_NEW, new_jobs),
+            ]
+        )
 
         def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
             return responses.pop(0)
@@ -794,9 +819,7 @@ class TestEvaluateCiGreen:
             for name in REQUIRED_CHECKS[1:]
         ]
 
-        with patch.object(
-            merge_mod, "_query_action_jobs", return_value=jobs
-        ):
+        with patch.object(merge_mod, "_query_action_jobs", return_value=jobs):
             result = evaluate_ci(
                 _OWNER, _REPO_NAME, _SHA, poll_interval=0, timeout=1
             )
@@ -820,9 +843,7 @@ class TestEvaluateCiGreen:
             for name in REQUIRED_CHECKS[1:]
         ]
 
-        with patch.object(
-            merge_mod, "_query_action_jobs", return_value=jobs
-        ):
+        with patch.object(merge_mod, "_query_action_jobs", return_value=jobs):
             result = evaluate_ci(
                 _OWNER, _REPO_NAME, _SHA, poll_interval=0, timeout=1
             )
@@ -839,9 +860,7 @@ class TestEvaluateCiGreen:
             }
         ]
 
-        with patch.object(
-            merge_mod, "_query_action_jobs", return_value=jobs
-        ):
+        with patch.object(merge_mod, "_query_action_jobs", return_value=jobs):
             result = evaluate_ci(
                 _OWNER, _REPO_NAME, _SHA, poll_interval=0, timeout=1
             )
@@ -858,9 +877,7 @@ class TestEvaluateCiGreen:
             }
         ]
 
-        with patch.object(
-            merge_mod, "_query_action_jobs", return_value=jobs
-        ):
+        with patch.object(merge_mod, "_query_action_jobs", return_value=jobs):
             result = evaluate_ci(
                 _OWNER, _REPO_NAME, _SHA, poll_interval=0, timeout=1
             )
@@ -888,9 +905,7 @@ class TestEvaluateCiRed:
             for name in REQUIRED_CHECKS[1:]
         ]
 
-        with patch.object(
-            merge_mod, "_query_action_jobs", return_value=jobs
-        ):
+        with patch.object(merge_mod, "_query_action_jobs", return_value=jobs):
             result = evaluate_ci(
                 _OWNER, _REPO_NAME, _SHA, poll_interval=0, timeout=1
             )
@@ -914,9 +929,7 @@ class TestEvaluateCiRed:
             for name in REQUIRED_CHECKS[1:]
         ]
 
-        with patch.object(
-            merge_mod, "_query_action_jobs", return_value=jobs
-        ):
+        with patch.object(merge_mod, "_query_action_jobs", return_value=jobs):
             result = evaluate_ci(
                 _OWNER, _REPO_NAME, _SHA, poll_interval=0, timeout=1
             )
@@ -940,9 +953,7 @@ class TestEvaluateCiRed:
             for name in REQUIRED_CHECKS[1:]
         ]
 
-        with patch.object(
-            merge_mod, "_query_action_jobs", return_value=jobs
-        ):
+        with patch.object(merge_mod, "_query_action_jobs", return_value=jobs):
             result = evaluate_ci(
                 _OWNER, _REPO_NAME, _SHA, poll_interval=0, timeout=1
             )
@@ -966,9 +977,7 @@ class TestEvaluateCiRed:
             for name in REQUIRED_CHECKS[1:]
         ]
 
-        with patch.object(
-            merge_mod, "_query_action_jobs", return_value=jobs
-        ):
+        with patch.object(merge_mod, "_query_action_jobs", return_value=jobs):
             result = evaluate_ci(
                 _OWNER, _REPO_NAME, _SHA, poll_interval=0, timeout=1
             )
@@ -1050,9 +1059,7 @@ class TestEvaluateCiPollingAndTimeout:
         No jobs at all = every required job is absent = NOT-YET → not
         green on timeout.
         """
-        with patch.object(
-            merge_mod, "_query_action_jobs", return_value=[]
-        ):
+        with patch.object(merge_mod, "_query_action_jobs", return_value=[]):
             result = evaluate_ci(
                 _OWNER,
                 _REPO_NAME,
@@ -1784,9 +1791,7 @@ class TestUnrecognizedConclusionNotGreen:
             for name in REQUIRED_CHECKS[1:]
         ]
 
-        with patch.object(
-            merge_mod, "_query_action_jobs", return_value=jobs
-        ):
+        with patch.object(merge_mod, "_query_action_jobs", return_value=jobs):
             result = evaluate_ci(
                 _OWNER,
                 _REPO_NAME,
@@ -1820,9 +1825,7 @@ class TestUnrecognizedConclusionNotGreen:
             for name in REQUIRED_CHECKS[1:]
         ]
 
-        with patch.object(
-            merge_mod, "_query_action_jobs", return_value=jobs
-        ):
+        with patch.object(merge_mod, "_query_action_jobs", return_value=jobs):
             result = evaluate_ci(
                 _OWNER,
                 _REPO_NAME,
@@ -1852,9 +1855,7 @@ class TestUnrecognizedConclusionNotGreen:
             for name in REQUIRED_CHECKS[1:]
         ]
 
-        with patch.object(
-            merge_mod, "_query_action_jobs", return_value=jobs
-        ):
+        with patch.object(merge_mod, "_query_action_jobs", return_value=jobs):
             result = evaluate_ci(
                 _OWNER,
                 _REPO_NAME,
@@ -1889,9 +1890,7 @@ class TestUnrecognizedConclusionNotGreen:
             calls.append(cmd)
             return _ok()
 
-        with patch.object(
-            merge_mod, "_query_action_jobs", return_value=jobs
-        ):
+        with patch.object(merge_mod, "_query_action_jobs", return_value=jobs):
             with patch.object(merge_mod, "_run", side_effect=fake_run):
                 outcome = merge_issue_branch(
                     _REPO,
