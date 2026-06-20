@@ -205,7 +205,7 @@ _find_open_issue_url() {
 
 echo "baton-harness: creating trivial trigger issue ..."
 
-_trivial_title="add a hello() function"
+_trivial_title="add a greet() function"
 TRIVIAL_ISSUE_URL="$(_find_open_issue_url "${_trivial_title}")" || true
 if [[ -n "${TRIVIAL_ISSUE_URL}" ]]; then
     echo "baton-harness:   trivial issue exists, reusing: ${TRIVIAL_ISSUE_URL}"
@@ -213,7 +213,7 @@ else
     TRIVIAL_ISSUE_URL="$(gh issue create \
         --repo "${REPO_SLUG}" \
         --title "${_trivial_title}" \
-        --body "Add a Python file with a hello() function that prints 'hello'." \
+        --body "Add a Python file (greet.py) with a greet() function that prints 'hello'." \
         --label "agent-ready")"
     echo "baton-harness:   trivial issue created: ${TRIVIAL_ISSUE_URL}"
 fi
