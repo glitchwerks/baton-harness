@@ -1,17 +1,39 @@
-"""Unit tests for VP-5 — PR-exists mid-loop early exit in ``_run_worker``.
+r"""Unit tests for VP-5 — PR-exists mid-loop early exit in ``_run_worker``.
 
 Tests that once a PR is detected via ``tracker.check_pr_exists`` after a
-successful turn, the turn loop terminates immediately (VP-5 behaviour).
+successful turn AND the worktree is clean, the turn loop terminates
+immediately (revised VP-5 behaviour).
+
+Revised contract (Codex P2): the mid-loop early-exit fires only when BOTH
+(a) ``check_pr_exists(issue.number)`` is True AND (b) the worktree is clean
+— i.e. ``await run_cmd(["git", "status", "--porcelain",
+"--untracked-files=no"], cwd=wt.path)`` returns empty after ``.strip()``.
+If a PR exists but the worktree is dirty, the loop does NOT break; it
+continues so a later turn can commit.  The whole check remains best-effort
+(any exception → swallow → continue, no early-exit).
+
+``run_cmd`` is patched at
+``baton_harness.vendor.symphony.orchestrator.run_cmd`` (the name the
+implementation imports into that namespace from ``.workspace``).
+``return_value=""`` → clean worktree; ``return_value=" M src/foo.py\\n"``
+→ dirty worktree.
 
 All async calls are driven with ``asyncio.run`` (no pytest-asyncio dep).
 Mock strategy mirrors ``tests/vendor/test_exclude_labels_recheck.py``.
 
 Coverage:
-- A PR detected after turn 1 terminates the loop before turns 2..max_turns.
+- A PR detected after turn 1 with a clean worktree terminates the loop.
 - Without a PR, all turns run (early-exit must not over-fire).
 - A closed issue terminates the loop before the PR check (ordering).
 - A ``check_pr_exists`` exception is swallowed and the loop continues
   (best-effort guard, matching VP-2/VP-3 swallow-and-continue style).
+- Mid-loop True + clean + post-loop raise → ``"pr_created"`` (latch).
+- Mid-loop True + clean + post-loop False → ``"pr_created"`` (latch).
+- PR appearing on a later turn stops exactly at that turn (clean wt).
+- A dirty worktree prevents early-exit even when ``check_pr_exists`` is
+  True (revised contract — RED until implementation lands).
+- A clean worktree allows early-exit when ``check_pr_exists`` is True
+  (positive-path pin for the clean branch).
 """
 
 from __future__ import annotations
@@ -28,6 +50,8 @@ from baton_harness.vendor.symphony.tracker import Issue
 # ---------------------------------------------------------------------------
 # Helpers — verbatim style from test_exclude_labels_recheck.py
 # ---------------------------------------------------------------------------
+
+_ORCHESTRATOR_RUN_CMD = "baton_harness.vendor.symphony.orchestrator.run_cmd"
 
 
 def _minimal_config(max_turns: int = 4) -> WorkflowConfig:
@@ -100,18 +124,23 @@ def _make_orch(
 
 
 # ---------------------------------------------------------------------------
-# VP-5 test 1: PR detected after turn 1 — loop terminates early
+# VP-5 test 1: PR detected after turn 1 with clean worktree → early exit
 # ---------------------------------------------------------------------------
 
 
 def test_pr_exists_mid_loop_terminates_early() -> None:
-    """A PR detected after turn 1 ends the loop; turns 2..8 must NOT run.
+    """A PR detected after turn 1 with a clean worktree ends the loop early.
 
-    RED test for VP-5.  Against unpatched code ``check_pr_exists`` is
-    never consulted inside the loop, so all 8 turns execute.  After the
-    fix, the loop breaks immediately once ``check_pr_exists`` returns True.
+    Revised VP-5 contract: BOTH check_pr_exists True AND clean worktree
+    (run_cmd → "") must hold for the early-exit to fire.
 
-    The failing assertion (pre-fix) will read:
+    ``run_cmd`` is mocked to return ``""`` (clean) so the worktree gate
+    does not block the exit once the implementation lands.  Against current
+    code (no worktree gate), the mock is inert and the test still passes
+    (current code breaks on check_pr_exists True alone, satisfying the same
+    turn-count assertion).
+
+    Failing assertion (pre-VP-5-fix) will read:
         AssertionError: Expected 1 turn (PR exists → early exit), got 8
     """
     orch = _make_orch(max_turns=8)
@@ -175,6 +204,12 @@ def test_pr_exists_mid_loop_terminates_early() -> None:
             "check_pr_exists",
             new_callable=AsyncMock,
             return_value=True,  # PR already exists after every turn
+        ),
+        patch(
+            _ORCHESTRATOR_RUN_CMD,
+            new_callable=AsyncMock,
+            return_value="",  # clean worktree → early-exit allowed
+            create=True,  # attribute absent until impl imports run_cmd
         ),
     ):
         result = asyncio.run(orch._run_worker(issue))
@@ -259,6 +294,12 @@ def test_no_pr_runs_all_turns() -> None:
             "check_pr_exists",
             new_callable=AsyncMock,
             return_value=False,  # No PR ever detected
+        ),
+        patch(
+            _ORCHESTRATOR_RUN_CMD,
+            new_callable=AsyncMock,
+            return_value="",  # harmless — run_cmd not reached when PR absent
+            create=True,  # attribute absent until impl imports run_cmd
         ),
     ):
         asyncio.run(orch._run_worker(issue))
@@ -353,6 +394,12 @@ def test_closed_issue_precedes_pr_check() -> None:
             new_callable=AsyncMock,
             return_value=True,
         ),
+        patch(
+            _ORCHESTRATOR_RUN_CMD,
+            new_callable=AsyncMock,
+            return_value="",  # harmless — closed-issue break fires first
+            create=True,  # attribute absent until impl imports run_cmd
+        ),
     ):
         asyncio.run(orch._run_worker(issue))
 
@@ -383,6 +430,9 @@ def test_check_pr_exists_error_is_best_effort() -> None:
     site.  A correct VP-5 implementation must satisfy this case: even when
     ``check_pr_exists`` raises on every call, the run must complete all
     turns without propagating the error.
+
+    ``run_cmd`` is not reached when ``check_pr_exists`` raises (exception
+    swallowed before the worktree check), so the mock is harmless.
     """
     orch = _make_orch(max_turns=2)
     issue = _fake_issue(number=4)
@@ -446,6 +496,13 @@ def test_check_pr_exists_error_is_best_effort() -> None:
             "check_pr_exists",
             side_effect=raising_check_pr_exists,
         ),
+        patch(
+            _ORCHESTRATOR_RUN_CMD,
+            new_callable=AsyncMock,
+            # harmless — not reached when check_pr_exists raises
+            return_value="",
+            create=True,  # attribute absent until impl imports run_cmd
+        ),
     ):
         # Must not raise despite check_pr_exists throwing on every call.
         asyncio.run(orch._run_worker(issue))
@@ -462,17 +519,20 @@ def test_check_pr_exists_error_is_best_effort() -> None:
 
 
 def test_mid_loop_true_then_post_loop_raise_returns_pr_created() -> None:
-    """Mid-loop True must latch; post-loop raise must not override to no_pr.
+    """Mid-loop True + clean worktree must latch; post-loop raise keeps it.
 
     Sequence of ``check_pr_exists`` calls:
-      call 1 (mid-loop, turn 1): returns True  → loop breaks
+      call 1 (mid-loop, turn 1): returns True  → worktree checked (clean)
+                                                 → loop breaks
       call 2 (post-loop re-probe): raises RuntimeError
 
     Against current code the post-loop exception is swallowed and
     ``pr_exists`` stays False, so ``_run_worker`` returns ``"no_pr"``.
     The forthcoming fix latches ``pr_detected = True`` when the mid-loop
-    call returns True and short-circuits the post-loop re-probe, returning
-    ``"pr_created"`` regardless.
+    call returns True (and the worktree is clean) and short-circuits the
+    post-loop re-probe, returning ``"pr_created"`` regardless.
+
+    ``run_cmd`` is mocked to ``""`` (clean) so the worktree gate passes.
 
     Failing assertion (pre-fix):
         AssertionError: assert result == "pr_created" (got "no_pr")
@@ -538,6 +598,12 @@ def test_mid_loop_true_then_post_loop_raise_returns_pr_created() -> None:
             # call 1: mid-loop returns True (break); call 2: post-loop raises
             side_effect=[True, RuntimeError("post-loop flake")],
         ),
+        patch(
+            _ORCHESTRATOR_RUN_CMD,
+            new_callable=AsyncMock,
+            return_value="",  # clean worktree → early-exit allowed
+            create=True,  # attribute absent until impl imports run_cmd
+        ),
     ):
         result = asyncio.run(orch._run_worker(issue))
 
@@ -555,16 +621,19 @@ def test_mid_loop_true_then_post_loop_raise_returns_pr_created() -> None:
 
 
 def test_mid_loop_true_then_post_loop_false_returns_pr_created() -> None:
-    """Mid-loop True must latch; post-loop False must not override to no_pr.
+    """Mid-loop True + clean worktree must latch; post-loop False keeps it.
 
     Sequence of ``check_pr_exists`` calls:
-      call 1 (mid-loop, turn 1): returns True  → loop breaks
+      call 1 (mid-loop, turn 1): returns True  → worktree checked (clean)
+                                                 → loop breaks
       call 2 (post-loop re-probe): returns False
 
     Against current code the post-loop False sets ``pr_exists = False`` and
     ``_run_worker`` returns ``"no_pr"``.  The forthcoming fix latches
     ``pr_detected = True`` and skips the post-loop re-probe (or ignores its
     result), returning ``"pr_created"``.
+
+    ``run_cmd`` is mocked to ``""`` (clean) so the worktree gate passes.
 
     Failing assertion (pre-fix):
         AssertionError: assert result == "pr_created" (got "no_pr")
@@ -630,6 +699,12 @@ def test_mid_loop_true_then_post_loop_false_returns_pr_created() -> None:
             # call 1: mid-loop returns True (break); call 2: post-loop False
             side_effect=[True, False],
         ),
+        patch(
+            _ORCHESTRATOR_RUN_CMD,
+            new_callable=AsyncMock,
+            return_value="",  # clean worktree → early-exit allowed
+            create=True,  # attribute absent until impl imports run_cmd
+        ),
     ):
         result = asyncio.run(orch._run_worker(issue))
 
@@ -647,13 +722,16 @@ def test_mid_loop_true_then_post_loop_false_returns_pr_created() -> None:
 
 
 def test_pr_appears_on_later_turn_stops_there() -> None:
-    """PR detected on turn 3 stops the loop after exactly 3 turns.
+    """PR detected on turn 3 with a clean worktree stops after exactly 3 turns.
 
     Sequence of ``check_pr_exists`` calls (one per turn, plus any post-loop):
-      call 1 (mid-loop, turn 1): False
-      call 2 (mid-loop, turn 2): False
-      call 3 (mid-loop, turn 3): True  → loop breaks
+      call 1 (mid-loop, turn 1): False  → no run_cmd call
+      call 2 (mid-loop, turn 2): False  → no run_cmd call
+      call 3 (mid-loop, turn 3): True   → run_cmd called (clean) → break
       call 4 (post-loop re-probe, if present): True (harmless)
+
+    ``run_cmd`` mocked to ``""`` (clean) — the worktree gate passes when
+    the PR is finally detected on turn 3.
 
     This pins later-turn detection — not just the turn-1 case covered by
     test_pr_exists_mid_loop_terminates_early.  It may pass against current
@@ -724,6 +802,12 @@ def test_pr_appears_on_later_turn_stops_there() -> None:
             # turns 1-2: no PR; turn 3: PR found; 4th value covers post-loop
             side_effect=[False, False, True, True],
         ),
+        patch(
+            _ORCHESTRATOR_RUN_CMD,
+            new_callable=AsyncMock,
+            return_value="",  # clean worktree → early-exit allowed on turn 3
+            create=True,  # attribute absent until impl imports run_cmd
+        ),
     ):
         result = asyncio.run(orch._run_worker(issue))
 
@@ -733,3 +817,245 @@ def test_pr_appears_on_later_turn_stops_there() -> None:
     assert result == "pr_created", (
         f"Expected 'pr_created' (PR detected on turn 3), got {result!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# VP-5 revised contract: dirty worktree prevents early exit (RED pre-impl)
+# ---------------------------------------------------------------------------
+
+
+def test_dirty_worktree_does_not_early_exit() -> None:
+    r"""A dirty worktree must prevent the early-exit even when PR exists.
+
+    Revised VP-5 contract: the mid-loop break fires only when BOTH
+    ``check_pr_exists`` is True AND the worktree is clean.  When
+    ``run_cmd`` returns a non-empty status string (dirty), the loop must
+    continue so a later turn can commit the pending changes.
+
+    Setup:
+      - max_turns=4
+      - check_pr_exists → True on every call
+      - run_cmd → " M src/foo.py\\n" (dirty) on every call
+      - fetch_issue_state → "open"
+      - no blocked label
+
+    Expected: run_turn called 4 times (all turns run; no early-exit).
+
+    RED pre-implementation: current code (no worktree check) breaks as soon
+    as check_pr_exists is True → run_turn called once → assertion fails.
+
+    Failing assertion (pre-impl):
+        AssertionError: Expected 4 turns (dirty worktree, no early-exit),
+        got 1
+
+    Also asserts run_cmd was awaited with git status args (pins that the
+    worktree check actually runs).
+    """
+    orch = _make_orch(max_turns=4)
+    issue = _fake_issue(number=8)
+
+    fake_wt = MagicMock()
+    fake_wt.created_now = False
+    fake_wt.path = "/fake/wt/8"
+
+    fake_turn_result = MagicMock()
+    fake_turn_result.success = True
+    fake_turn_result.error = None
+
+    turn_call_count = 0
+
+    async def fake_run_turn(**kwargs: Any) -> Any:  # noqa: ANN401
+        nonlocal turn_call_count
+        turn_call_count += 1
+        return fake_turn_result
+
+    async def fake_fetch_issue_state(num: int) -> str:
+        return "open"
+
+    async def fake_run_gh(args: list[str]) -> str:
+        return json.dumps({"labels": []})
+
+    async def fake_run_hook(  # noqa: ANN401
+        name: str, script: object, **kwargs: object
+    ) -> bool:
+        return True
+
+    dirty_status = " M src/foo.py\n"
+
+    with (
+        patch.object(
+            orch.workspace,
+            "ensure_worktree",
+            new_callable=AsyncMock,
+            return_value=fake_wt,
+        ),
+        patch.object(
+            orch.worker,
+            "run_turn",
+            side_effect=fake_run_turn,
+        ),
+        patch.object(
+            orch.tracker,
+            "fetch_issue_state",
+            side_effect=fake_fetch_issue_state,
+        ),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.run_hook",
+            side_effect=fake_run_hook,
+        ),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.run_gh",
+            side_effect=fake_run_gh,
+        ),
+        patch.object(
+            orch.tracker,
+            "check_pr_exists",
+            new_callable=AsyncMock,
+            return_value=True,  # PR exists after every turn
+        ),
+        patch(
+            _ORCHESTRATOR_RUN_CMD,
+            new_callable=AsyncMock,
+            return_value=dirty_status,  # dirty → early-exit must NOT fire
+            create=True,  # attribute absent until impl imports run_cmd
+        ) as mock_run_cmd,
+    ):
+        asyncio.run(orch._run_worker(issue))
+
+    # Primary RED assertion: all 4 turns must run despite PR existing.
+    assert turn_call_count == 4, (
+        f"Expected 4 turns (dirty worktree, no early-exit),"
+        f" got {turn_call_count}"
+    )
+
+    # Secondary: confirm run_cmd was called with git-status args at least once.
+    assert mock_run_cmd.called, (
+        "Expected run_cmd to be called for worktree status check"
+    )
+    called_args = [
+        call.args[0] if call.args else call.kwargs.get("args", [])
+        for call in mock_run_cmd.call_args_list
+    ]
+    assert any(
+        "status" in args and "--porcelain" in args for args in called_args
+    ), f"Expected a git-status --porcelain call; got: {called_args!r}"
+
+
+# ---------------------------------------------------------------------------
+# VP-5 revised contract: clean worktree allows early exit (positive pin)
+# ---------------------------------------------------------------------------
+
+
+def test_clean_worktree_early_exits() -> None:
+    """A clean worktree combined with PR-exists fires the early exit.
+
+    Positive-path pin for the revised VP-5 contract.  Locks that a clean
+    worktree does NOT block the exit — only a dirty one does.
+
+    Setup:
+      - max_turns=8
+      - check_pr_exists → True on every call
+      - run_cmd → "" (clean) on every call
+      - fetch_issue_state → "open"
+      - no blocked label
+
+    Expected: run_turn called exactly once, result "pr_created".
+
+    Against current code (no worktree gate) this passes because the early-
+    exit fires on check_pr_exists True alone — the mock is inert.  Once
+    the implementation adds the worktree gate, run_cmd returns "" → clean
+    → early-exit still fires.  This test therefore passes both before and
+    after the implementation, pinning the clean-path contract throughout.
+
+    Also asserts run_cmd was awaited with git-status args (pins that the
+    worktree check actually runs in the post-implementation path).
+    """
+    orch = _make_orch(max_turns=8)
+    issue = _fake_issue(number=9)
+
+    fake_wt = MagicMock()
+    fake_wt.created_now = False
+    fake_wt.path = "/fake/wt/9"
+
+    fake_turn_result = MagicMock()
+    fake_turn_result.success = True
+    fake_turn_result.error = None
+
+    turn_call_count = 0
+
+    async def fake_run_turn(**kwargs: Any) -> Any:  # noqa: ANN401
+        nonlocal turn_call_count
+        turn_call_count += 1
+        return fake_turn_result
+
+    async def fake_fetch_issue_state(num: int) -> str:
+        return "open"
+
+    async def fake_run_gh(args: list[str]) -> str:
+        return json.dumps({"labels": []})
+
+    async def fake_run_hook(  # noqa: ANN401
+        name: str, script: object, **kwargs: object
+    ) -> bool:
+        return True
+
+    with (
+        patch.object(
+            orch.workspace,
+            "ensure_worktree",
+            new_callable=AsyncMock,
+            return_value=fake_wt,
+        ),
+        patch.object(
+            orch.worker,
+            "run_turn",
+            side_effect=fake_run_turn,
+        ),
+        patch.object(
+            orch.tracker,
+            "fetch_issue_state",
+            side_effect=fake_fetch_issue_state,
+        ),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.run_hook",
+            side_effect=fake_run_hook,
+        ),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.run_gh",
+            side_effect=fake_run_gh,
+        ),
+        patch.object(
+            orch.tracker,
+            "check_pr_exists",
+            new_callable=AsyncMock,
+            return_value=True,  # PR exists after every turn
+        ),
+        patch(
+            _ORCHESTRATOR_RUN_CMD,
+            new_callable=AsyncMock,
+            return_value="",  # clean → early-exit must fire
+            create=True,  # attribute absent until impl imports run_cmd
+        ) as mock_run_cmd,
+    ):
+        result = asyncio.run(orch._run_worker(issue))
+
+    assert turn_call_count == 1, (
+        f"Expected 1 turn (clean worktree + PR exists → early exit),"
+        f" got {turn_call_count}"
+    )
+    assert result == "pr_created", (
+        f"Expected 'pr_created' (clean worktree exit), got {result!r}"
+    )
+
+    # Pin that the worktree check runs (post-implementation guard).
+    # Pre-implementation: mock not called (run_cmd absent from code) — OK,
+    # the call-args assertion is inside an ``if mock_run_cmd.called`` guard
+    # so it does not force a RED on this test before the impl lands.
+    if mock_run_cmd.called:
+        called_args = [
+            call.args[0] if call.args else call.kwargs.get("args", [])
+            for call in mock_run_cmd.call_args_list
+        ]
+        assert any(
+            "status" in args and "--porcelain" in args for args in called_args
+        ), f"Expected a git-status --porcelain call; got: {called_args!r}"
