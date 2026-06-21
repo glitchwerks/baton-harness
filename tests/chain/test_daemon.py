@@ -6556,11 +6556,7 @@ def _run_side_effect_for_128(
         ):
             return _ok(_json.dumps(ready_issues))
         # issue view — _fetch_issue_obj path (labels field).
-        if (
-            "issue" in cmd_str
-            and "view" in cmd_str
-            and "edit" not in cmd_str
-        ):
+        if "issue" in cmd_str and "view" in cmd_str and "edit" not in cmd_str:
             nums = [p for p in cmd if p.isdigit()]
             n = int(nums[0]) if nums else issue_number
             return _ok(
@@ -6830,11 +6826,7 @@ def test_mixed_frontier_only_non_blocked_dispatched() -> None:
             and "agent-ready" in cmd_str
         ):
             return _ok(_json.dumps(ready_issues))
-        if (
-            "issue" in cmd_str
-            and "view" in cmd_str
-            and "edit" not in cmd_str
-        ):
+        if "issue" in cmd_str and "view" in cmd_str and "edit" not in cmd_str:
             nums = [p for p in cmd if p.isdigit()]
             n = int(nums[0]) if nums else 12
             return _ok(
