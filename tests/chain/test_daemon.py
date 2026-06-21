@@ -6515,3 +6515,409 @@ def test_sigterm_handler_clears_marker_on_invocation(
         "daemon.alive marker must be removed when the SIGTERM handler fires; "
         "a docker/systemd stop must not leave a false ungraceful-exit marker"
     )
+
+
+# ---------------------------------------------------------------------------
+# FIX #128: Live blocked label re-check before dispatch
+# ---------------------------------------------------------------------------
+# The snapshot ``agent_ready_issues`` used to build ``dispatch_actionable``
+# is taken before milestone expansion.  An issue that carries BOTH
+# ``agent-ready`` (in the snapshot) AND ``blocked`` (live on GitHub) must
+# NOT be dispatched — it must be parked/skipped instead.
+#
+# All three tests patch ``baton_harness.chain.daemon._fetch_issue_labels``
+# directly so the live-label state can differ from the snapshot without
+# having to wire through the ``_run`` seam.
+# ---------------------------------------------------------------------------
+
+
+def _run_side_effect_for_128(
+    ready_issues: list[dict[str, Any]],
+    issue_number: int = 10,
+) -> Any:  # noqa: ANN401
+    """Build a ``_run`` side-effect for the #128 live-label tests.
+
+    Args:
+        ready_issues: Issue dicts returned by ``gh issue list``.
+        issue_number: The issue number to serve for ``issue view`` calls.
+
+    Returns:
+        A callable matching the ``_run`` signature.
+    """
+
+    def side_effect(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        import json as _json
+
+        cmd_str = " ".join(cmd)
+        if (
+            "issue" in cmd_str
+            and "list" in cmd_str
+            and "agent-ready" in cmd_str
+        ):
+            return _ok(_json.dumps(ready_issues))
+        # issue view — _fetch_issue_obj path (labels field).
+        if (
+            "issue" in cmd_str
+            and "view" in cmd_str
+            and "edit" not in cmd_str
+        ):
+            nums = [p for p in cmd if p.isdigit()]
+            n = int(nums[0]) if nums else issue_number
+            return _ok(
+                _json.dumps(
+                    {
+                        "number": n,
+                        "title": f"Issue {n}",
+                        "state": "open",
+                        "body": "",
+                        "url": f"https://github.com/o/r/issues/{n}",
+                        "labels": [{"name": "agent-done"}],
+                        "assignees": [],
+                    }
+                )
+            )
+        if "issue" in cmd_str and "edit" in cmd_str:
+            return _ok()
+        if "pr" in cmd_str and "list" in cmd_str:
+            return _ok(_json.dumps([]))
+        if "pr" in cmd_str and "create" in cmd_str:
+            return _ok("https://github.com/o/r/pull/99")
+        if "git" in cmd_str and "push" in cmd_str:
+            return _ok()
+        if "ls-remote" in cmd_str:
+            return _ok("")
+        if "rev-parse" in cmd_str:
+            return _ok("abc123\n")
+        return _ok()
+
+    return side_effect
+
+
+def test_blocked_live_label_prevents_dispatch() -> None:
+    """Issue carrying live ``blocked`` label must not be dispatched.
+
+    The snapshot places issue #10 in ``agent_ready_issues``, so it enters
+    ``dispatch_actionable``.  But ``_fetch_issue_labels`` returns
+    ``{"agent-ready", "blocked"}`` — the live state shows it is blocked.
+    The worker must never be called for #10.
+    """
+    ready_issues = [
+        {
+            "number": 10,
+            "title": "Issue 10",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/10",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        }
+    ]
+
+    worker_calls: list[int] = []
+
+    async def fake_run_worker(issue: Any) -> str:  # noqa: ANN401
+        worker_calls.append(issue.number)
+        return "pr_created"
+
+    def fake_fetch_labels(
+        owner: str,
+        repo: str,
+        issue: int,
+    ) -> set[str]:
+        # Torn state: agent-ready in snapshot, but blocked is live.
+        return {"agent-ready", "blocked"}
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=_run_side_effect_for_128(ready_issues),
+        ),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            return_value=[],
+        ),
+        patch(
+            "baton_harness.chain.daemon._fetch_issue_labels",
+            side_effect=fake_fetch_labels,
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.Orchestrator"
+            "._run_worker",
+            side_effect=fake_run_worker,
+        ),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    assert 10 not in worker_calls, (
+        f"Issue #10 carries live 'blocked' label and must NOT be dispatched"
+        f" to a worker; worker_calls={worker_calls}"
+    )
+
+
+def test_non_blocked_live_label_still_dispatches() -> None:
+    """Issue with no live ``blocked`` label must still be dispatched.
+
+    Regression guard: the live-label re-check must not suppress dispatch
+    of a genuinely actionable issue.  ``_fetch_issue_labels`` returns
+    ``{"agent-ready"}`` — no ``blocked`` — so the worker IS called for #10.
+    """
+    ready_issues = [
+        {
+            "number": 10,
+            "title": "Issue 10",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/10",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        }
+    ]
+
+    worker_calls: list[int] = []
+
+    async def fake_run_worker(issue: Any) -> str:  # noqa: ANN401
+        worker_calls.append(issue.number)
+        return "pr_created"
+
+    def fake_fetch_labels(
+        owner: str,
+        repo: str,
+        issue: int,
+    ) -> set[str]:
+        # Clean state: agent-ready, no blocked.
+        return {"agent-ready"}
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=_run_side_effect_for_128(ready_issues),
+        ),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            return_value=[],
+        ),
+        patch(
+            "baton_harness.chain.daemon._fetch_issue_labels",
+            side_effect=fake_fetch_labels,
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.Orchestrator"
+            "._run_worker",
+            side_effect=fake_run_worker,
+        ),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    assert 10 in worker_calls, (
+        f"Issue #10 has no live 'blocked' label and MUST be dispatched;"
+        f" worker_calls={worker_calls}"
+    )
+
+
+def test_mixed_frontier_only_non_blocked_dispatched() -> None:
+    """Two ready issues: one live-blocked, one not — only the clean one
+    is dispatched.
+
+    Issue #11 is live-blocked; issue #12 is clean.  After the live-label
+    re-check the worker must be called exactly for #12 and never for #11.
+    """
+    ready_issues = [
+        {
+            "number": 11,
+            "title": "Issue 11",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/11",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        },
+        {
+            "number": 12,
+            "title": "Issue 12",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/12",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        },
+    ]
+
+    worker_calls: list[int] = []
+
+    async def fake_run_worker(issue: Any) -> str:  # noqa: ANN401
+        worker_calls.append(issue.number)
+        return "pr_created"
+
+    def fake_fetch_labels(
+        owner: str,
+        repo: str,
+        issue: int,
+    ) -> set[str]:
+        # #11 is live-blocked; #12 is clean.
+        if issue == 11:
+            return {"agent-ready", "blocked"}
+        return {"agent-ready"}
+
+    def mixed_run_side_effect(
+        cmd: list[str],
+    ) -> subprocess.CompletedProcess[str]:
+        import json as _json
+
+        cmd_str = " ".join(cmd)
+        if (
+            "issue" in cmd_str
+            and "list" in cmd_str
+            and "agent-ready" in cmd_str
+        ):
+            return _ok(_json.dumps(ready_issues))
+        if (
+            "issue" in cmd_str
+            and "view" in cmd_str
+            and "edit" not in cmd_str
+        ):
+            nums = [p for p in cmd if p.isdigit()]
+            n = int(nums[0]) if nums else 12
+            return _ok(
+                _json.dumps(
+                    {
+                        "number": n,
+                        "title": f"Issue {n}",
+                        "state": "open",
+                        "body": "",
+                        "url": f"https://github.com/o/r/issues/{n}",
+                        "labels": [{"name": "agent-done"}],
+                        "assignees": [],
+                    }
+                )
+            )
+        if "issue" in cmd_str and "edit" in cmd_str:
+            return _ok()
+        if "pr" in cmd_str and "list" in cmd_str:
+            return _ok(_json.dumps([]))
+        if "pr" in cmd_str and "create" in cmd_str:
+            return _ok("https://github.com/o/r/pull/99")
+        if "git" in cmd_str and "push" in cmd_str:
+            return _ok()
+        if "ls-remote" in cmd_str:
+            return _ok("")
+        if "rev-parse" in cmd_str:
+            return _ok("abc123\n")
+        return _ok()
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=mixed_run_side_effect,
+        ),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            side_effect=lambda o, r, n: [],
+        ),
+        patch(
+            "baton_harness.chain.daemon._fetch_issue_labels",
+            side_effect=fake_fetch_labels,
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.Orchestrator"
+            "._run_worker",
+            side_effect=fake_run_worker,
+        ),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    assert 11 not in worker_calls, (
+        f"Issue #11 is live-blocked and must NOT be dispatched;"
+        f" worker_calls={worker_calls}"
+    )
+    assert 12 in worker_calls, (
+        f"Issue #12 is not blocked and MUST be dispatched;"
+        f" worker_calls={worker_calls}"
+    )
