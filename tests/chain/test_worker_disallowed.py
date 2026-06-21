@@ -25,6 +25,7 @@ Coverage map:
 - test_disallowed_tools_values_follow_flag:
     deny tokens appear as individual argv elements after the flag
 """
+
 from __future__ import annotations
 
 import pytest
@@ -103,7 +104,7 @@ def _deny_values(args: list[str]) -> list[str]:
         return []
 
     values: list[str] = []
-    for token in args[idx + 1:]:
+    for token in args[idx + 1 :]:
         if token.startswith("-"):
             break
         values.append(token)
