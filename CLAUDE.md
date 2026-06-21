@@ -11,3 +11,10 @@ This harness drives the **Baton** orchestrator (`mraza007/baton`, package `symph
 **Policy for Baton bugs we hit:** fix them directly in the vendored source under `src/baton_harness/vendor/symphony/`, recorded as a tracked patch in `patches/` with `# VENDOR-PATCH` markers and a `VENDORING.md` entry (see its re-vendor checklist). No upstream dependency; best-effort upstream reports (e.g. `mraza007/baton#1`) remain optional and are not load-bearing. The external-`baton` pilot launcher (`bin/run.sh` / `baton start -w`) has been **retired** in favor of `bin/run-daemon.sh` and the `bh-daemon` entry point.
 
 The previously-tracked item **#23** (terminal-block / `exclude_labels` not re-checked between turns) is **resolved**: VP-2 adds the mid-turn `exclude_labels` re-check to the vendored `_run_worker` loop, so a mid-run `blocked` label is now terminal — retiring the `max_turns: 2` workaround (`config/WORKFLOW.md` now sets `max_turns: 8`). No upstream-blocked items remain.
+
+## Prior art / design references
+
+Two external systems inform this harness's design. Draw on both when reasoning about orchestration, autonomy, and the label state machine.
+
+- **`mraza007/baton`** (`symphony`) — the original orchestrator, now vendored. Source of the core poll-issue → run-agent → open-PR loop. Dormant upstream (see § Upstream dependency above).
+- **[`nexu-io/looper`](https://github.com/nexu-io/looper)** — actively-maintained Go system with the same core idea (poll GitHub for labeled issues/PRs, run pluggable AI agents, produce PRs), but architecturally deeper: five agent roles (Coordinator → Planner → Reviewer ↔ Fixer → Worker), parallel goroutines, goal-based termination via a stdout result marker, optional auto-merge, and 11 ADRs. **Design reference, not a dependency** — borrow patterns, keep our Python stack and draft-PR-only guardrails. Full comparison and the rationale for *not* adopting it wholesale: `docs/research/2026-06-21-looper-vs-baton-harness.md`. Active borrow-candidates tracked under milestone **Looper-inspired enhancements** (#139 goal-based termination, #140 automated review pass, #141 durable-authority discipline).
