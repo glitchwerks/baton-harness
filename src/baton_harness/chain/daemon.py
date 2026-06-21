@@ -974,6 +974,39 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
             _label_edit(owner, repo, n, remove=["agent-in-progress"])
             _log.info("daemon: cleared orphan agent-in-progress for #%d", n)
 
+        # Fail-closed blocked-gate (#128 P2a): re-read live labels
+        # immediately before dispatch.  If the fetch fails (None), we
+        # cannot confirm the issue is unblocked — skip it this cycle
+        # conservatively rather than risk dispatching a blocked issue.
+        # Distinct from the post-run None guard (L~1087): that guard
+        # fires *after* the worker; this one fires *before*, so the
+        # worker is never called.  Self-heals on the next poll tick.
+        _pre_dispatch_labels = _fetch_issue_labels(owner, repo, n)
+        if _pre_dispatch_labels is None:
+            _log.info(
+                "daemon: #%d label fetch failed before dispatch;"
+                " skipping this poll cycle (fail-closed, #128 P2a)",
+                n,
+            )
+            alert(
+                owner,
+                repo,
+                n,
+                (
+                    f"Issue #{n} labels unreadable before dispatch;"
+                    " skipping this poll cycle."
+                ),
+                severity="critical",
+                kind="block",
+                runlog=runlog,
+            )
+            _label_edit(owner, repo, n, remove=["agent-in-progress"])
+            if liveness_state is not None:
+                liveness_state.clear()
+            sched.mark_parked(n)
+            parked_reasons[n] = "label fetch failed pre-dispatch"
+            continue
+
         # Checkout feature branch (HEAD = feature branch, §3.4).
         branches.checkout_feature_branch(repo_root, slug)
         # Record cut-point (§3.7).
@@ -1715,6 +1748,34 @@ async def _poll_and_run(
         if "blocked"
         not in {lbl["name"].lower() for lbl in i.get("labels", [])}
     ]
+
+    # Live blocked re-check (#128): the snapshot above may race with a
+    # concurrent label update.  For each snapshot-ready issue, re-read
+    # the live label set; if `blocked` and `agent-ready` are both live,
+    # the issue is in a torn pre-dispatch state — skip it this poll cycle
+    # so it is not selected as the work unit.  Treat a fetch failure
+    # (None) as clean to avoid false exclusions on transient API errors.
+    # The `agent-ready` guard distinguishes this pre-dispatch torn state
+    # from a post-worker torn state ({agent-done, blocked}) which has no
+    # `agent-ready` and must reach the post-run invariant check instead.
+    ready_issues_live: list[dict[str, Any]] = []
+    for issue in ready_issues:
+        n = issue["number"]
+        live_labels = _fetch_issue_labels(owner, repo, n)
+        if (
+            live_labels is not None
+            and "blocked" in live_labels
+            and "agent-ready" in live_labels
+        ):
+            _log.info(
+                "daemon: #%d is live-blocked (torn snapshot); skipping"
+                " this poll cycle",
+                n,
+            )
+            _label_edit(owner, repo, n, remove=["agent-in-progress"])
+        else:
+            ready_issues_live.append(issue)
+    ready_issues = ready_issues_live
 
     if ready_issues:
         # Select ONE ready work unit (B-I3 serial).
