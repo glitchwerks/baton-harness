@@ -116,7 +116,7 @@ def _deny_values(args: list[str]) -> list[str]:
 
 
 def test_disallowed_tools_flag_present_bypass() -> None:
-    """--disallowed-tools flag is in args for permission_mode bypassPermissions.
+    """--disallowed-tools flag is in args for bypassPermissions mode.
 
     This is the highest-risk mode (--dangerously-skip-permissions is also
     added); the deny-list must be present here above all else.
