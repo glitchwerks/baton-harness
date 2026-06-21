@@ -7008,3 +7008,607 @@ def test_label_fetch_failure_is_fail_closed_no_dispatch() -> None:
         f" blocked-gate must be fail-closed and NOT dispatch the issue;"
         f" worker_calls={worker_calls}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Bug #132: un-milestoned agent-ready issue silently dropped when a
+# milestoned issue is also present in the same poll tick.
+# ---------------------------------------------------------------------------
+
+
+def test_unmilestoned_issue_dispatched_alongside_milestoned_in_same_tick() -> (
+    None
+):
+    """Un-milestoned agent-ready issue runs in the same tick as a milestone.
+
+    Regression test for #132.  Before the fix, ``_poll_and_run`` selected
+    exactly ONE work unit per tick (milestoned first), silently dropping
+    any un-milestoned ``agent-ready`` issues until a future tick.  With
+    ``once=True`` (``--once`` smoke-run mode) the un-milestoned issue was
+    NEVER dispatched.
+
+    The fix: after running the primary (milestoned) work unit,
+    ``_poll_and_run`` must continue selecting work units from the
+    remaining ready issues until none remain — routing each un-milestoned
+    issue through the standard ``build_dag → IssueScheduler`` path as a
+    degenerate N=1 DAG (the fix design constraint from the bug report).
+
+    Setup:
+    - Milestoned issue #20 (milestone 3, ``agent-ready``).
+    - Un-milestoned issue #1 (``agent-ready``).
+    - ``once=True`` — one poll tick.
+
+    Expected: ``_run_worker`` is called for BOTH #20 and #1 within the
+    single tick.
+    """
+    ms = {"number": 3, "title": "Sprint 3"}
+    ready_issues = [
+        {
+            "number": 20,
+            "title": "Issue 20",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/20",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": ms,
+            "assignees": [],
+        },
+        {
+            "number": 1,
+            "title": "Trivial trigger",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/1",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        },
+    ]
+
+    worker_calls: list[int] = []
+
+    async def fake_run_worker(issue: Any) -> str:  # noqa: ANN401
+        """Record dispatched issue numbers."""
+        worker_calls.append(issue.number)
+        return "pr_created"
+
+    def run_side_effect(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        """Stub gh/git calls for the mixed-frontier scenario."""
+        import json as _json
+
+        cmd_str = " ".join(cmd)
+        if (
+            "issue" in cmd_str
+            and "list" in cmd_str
+            and "agent-ready" in cmd_str
+        ):
+            return _ok(_json.dumps(ready_issues))
+        if (
+            "issue" in cmd_str
+            and "list" in cmd_str
+            and "agent-in-progress" in cmd_str
+        ):
+            return _ok(_json.dumps([]))
+        if "issue" in cmd_str and "view" in cmd_str and "edit" not in cmd_str:
+            nums = [p for p in cmd if p.isdigit()]
+            n = int(nums[0]) if nums else 20
+            return _ok(
+                _json.dumps(
+                    {
+                        "number": n,
+                        "title": f"Issue {n}",
+                        "state": "open",
+                        "body": "",
+                        "url": f"https://github.com/o/r/issues/{n}",
+                        "labels": [{"name": "agent-done"}],
+                        "assignees": [],
+                    }
+                )
+            )
+        if "issue" in cmd_str and "edit" in cmd_str:
+            return _ok()
+        if "pr" in cmd_str and "list" in cmd_str:
+            prs = [
+                {
+                    "number": 5,
+                    "headRefName": f"baton/sprint-3-{n}",
+                    "headRefOid": f"sha{n}",
+                }
+                for n in [20, 1]
+            ]
+            return _ok(_json.dumps(prs))
+        if "pr" in cmd_str and "create" in cmd_str:
+            return _ok("https://github.com/o/r/pull/99")
+        if "git" in cmd_str and "push" in cmd_str:
+            return _ok()
+        if "ls-remote" in cmd_str:
+            return _ok("")
+        if "rev-parse" in cmd_str:
+            return _ok("abc123\n")
+        return _ok()
+
+    with (
+        patch.object(daemon_mod, "_run", side_effect=run_side_effect),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            return_value=[],
+        ),
+        patch(
+            "baton_harness.chain.daemon._fetch_full_milestone_members",
+            return_value=frozenset({20}),
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.Orchestrator"
+            "._run_worker",
+            side_effect=fake_run_worker,
+        ),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    assert 20 in worker_calls, (
+        f"Milestoned issue #20 must be dispatched; worker_calls={worker_calls}"
+    )
+    assert 1 in worker_calls, (
+        f"Un-milestoned issue #1 must be dispatched in the same tick as"
+        f" the milestoned work unit (bug #132);"
+        f" worker_calls={worker_calls}"
+    )
+
+
+def test_second_work_unit_skipped_when_blocked_mid_drain() -> None:
+    """Second work unit is skipped and alert fires when blocked mid-drain.
+
+    Regression test for the Codex HIGH finding on #132: two ready work
+    units at tick start; the SECOND unit's issue gets a ``blocked`` label
+    applied AFTER the first unit runs (simulated via ``_fetch_issue_labels``
+    returning ``{"blocked"}`` on the second call for that issue number).
+
+    Before the fix, the drain loop dispatched the second unit without
+    re-checking live labels.  After the fix, it must:
+    - Skip the blocked work unit (``_run_worker`` NOT called for it).
+    - Fire ``alert`` with ``kind="block"`` and ``severity="critical"``.
+
+    Setup:
+    - Un-milestoned issue #1 (``agent-ready``), dispatched first.
+    - Un-milestoned issue #5 (``agent-ready``), becomes blocked
+      mid-drain.
+    - ``once=True`` — one poll tick.
+
+    The ``_fetch_issue_labels`` mock returns the live label set for each
+    call.  For issue #5 the second call (the mid-drain re-check) returns
+    ``{"blocked"}``.
+
+    Expected:
+    - ``_run_worker`` called for #1 only.
+    - ``alert`` called at least once with ``kind="block"``.
+    """
+    # Two un-milestoned ready issues.  _select_work_unit picks lowest
+    # number first, so #1 runs before #5.
+    ready_issues = [
+        {
+            "number": 1,
+            "title": "First issue",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/1",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        },
+        {
+            "number": 5,
+            "title": "Second issue — becomes blocked mid-drain",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/5",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        },
+    ]
+
+    worker_calls: list[int] = []
+
+    async def fake_run_worker(issue: Any) -> str:  # noqa: ANN401
+        """Record dispatched issue numbers."""
+        worker_calls.append(issue.number)
+        return "pr_created"
+
+    # Track how many times _fetch_issue_labels has been called for #5.
+    # The first call is the pre-tick live blocked re-check (L~1764 in
+    # _poll_and_run); the second call is the mid-drain re-check we added.
+    # We want the second call to return {"blocked"} to simulate the label
+    # being applied after #1 finished.
+    fetch_calls_for_5: list[int] = []
+
+    def fake_fetch_labels(owner: str, repo: str, n: int) -> set[str] | None:
+        """Return live labels; issue #5 becomes blocked on second fetch."""
+        if n == 5:
+            fetch_calls_for_5.append(n)
+            if len(fetch_calls_for_5) >= 2:
+                # Second fetch (mid-drain re-check): now blocked.
+                return {"blocked", "agent-ready"}
+            # First fetch (pre-tick live check): clean.
+            return {"agent-ready"}
+        # All other issues: clean.
+        return {"agent-ready"}
+
+    def run_side_effect(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        """Stub gh/git calls for the two-unit mid-drain scenario."""
+        import json as _json
+
+        cmd_str = " ".join(cmd)
+        if (
+            "issue" in cmd_str
+            and "list" in cmd_str
+            and "agent-ready" in cmd_str
+        ):
+            return _ok(_json.dumps(ready_issues))
+        if (
+            "issue" in cmd_str
+            and "list" in cmd_str
+            and "agent-in-progress" in cmd_str
+        ):
+            return _ok(_json.dumps([]))
+        if "issue" in cmd_str and "view" in cmd_str and "edit" not in cmd_str:
+            nums = [p for p in cmd if p.isdigit()]
+            n = int(nums[0]) if nums else 1
+            return _ok(
+                _json.dumps(
+                    {
+                        "number": n,
+                        "title": f"Issue {n}",
+                        "state": "open",
+                        "body": "",
+                        "url": f"https://github.com/o/r/issues/{n}",
+                        "labels": [{"name": "agent-done"}],
+                        "assignees": [],
+                    }
+                )
+            )
+        if "issue" in cmd_str and "edit" in cmd_str:
+            return _ok()
+        if "pr" in cmd_str and "list" in cmd_str:
+            prs = [
+                {
+                    "number": 10,
+                    "headRefName": f"baton/issue-{n}-{n}",
+                    "headRefOid": f"sha{n}",
+                }
+                for n in [1, 5]
+            ]
+            return _ok(_json.dumps(prs))
+        if "pr" in cmd_str and "create" in cmd_str:
+            return _ok("https://github.com/o/r/pull/99")
+        if "git" in cmd_str and "push" in cmd_str:
+            return _ok()
+        if "ls-remote" in cmd_str:
+            return _ok("")
+        if "rev-parse" in cmd_str:
+            return _ok("abc123\n")
+        return _ok()
+
+    alert_calls: list[dict[str, Any]] = []
+
+    def fake_alert(
+        owner: str,
+        repo: str,
+        issue: int,
+        message: str,
+        *,
+        severity: str = "critical",
+        kind: str = "block",
+        runlog: Any = None,  # noqa: ANN401
+    ) -> bool:
+        """Capture alert calls."""
+        alert_calls.append(
+            {"issue": issue, "severity": severity, "kind": kind}
+        )
+        return True
+
+    with (
+        patch.object(daemon_mod, "_run", side_effect=run_side_effect),
+        patch(
+            "baton_harness.chain.daemon._fetch_issue_labels",
+            side_effect=fake_fetch_labels,
+        ),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            return_value=[],
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch(
+            "baton_harness.chain.daemon.alert",
+            side_effect=fake_alert,
+        ),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.Orchestrator"
+            "._run_worker",
+            side_effect=fake_run_worker,
+        ),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    assert 1 in worker_calls, (
+        f"Issue #1 must be dispatched (first unit); "
+        f"worker_calls={worker_calls}"
+    )
+    assert 5 not in worker_calls, (
+        f"Issue #5 became blocked mid-drain and must NOT be dispatched "
+        f"(VP-2 drain-level re-check, #128/#132); "
+        f"worker_calls={worker_calls}"
+    )
+    block_alerts = [a for a in alert_calls if a["kind"] == "block"]
+    assert block_alerts, (
+        f"alert must fire with kind='block' for the skipped unit; "
+        f"alert_calls={alert_calls}"
+    )
+
+
+def test_second_work_unit_skipped_on_non_blocked_exclude_label_mid_drain() -> (
+    None
+):
+    """Mid-drain re-check uses the full exclude set, not the literal 'blocked'.
+
+    Regression test for the generalisation in #132.  The mid-drain label
+    re-check previously compared against the hardcoded string ``"blocked"``.
+    This test patches ``daemon_mod._DISPATCH_EXCLUDE_LABELS`` to include a
+    second label (``"on-hold"``) and confirms the second work unit is skipped
+    when its issue acquires that label mid-drain — proving the code path
+    reads the constant rather than the literal.
+
+    This test FAILS against the old hardcoded-``"blocked"`` implementation
+    and PASSES after the fix.
+
+    Setup:
+    - Un-milestoned issue #1 (``agent-ready``), dispatched first.
+    - Un-milestoned issue #5 (``agent-ready``), acquires ``"on-hold"``
+      mid-drain (NOT ``"blocked"``).
+    - ``_DISPATCH_EXCLUDE_LABELS`` patched to
+      ``frozenset({"blocked", "on-hold"})``.
+    - ``once=True`` — one poll tick.
+
+    Expected:
+    - ``_run_worker`` called for #1 only.
+    - ``alert`` called at least once with ``kind="block"``.
+    """
+    ready_issues = [
+        {
+            "number": 1,
+            "title": "First issue",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/1",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        },
+        {
+            "number": 5,
+            "title": "Second issue — acquires on-hold mid-drain",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/5",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        },
+    ]
+
+    worker_calls: list[int] = []
+
+    async def fake_run_worker(issue: Any) -> str:  # noqa: ANN401
+        """Record dispatched issue numbers."""
+        worker_calls.append(issue.number)
+        return "pr_created"
+
+    # Issue #5 gets "on-hold" on the second label fetch (mid-drain re-check).
+    fetch_calls_for_5: list[int] = []
+
+    def fake_fetch_labels(owner: str, repo: str, n: int) -> set[str] | None:
+        """Return live labels; issue #5 gets 'on-hold' on second fetch."""
+        if n == 5:
+            fetch_calls_for_5.append(n)
+            if len(fetch_calls_for_5) >= 2:
+                # Mid-drain re-check: now excluded via "on-hold", not
+                # "blocked" — proves the set is consulted, not the
+                # literal.
+                return {"on-hold", "agent-ready"}
+            return {"agent-ready"}
+        return {"agent-ready"}
+
+    def run_side_effect(
+        cmd: list[str],
+    ) -> subprocess.CompletedProcess[str]:
+        """Stub gh/git calls for the non-blocked-exclude-label scenario."""
+        import json as _json
+
+        cmd_str = " ".join(cmd)
+        if (
+            "issue" in cmd_str
+            and "list" in cmd_str
+            and "agent-ready" in cmd_str
+        ):
+            return _ok(_json.dumps(ready_issues))
+        if (
+            "issue" in cmd_str
+            and "list" in cmd_str
+            and "agent-in-progress" in cmd_str
+        ):
+            return _ok(_json.dumps([]))
+        if "issue" in cmd_str and "view" in cmd_str and "edit" not in cmd_str:
+            nums = [p for p in cmd if p.isdigit()]
+            n = int(nums[0]) if nums else 1
+            return _ok(
+                _json.dumps(
+                    {
+                        "number": n,
+                        "title": f"Issue {n}",
+                        "state": "open",
+                        "body": "",
+                        "url": f"https://github.com/o/r/issues/{n}",
+                        "labels": [{"name": "agent-done"}],
+                        "assignees": [],
+                    }
+                )
+            )
+        if "issue" in cmd_str and "edit" in cmd_str:
+            return _ok()
+        if "pr" in cmd_str and "list" in cmd_str:
+            prs = [
+                {
+                    "number": 10,
+                    "headRefName": f"baton/issue-{n}-{n}",
+                    "headRefOid": f"sha{n}",
+                }
+                for n in [1, 5]
+            ]
+            return _ok(_json.dumps(prs))
+        if "pr" in cmd_str and "create" in cmd_str:
+            return _ok("https://github.com/o/r/pull/99")
+        if "git" in cmd_str and "push" in cmd_str:
+            return _ok()
+        if "ls-remote" in cmd_str:
+            return _ok("")
+        if "rev-parse" in cmd_str:
+            return _ok("abc123\n")
+        return _ok()
+
+    alert_calls: list[dict[str, Any]] = []
+
+    def fake_alert(
+        owner: str,
+        repo: str,
+        issue: int,
+        message: str,
+        *,
+        severity: str = "critical",
+        kind: str = "block",
+        runlog: Any = None,  # noqa: ANN401
+    ) -> bool:
+        """Capture alert calls."""
+        alert_calls.append(
+            {"issue": issue, "severity": severity, "kind": kind}
+        )
+        return True
+
+    # Patch the module-level constant to include "on-hold" so the
+    # generalised mid-drain check can trip on it.
+    extended_exclude = frozenset({"blocked", "on-hold"})
+
+    with (
+        patch.object(daemon_mod, "_DISPATCH_EXCLUDE_LABELS", extended_exclude),
+        patch.object(daemon_mod, "_run", side_effect=run_side_effect),
+        patch(
+            "baton_harness.chain.daemon._fetch_issue_labels",
+            side_effect=fake_fetch_labels,
+        ),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            return_value=[],
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch(
+            "baton_harness.chain.daemon.alert",
+            side_effect=fake_alert,
+        ),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.Orchestrator"
+            "._run_worker",
+            side_effect=fake_run_worker,
+        ),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    assert 1 in worker_calls, (
+        f"Issue #1 must be dispatched (first unit); "
+        f"worker_calls={worker_calls}"
+    )
+    assert 5 not in worker_calls, (
+        f"Issue #5 acquired 'on-hold' mid-drain and must NOT be dispatched"
+        f" — the mid-drain re-check must use _DISPATCH_EXCLUDE_LABELS, not"
+        f" the literal 'blocked' (generalisation, #132);"
+        f" worker_calls={worker_calls}"
+    )
+    block_alerts = [a for a in alert_calls if a["kind"] == "block"]
+    assert block_alerts, (
+        f"alert must fire with kind='block' for the skipped unit; "
+        f"alert_calls={alert_calls}"
+    )
