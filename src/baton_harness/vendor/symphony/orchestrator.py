@@ -11,7 +11,7 @@ from .prompt import render_prompt  # VENDOR-PATCH: relative import for vendoring
 from .state import IssueState, OrchestratorState  # VENDOR-PATCH: relative import for vendoring
 from .tracker import GitHubTracker, Issue, parse_issue_skills, run_gh  # VENDOR-PATCH: relative import for vendoring; run_gh added for VP-2 exclude_labels re-check
 from .worker import Worker  # VENDOR-PATCH: relative import for vendoring
-from .workspace import WorkspaceManager  # VENDOR-PATCH: relative import for vendoring
+from .workspace import WorkspaceManager, run_cmd  # VENDOR-PATCH: relative import for vendoring; run_cmd added for VP-5 worktree-clean gate
 
 log = logging.getLogger("symphony")
 
@@ -230,15 +230,31 @@ class Orchestrator:
             # failure never crashes the run.
             try:
                 if await self.tracker.check_pr_exists(issue.number):
-                    log.info(
-                        f"PR_EARLY #{issue.number} — PR detected mid-loop"
-                        f" at turn {turn}; exiting turn loop"
+                    # VENDOR-PATCH VP-5: only exit early when the worktree is
+                    # clean. A dirty tree (tracked, uncommitted changes) is
+                    # scored by after_run._classify as UNCOMMITTED_CHANGES
+                    # *before* it checks PR_OPENED, so the daemon would park
+                    # the issue and strand the PR. If dirty, keep looping so a
+                    # later turn commits — the PR alone is not a "done" signal.
+                    status = await run_cmd(
+                        ["git", "status", "--porcelain", "--untracked-files=no"],
+                        cwd=wt.path,
                     )
-                    pr_detected = True  # VENDOR-PATCH VP-5: latch before break
-                    break
+                    if not status.strip():
+                        log.info(
+                            f"PR_EARLY #{issue.number} — PR detected mid-loop"
+                            f" at turn {turn} with clean worktree; exiting"
+                        )
+                        pr_detected = True  # VENDOR-PATCH VP-5: latch before break
+                        break
+                    log.info(
+                        f"PR_DIRTY #{issue.number} — PR exists but worktree has"
+                        f" uncommitted changes at turn {turn}; continuing"
+                    )
             except Exception as _exc:  # best-effort; don't crash the run
                 log.debug(
-                    f"VP-5 check_pr_exists failed for #{issue.number}: {_exc}"
+                    f"VP-5 worktree-clean check failed for"
+                    f" #{issue.number}: {_exc}"
                 )
 
         # Run after_run hook
