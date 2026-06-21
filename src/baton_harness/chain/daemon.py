@@ -974,6 +974,39 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
             _label_edit(owner, repo, n, remove=["agent-in-progress"])
             _log.info("daemon: cleared orphan agent-in-progress for #%d", n)
 
+        # Fail-closed blocked-gate (#128 P2a): re-read live labels
+        # immediately before dispatch.  If the fetch fails (None), we
+        # cannot confirm the issue is unblocked — skip it this cycle
+        # conservatively rather than risk dispatching a blocked issue.
+        # Distinct from the post-run None guard (L~1087): that guard
+        # fires *after* the worker; this one fires *before*, so the
+        # worker is never called.  Self-heals on the next poll tick.
+        _pre_dispatch_labels = _fetch_issue_labels(owner, repo, n)
+        if _pre_dispatch_labels is None:
+            _log.info(
+                "daemon: #%d label fetch failed before dispatch;"
+                " skipping this poll cycle (fail-closed, #128 P2a)",
+                n,
+            )
+            alert(
+                owner,
+                repo,
+                n,
+                (
+                    f"Issue #{n} labels unreadable before dispatch;"
+                    " skipping this poll cycle."
+                ),
+                severity="critical",
+                kind="block",
+                runlog=runlog,
+            )
+            _label_edit(owner, repo, n, remove=["agent-in-progress"])
+            if liveness_state is not None:
+                liveness_state.clear()
+            sched.mark_parked(n)
+            parked_reasons[n] = "label fetch failed pre-dispatch"
+            continue
+
         # Checkout feature branch (HEAD = feature branch, §3.4).
         branches.checkout_feature_branch(repo_root, slug)
         # Record cut-point (§3.7).
