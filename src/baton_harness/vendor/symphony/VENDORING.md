@@ -72,6 +72,23 @@ orchestration path.
   a hung worker (P2 / IS-1, issue #33).  Marker:
   `# VENDOR-PATCH VP-3: per-turn progress callback (issue #33)`.
 
+### VP-4 — _build_claude_args denies PR-merge tools
+
+- **File:** `worker.py`
+- **Patch file:** `patches/VP-4-worker-disallow-merge.diff` (relative to repo root)
+- **Description:** Adds a module-level constant `_MERGE_DENY_TOOLS` containing
+  the two deny tokens `"Bash(gh pr merge*)"` and
+  `"mcp__github__merge_pull_request"`. `_build_claude_args` unconditionally
+  appends `["--disallowed-tools", *_MERGE_DENY_TOOLS]` after the
+  permission-mode block and before `return args`. The deny-list is therefore
+  present regardless of `permission_mode` value (including `None`). Deny rules
+  are honored even under `--dangerously-skip-permissions` — deny precedence is
+  a hard constraint; skip-permissions only skips prompts. A `Bash(gh pr merge*)`
+  deny rule is robust against compound/process-wrapper bypass per Claude Code's
+  command-splitting semantics. Defense-in-depth alongside the no-merge
+  prohibition added to `config/WORKFLOW.md` (issue #130). Marker:
+  `# VENDOR-PATCH VP-4: always deny PR-merge tools (#130)`.
+
 ### Vendoring-mechanics patches (not VP patches; no separate diff files)
 
 These are **structural edits required for re-packaging** — they change
@@ -112,6 +129,7 @@ When re-vendoring at a new upstream SHA, apply these steps in order:
    git apply patches/VP-1-run-hook-env.diff
    git apply patches/VP-2-exclude-labels-recheck.diff
    git apply patches/VP-3-progress-callback.diff
+   git apply patches/VP-4-worker-disallow-merge.diff
    ```
 4. Re-apply the relative-import vendoring-mechanics patches manually (they
    are not in a diff file because they only depend on the module names, which
@@ -125,6 +143,7 @@ When re-vendoring at a new upstream SHA, apply these steps in order:
    - `VP-1` in `hooks.py`
    - `VP-2` in `orchestrator.py`
    - `VP-3` in `orchestrator.py`
+   - `VP-4` in `worker.py`
    - `relative import for vendoring` in `orchestrator.py`, `cli.py`,
      `prompt.py`, `worker.py`
 6. Update the **Pinned SHA** and **Vendor date** fields at the top of this
