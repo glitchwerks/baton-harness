@@ -6773,11 +6773,11 @@ def test_non_blocked_live_label_still_dispatches() -> None:
 
 
 def test_mixed_frontier_only_non_blocked_dispatched() -> None:
-    """Two ready issues: one live-blocked, one not — only the clean one
-    is dispatched.
+    """Mixed frontier: only non-blocked issues are dispatched.
 
-    Issue #11 is live-blocked; issue #12 is clean.  After the live-label
-    re-check the worker must be called exactly for #12 and never for #11.
+    Two ready issues — #11 is live-blocked, #12 is clean.  After the
+    live-label re-check the worker must be called exactly for #12 and
+    never for #11.
     """
     ready_issues = [
         {
