@@ -34,6 +34,8 @@ Coverage:
   True (revised contract — RED until implementation lands).
 - A clean worktree allows early-exit when ``check_pr_exists`` is True
   (positive-path pin for the clean branch).
+- A clean worktree with unpushed commits must NOT early-exit (Codex P2 —
+  RED until implementation adds rev-list ahead check).
 """
 
 from __future__ import annotations
@@ -1179,4 +1181,161 @@ def test_run_cmd_failure_continues_conservatively() -> None:
     assert result == "pr_created", (
         f"Expected 'pr_created' (post-loop probe succeeds despite run_cmd"
         f" failures), got {result!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Codex P2: clean tree but unpushed commits → must NOT early-exit (RED)
+# ---------------------------------------------------------------------------
+
+
+def test_clean_but_unpushed_commits_does_not_early_exit() -> None:
+    r"""Clean worktree ahead of remote must NOT trigger early-exit.
+
+    Codex P2 gate condition: the mid-loop break requires THREE conditions:
+      1. ``check_pr_exists`` returns True.
+      2. ``git status --porcelain --untracked-files=no`` output is empty
+         (worktree is clean — no uncommitted changes).
+      3. ``git rev-list --count @{upstream}..HEAD`` returns ``"0"`` (branch
+         is NOT ahead of remote — no unpushed commits).
+
+    When condition 3 fails (the branch is ahead), the early-exit must NOT
+    fire even though conditions 1 and 2 are met.  A later turn must be
+    allowed to push the commit before the daemon can safely exit.
+
+    The ``run_cmd`` mock is argument-aware (side_effect callable) so that:
+      - args containing ``"rev-list"`` → returns ``"1\\n"`` (1 unpushed
+        commit; branch is ahead of remote).
+      - args containing ``"status"`` → returns ``""`` (clean worktree).
+      - any other args → returns ``""`` (safe default).
+
+    This shape is safe for the 10 existing tests: they each install their
+    own ``patch(_ORCHESTRATOR_RUN_CMD, ..., return_value=...)`` context,
+    which uses a constant ``return_value``, not this callable.  They are
+    unaffected by this test's mock.
+
+    Setup:
+      - max_turns=4
+      - check_pr_exists → True (PR already open)
+      - fetch_issue_state → "open" (issue stays open, no closed-issue break)
+      - no blocked label (VP-2 break must not fire)
+      - run_cmd side_effect: "1\\n" for rev-list, "" for status
+
+    Expected (correct implementation):
+      - run_turn called all 4 times (clean-but-ahead must NOT early-exit).
+      - run_cmd called at least once with a ``rev-list`` command (pins that
+        the ahead check is actually performed by the implementation).
+
+    RED pre-implementation: current code checks only ``status`` (condition
+    2) and ignores condition 3 (no rev-list call).  Because status is
+    clean and check_pr_exists is True, the early-exit fires after turn 1 →
+    run_turn called once → assertion fails:
+
+        AssertionError: assert 1 == 4 — Expected 4 turns
+        (clean-but-unpushed, no early-exit), got 1
+    """
+    orch = _make_orch(max_turns=4)
+    issue = _fake_issue(number=11)
+
+    fake_wt = MagicMock()
+    fake_wt.created_now = False
+    fake_wt.path = "/fake/wt/11"
+
+    fake_turn_result = MagicMock()
+    fake_turn_result.success = True
+    fake_turn_result.error = None
+
+    turn_call_count = 0
+
+    async def fake_run_turn(**kwargs: Any) -> Any:  # noqa: ANN401
+        nonlocal turn_call_count
+        turn_call_count += 1
+        return fake_turn_result
+
+    async def fake_fetch_issue_state(num: int) -> str:
+        return "open"
+
+    async def fake_run_gh(args: list[str]) -> str:
+        return json.dumps({"labels": []})
+
+    async def fake_run_hook(  # noqa: ANN401
+        name: str, script: object, **kwargs: object
+    ) -> bool:
+        return True
+
+    def _arg_aware_run_cmd(args: list[str], **kwargs: object) -> str:
+        r"""Return git output keyed on which subcommand is being called.
+
+        Args:
+            args: The git argument list passed to run_cmd.
+            **kwargs: Forwarded keyword args (e.g. ``cwd``); unused here.
+
+        Returns:
+            ``"1\\n"`` for a rev-list call (1 unpushed commit), ``""``
+            for a status call or any other git subcommand.
+        """
+        if "rev-list" in args:
+            return "1\n"  # branch is ahead — 1 unpushed commit
+        if "status" in args:
+            return ""  # clean worktree
+        return ""
+
+    mock_run_cmd_async = AsyncMock(side_effect=_arg_aware_run_cmd)
+
+    with (
+        patch.object(
+            orch.workspace,
+            "ensure_worktree",
+            new_callable=AsyncMock,
+            return_value=fake_wt,
+        ),
+        patch.object(
+            orch.worker,
+            "run_turn",
+            side_effect=fake_run_turn,
+        ),
+        patch.object(
+            orch.tracker,
+            "fetch_issue_state",
+            side_effect=fake_fetch_issue_state,
+        ),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.run_hook",
+            side_effect=fake_run_hook,
+        ),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.run_gh",
+            side_effect=fake_run_gh,
+        ),
+        patch.object(
+            orch.tracker,
+            "check_pr_exists",
+            new_callable=AsyncMock,
+            return_value=True,  # PR open on every turn
+        ),
+        patch(
+            _ORCHESTRATOR_RUN_CMD,
+            mock_run_cmd_async,
+            create=True,  # attribute absent until impl imports run_cmd
+        ),
+    ):
+        asyncio.run(orch._run_worker(issue))
+
+    # Primary RED assertion: all 4 turns must run despite PR existing
+    # and worktree being clean — the unpushed commit blocks early-exit.
+    assert turn_call_count == 4, (
+        f"Expected 4 turns (clean-but-unpushed, no early-exit),"
+        f" got {turn_call_count}"
+    )
+
+    # Pin that the impl actually calls run_cmd with a rev-list command.
+    all_call_args = [
+        call.args[0] if call.args else call.kwargs.get("args", [])
+        for call in mock_run_cmd_async.call_args_list
+    ]
+    assert any(
+        "rev-list" in args for args in all_call_args
+    ), (
+        "Expected run_cmd to be called with a rev-list command"
+        f" (ahead-of-remote check); got: {all_call_args!r}"
     )

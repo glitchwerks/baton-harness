@@ -231,26 +231,41 @@ class Orchestrator:
             try:
                 if await self.tracker.check_pr_exists(issue.number):
                     # VENDOR-PATCH VP-5: only exit early when the worktree is
-                    # clean. A dirty tree (tracked, uncommitted changes) is
-                    # scored by after_run._classify as UNCOMMITTED_CHANGES
-                    # *before* it checks PR_OPENED, so the daemon would park
-                    # the issue and strand the PR. If dirty, keep looping so a
-                    # later turn commits — the PR alone is not a "done" signal.
+                    # clean AND fully pushed. A dirty tree is scored by
+                    # after_run._classify as UNCOMMITTED_CHANGES before it
+                    # checks PR_OPENED (→ parked, PR stranded); a clean tree
+                    # that is ahead of its remote would strand the unpushed
+                    # commit and let CI run on a stale PR. In either case keep
+                    # looping so a later turn commits/pushes — the PR alone is
+                    # not a "done" signal.
                     status = await run_cmd(
                         ["git", "status", "--porcelain", "--untracked-files=no"],
                         cwd=wt.path,
                     )
-                    if not status.strip():
+                    if status.strip():
                         log.info(
-                            f"PR_EARLY #{issue.number} — PR detected mid-loop"
-                            f" at turn {turn} with clean worktree; exiting"
+                            f"PR_DIRTY #{issue.number} — PR exists but worktree"
+                            f" has uncommitted changes at turn {turn};"
+                            f" continuing"
                         )
-                        pr_detected = True  # VENDOR-PATCH VP-5: latch before break
-                        break
-                    log.info(
-                        f"PR_DIRTY #{issue.number} — PR exists but worktree has"
-                        f" uncommitted changes at turn {turn}; continuing"
-                    )
+                    else:
+                        ahead = await run_cmd(
+                            ["git", "rev-list", "--count", "@{upstream}..HEAD"],
+                            cwd=wt.path,
+                        )
+                        if ahead.strip() in ("", "0"):
+                            log.info(
+                                f"PR_EARLY #{issue.number} — PR detected"
+                                f" mid-loop at turn {turn} with clean, pushed"
+                                f" worktree; exiting"
+                            )
+                            pr_detected = True  # VENDOR-PATCH VP-5: latch before break
+                            break
+                        log.info(
+                            f"PR_UNPUSHED #{issue.number} — PR exists but"
+                            f" {ahead.strip()} local commit(s) are unpushed at"
+                            f" turn {turn}; continuing"
+                        )
             except Exception as _exc:  # best-effort; don't crash the run
                 log.debug(
                     f"VP-5 worktree-clean check failed for"
