@@ -1716,6 +1716,34 @@ async def _poll_and_run(
         not in {lbl["name"].lower() for lbl in i.get("labels", [])}
     ]
 
+    # Live blocked re-check (#128): the snapshot above may race with a
+    # concurrent label update.  For each snapshot-ready issue, re-read
+    # the live label set; if `blocked` and `agent-ready` are both live,
+    # the issue is in a torn pre-dispatch state — skip it this poll cycle
+    # so it is not selected as the work unit.  Treat a fetch failure
+    # (None) as clean to avoid false exclusions on transient API errors.
+    # The `agent-ready` guard distinguishes this pre-dispatch torn state
+    # from a post-worker torn state ({agent-done, blocked}) which has no
+    # `agent-ready` and must reach the post-run invariant check instead.
+    ready_issues_live: list[dict[str, Any]] = []
+    for issue in ready_issues:
+        n = issue["number"]
+        live_labels = _fetch_issue_labels(owner, repo, n)
+        if (
+            live_labels is not None
+            and "blocked" in live_labels
+            and "agent-ready" in live_labels
+        ):
+            _log.info(
+                "daemon: #%d is live-blocked (torn snapshot); skipping"
+                " this poll cycle",
+                n,
+            )
+            _label_edit(owner, repo, n, remove=["agent-in-progress"])
+        else:
+            ready_issues_live.append(issue)
+    ready_issues = ready_issues_live
+
     if ready_issues:
         # Select ONE ready work unit (B-I3 serial).
         # Priority: milestoned first; then un-milestoned by number.
