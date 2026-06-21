@@ -12,6 +12,16 @@ from .config import WorkflowConfig  # VENDOR-PATCH: relative import for vendorin
 
 log = logging.getLogger("symphony")
 
+# VENDOR-PATCH VP-4: always deny PR-merge tools (#130)
+# Deny rules are honored even under --dangerously-skip-permissions;
+# deny precedence is a hard constraint — skip-permissions only skips prompts.
+# A Bash(gh pr merge*) deny rule is robust against compound/process-wrapper
+# bypass per Claude Code's command-splitting semantics.
+_MERGE_DENY_TOOLS = [
+    "Bash(gh pr merge*)",
+    "mcp__github__merge_pull_request",
+]
+
 
 class WorkerError(Exception):
     def __init__(self, code: str, message: str):
@@ -68,6 +78,11 @@ class Worker:
                 args.extend(["--permission-mode", "acceptEdits"])
             elif mode == "bypassPermissions":
                 args.extend(["--dangerously-skip-permissions"])
+
+        # VENDOR-PATCH VP-4: always deny PR-merge tools (#130)
+        # Append unconditionally — after the permission-mode block — so the
+        # deny-list is present regardless of which mode (or no mode) is set.
+        args.extend(["--disallowed-tools", *_MERGE_DENY_TOOLS])
 
         return args
 

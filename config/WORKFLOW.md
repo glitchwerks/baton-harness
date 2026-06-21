@@ -62,5 +62,8 @@ reorder them.
    The PR body MUST contain the plain-text `Closes #{{ issue.number }}` so
    GitHub auto-closes the issue on merge. Report if this step fails and STOP.
 
+   **Do NOT merge any pull request.** Open a draft PR only; the harness owns
+   all merges. Never run `gh pr merge` or any merge tool.
+
 If any step above fails, report exactly which step failed and what the error
 output was, then STOP. Do not attempt to work around a failing step silently.
