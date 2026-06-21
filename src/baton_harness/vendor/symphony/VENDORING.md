@@ -89,6 +89,22 @@ orchestration path.
   prohibition added to `config/WORKFLOW.md` (issue #130). Marker:
   `# VENDOR-PATCH VP-4: always deny PR-merge tools (#130)`.
 
+### VP-5 — mid-loop PR-exists early-exit in _run_worker
+
+- **File:** `orchestrator.py`
+- **Patch file:** `patches/VP-5-pr-exists-early-exit.diff` (relative to repo root)
+- **Description:** Adds a guarded `check_pr_exists` call inside the `_run_worker`
+  turn loop, inserted AFTER the existing closed-issue break and the VP-2
+  `exclude_labels` break — so those higher-priority terminations still fire first.
+  If `check_pr_exists` returns `True`, the loop breaks immediately
+  (`"PR_EARLY"` log line) so the worker does not burn remaining turns firing
+  useless "continue" prompts after a PR is already open (closes issue #137).
+  Also wraps the existing post-loop `check_pr_exists` call in `try/except` so
+  a transient gh failure no longer crashes the run — on exception, `pr_exists`
+  is set to `False` and the daemon schedules a continuation retry.  Both sites
+  use the best-effort swallow-and-continue pattern matching VP-2/VP-3.
+  Marker: `# VENDOR-PATCH VP-5: mid-loop PR-exists early-exit (#137)`.
+
 ### Vendoring-mechanics patches (not VP patches; no separate diff files)
 
 These are **structural edits required for re-packaging** — they change
@@ -130,6 +146,7 @@ When re-vendoring at a new upstream SHA, apply these steps in order:
    git apply patches/VP-2-exclude-labels-recheck.diff
    git apply patches/VP-3-progress-callback.diff
    git apply patches/VP-4-worker-disallow-merge.diff
+   git apply patches/VP-5-pr-exists-early-exit.diff
    ```
 4. Re-apply the relative-import vendoring-mechanics patches manually (they
    are not in a diff file because they only depend on the module names, which
@@ -144,6 +161,7 @@ When re-vendoring at a new upstream SHA, apply these steps in order:
    - `VP-2` in `orchestrator.py`
    - `VP-3` in `orchestrator.py`
    - `VP-4` in `worker.py`
+   - `VP-5` in `orchestrator.py`
    - `relative import for vendoring` in `orchestrator.py`, `cli.py`,
      `prompt.py`, `worker.py`
 6. Update the **Pinned SHA** and **Vendor date** fields at the top of this
