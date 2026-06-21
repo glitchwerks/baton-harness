@@ -454,3 +454,282 @@ def test_check_pr_exists_error_is_best_effort() -> None:
         f"Expected 2 turns (errors swallowed, all turns run),"
         f" got {turn_call_count}"
     )
+
+
+# ---------------------------------------------------------------------------
+# VP-5 double-probe race: mid-loop True + post-loop raise → "pr_created"
+# ---------------------------------------------------------------------------
+
+
+def test_mid_loop_true_then_post_loop_raise_returns_pr_created() -> None:
+    """Mid-loop True must latch; post-loop raise must not override to no_pr.
+
+    Sequence of ``check_pr_exists`` calls:
+      call 1 (mid-loop, turn 1): returns True  → loop breaks
+      call 2 (post-loop re-probe): raises RuntimeError
+
+    Against current code the post-loop exception is swallowed and
+    ``pr_exists`` stays False, so ``_run_worker`` returns ``"no_pr"``.
+    The forthcoming fix latches ``pr_detected = True`` when the mid-loop
+    call returns True and short-circuits the post-loop re-probe, returning
+    ``"pr_created"`` regardless.
+
+    Failing assertion (pre-fix):
+        AssertionError: assert result == "pr_created" (got "no_pr")
+    """
+    orch = _make_orch(max_turns=8)
+    issue = _fake_issue(number=5)
+
+    fake_wt = MagicMock()
+    fake_wt.created_now = False
+    fake_wt.path = "/fake/wt/5"
+
+    fake_turn_result = MagicMock()
+    fake_turn_result.success = True
+    fake_turn_result.error = None
+
+    turn_call_count = 0
+
+    async def fake_run_turn(**kwargs: Any) -> Any:  # noqa: ANN401
+        nonlocal turn_call_count
+        turn_call_count += 1
+        return fake_turn_result
+
+    async def fake_fetch_issue_state(num: int) -> str:
+        return "open"
+
+    async def fake_run_gh(args: list[str]) -> str:
+        return json.dumps({"labels": []})
+
+    async def fake_run_hook(  # noqa: ANN401
+        name: str, script: object, **kwargs: object
+    ) -> bool:
+        return True
+
+    with (
+        patch.object(
+            orch.workspace,
+            "ensure_worktree",
+            new_callable=AsyncMock,
+            return_value=fake_wt,
+        ),
+        patch.object(
+            orch.worker,
+            "run_turn",
+            side_effect=fake_run_turn,
+        ),
+        patch.object(
+            orch.tracker,
+            "fetch_issue_state",
+            side_effect=fake_fetch_issue_state,
+        ),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.run_hook",
+            side_effect=fake_run_hook,
+        ),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.run_gh",
+            side_effect=fake_run_gh,
+        ),
+        patch.object(
+            orch.tracker,
+            "check_pr_exists",
+            new_callable=AsyncMock,
+            # call 1: mid-loop returns True (break); call 2: post-loop raises
+            side_effect=[True, RuntimeError("post-loop flake")],
+        ),
+    ):
+        result = asyncio.run(orch._run_worker(issue))
+
+    assert turn_call_count == 1, (
+        f"Expected 1 turn (mid-loop True → break), got {turn_call_count}"
+    )
+    assert result == "pr_created", (
+        f"Expected 'pr_created' (mid-loop latch), got {result!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# VP-5 double-probe race: mid-loop True + post-loop False → "pr_created"
+# ---------------------------------------------------------------------------
+
+
+def test_mid_loop_true_then_post_loop_false_returns_pr_created() -> None:
+    """Mid-loop True must latch; post-loop False must not override to no_pr.
+
+    Sequence of ``check_pr_exists`` calls:
+      call 1 (mid-loop, turn 1): returns True  → loop breaks
+      call 2 (post-loop re-probe): returns False
+
+    Against current code the post-loop False sets ``pr_exists = False`` and
+    ``_run_worker`` returns ``"no_pr"``.  The forthcoming fix latches
+    ``pr_detected = True`` and skips the post-loop re-probe (or ignores its
+    result), returning ``"pr_created"``.
+
+    Failing assertion (pre-fix):
+        AssertionError: assert result == "pr_created" (got "no_pr")
+    """
+    orch = _make_orch(max_turns=8)
+    issue = _fake_issue(number=6)
+
+    fake_wt = MagicMock()
+    fake_wt.created_now = False
+    fake_wt.path = "/fake/wt/6"
+
+    fake_turn_result = MagicMock()
+    fake_turn_result.success = True
+    fake_turn_result.error = None
+
+    turn_call_count = 0
+
+    async def fake_run_turn(**kwargs: Any) -> Any:  # noqa: ANN401
+        nonlocal turn_call_count
+        turn_call_count += 1
+        return fake_turn_result
+
+    async def fake_fetch_issue_state(num: int) -> str:
+        return "open"
+
+    async def fake_run_gh(args: list[str]) -> str:
+        return json.dumps({"labels": []})
+
+    async def fake_run_hook(  # noqa: ANN401
+        name: str, script: object, **kwargs: object
+    ) -> bool:
+        return True
+
+    with (
+        patch.object(
+            orch.workspace,
+            "ensure_worktree",
+            new_callable=AsyncMock,
+            return_value=fake_wt,
+        ),
+        patch.object(
+            orch.worker,
+            "run_turn",
+            side_effect=fake_run_turn,
+        ),
+        patch.object(
+            orch.tracker,
+            "fetch_issue_state",
+            side_effect=fake_fetch_issue_state,
+        ),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.run_hook",
+            side_effect=fake_run_hook,
+        ),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.run_gh",
+            side_effect=fake_run_gh,
+        ),
+        patch.object(
+            orch.tracker,
+            "check_pr_exists",
+            new_callable=AsyncMock,
+            # call 1: mid-loop returns True (break); call 2: post-loop False
+            side_effect=[True, False],
+        ),
+    ):
+        result = asyncio.run(orch._run_worker(issue))
+
+    assert turn_call_count == 1, (
+        f"Expected 1 turn (mid-loop True → break), got {turn_call_count}"
+    )
+    assert result == "pr_created", (
+        f"Expected 'pr_created' (mid-loop latch), got {result!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# VP-5 guard: PR appearing on a later turn stops exactly at that turn
+# ---------------------------------------------------------------------------
+
+
+def test_pr_appears_on_later_turn_stops_there() -> None:
+    """PR detected on turn 3 stops the loop after exactly 3 turns.
+
+    Sequence of ``check_pr_exists`` calls (one per turn, plus any post-loop):
+      call 1 (mid-loop, turn 1): False
+      call 2 (mid-loop, turn 2): False
+      call 3 (mid-loop, turn 3): True  → loop breaks
+      call 4 (post-loop re-probe, if present): True (harmless)
+
+    This pins later-turn detection — not just the turn-1 case covered by
+    test_pr_exists_mid_loop_terminates_early.  It may pass against current
+    code if the post-loop probe returns True (no net state change) but is
+    included to guard the turn-count contract after the fix.
+
+    Failing assertion if VP-5 loop-break is missing (all 8 turns run):
+        AssertionError: assert turn_call_count == 3 (got 8)
+    """
+    orch = _make_orch(max_turns=8)
+    issue = _fake_issue(number=7)
+
+    fake_wt = MagicMock()
+    fake_wt.created_now = False
+    fake_wt.path = "/fake/wt/7"
+
+    fake_turn_result = MagicMock()
+    fake_turn_result.success = True
+    fake_turn_result.error = None
+
+    turn_call_count = 0
+
+    async def fake_run_turn(**kwargs: Any) -> Any:  # noqa: ANN401
+        nonlocal turn_call_count
+        turn_call_count += 1
+        return fake_turn_result
+
+    async def fake_fetch_issue_state(num: int) -> str:
+        return "open"
+
+    async def fake_run_gh(args: list[str]) -> str:
+        return json.dumps({"labels": []})
+
+    async def fake_run_hook(  # noqa: ANN401
+        name: str, script: object, **kwargs: object
+    ) -> bool:
+        return True
+
+    with (
+        patch.object(
+            orch.workspace,
+            "ensure_worktree",
+            new_callable=AsyncMock,
+            return_value=fake_wt,
+        ),
+        patch.object(
+            orch.worker,
+            "run_turn",
+            side_effect=fake_run_turn,
+        ),
+        patch.object(
+            orch.tracker,
+            "fetch_issue_state",
+            side_effect=fake_fetch_issue_state,
+        ),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.run_hook",
+            side_effect=fake_run_hook,
+        ),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.run_gh",
+            side_effect=fake_run_gh,
+        ),
+        patch.object(
+            orch.tracker,
+            "check_pr_exists",
+            new_callable=AsyncMock,
+            # turns 1-2: no PR; turn 3: PR found; 4th value covers post-loop
+            side_effect=[False, False, True, True],
+        ),
+    ):
+        result = asyncio.run(orch._run_worker(issue))
+
+    assert turn_call_count == 3, (
+        f"Expected 3 turns (PR appears on turn 3), got {turn_call_count}"
+    )
+    assert result == "pr_created", (
+        f"Expected 'pr_created' (PR detected on turn 3), got {result!r}"
+    )

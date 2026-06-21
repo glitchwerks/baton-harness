@@ -129,6 +129,9 @@ class Orchestrator:
         issue_skills = parse_issue_skills(issue.body)
 
         # 5. Multi-turn loop
+        # VENDOR-PATCH VP-5: latch a confirmed mid-loop PR observation so a
+        # flaky post-loop re-probe cannot downgrade it to "no_pr".
+        pr_detected = False
         for turn in range(1, self.config.max_turns + 1):
             # Update state
             # VENDOR-PATCH VP-2: guard already present — confirmed in vendored
@@ -231,6 +234,7 @@ class Orchestrator:
                         f"PR_EARLY #{issue.number} — PR detected mid-loop"
                         f" at turn {turn}; exiting turn loop"
                     )
+                    pr_detected = True  # VENDOR-PATCH VP-5: latch before break
                     break
             except Exception as _exc:  # best-effort; don't crash the run
                 log.debug(
@@ -243,10 +247,18 @@ class Orchestrator:
             cwd=wt.path, timeout_ms=self.config.hook_timeout_ms,
         )
 
-        # Check if a PR was created — signals work is complete
-        # VENDOR-PATCH VP-5: guard the post-loop check so a transient gh
-        # failure does not crash the run; treat as "could not determine" →
-        # return "no_pr" so the daemon schedules a continuation retry.
+        # Check if a PR was created — signals work is complete.
+        # VENDOR-PATCH VP-5: a PR confirmed mid-loop is authoritative — return
+        # immediately and do NOT re-probe, so a transient post-loop gh failure
+        # cannot downgrade a real PR to "no_pr" (the daemon parks on "no_pr",
+        # which would strand the PR). This also removes the redundant second
+        # check_pr_exists call on the common success path.
+        if pr_detected:
+            log.info(f"PR_READY #{issue.number} — PR found, releasing claim")
+            return "pr_created"
+        # Fallback: no mid-loop detection (closed/blocked break, or the
+        # mid-loop check raised every turn). Probe once, guarded — a transient
+        # failure here means "could not determine" → "no_pr".
         try:
             pr_exists = await self.tracker.check_pr_exists(issue.number)
         except Exception as _exc:  # best-effort; don't crash the run
