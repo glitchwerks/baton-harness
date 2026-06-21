@@ -46,6 +46,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from baton_harness.vendor.symphony.config import WorkflowConfig
 from baton_harness.vendor.symphony.orchestrator import Orchestrator
 from baton_harness.vendor.symphony.tracker import Issue
+from baton_harness.vendor.symphony.workspace import WorkspaceError
 
 # ---------------------------------------------------------------------------
 # Helpers — verbatim style from test_exclude_labels_recheck.py
@@ -920,7 +921,7 @@ def test_dirty_worktree_does_not_early_exit() -> None:
             create=True,  # attribute absent until impl imports run_cmd
         ) as mock_run_cmd,
     ):
-        asyncio.run(orch._run_worker(issue))
+        result = asyncio.run(orch._run_worker(issue))
 
     # Primary RED assertion: all 4 turns must run despite PR existing.
     assert turn_call_count == 4, (
@@ -939,6 +940,15 @@ def test_dirty_worktree_does_not_early_exit() -> None:
     assert any(
         "status" in args and "--porcelain" in args for args in called_args
     ), f"Expected a git-status --porcelain call; got: {called_args!r}"
+
+    # Tertiary: dirty path must still report "pr_created" via post-loop probe
+    # (tree stayed dirty so no early-exit, but post-loop check_pr_exists
+    # is True → "pr_created").  Pins that all-dirty does NOT regress to
+    # "no_pr".
+    assert result == "pr_created", (
+        f"Expected 'pr_created' (dirty path, post-loop probe finds PR),"
+        f" got {result!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1059,3 +1069,114 @@ def test_clean_worktree_early_exits() -> None:
         assert any(
             "status" in args and "--porcelain" in args for args in called_args
         ), f"Expected a git-status --porcelain call; got: {called_args!r}"
+
+
+# ---------------------------------------------------------------------------
+# VP-5 best-effort: run_cmd failure swallowed, run continues conservatively
+# ---------------------------------------------------------------------------
+
+
+def test_run_cmd_failure_continues_conservatively() -> None:
+    """A ``run_cmd`` error inside the mid-loop VP-5 block must be swallowed.
+
+    The mid-loop PR check is wrapped in a best-effort ``try/except``; any
+    exception — including ``WorkspaceError`` from ``run_cmd`` — must be
+    swallowed and the turn loop must continue rather than crashing.
+
+    Setup:
+      - max_turns=4
+      - check_pr_exists → True on every call (PR found in principle)
+      - run_cmd → raises ``WorkspaceError("git_failed", "boom")`` on every
+        call (git status fails on every attempt)
+      - fetch_issue_state → "open" (no closed-issue break)
+      - no blocked label
+
+    Expected (characterising existing conservative contract):
+      - run_turn called all 4 times (swallowed run_cmd failure must NOT
+        cause an early-exit and must NOT abort the run).
+      - ``_run_worker`` completes without propagating the exception.
+      - result is ``"pr_created"`` (post-loop ``check_pr_exists`` probe
+        still returns True → ``"pr_created"``).
+
+    This pins the conservative "git status failure → keep looping, never
+    crash" invariant.  A regression that lets the exception propagate would
+    surface as an unhandled ``WorkspaceError`` raised by ``asyncio.run``.
+    """
+    orch = _make_orch(max_turns=4)
+    issue = _fake_issue(number=10)
+
+    fake_wt = MagicMock()
+    fake_wt.created_now = False
+    fake_wt.path = "/fake/wt/10"
+
+    fake_turn_result = MagicMock()
+    fake_turn_result.success = True
+    fake_turn_result.error = None
+
+    turn_call_count = 0
+
+    async def fake_run_turn(**kwargs: Any) -> Any:  # noqa: ANN401
+        nonlocal turn_call_count
+        turn_call_count += 1
+        return fake_turn_result
+
+    async def fake_fetch_issue_state(num: int) -> str:
+        return "open"
+
+    async def fake_run_gh(args: list[str]) -> str:
+        return json.dumps({"labels": []})
+
+    async def fake_run_hook(  # noqa: ANN401
+        name: str, script: object, **kwargs: object
+    ) -> bool:
+        return True
+
+    with (
+        patch.object(
+            orch.workspace,
+            "ensure_worktree",
+            new_callable=AsyncMock,
+            return_value=fake_wt,
+        ),
+        patch.object(
+            orch.worker,
+            "run_turn",
+            side_effect=fake_run_turn,
+        ),
+        patch.object(
+            orch.tracker,
+            "fetch_issue_state",
+            side_effect=fake_fetch_issue_state,
+        ),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.run_hook",
+            side_effect=fake_run_hook,
+        ),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.run_gh",
+            side_effect=fake_run_gh,
+        ),
+        patch.object(
+            orch.tracker,
+            "check_pr_exists",
+            new_callable=AsyncMock,
+            return_value=True,  # PR found on every call (per-turn + post-loop)
+        ),
+        patch(
+            _ORCHESTRATOR_RUN_CMD,
+            new_callable=AsyncMock,
+            side_effect=WorkspaceError("git_failed", "boom"),
+            create=True,  # attribute absent until impl imports run_cmd
+        ),
+    ):
+        # Must not raise even though run_cmd errors on every turn.
+        result = asyncio.run(orch._run_worker(issue))
+
+    assert turn_call_count == 4, (
+        f"Expected 4 turns (run_cmd failure swallowed, all turns run),"
+        f" got {turn_call_count}"
+    )
+    assert result == "pr_created", (
+        f"Expected 'pr_created' (post-loop probe succeeds despite run_cmd"
+        f" failures), got {result!r}"
+    )
