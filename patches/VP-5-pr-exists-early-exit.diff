@@ -1,0 +1,109 @@
+diff --git a/src/baton_harness/vendor/symphony/orchestrator.py b/src/baton_harness/vendor/symphony/orchestrator.py
+index 8d1dba9..abeeaab 100644
+--- a/src/baton_harness/vendor/symphony/orchestrator.py
++++ b/src/baton_harness/vendor/symphony/orchestrator.py
+@@ -11,7 +11,7 @@ from .prompt import render_prompt  # VENDOR-PATCH: relative import for vendoring
+ from .state import IssueState, OrchestratorState  # VENDOR-PATCH: relative import for vendoring
+ from .tracker import GitHubTracker, Issue, parse_issue_skills, run_gh  # VENDOR-PATCH: relative import for vendoring; run_gh added for VP-2 exclude_labels re-check
+ from .worker import Worker  # VENDOR-PATCH: relative import for vendoring
+-from .workspace import WorkspaceManager  # VENDOR-PATCH: relative import for vendoring
++from .workspace import WorkspaceManager, run_cmd  # VENDOR-PATCH: relative import for vendoring; run_cmd added for VP-5 worktree-clean gate
+ 
+ log = logging.getLogger("symphony")
+ 
+@@ -129,6 +129,9 @@ class Orchestrator:
+         issue_skills = parse_issue_skills(issue.body)
+ 
+         # 5. Multi-turn loop
++        # VENDOR-PATCH VP-5: latch a confirmed mid-loop PR observation so a
++        # flaky post-loop re-probe cannot downgrade it to "no_pr".
++        pr_detected = False
+         for turn in range(1, self.config.max_turns + 1):
+             # Update state
+             # VENDOR-PATCH VP-2: guard already present — confirmed in vendored
+@@ -218,14 +221,83 @@ class Orchestrator:
+                         f" #{issue.number}: {_exc}"
+                     )
+ 
++            # VENDOR-PATCH VP-5: mid-loop PR-exists early-exit (#137)
++            # If a PR already exists after this turn, stop burning turns.
++            # Ordering: AFTER the closed-issue break and VP-2 blocked-label
++            # break, so those higher-priority terminations still fire first.
++            # Best-effort: a check_pr_exists exception is swallowed (matching
++            # the VP-2/VP-3 swallow-and-continue pattern) so a transient gh
++            # failure never crashes the run.
++            try:
++                if await self.tracker.check_pr_exists(issue.number):
++                    # VENDOR-PATCH VP-5: only exit early when the worktree is
++                    # clean AND fully pushed. A dirty tree is scored by
++                    # after_run._classify as UNCOMMITTED_CHANGES before it
++                    # checks PR_OPENED (→ parked, PR stranded); a clean tree
++                    # that is ahead of its remote would strand the unpushed
++                    # commit and let CI run on a stale PR. In either case keep
++                    # looping so a later turn commits/pushes — the PR alone is
++                    # not a "done" signal.
++                    status = await run_cmd(
++                        ["git", "status", "--porcelain", "--untracked-files=no"],
++                        cwd=wt.path,
++                    )
++                    if status.strip():
++                        log.info(
++                            f"PR_DIRTY #{issue.number} — PR exists but worktree"
++                            f" has uncommitted changes at turn {turn};"
++                            f" continuing"
++                        )
++                    else:
++                        ahead = await run_cmd(
++                            ["git", "rev-list", "--count", "@{upstream}..HEAD"],
++                            cwd=wt.path,
++                        )
++                        if ahead.strip() in ("", "0"):
++                            log.info(
++                                f"PR_EARLY #{issue.number} — PR detected"
++                                f" mid-loop at turn {turn} with clean, pushed"
++                                f" worktree; exiting"
++                            )
++                            pr_detected = True  # VENDOR-PATCH VP-5: latch before break
++                            break
++                        log.info(
++                            f"PR_UNPUSHED #{issue.number} — PR exists but"
++                            f" {ahead.strip()} local commit(s) are unpushed at"
++                            f" turn {turn}; continuing"
++                        )
++            except Exception as _exc:  # best-effort; don't crash the run
++                log.debug(
++                    f"VP-5 worktree-clean check failed for"
++                    f" #{issue.number}: {_exc}"
++                )
++
+         # Run after_run hook
+         await run_hook(
+             "after_run", self.config.hook_after_run,
+             cwd=wt.path, timeout_ms=self.config.hook_timeout_ms,
+         )
+ 
+-        # Check if a PR was created — signals work is complete
+-        pr_exists = await self.tracker.check_pr_exists(issue.number)
++        # Check if a PR was created — signals work is complete.
++        # VENDOR-PATCH VP-5: a PR confirmed mid-loop is authoritative — return
++        # immediately and do NOT re-probe, so a transient post-loop gh failure
++        # cannot downgrade a real PR to "no_pr" (the daemon parks on "no_pr",
++        # which would strand the PR). This also removes the redundant second
++        # check_pr_exists call on the common success path.
++        if pr_detected:
++            log.info(f"PR_READY #{issue.number} — PR found, releasing claim")
++            return "pr_created"
++        # Fallback: no mid-loop detection (closed/blocked break, or the
++        # mid-loop check raised every turn). Probe once, guarded — a transient
++        # failure here means "could not determine" → "no_pr".
++        try:
++            pr_exists = await self.tracker.check_pr_exists(issue.number)
++        except Exception as _exc:  # best-effort; don't crash the run
++            log.debug(
++                f"VP-5 post-loop check_pr_exists failed for"
++                f" #{issue.number}: {_exc}"
++            )
++            pr_exists = False
+         if pr_exists:
+             log.info(f"PR_READY #{issue.number} — PR found, releasing claim")
+             return "pr_created"
