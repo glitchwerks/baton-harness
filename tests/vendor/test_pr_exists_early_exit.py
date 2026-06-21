@@ -1333,9 +1333,7 @@ def test_clean_but_unpushed_commits_does_not_early_exit() -> None:
         call.args[0] if call.args else call.kwargs.get("args", [])
         for call in mock_run_cmd_async.call_args_list
     ]
-    assert any(
-        "rev-list" in args for args in all_call_args
-    ), (
+    assert any("rev-list" in args for args in all_call_args), (
         "Expected run_cmd to be called with a rev-list command"
         f" (ahead-of-remote check); got: {all_call_args!r}"
     )
