@@ -6921,3 +6921,98 @@ def test_mixed_frontier_only_non_blocked_dispatched() -> None:
         f"Issue #12 is not blocked and MUST be dispatched;"
         f" worker_calls={worker_calls}"
     )
+
+
+def test_label_fetch_failure_is_fail_closed_no_dispatch() -> None:
+    """Label-fetch failure (None) must suppress dispatch (fail-closed).
+
+    Issue #10 is in the ``agent_ready`` snapshot so it enters
+    ``dispatch_actionable``.  ``_fetch_issue_labels`` returns ``None``
+    (simulating a ``gh`` API error).  The blocked-gate must treat an
+    unknown label state as unsafe and skip the issue — the worker must
+    NOT be called.
+
+    Currently fails because the implementation treats ``None`` as clean
+    (fail-open) and dispatches the issue.
+    """
+    ready_issues = [
+        {
+            "number": 10,
+            "title": "Issue 10",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/10",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        }
+    ]
+
+    worker_calls: list[int] = []
+
+    async def fake_run_worker(issue: Any) -> str:  # noqa: ANN401
+        worker_calls.append(issue.number)
+        return "pr_created"
+
+    def fake_fetch_labels_none(
+        owner: str,
+        repo: str,
+        issue: int,
+    ) -> None:
+        """Simulate a gh fetch failure by returning None."""
+        return None
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=_run_side_effect_for_128(ready_issues),
+        ),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            return_value=[],
+        ),
+        patch(
+            "baton_harness.chain.daemon._fetch_issue_labels",
+            side_effect=fake_fetch_labels_none,
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.Orchestrator"
+            "._run_worker",
+            side_effect=fake_run_worker,
+        ),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    assert 10 not in worker_calls, (
+        f"_fetch_issue_labels returned None (gh failure) for issue #10;"
+        f" blocked-gate must be fail-closed and NOT dispatch the issue;"
+        f" worker_calls={worker_calls}"
+    )
