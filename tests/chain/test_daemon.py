@@ -6550,7 +6550,10 @@ def _run_side_effect_for_128(
         A callable matching the ``_run`` signature.
     """
 
-    def side_effect(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    def side_effect(
+        cmd: list[str],
+        env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         import json as _json
 
         cmd_str = " ".join(cmd)
@@ -6714,6 +6717,7 @@ def test_non_blocked_live_label_still_dispatches() -> None:
         owner: str,
         repo: str,
         issue: int,
+        installation_token: str = "",
     ) -> set[str]:
         # Clean state: agent-ready, no blocked.
         return {"agent-ready"}
@@ -6764,6 +6768,7 @@ def test_non_blocked_live_label_still_dispatches() -> None:
                 [_repo_cfg()],
                 once=True,
                 poll_interval_s=0,
+                installation_token="ghs_TESTTOKEN_xxxxxxx",
             )
         )
 
@@ -6813,6 +6818,7 @@ def test_mixed_frontier_only_non_blocked_dispatched() -> None:
         owner: str,
         repo: str,
         issue: int,
+        installation_token: str = "",
     ) -> set[str]:
         # #11 is live-blocked; #12 is clean.
         if issue == 11:
@@ -6821,6 +6827,7 @@ def test_mixed_frontier_only_non_blocked_dispatched() -> None:
 
     def mixed_run_side_effect(
         cmd: list[str],
+        env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         import json as _json
 
@@ -6907,6 +6914,7 @@ def test_mixed_frontier_only_non_blocked_dispatched() -> None:
                 [_repo_cfg()],
                 once=True,
                 poll_interval_s=0,
+                installation_token="ghs_TESTTOKEN_xxxxxxx",
             )
         )
 
@@ -7262,7 +7270,12 @@ def test_second_work_unit_skipped_when_blocked_mid_drain() -> None:
     # being applied after #1 finished.
     fetch_calls_for_5: list[int] = []
 
-    def fake_fetch_labels(owner: str, repo: str, n: int) -> set[str] | None:
+    def fake_fetch_labels(
+        owner: str,
+        repo: str,
+        n: int,
+        installation_token: str = "",
+    ) -> set[str] | None:
         """Return live labels; issue #5 becomes blocked on second fetch."""
         if n == 5:
             fetch_calls_for_5.append(n)
@@ -7274,7 +7287,10 @@ def test_second_work_unit_skipped_when_blocked_mid_drain() -> None:
         # All other issues: clean.
         return {"agent-ready"}
 
-    def run_side_effect(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    def run_side_effect(
+        cmd: list[str],
+        env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         """Stub gh/git calls for the two-unit mid-drain scenario."""
         import json as _json
 
@@ -7392,6 +7408,7 @@ def test_second_work_unit_skipped_when_blocked_mid_drain() -> None:
                 [_repo_cfg()],
                 once=True,
                 poll_interval_s=0,
+                installation_token="ghs_TESTTOKEN_xxxxxxx",
             )
         )
 
@@ -7471,7 +7488,12 @@ def test_second_work_unit_skipped_on_non_blocked_exclude_label_mid_drain() -> (
     # Issue #5 gets "on-hold" on the second label fetch (mid-drain re-check).
     fetch_calls_for_5: list[int] = []
 
-    def fake_fetch_labels(owner: str, repo: str, n: int) -> set[str] | None:
+    def fake_fetch_labels(
+        owner: str,
+        repo: str,
+        n: int,
+        installation_token: str = "",
+    ) -> set[str] | None:
         """Return live labels; issue #5 gets 'on-hold' on second fetch."""
         if n == 5:
             fetch_calls_for_5.append(n)
@@ -7485,6 +7507,7 @@ def test_second_work_unit_skipped_on_non_blocked_exclude_label_mid_drain() -> (
 
     def run_side_effect(
         cmd: list[str],
+        env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         """Stub gh/git calls for the non-blocked-exclude-label scenario."""
         import json as _json
@@ -7608,6 +7631,7 @@ def test_second_work_unit_skipped_on_non_blocked_exclude_label_mid_drain() -> (
                 [_repo_cfg()],
                 once=True,
                 poll_interval_s=0,
+                installation_token="ghs_TESTTOKEN_xxxxxxx",
             )
         )
 
@@ -7695,13 +7719,19 @@ def test_second_work_unit_skipped_when_agent_ready_removed_mid_drain() -> None:
     # and WITHOUT any exclude label — pure de-greenlit scenario).
     fetch_calls_for_5: list[int] = []
 
-    def fake_fetch_labels(owner: str, repo: str, n: int) -> set[str] | None:
+    def fake_fetch_labels(
+        owner: str,
+        repo: str,
+        n: int,
+        installation_token: str = "",
+    ) -> set[str] | None:
         """Return live labels; issue #5 loses agent-ready on second fetch.
 
         Args:
             owner: Repository owner (unused in stub).
             repo: Repository name (unused in stub).
             n: Issue number to fetch labels for.
+            installation_token: Ignored in stub; accepted for compatibility.
 
         Returns:
             A set of label strings, or None on simulated fetch failure.
@@ -7719,11 +7749,13 @@ def test_second_work_unit_skipped_when_agent_ready_removed_mid_drain() -> None:
 
     def run_side_effect(
         cmd: list[str],
+        env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         """Stub gh/git calls for the two-unit mid-drain scenario.
 
         Args:
             cmd: The command list passed to ``_run``.
+            env: Environment dict passed by the daemon (ignored in stub).
 
         Returns:
             A successful CompletedProcess with appropriate JSON payloads.
@@ -7857,6 +7889,7 @@ def test_second_work_unit_skipped_when_agent_ready_removed_mid_drain() -> None:
                 [_repo_cfg()],
                 once=True,
                 poll_interval_s=0,
+                installation_token="ghs_TESTTOKEN_xxxxxxx",
             )
         )
 
@@ -8293,14 +8326,18 @@ class TestDrainAgentReadyRevalidation:
             ms_number: Milestone number; used to build baton branch names.
 
         Returns:
-            A callable matching the ``_run(cmd)`` signature.
+            A callable matching the ``_run(cmd, env)`` signature.
         """
 
-        def side_effect(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        def side_effect(
+            cmd: list[str],
+            env: dict[str, str] | None = None,
+        ) -> subprocess.CompletedProcess[str]:
             """Dispatch stub responses by command shape.
 
             Args:
                 cmd: Command token list passed to ``_run``.
+                env: Environment dict passed by the daemon (ignored in stub).
 
             Returns:
                 A successful ``CompletedProcess`` with appropriate JSON.
@@ -8435,7 +8472,10 @@ class TestDrainAgentReadyRevalidation:
         fetch_calls_for_5: list[int] = []
 
         def fake_fetch_labels(
-            owner: str, repo: str, n: int
+            owner: str,
+            repo: str,
+            n: int,
+            installation_token: str = "",
         ) -> set[str] | None:
             """Return live labels; #5 loses agent-ready on second fetch.
 
@@ -8443,6 +8483,7 @@ class TestDrainAgentReadyRevalidation:
                 owner: Repo owner (unused stub).
                 repo: Repo name (unused stub).
                 n: Issue number.
+                installation_token: Ignored in stub; accepted for compat.
 
             Returns:
                 Set of label name strings, or None on failure.
@@ -8538,6 +8579,7 @@ class TestDrainAgentReadyRevalidation:
                     [_repo_cfg()],
                     once=True,
                     poll_interval_s=0,
+                    installation_token="ghs_TESTTOKEN_xxxxxxx",
                 )
             )
 
@@ -8674,6 +8716,8 @@ class TestDrainAgentReadyRevalidation:
             repo: str,
             ms_num: int,
             ms_title: str,
+            *,
+            installation_token: str = "",
         ) -> frozenset[int]:
             """Return the full open member set for each milestone.
 
@@ -8682,6 +8726,7 @@ class TestDrainAgentReadyRevalidation:
                 repo: Repo name (unused stub).
                 ms_num: Milestone number.
                 ms_title: Milestone title (unused stub).
+                installation_token: Ignored in stub; accepted for compat.
 
             Returns:
                 Full open-member frozenset for the given milestone.
@@ -8689,7 +8734,10 @@ class TestDrainAgentReadyRevalidation:
             return full_memberships.get(ms_num, frozenset())
 
         def fake_fetch_labels(
-            owner: str, repo: str, n: int
+            owner: str,
+            repo: str,
+            n: int,
+            installation_token: str = "",
         ) -> set[str] | None:
             """Return live labels reflecting each issue's true state.
 
@@ -8702,6 +8750,7 @@ class TestDrainAgentReadyRevalidation:
                 owner: Repo owner (unused stub).
                 repo: Repo name (unused stub).
                 n: Issue number.
+                installation_token: Ignored in stub; accepted for compat.
 
             Returns:
                 Set of label name strings, or None on failure.
@@ -8714,11 +8763,13 @@ class TestDrainAgentReadyRevalidation:
 
         def run_side_effect(
             cmd: list[str],
+            env: dict[str, str] | None = None,
         ) -> subprocess.CompletedProcess[str]:
             """Stub gh/git calls for the two-milestone drain scenario.
 
             Args:
                 cmd: Command token list passed to ``_run``.
+                env: Environment dict passed by the daemon (ignored in stub).
 
             Returns:
                 A successful ``CompletedProcess`` with appropriate JSON.
@@ -8826,6 +8877,7 @@ class TestDrainAgentReadyRevalidation:
                     [_repo_cfg()],
                     once=True,
                     poll_interval_s=0,
+                    installation_token="ghs_TESTTOKEN_xxxxxxx",
                 )
             )
 

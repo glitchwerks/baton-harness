@@ -95,6 +95,11 @@ def test_main_once_calls_run_daemon_with_once_true() -> None:
 
     with (
         patch(
+            "baton_harness.chain.cli.bootstrap_secrets",
+            return_value="ghs_TESTTOKEN_xxxxxxx",
+        ),
+        patch("baton_harness.chain.cli.validate_daemon_token"),
+        patch(
             "baton_harness.chain.cli.load_workflow",
             return_value=MagicMock(),
         ),
@@ -123,6 +128,11 @@ def test_main_poll_interval_override() -> None:
         called_kwargs.update(kwargs)
 
     with (
+        patch(
+            "baton_harness.chain.cli.bootstrap_secrets",
+            return_value="ghs_TESTTOKEN_xxxxxxx",
+        ),
+        patch("baton_harness.chain.cli.validate_daemon_token"),
         patch(
             "baton_harness.chain.cli.load_workflow",
             return_value=MagicMock(),
@@ -169,6 +179,11 @@ def test_main_chdirs_into_project_root_before_run_daemon() -> None:
     fake_repo_cfg.project_root = project_root
 
     with (
+        patch(
+            "baton_harness.chain.cli.bootstrap_secrets",
+            return_value="ghs_TESTTOKEN_xxxxxxx",
+        ),
+        patch("baton_harness.chain.cli.validate_daemon_token"),
         patch(
             "baton_harness.chain.cli.load_workflow",
             return_value=MagicMock(),
@@ -264,6 +279,11 @@ def test_main_workflow_path_resolved_absolute_before_chdir() -> None:
         pass
 
     with (
+        patch(
+            "baton_harness.chain.cli.bootstrap_secrets",
+            return_value="ghs_TESTTOKEN_xxxxxxx",
+        ),
+        patch("baton_harness.chain.cli.validate_daemon_token"),
         patch(
             "baton_harness.chain.cli.load_workflow",
             side_effect=record_load_workflow,
