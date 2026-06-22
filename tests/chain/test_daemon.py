@@ -7932,11 +7932,7 @@ def _run_side_effect_for_135(
         ):
             return _ok(_json.dumps([]))
         # issue view — structural response for _fetch_issue_obj.
-        if (
-            "issue" in cmd_str
-            and "view" in cmd_str
-            and "edit" not in cmd_str
-        ):
+        if "issue" in cmd_str and "view" in cmd_str and "edit" not in cmd_str:
             nums = [p for p in cmd if p.isdigit()]
             n = int(nums[0]) if nums else issue_number
             return _ok(
@@ -8090,9 +8086,7 @@ def test_malformed_3_label_state_fires_critical_alert() -> None:
     )
 
     # Invariant alert: a critical alert must be emitted for the operator.
-    critical_alerts = [
-        a for a in alert_calls if a["severity"] == "critical"
-    ]
+    critical_alerts = [a for a in alert_calls if a["severity"] == "critical"]
     assert critical_alerts, (
         "Malformed 3-label state {agent-ready, agent-done, blocked} must"
         " emit a critical alert so the operator is paged — the pre-dispatch"
@@ -8228,8 +8222,7 @@ def test_two_label_torn_state_no_multi_state_critical_alert() -> None:
     multi_state_critical = [
         a
         for a in alert_calls
-        if a["severity"] == "critical"
-        and "agent-done" in a["msg"]
+        if a["severity"] == "critical" and "agent-done" in a["msg"]
     ]
     assert not multi_state_critical, (
         "2-label torn state {agent-ready, blocked} must NOT fire a"

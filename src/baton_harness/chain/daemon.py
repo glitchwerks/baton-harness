@@ -1793,9 +1793,7 @@ async def _poll_and_run(
             # Malformed multi-state: blocked + ≥2 state labels is a
             # genuine invariant violation — page the operator.
             if len(live_labels & STATE_LABELS) >= 2:
-                extra = sorted(
-                    (live_labels & STATE_LABELS) - {LABEL_BLOCKED}
-                )
+                extra = sorted((live_labels & STATE_LABELS) - {LABEL_BLOCKED})
                 alert(
                     owner,
                     repo,
