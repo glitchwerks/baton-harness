@@ -14,6 +14,10 @@ Coverage:
   ``_MAX_RETRIES`` times before raising with a transient-specific message.
 - Permanent errors (401, bad credentials) raise immediately without retry.
 - Exception messages never contain raw ``gh`` stderr payloads.
+- (C1) ``validate_github_token`` still REJECTS a ``ghs_`` installation
+  token — the worker path must remain ``github_pat_``-only.
+- (C2) ``validate_daemon_token`` ACCEPTS a ``ghs_`` installation token
+  and REJECTS ``github_pat_``, ``ghp_``, and empty strings.
 
 All ``gh`` subprocess calls are intercepted by patching
 ``baton_harness._auth._run`` so no real network calls are made.
@@ -27,7 +31,11 @@ from unittest.mock import patch
 import pytest
 
 import baton_harness._auth as auth_mod
-from baton_harness._auth import TokenValidationError, validate_github_token
+from baton_harness._auth import (
+    TokenValidationError,
+    validate_daemon_token,
+    validate_github_token,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -588,3 +596,104 @@ class TestCredentialHygiene:
             f"Raw stderr sentinel must not appear in the exception "
             f"message. Got: {msg!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# C1. Regression guard: worker validator still rejects ghs_ tokens
+# ---------------------------------------------------------------------------
+
+
+class TestWorkerValidatorRejectsInstallationToken:
+    """``validate_github_token`` (worker path) must NOT accept ``ghs_`` tokens.
+
+    Design decision #133: the worker path is ``github_pat_``-only.  A
+    ``ghs_`` installation token reaching this validator would indicate the
+    harness accidentally passed its privileged credential into the worker
+    context -- a security regression.
+    """
+
+    def test_ghs_token_raises_token_validation_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``ghs_`` raises ``TokenValidationError`` in the worker gate."""
+        monkeypatch.setenv("GH_TOKEN", "ghs_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+        with pytest.raises(TokenValidationError):
+            validate_github_token()
+
+    def test_ghs_token_rejection_without_capability_call(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``ghs_`` must be rejected at the type gate, before any gh call.
+
+        If the type gate fires first, no ``_run`` call should be made.
+        """
+        monkeypatch.setenv("GH_TOKEN", "ghs_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+        run_called = False
+
+        def sentinel_run(
+            cmd: list[str],
+        ) -> subprocess.CompletedProcess[str]:
+            nonlocal run_called
+            run_called = True
+            return _completed(_GH_API_USER_OK)
+
+        with patch.object(auth_mod, "_run", sentinel_run):
+            with pytest.raises(TokenValidationError):
+                validate_github_token()
+
+        assert not run_called, (
+            "validate_github_token must reject ghs_ at the type gate "
+            "without making any gh subprocess call"
+        )
+
+
+# ---------------------------------------------------------------------------
+# C2. New daemon validator: accept ghs_, reject all worker-token prefixes
+# ---------------------------------------------------------------------------
+
+
+class TestValidateDaemonToken:
+    """``validate_daemon_token`` enforces the daemon-side token type gate.
+
+    Accepts ``ghs_`` installation tokens only.  All worker-token forms
+    (``github_pat_``, ``ghp_``) and empty strings must be rejected.  This
+    is a type-gate only -- no live ``gh`` call is required or made.
+    """
+
+    def test_accepts_ghs_installation_token(self) -> None:
+        """``ghs_`` installation token must be accepted without raising."""
+        # Must not raise.
+        validate_daemon_token("ghs_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+
+    def test_rejects_fine_grained_pat(self) -> None:
+        """Fine-grained worker PAT (``github_pat_``) must be rejected."""
+        with pytest.raises(TokenValidationError):
+            validate_daemon_token(
+                "github_pat_AAAAAAAAAAAAAAAAAAAAAAAAAAAAA_BBBBBBB"
+            )
+
+    def test_rejects_classic_pat(self) -> None:
+        """Classic PAT (``ghp_`` prefix) must be rejected."""
+        with pytest.raises(TokenValidationError):
+            validate_daemon_token("ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+
+    def test_rejects_empty_string(self) -> None:
+        """Empty string must be rejected."""
+        with pytest.raises(TokenValidationError):
+            validate_daemon_token("")
+
+    def test_rejects_oauth_token(self) -> None:
+        """OAuth app token (``gho_`` prefix) must be rejected."""
+        with pytest.raises(TokenValidationError):
+            validate_daemon_token("gho_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+
+    def test_rejects_unknown_prefix(self) -> None:
+        """An unrecognised token prefix must be rejected."""
+        with pytest.raises(TokenValidationError):
+            validate_daemon_token("v1_someoldstyletoken")
