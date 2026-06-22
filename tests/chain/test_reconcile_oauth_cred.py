@@ -15,7 +15,7 @@ honour an overridable/configured path if the project exposes one.
 We test the behaviour via the module-level seam rather than the
 default path to avoid touching real credentials.
 
-All I/O is mocked.  ``validate_github_token``, ``alert``, and the
+All I/O is mocked.  ``validate_daemon_token``, ``alert``, and the
 credential-file open are each patched per-test so no real files or
 network calls are made.
 
@@ -44,7 +44,7 @@ import pytest
 
 _OWNER = "glitchwerks"
 _REPO = "baton-harness"
-_FINE_GRAINED_TOKEN = "github_pat_test_0000000000"
+_INSTALLATION_TOKEN = "ghs_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
 
 def _import_reconcile() -> Any:  # noqa: ANN401
@@ -88,10 +88,10 @@ def _patch_passing_prereqs(
     """Set env vars so the G3a/G3b gates pass without touching G3c.
 
     Removes ANTHROPIC_API_KEY (must be absent) and sets GH_TOKEN to
-    a fake fine-grained PAT prefix so the token-type check in
-    validate_github_token passes before we patch it out.
+    a fake ghs_ installation token so the token-type check in
+    validate_daemon_token passes before we patch it out.
     """
-    monkeypatch.setenv("GH_TOKEN", _FINE_GRAINED_TOKEN)
+    monkeypatch.setenv("GH_TOKEN", _INSTALLATION_TOKEN)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
 
@@ -137,7 +137,7 @@ class TestG3cCredentialFilePresent:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_github_token",
+                "baton_harness.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
             patch("baton_harness.chain.reconcile.alert", mock_alert),
@@ -195,7 +195,7 @@ class TestG3cCredentialFilePresent:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_github_token",
+                "baton_harness.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
             patch("baton_harness.chain.reconcile.alert", return_value=True),
@@ -247,7 +247,7 @@ class TestG3cCredentialFileAbsent:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_github_token",
+                "baton_harness.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
             patch("baton_harness.chain.reconcile.alert", mock_alert),
@@ -298,7 +298,7 @@ class TestG3cCredentialFileAbsent:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_github_token",
+                "baton_harness.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
             patch("baton_harness.chain.reconcile.alert", mock_alert),
@@ -344,7 +344,7 @@ class TestG3cCredentialFileAbsent:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_github_token",
+                "baton_harness.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
             patch("baton_harness.chain.reconcile.alert", return_value=True),
@@ -422,7 +422,7 @@ class TestG3cCredentialFileUnreadable:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_github_token",
+                "baton_harness.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
             patch("baton_harness.chain.reconcile.alert", mock_alert),
@@ -486,7 +486,7 @@ class TestG3cCredentialFileUnreadable:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_github_token",
+                "baton_harness.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
             patch("baton_harness.chain.reconcile.alert", mock_alert),
@@ -543,7 +543,7 @@ class TestG3cCredentialFileUnreadable:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_github_token",
+                "baton_harness.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
             patch("baton_harness.chain.reconcile.alert", return_value=True),
@@ -608,7 +608,7 @@ class TestG3cStructuralOnly:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_github_token",
+                "baton_harness.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
             patch("baton_harness.chain.reconcile.alert", mock_alert),
