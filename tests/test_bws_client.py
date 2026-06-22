@@ -22,6 +22,7 @@ import subprocess
 from collections.abc import Callable
 
 import pytest
+
 from baton_harness.chain.bws_client import BwsClientError, fetch_secret
 
 # ---------------------------------------------------------------------------

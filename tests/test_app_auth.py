@@ -27,6 +27,10 @@ from typing import Any
 
 import jwt
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.serialization import load_der_public_key
+
 from baton_harness.chain.app_auth import (
     AppAuthError,
     InstallationTokenProvider,
@@ -34,9 +38,6 @@ from baton_harness.chain.app_auth import (
     build_app_jwt,
     mint_installation_token,
 )
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.hazmat.primitives.serialization import load_der_public_key
 
 # ---------------------------------------------------------------------------
 # Helpers
