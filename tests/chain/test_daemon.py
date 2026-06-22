@@ -7137,6 +7137,15 @@ def test_unmilestoned_issue_dispatched_alongside_milestoned_in_same_tick() -> (
             "baton_harness.chain.daemon._fetch_full_milestone_members",
             return_value=frozenset({20}),
         ),
+        # Both issues remain greenlit throughout the drain (neither loses
+        # agent-ready nor acquires an exclude label mid-drain).  Required
+        # since the P2 fix now also re-verifies agent-ready on every
+        # mid-drain fetch; without this patch the real _run stub returns
+        # agent-done labels, which would incorrectly trigger a skip.
+        patch(
+            "baton_harness.chain.daemon._fetch_issue_labels",
+            return_value={"agent-ready"},
+        ),
         patch("baton_harness.chain.branches.create_feature_branch"),
         patch("baton_harness.chain.branches.checkout_feature_branch"),
         patch(
@@ -7606,6 +7615,254 @@ def test_second_work_unit_skipped_on_non_blocked_exclude_label_mid_drain() -> (
         f" — the mid-drain re-check must use _DISPATCH_EXCLUDE_LABELS, not"
         f" the literal 'blocked' (generalisation, #132);"
         f" worker_calls={worker_calls}"
+    )
+    block_alerts = [a for a in alert_calls if a["kind"] == "block"]
+    assert block_alerts, (
+        f"alert must fire with kind='block' for the skipped unit; "
+        f"alert_calls={alert_calls}"
+    )
+
+
+def test_second_work_unit_skipped_when_agent_ready_removed_mid_drain() -> None:
+    """Second work unit is skipped when ``agent-ready`` is removed mid-drain.
+
+    Regression test for the Codex P2 finding on PR #145: the mid-drain
+    live-label re-check only verified exclude labels (e.g. ``blocked``)
+    but did NOT verify that ``agent-ready`` was still present.  If a
+    human de-greenlit the second unit's issue (removed ``agent-ready``)
+    while the first unit ran, the stale ``all_ready_nums`` snapshot still
+    treated it as ready and dispatched a worker.
+
+    Setup:
+    - Un-milestoned issue #1 (``agent-ready``), dispatched first.
+    - Un-milestoned issue #5 (``agent-ready``), loses ``agent-ready``
+      mid-drain (live-label fetch on second call returns labels WITHOUT
+      ``agent-ready`` and WITHOUT any exclude label — pure de-greenlit).
+    - ``once=True`` — one poll tick.
+
+    The ``_fetch_issue_labels`` mock:
+    - First call for #5 (tick-start pre-check): returns
+      ``{"agent-ready"}`` — clean.
+    - Second call for #5 (mid-drain re-check): returns
+      ``{"some-other"}`` — ``agent-ready`` absent, no exclude label.
+
+    Expected:
+    - ``_run_worker`` called for #1 only.
+    - ``alert`` called at least once with ``kind="block"``.
+
+    This test FAILS against the pre-fix code (which only checked exclude
+    labels) and PASSES after the fix (which also requires ``agent-ready``
+    to be present).
+    """
+    ready_issues = [
+        {
+            "number": 1,
+            "title": "First issue",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/1",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        },
+        {
+            "number": 5,
+            "title": "Second issue — loses agent-ready mid-drain",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/5",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        },
+    ]
+
+    worker_calls: list[int] = []
+
+    async def fake_run_worker(issue: Any) -> str:  # noqa: ANN401
+        """Record dispatched issue numbers."""
+        worker_calls.append(issue.number)
+        return "pr_created"
+
+    # Track how many times _fetch_issue_labels is called for #5.
+    # First call = tick-start pre-check (returns agent-ready — clean).
+    # Second call = mid-drain re-check (returns labels WITHOUT agent-ready
+    # and WITHOUT any exclude label — pure de-greenlit scenario).
+    fetch_calls_for_5: list[int] = []
+
+    def fake_fetch_labels(owner: str, repo: str, n: int) -> set[str] | None:
+        """Return live labels; issue #5 loses agent-ready on second fetch.
+
+        Args:
+            owner: Repository owner (unused in stub).
+            repo: Repository name (unused in stub).
+            n: Issue number to fetch labels for.
+
+        Returns:
+            A set of label strings, or None on simulated fetch failure.
+        """
+        if n == 5:
+            fetch_calls_for_5.append(n)
+            if len(fetch_calls_for_5) >= 2:
+                # Mid-drain re-check: agent-ready removed, no exclude
+                # label present.  Pure de-greenlit case.
+                return {"some-other-label"}
+            # Tick-start pre-check: clean.
+            return {"agent-ready"}
+        # All other issues: always clean.
+        return {"agent-ready"}
+
+    def run_side_effect(
+        cmd: list[str],
+    ) -> subprocess.CompletedProcess[str]:
+        """Stub gh/git calls for the two-unit mid-drain scenario.
+
+        Args:
+            cmd: The command list passed to ``_run``.
+
+        Returns:
+            A successful CompletedProcess with appropriate JSON payloads.
+        """
+        import json as _json
+
+        cmd_str = " ".join(cmd)
+        if (
+            "issue" in cmd_str
+            and "list" in cmd_str
+            and "agent-ready" in cmd_str
+        ):
+            return _ok(_json.dumps(ready_issues))
+        if (
+            "issue" in cmd_str
+            and "list" in cmd_str
+            and "agent-in-progress" in cmd_str
+        ):
+            return _ok(_json.dumps([]))
+        if "issue" in cmd_str and "view" in cmd_str and "edit" not in cmd_str:
+            nums = [p for p in cmd if p.isdigit()]
+            n = int(nums[0]) if nums else 1
+            return _ok(
+                _json.dumps(
+                    {
+                        "number": n,
+                        "title": f"Issue {n}",
+                        "state": "open",
+                        "body": "",
+                        "url": f"https://github.com/o/r/issues/{n}",
+                        "labels": [{"name": "agent-done"}],
+                        "assignees": [],
+                    }
+                )
+            )
+        if "issue" in cmd_str and "edit" in cmd_str:
+            return _ok()
+        if "pr" in cmd_str and "list" in cmd_str:
+            prs = [
+                {
+                    "number": 10,
+                    "headRefName": f"baton/issue-{n}-{n}",
+                    "headRefOid": f"sha{n}",
+                }
+                for n in [1, 5]
+            ]
+            return _ok(_json.dumps(prs))
+        if "pr" in cmd_str and "create" in cmd_str:
+            return _ok("https://github.com/o/r/pull/99")
+        if "git" in cmd_str and "push" in cmd_str:
+            return _ok()
+        if "ls-remote" in cmd_str:
+            return _ok("")
+        if "rev-parse" in cmd_str:
+            return _ok("abc123\n")
+        return _ok()
+
+    alert_calls: list[dict[str, Any]] = []
+
+    def fake_alert(
+        owner: str,
+        repo: str,
+        issue: int,
+        message: str,
+        *,
+        severity: str = "critical",
+        kind: str = "block",
+        runlog: Any = None,  # noqa: ANN401
+    ) -> bool:
+        """Capture alert calls.
+
+        Args:
+            owner: Repository owner.
+            repo: Repository name.
+            issue: Issue number the alert concerns.
+            message: Human-readable alert message.
+            severity: Alert severity level.
+            kind: Alert kind (e.g. ``"block"``).
+            runlog: Optional runlog handle.
+
+        Returns:
+            Always ``True`` (stub success).
+        """
+        alert_calls.append(
+            {"issue": issue, "severity": severity, "kind": kind}
+        )
+        return True
+
+    with (
+        patch.object(daemon_mod, "_run", side_effect=run_side_effect),
+        patch(
+            "baton_harness.chain.daemon._fetch_issue_labels",
+            side_effect=fake_fetch_labels,
+        ),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            return_value=[],
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch(
+            "baton_harness.chain.daemon.alert",
+            side_effect=fake_alert,
+        ),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.Orchestrator"
+            "._run_worker",
+            side_effect=fake_run_worker,
+        ),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    assert 1 in worker_calls, (
+        f"Issue #1 must be dispatched (first unit); "
+        f"worker_calls={worker_calls}"
+    )
+    assert 5 not in worker_calls, (
+        f"Issue #5 lost agent-ready mid-drain and must NOT be dispatched "
+        f"(Codex P2 mid-drain agent-ready re-check, PR #145); "
+        f"worker_calls={worker_calls}"
     )
     block_alerts = [a for a in alert_calls if a["kind"] == "block"]
     assert block_alerts, (

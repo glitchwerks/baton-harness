@@ -60,6 +60,7 @@ from baton_harness.chain.gh_deps import (
 )
 from baton_harness.chain.heartbeat import LivenessState, run_heartbeat_loop
 from baton_harness.chain.labels import (
+    LABEL_AGENT_READY,
     LABEL_BLOCKED,
     assert_single_state,
     target_state_from_observed,
@@ -1870,20 +1871,29 @@ async def _poll_and_run(
             # issues before the drain loop started, so the first work unit
             # is clean.  Subsequent units may have become blocked WHILE
             # the preceding unit(s) ran — re-fetch their live labels and
-            # skip if any member now carries ``blocked``.  Re-uses the same
+            # skip if any member now carries an exclude label OR has lost
+            # ``agent-ready`` (de-greenlit mid-drain).  Re-uses the same
             # ``_fetch_issue_labels`` helper and ``alert`` path as the
             # pre-dispatch gate inside ``_run_work_unit`` (L~984) — no new
-            # code paths.
+            # code paths.  Single fetch per member covers both checks
+            # (Codex P2, #145).
             if _drain_idx > 0:
                 # Re-check live labels for every member using the same
                 # ``_DISPATCH_EXCLUDE_LABELS`` set as the tick-start gate
                 # so "blocked or other exclude labels" is consistent.
+                # Also re-verify ``agent-ready`` is still present: a human
+                # may have removed it mid-drain (de-greenlit), which is a
+                # complementary TOCTOU gap to the exclude-label check.
                 # Fail-closed: ``None`` (unreadable) also skips the unit.
                 mid_drain_excluded: int | None = None
                 for _md_n in membership:
                     _md_labels = _fetch_issue_labels(owner, repo, _md_n)
-                    if _md_labels is None or not (
-                        _DISPATCH_EXCLUDE_LABELS.isdisjoint(_md_labels)
+                    if (
+                        _md_labels is None
+                        or not (
+                            _DISPATCH_EXCLUDE_LABELS.isdisjoint(_md_labels)
+                        )
+                        or LABEL_AGENT_READY not in _md_labels
                     ):
                         mid_drain_excluded = _md_n
                         break
