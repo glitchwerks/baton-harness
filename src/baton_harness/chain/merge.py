@@ -87,6 +87,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import time
 from enum import Enum, auto
@@ -170,7 +171,31 @@ class CiAuthError(RuntimeError):
 # ---------------------------------------------------------------------------
 
 
-def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+def _gh_env(installation_token: str) -> dict[str, str]:
+    """Return os.environ overlaid with GH_TOKEN=<installation_token>.
+
+    Does not mutate os.environ.  Token is per-call; never persists
+    in the process environment.
+
+    Args:
+        installation_token: GitHub App installation access token
+            (``ghs_`` prefix) to inject as ``GH_TOKEN`` and
+            ``GITHUB_TOKEN`` in the subprocess environment.
+
+    Returns:
+        A shallow copy of ``os.environ`` with both ``GH_TOKEN`` and
+        ``GITHUB_TOKEN`` overridden to ``installation_token``.
+    """
+    env = dict(os.environ)
+    env["GH_TOKEN"] = installation_token
+    env["GITHUB_TOKEN"] = installation_token
+    return env
+
+
+def _run(
+    cmd: list[str],
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     """Run an external command and return its completed process.
 
     Centralises subprocess invocation so tests can patch a single symbol
@@ -178,6 +203,10 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
 
     Args:
         cmd: Command and arguments to execute (no shell interpolation).
+        env: Optional environment dict for the subprocess.  When
+            ``None``, the subprocess inherits ``os.environ`` unchanged.
+            Pass ``_gh_env(installation_token)`` for daemon-side calls
+            to override ``GH_TOKEN`` without mutating ``os.environ``.
 
     Returns:
         A ``subprocess.CompletedProcess`` with captured stdout/stderr.
@@ -188,6 +217,7 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         encoding="utf-8",
+        env=env,
     )
 
 
@@ -213,6 +243,8 @@ def _query_action_jobs(
     owner: str,
     repo: str,
     sha: str,
+    *,
+    installation_token: str = "",
 ) -> list[dict[str, object]]:
     """Query the GitHub Actions API for jobs associated with a commit SHA.
 
@@ -236,6 +268,11 @@ def _query_action_jobs(
         owner: The GitHub repository owner.
         repo: The repository name.
         sha: The commit SHA whose Actions jobs are queried.
+        installation_token: Optional GitHub App installation access token
+            (``ghs_`` prefix).  When non-empty, the ``gh`` subprocess
+            calls override ``GH_TOKEN`` via a per-call env copy —
+            ``os.environ`` is never mutated.  Pass ``""`` (default) to
+            inherit the ambient credential unchanged.
 
     Returns:
         A flat list of job dicts, each containing at minimum ``name``,
@@ -250,9 +287,13 @@ def _query_action_jobs(
         ValueError: If the response JSON cannot be parsed or lacks the
             expected keys.
     """
+    gh_call_env = _gh_env(installation_token) if installation_token else None
+    _env_kw: dict[str, dict[str, str]] = (
+        {"env": gh_call_env} if gh_call_env is not None else {}
+    )
     # Step 1: list workflow runs for this SHA.
     runs_url = f"repos/{owner}/{repo}/actions/runs?head_sha={sha}"
-    runs_proc = _run(["gh", "api", runs_url])
+    runs_proc = _run(["gh", "api", runs_url], **_env_kw)
     if runs_proc.returncode != 0:
         if _is_auth_error(runs_proc):
             raise CiAuthError(
@@ -286,7 +327,7 @@ def _query_action_jobs(
     for run in sorted_runs:
         run_id = run["id"]
         jobs_url = f"repos/{owner}/{repo}/actions/runs/{run_id}/jobs"
-        jobs_proc = _run(["gh", "api", jobs_url])
+        jobs_proc = _run(["gh", "api", jobs_url], **_env_kw)
         if jobs_proc.returncode != 0:
             if _is_auth_error(jobs_proc):
                 raise CiAuthError(

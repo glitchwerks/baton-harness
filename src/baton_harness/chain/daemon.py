@@ -135,7 +135,31 @@ _CLAUDE_ATTRIBUTION = (
 # ---------------------------------------------------------------------------
 
 
-def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+def _gh_env(installation_token: str) -> dict[str, str]:
+    """Return os.environ overlaid with GH_TOKEN=<installation_token>.
+
+    Does not mutate os.environ.  Token is per-call; never persists
+    in the process environment.
+
+    Args:
+        installation_token: GitHub App installation access token
+            (``ghs_`` prefix) to inject as ``GH_TOKEN`` and
+            ``GITHUB_TOKEN`` in the subprocess environment.
+
+    Returns:
+        A shallow copy of ``os.environ`` with both ``GH_TOKEN`` and
+        ``GITHUB_TOKEN`` overridden to ``installation_token``.
+    """
+    env = dict(os.environ)
+    env["GH_TOKEN"] = installation_token
+    env["GITHUB_TOKEN"] = installation_token
+    return env
+
+
+def _run(
+    cmd: list[str],
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     """Run an external command and return its completed process.
 
     Centralises subprocess invocation so tests can patch a single symbol
@@ -143,6 +167,10 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
 
     Args:
         cmd: Command and arguments to execute (no shell interpolation).
+        env: Optional environment dict for the subprocess.  When
+            ``None``, the subprocess inherits ``os.environ`` unchanged.
+            Pass ``_gh_env(installation_token)`` for daemon-side calls
+            to override ``GH_TOKEN`` without mutating ``os.environ``.
 
     Returns:
         A ``subprocess.CompletedProcess`` with captured stdout/stderr.
@@ -153,6 +181,7 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         encoding="utf-8",
+        env=env,
     )
 
 
@@ -194,6 +223,7 @@ def _label_edit(
     *,
     add: list[str] | None = None,
     remove: list[str] | None = None,
+    installation_token: str = "",
 ) -> None:
     """Edit labels on a GitHub issue.
 
@@ -203,13 +233,20 @@ def _label_edit(
         issue: The issue number.
         add: Labels to add (optional).
         remove: Labels to remove (optional).
+        installation_token: Optional GitHub App installation access token.
+            When non-empty, overrides ``GH_TOKEN`` in the subprocess env
+            via a per-call copy — ``os.environ`` is never mutated.
     """
     cmd = ["gh", "issue", "edit", str(issue), "--repo", f"{owner}/{repo}"]
     for lbl in add or []:
         cmd += ["--add-label", lbl]
     for lbl in remove or []:
         cmd += ["--remove-label", lbl]
-    proc = _run(cmd)
+    gh_env = _gh_env(installation_token) if installation_token else None
+    _env_kw: dict[str, dict[str, str]] = (
+        {"env": gh_env} if gh_env is not None else {}
+    )
+    proc = _run(cmd, **_env_kw)
     if proc.returncode != 0:
         _log.warning(
             "daemon: gh issue edit failed for #%d (exit %d): %s",
@@ -223,6 +260,8 @@ def _find_issue_pr(
     owner: str,
     repo: str,
     issue: int,
+    *,
+    installation_token: str = "",
 ) -> tuple[str | None, str | None]:
     """Find an open PR's head branch and SHA for a given issue number.
 
@@ -233,11 +272,18 @@ def _find_issue_pr(
         owner: The GitHub repository owner.
         repo: The repository name.
         issue: The issue number to search for.
+        installation_token: Optional GitHub App installation access token.
+            When non-empty, overrides ``GH_TOKEN`` in the subprocess env
+            via a per-call copy — ``os.environ`` is never mutated.
 
     Returns:
         A ``(branch_name, head_sha)`` tuple if found, or
         ``(None, None)`` if no matching PR exists.
     """
+    gh_env = _gh_env(installation_token) if installation_token else None
+    _env_kw: dict[str, dict[str, str]] = (
+        {"env": gh_env} if gh_env is not None else {}
+    )
     proc = _run(
         [
             "gh",
@@ -251,7 +297,8 @@ def _find_issue_pr(
             "number,headRefName,headRefOid",
             "--limit",
             "100",
-        ]
+        ],
+        **_env_kw,
     )
     if proc.returncode != 0:
         _log.warning(
@@ -280,6 +327,8 @@ def _fetch_issue_labels(
     owner: str,
     repo: str,
     issue: int,
+    *,
+    installation_token: str = "",
 ) -> set[str] | None:
     """Fetch current labels for an issue (lowercase).
 
@@ -296,6 +345,9 @@ def _fetch_issue_labels(
         owner: The GitHub repository owner.
         repo: The repository name.
         issue: The issue number.
+        installation_token: Optional GitHub App installation access token.
+            When non-empty, overrides ``GH_TOKEN`` in the subprocess env
+            via a per-call copy — ``os.environ`` is never mutated.
 
     Returns:
         A ``set[str]`` of lowercase label name strings when the fetch
@@ -306,6 +358,10 @@ def _fetch_issue_labels(
         and must NOT attempt single-state convergence on an unknown state
         (Codex P1 #3, PR #95).
     """
+    gh_env = _gh_env(installation_token) if installation_token else None
+    _env_kw: dict[str, dict[str, str]] = (
+        {"env": gh_env} if gh_env is not None else {}
+    )
     proc = _run(
         [
             "gh",
@@ -316,7 +372,8 @@ def _fetch_issue_labels(
             f"{owner}/{repo}",
             "--json",
             "labels",
-        ]
+        ],
+        **_env_kw,
     )
     if proc.returncode != 0:
         return None
@@ -331,6 +388,8 @@ def _fetch_issue_obj(
     owner: str,
     repo: str,
     issue_number: int,
+    *,
+    installation_token: str = "",
 ) -> Issue | None:
     """Fetch a single issue as an ``Issue`` dataclass.
 
@@ -338,10 +397,17 @@ def _fetch_issue_obj(
         owner: The GitHub repository owner.
         repo: The repository name.
         issue_number: The issue number.
+        installation_token: Optional GitHub App installation access token.
+            When non-empty, overrides ``GH_TOKEN`` in the subprocess env
+            via a per-call copy — ``os.environ`` is never mutated.
 
     Returns:
         An ``Issue`` object or ``None`` on error.
     """
+    gh_env = _gh_env(installation_token) if installation_token else None
+    _env_kw: dict[str, dict[str, str]] = (
+        {"env": gh_env} if gh_env is not None else {}
+    )
     proc = _run(
         [
             "gh",
@@ -352,7 +418,8 @@ def _fetch_issue_obj(
             f"{owner}/{repo}",
             "--json",
             "number,title,state,body,url,labels,assignees",
-        ]
+        ],
+        **_env_kw,
     )
     if proc.returncode != 0:
         _log.warning(
@@ -376,6 +443,8 @@ def _fetch_full_milestone_members(
     repo: str,
     milestone_number: int,
     milestone_title: str,
+    *,
+    installation_token: str = "",
 ) -> frozenset[int]:
     """Fetch all OPEN issues for a milestone — the full DAG membership set.
 
@@ -396,11 +465,18 @@ def _fetch_full_milestone_members(
         milestone_number: The milestone integer ID (used as fallback only).
         milestone_title: The milestone title string (used for the CLI
             ``--milestone`` filter).
+        installation_token: Optional GitHub App installation access token.
+            When non-empty, overrides ``GH_TOKEN`` in the subprocess env
+            via a per-call copy — ``os.environ`` is never mutated.
 
     Returns:
         A ``frozenset`` of all open issue numbers in the milestone.
         Falls back to an empty frozenset on error.
     """
+    gh_env = _gh_env(installation_token) if installation_token else None
+    _env_kw: dict[str, dict[str, str]] = (
+        {"env": gh_env} if gh_env is not None else {}
+    )
     proc = _run(
         [
             "gh",
@@ -416,7 +492,8 @@ def _fetch_full_milestone_members(
             "number,title,state,body,url,labels,milestone,assignees",
             "--limit",
             "200",
-        ]
+        ],
+        **_env_kw,
     )
     if proc.returncode != 0:
         _log.warning(
@@ -456,6 +533,7 @@ def _run_ci_gate(
     parked_reasons: dict[int, str],
     ci_poll_interval: float,
     ci_timeout: float,
+    installation_token: str = "",
 ) -> None:
     """Run the CI gate and apply the merge/park terminal for one issue.
 
@@ -494,6 +572,8 @@ def _run_ci_gate(
         parked_reasons: Mutable dict accumulating park reasons.
         ci_poll_interval: Seconds between CI status polls.
         ci_timeout: Hard ceiling for the CI gate in seconds.
+        installation_token: Optional GitHub App installation access token
+            (``ghs_`` prefix).  Threaded to ``_label_edit`` calls.
     """
     try:
         outcome = merge_issue_branch(
@@ -513,7 +593,13 @@ def _run_ci_gate(
             n,
             exc,
         )
-        _label_edit(owner, repo, n, remove=["agent-in-progress"])
+        _label_edit(
+            owner,
+            repo,
+            n,
+            remove=["agent-in-progress"],
+            installation_token=installation_token,
+        )
         if liveness_state is not None:
             liveness_state.clear()
         sched.mark_parked(n)
@@ -531,14 +617,26 @@ def _run_ci_gate(
 
     if outcome == MergeOutcome.MERGED:
         # merge_issue_branch already added agent-merged + marker.
-        _label_edit(owner, repo, n, remove=["agent-in-progress", "agent-done"])
+        _label_edit(
+            owner,
+            repo,
+            n,
+            remove=["agent-in-progress", "agent-done"],
+            installation_token=installation_token,
+        )
         if liveness_state is not None:
             liveness_state.clear()
         sched.mark_done(n)
         merged_issues.append(n)
         _log.info("daemon: issue #%d merged into %r", n, branch_name)
     else:
-        _label_edit(owner, repo, n, remove=["agent-in-progress"])
+        _label_edit(
+            owner,
+            repo,
+            n,
+            remove=["agent-in-progress"],
+            installation_token=installation_token,
+        )
         if liveness_state is not None:
             liveness_state.clear()
         sched.mark_parked(n)
@@ -567,6 +665,8 @@ def _open_draft_pr(
     branch_name: str,
     title: str,
     body: str,
+    *,
+    installation_token: str = "",
 ) -> None:
     """Open a draft PR from ``branch_name`` → main.
 
@@ -578,7 +678,14 @@ def _open_draft_pr(
         branch_name: The feature branch to open the PR from.
         title: The PR title.
         body: The PR body (including attribution line).
+        installation_token: Optional GitHub App installation access token.
+            When non-empty, overrides ``GH_TOKEN`` in the subprocess env
+            via a per-call copy — ``os.environ`` is never mutated.
     """
+    gh_env = _gh_env(installation_token) if installation_token else None
+    _env_kw: dict[str, dict[str, str]] = (
+        {"env": gh_env} if gh_env is not None else {}
+    )
     proc = _run(
         [
             "gh",
@@ -595,7 +702,8 @@ def _open_draft_pr(
             title,
             "--body",
             body,
-        ]
+        ],
+        **_env_kw,
     )
     if proc.returncode != 0:
         # "already exists" is OK — the PR already tracks this branch.
@@ -633,6 +741,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
     runlog: RunLog | None = None,
     tally: RedispatchTally | None = None,
     liveness_state: LivenessState | None = None,
+    installation_token: str = "",
 ) -> None:
     """Run one work unit (one DAG) to completion.
 
@@ -662,6 +771,10 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
             heartbeat monitor.  When provided, this function calls
             ``mark_in_progress`` before dispatching a worker and
             ``clear`` on every terminal branch (C-I4).
+        installation_token: Optional GitHub App installation access token
+            (``ghs_`` prefix).  When non-empty, all ``gh`` subprocess
+            calls use a per-call env copy with ``GH_TOKEN`` overridden —
+            ``os.environ`` is never mutated.
     """
     owner = repo_cfg.owner
     repo = repo_cfg.repo
@@ -830,21 +943,38 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
             continue
 
         if n in recovery_result.parked_seed:
-            _label_edit(owner, repo, n, remove=["agent-in-progress"])
+            _label_edit(
+                owner,
+                repo,
+                n,
+                remove=["agent-in-progress"],
+                installation_token=installation_token,
+            )
             sched.mark_parked(n)
             parked_reasons[n] = "blocked (recovery)"
             continue
 
         if n in recovery_result.ci_gate_reentry:
             # Rule 3a: re-enter CI gate without _run_worker.
-            issue_branch, pr_head_sha = _find_issue_pr(owner, repo, n)
+            issue_branch, pr_head_sha = _find_issue_pr(
+                owner,
+                repo,
+                n,
+                installation_token=installation_token,
+            )
             if issue_branch is None or pr_head_sha is None:
                 _log.warning(
                     "daemon: ci_gate_reentry for #%d but no open PR found;"
                     " parking",
                     n,
                 )
-                _label_edit(owner, repo, n, remove=["agent-in-progress"])
+                _label_edit(
+                    owner,
+                    repo,
+                    n,
+                    remove=["agent-in-progress"],
+                    installation_token=installation_token,
+                )
                 sched.mark_parked(n)
                 parked_reasons[n] = "ci_gate_reentry: no open PR"
                 alert(
@@ -894,7 +1024,13 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                     n,
                     exc,
                 )
-                _label_edit(owner, repo, n, remove=["agent-in-progress"])
+                _label_edit(
+                    owner,
+                    repo,
+                    n,
+                    remove=["agent-in-progress"],
+                    installation_token=installation_token,
+                )
                 if liveness_state is not None:
                     liveness_state.clear()
                 sched.mark_parked(n)
@@ -912,14 +1048,24 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
 
             if outcome == MergeOutcome.MERGED:
                 _label_edit(
-                    owner, repo, n, remove=["agent-in-progress", "agent-done"]
+                    owner,
+                    repo,
+                    n,
+                    remove=["agent-in-progress", "agent-done"],
+                    installation_token=installation_token,
                 )
                 if liveness_state is not None:
                     liveness_state.clear()
                 sched.mark_done(n)
                 merged_issues.append(n)
             else:
-                _label_edit(owner, repo, n, remove=["agent-in-progress"])
+                _label_edit(
+                    owner,
+                    repo,
+                    n,
+                    remove=["agent-in-progress"],
+                    installation_token=installation_token,
+                )
                 if liveness_state is not None:
                     liveness_state.clear()
                 sched.mark_parked(n)
@@ -976,13 +1122,25 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                     kind="block",
                     runlog=runlog,
                 )
-                _label_edit(owner, repo, n, remove=["agent-in-progress"])
+                _label_edit(
+                    owner,
+                    repo,
+                    n,
+                    remove=["agent-in-progress"],
+                    installation_token=installation_token,
+                )
                 sched.mark_parked(n)
                 parked_reasons[n] = "redispatch loop"
                 continue
 
             # Clear orphan agent-in-progress before re-dispatch (C1).
-            _label_edit(owner, repo, n, remove=["agent-in-progress"])
+            _label_edit(
+                owner,
+                repo,
+                n,
+                remove=["agent-in-progress"],
+                installation_token=installation_token,
+            )
             _log.info("daemon: cleared orphan agent-in-progress for #%d", n)
 
         # Fail-closed blocked-gate (#128 P2a): re-read live labels
@@ -992,7 +1150,12 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
         # Distinct from the post-run None guard (L~1087): that guard
         # fires *after* the worker; this one fires *before*, so the
         # worker is never called.  Self-heals on the next poll tick.
-        _pre_dispatch_labels = _fetch_issue_labels(owner, repo, n)
+        _pre_dispatch_labels = _fetch_issue_labels(
+            owner,
+            repo,
+            n,
+            installation_token=installation_token,
+        )
         if _pre_dispatch_labels is None:
             _log.info(
                 "daemon: #%d label fetch failed before dispatch;"
@@ -1011,7 +1174,13 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 kind="block",
                 runlog=runlog,
             )
-            _label_edit(owner, repo, n, remove=["agent-in-progress"])
+            _label_edit(
+                owner,
+                repo,
+                n,
+                remove=["agent-in-progress"],
+                installation_token=installation_token,
+            )
             if liveness_state is not None:
                 liveness_state.clear()
             sched.mark_parked(n)
@@ -1025,7 +1194,12 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
 
         # Label transition: remove agent-ready, add agent-in-progress (C1).
         _label_edit(
-            owner, repo, n, add=["agent-in-progress"], remove=["agent-ready"]
+            owner,
+            repo,
+            n,
+            add=["agent-in-progress"],
+            remove=["agent-ready"],
+            installation_token=installation_token,
         )
         # Liveness tracking: record that this issue is now in-progress so
         # heartbeat_monitor can detect a stall.  worker_active=True enables
@@ -1046,10 +1220,18 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
         os.environ["BH_FEATURE_BRANCH"] = branch_name
 
         # Fetch the Issue object.
-        issue_obj = _fetch_issue_obj(owner, repo, n)
+        issue_obj = _fetch_issue_obj(
+            owner, repo, n, installation_token=installation_token
+        )
         if issue_obj is None:
             _log.error("daemon: could not fetch issue #%d; parking", n)
-            _label_edit(owner, repo, n, remove=["agent-in-progress"])
+            _label_edit(
+                owner,
+                repo,
+                n,
+                remove=["agent-in-progress"],
+                installation_token=installation_token,
+            )
             if liveness_state is not None:
                 liveness_state.clear()
             sched.mark_parked(n)
@@ -1086,7 +1268,13 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
             worker_result = await orch._run_worker(issue_obj)
         except Exception as exc:
             _log.error("daemon: _run_worker raised for #%d: %s", n, exc)
-            _label_edit(owner, repo, n, remove=["agent-in-progress"])
+            _label_edit(
+                owner,
+                repo,
+                n,
+                remove=["agent-in-progress"],
+                installation_token=installation_token,
+            )
             if liveness_state is not None:
                 liveness_state.clear()
             sched.mark_parked(n)
@@ -1122,7 +1310,12 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 pass
 
         # Re-read labels after _run_worker (after_run may have set blocked).
-        post_labels = _fetch_issue_labels(owner, repo, n)
+        post_labels = _fetch_issue_labels(
+            owner,
+            repo,
+            n,
+            installation_token=installation_token,
+        )
 
         # Guard: None sentinel means the gh call failed or stdout was
         # unparsable.  The single-state invariant CANNOT be verified and
@@ -1164,7 +1357,13 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 kind="block",
                 runlog=runlog,
             )
-            _label_edit(owner, repo, n, remove=["agent-in-progress"])
+            _label_edit(
+                owner,
+                repo,
+                n,
+                remove=["agent-in-progress"],
+                installation_token=installation_token,
+            )
             if liveness_state is not None:
                 liveness_state.clear()
             sched.mark_parked(n)
@@ -1190,7 +1389,12 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
             )
             _zero_state = len(_state_labels_present) == 0
             if _zero_state and not has_blocked:
-                _conv_branch, _conv_sha = _find_issue_pr(owner, repo, n)
+                _conv_branch, _conv_sha = _find_issue_pr(
+                    owner,
+                    repo,
+                    n,
+                    installation_token=installation_token,
+                )
                 if _conv_branch is not None:
                     # Definite completion evidence: derive target via
                     # the pure helper (avoids hard-coding "agent-done").
@@ -1214,6 +1418,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                         n,
                         add=[_target],
                         remove=_remove,
+                        installation_token=installation_token,
                     )
                     if runlog is not None:
                         try:
@@ -1261,6 +1466,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                         parked_reasons=parked_reasons,
                         ci_poll_interval=ci_poll_interval,
                         ci_timeout=ci_timeout,
+                        installation_token=installation_token,
                     )
                     continue
             # No convergence target found (no open PR, or blocked):
@@ -1297,7 +1503,13 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 kind="block",
                 runlog=runlog,
             )
-            _label_edit(owner, repo, n, remove=["agent-in-progress"])
+            _label_edit(
+                owner,
+                repo,
+                n,
+                remove=["agent-in-progress"],
+                installation_token=installation_token,
+            )
             if liveness_state is not None:
                 liveness_state.clear()
             sched.mark_parked(n)
@@ -1308,13 +1520,24 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
         if worker_result == "pr_created" and not has_blocked:
             # Normal CI gate: locate the PR once, then delegate to the
             # shared merge entry point (_run_ci_gate).
-            issue_branch, pr_head_sha = _find_issue_pr(owner, repo, n)
+            issue_branch, pr_head_sha = _find_issue_pr(
+                owner,
+                repo,
+                n,
+                installation_token=installation_token,
+            )
             if issue_branch is None or pr_head_sha is None:
                 _log.warning(
                     "daemon: pr_created but no open PR found for #%d; parking",
                     n,
                 )
-                _label_edit(owner, repo, n, remove=["agent-in-progress"])
+                _label_edit(
+                    owner,
+                    repo,
+                    n,
+                    remove=["agent-in-progress"],
+                    installation_token=installation_token,
+                )
                 if liveness_state is not None:
                     liveness_state.clear()
                 sched.mark_parked(n)
@@ -1345,6 +1568,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 parked_reasons=parked_reasons,
                 ci_poll_interval=ci_poll_interval,
                 ci_timeout=ci_timeout,
+                installation_token=installation_token,
             )
         else:
             # Park path: blocked or no_pr.
@@ -1354,7 +1578,13 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 if has_blocked
                 else "no PR created (agent may have failed)"
             )
-            _label_edit(owner, repo, n, remove=["agent-in-progress"])
+            _label_edit(
+                owner,
+                repo,
+                n,
+                remove=["agent-in-progress"],
+                installation_token=installation_token,
+            )
             if liveness_state is not None:
                 liveness_state.clear()
             sched.mark_parked(n)
@@ -1427,7 +1657,14 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
             len(parked_reasons),
         )
     else:
-        _open_draft_pr(owner, repo, branch_name, pr_title, pr_body)
+        _open_draft_pr(
+            owner,
+            repo,
+            branch_name,
+            pr_title,
+            pr_body,
+            installation_token=installation_token,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1475,6 +1712,7 @@ async def run_daemon(
     poll_interval_s: float | None = None,
     ci_poll_interval: float = _DEFAULT_CI_POLL_INTERVAL,
     ci_timeout: float = _DEFAULT_CI_TIMEOUT,
+    installation_token: str = "",
 ) -> None:
     """Run the always-on serial daemon outer loop.
 
@@ -1490,6 +1728,10 @@ async def run_daemon(
             Defaults to ``config.poll_interval_ms / 1000``.
         ci_poll_interval: Seconds between CI polls in the merge gate.
         ci_timeout: Hard ceiling for the CI gate in seconds.
+        installation_token: GitHub App installation access token
+            (``ghs_`` prefix).  Threaded to all ``gh`` subprocess
+            calls via per-call env override.  ``os.environ`` is never
+            mutated.  Pass ``""`` (default) to inherit ambient creds.
     """
     if poll_interval_s is None:
         poll_interval_s = config.poll_interval_ms / 1000
@@ -1615,6 +1857,7 @@ async def run_daemon(
                         tally=tally,
                         liveness_state=liveness_state,
                         obs=obs,
+                        installation_token=installation_token,
                     )
                 except Exception as exc:
                     _log.error(
@@ -1667,6 +1910,7 @@ async def _poll_and_run(
     tally: RedispatchTally | None = None,
     liveness_state: LivenessState | None = None,
     obs: ObsConfig | None = None,
+    installation_token: str = "",
 ) -> None:
     """Poll one repo for a ready work unit and run it if found.
 
@@ -1709,6 +1953,9 @@ async def _poll_and_run(
         obs: Optional loaded ``ObsConfig`` used to read
             ``worktree_gc`` mode for Phase 3.  When ``None``, Phase 3
             runs in ``"detect"`` mode (no reclaim).
+        installation_token: GitHub App installation access token
+            (``ghs_`` prefix).  Threaded to all ``gh`` subprocess
+            calls.  Pass ``""`` (default) to inherit ambient creds.
     """
     owner = repo_cfg.owner
     repo = repo_cfg.repo
@@ -1725,6 +1972,10 @@ async def _poll_and_run(
     # ------------------------------------------------------------------
 
     # Fetch open agent-ready issues.
+    _poll_gh_env = _gh_env(installation_token) if installation_token else None
+    _poll_env_kw: dict[str, dict[str, str]] = (
+        {"env": _poll_gh_env} if _poll_gh_env is not None else {}
+    )
     proc = _run(
         [
             "gh",
@@ -1740,7 +1991,8 @@ async def _poll_and_run(
             "number,title,state,body,url,labels,milestone,assignees",
             "--limit",
             "100",
-        ]
+        ],
+        **_poll_env_kw,
     )
     if proc.returncode != 0:
         _log.error(
@@ -1779,7 +2031,12 @@ async def _poll_and_run(
     ready_issues_live: list[dict[str, Any]] = []
     for issue in ready_issues:
         n = issue["number"]
-        live_labels = _fetch_issue_labels(owner, repo, n)
+        live_labels = _fetch_issue_labels(
+            owner,
+            repo,
+            n,
+            installation_token=installation_token,
+        )
         if (
             live_labels is not None
             and not _DISPATCH_EXCLUDE_LABELS.isdisjoint(live_labels)
@@ -1805,7 +2062,13 @@ async def _poll_and_run(
                     severity="critical",
                     kind="block",
                 )
-            _label_edit(owner, repo, n, remove=["agent-in-progress"])
+            _label_edit(
+                owner,
+                repo,
+                n,
+                remove=["agent-in-progress"],
+                installation_token=installation_token,
+            )
         else:
             ready_issues_live.append(issue)
     ready_issues = ready_issues_live
@@ -1858,7 +2121,11 @@ async def _poll_and_run(
             if milestone_info is not None:
                 ms_num, ms_title = milestone_info
                 full_members = _fetch_full_milestone_members(
-                    owner, repo, ms_num, ms_title
+                    owner,
+                    repo,
+                    ms_num,
+                    ms_title,
+                    installation_token=installation_token,
                 )
                 if full_members:
                     membership = full_members
@@ -1905,7 +2172,12 @@ async def _poll_and_run(
                 # Fail-closed: ``None`` (unreadable) also skips the unit.
                 mid_drain_excluded: int | None = None
                 for _md_n in membership & all_ready_nums:
-                    _md_labels = _fetch_issue_labels(owner, repo, _md_n)
+                    _md_labels = _fetch_issue_labels(
+                        owner,
+                        repo,
+                        _md_n,
+                        installation_token=installation_token,
+                    )
                     if (
                         _md_labels is None
                         or not (
@@ -1951,6 +2223,7 @@ async def _poll_and_run(
                 runlog=runlog,
                 tally=tally,
                 liveness_state=liveness_state,
+                installation_token=installation_token,
             )
     else:
         _log.debug("daemon: no ready issues in %s/%s", owner, repo)
@@ -1979,7 +2252,8 @@ async def _poll_and_run(
             "number,title,state,body,url,labels,milestone,assignees",
             "--limit",
             "100",
-        ]
+        ],
+        **_poll_env_kw,
     )
     if orphan_proc.returncode != 0:
         _log.warning(
@@ -2038,7 +2312,11 @@ async def _poll_and_run(
             # Expand membership to all open milestone members (mirrors
             # FIX 1 in phase 1).
             orphan_membership = _fetch_full_milestone_members(
-                owner, repo, ms_num, ms_title
+                owner,
+                repo,
+                ms_num,
+                ms_title,
+                installation_token=installation_token,
             )
             if not orphan_membership:
                 # Fallback: at minimum include the orphan itself.
@@ -2077,6 +2355,7 @@ async def _poll_and_run(
             runlog=runlog,
             tally=tally,
             liveness_state=liveness_state,
+            installation_token=installation_token,
         )
 
     # ------------------------------------------------------------------

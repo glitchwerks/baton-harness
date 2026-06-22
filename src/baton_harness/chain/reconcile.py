@@ -30,7 +30,11 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from baton_harness._auth import TokenValidationError, validate_github_token
+from baton_harness._auth import (
+    TokenValidationError,
+    validate_daemon_token,
+    validate_github_token,  # noqa: F401 — kept for test patch target
+)
 from baton_harness.chain.escalation import alert
 
 if TYPE_CHECKING:
@@ -108,9 +112,15 @@ async def reconcile_startup(
 
     # ------------------------------------------------------------------
     # G3a: GitHub token validation — FATAL.
+    # Daemon path uses validate_daemon_token (accepts ghs_ installation
+    # tokens).  The worker path (before_run.py) continues to use
+    # validate_github_token (github_pat_ only) — see slice 3a spec.
     # ------------------------------------------------------------------
+    token = os.environ.get("GH_TOKEN", "") or os.environ.get(
+        "GITHUB_TOKEN", ""
+    )
     try:
-        validate_github_token()
+        validate_daemon_token(token)
     except TokenValidationError as exc:
         alert(
             owner,

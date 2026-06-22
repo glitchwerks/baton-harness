@@ -299,15 +299,25 @@ def _parse_iso_to_epoch(iso_str: str) -> float:
 
     Returns:
         Unix epoch as a float (seconds since 1970-01-01T00:00:00Z).
+
+    Raises:
+        AppAuthError: If ``iso_str`` does not match the expected
+            ``YYYY-MM-DDTHH:MM:SSZ`` format.
     """
     import datetime
 
     # Python 3.10 does not support ``%z`` parsing ``Z`` directly;
     # strip the trailing ``Z`` and treat as UTC explicitly.
-    dt = datetime.datetime.strptime(
-        iso_str.rstrip("Z"), "%Y-%m-%dT%H:%M:%S"
-    ).replace(tzinfo=datetime.timezone.utc)
-    return dt.timestamp()
+    try:
+        dt = datetime.datetime.strptime(
+            iso_str.rstrip("Z"), "%Y-%m-%dT%H:%M:%S"
+        ).replace(tzinfo=datetime.timezone.utc)
+        return dt.timestamp()
+    except ValueError as exc:
+        raise AppAuthError(
+            f"mint_installation_token: invalid expires_at timestamp"
+            f" format: {iso_str}: {exc}"
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -336,6 +346,10 @@ def bootstrap_secrets(
     The ``fetch_secret`` and ``mint_token`` callables are injected so
     tests can drive the full flow without a real Bitwarden vault or
     GitHub API.
+
+    Note: ``BWS_ACCESS_TOKEN`` is removed from ``os.environ`` immediately,
+    before any other operation.  If this function raises an exception,
+    the token will have already been scrubbed.
 
     Args:
         app_id: GitHub App numeric ID (forwarded to ``mint_token``).
