@@ -24,7 +24,8 @@ Test conventions mirror the existing ``test_reconcile.py``:
   a clean ``AttributeError``/``AssertionError``, not a collection error.
 - ``asyncio.run(reconcile.reconcile_startup(...))`` (no pytest-asyncio).
 - Fatal signal: ``pytest.raises(SystemExit)`` with non-zero code.
-- Alert assertions via ``MagicMock`` on ``baton_harness.chain.reconcile.alert``.
+- Alert assertions via ``MagicMock`` on
+  ``baton_harness.chain.reconcile.alert``.
 """
 
 from __future__ import annotations
@@ -33,10 +34,9 @@ import asyncio
 import builtins
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, mock_open, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Helpers (mirrored from test_reconcile.py to keep this file self-contained)
@@ -328,7 +328,7 @@ class TestG3cCredentialFileAbsent:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """G3c fatal (absent file) → G2 marker NOT written, G1 lister NOT called.
+        """G3c fatal (absent file) → G2 marker NOT written, G1 scan skipped.
 
         The credential check must run before G2/G1; a fatal here must
         prevent both the marker write and the process scan.
@@ -632,8 +632,8 @@ class TestG3cStructuralOnly:
             if c.kwargs.get("severity") == "critical"
         ]
         assert not critical_calls, (
-            "Empty credential file (readable) must not trigger critical alert; "
-            f"got: {critical_calls}"
+            "Empty credential file (readable) must not trigger a critical "
+            f"alert; got: {critical_calls}"
         )
 
     def test_module_exposes_oauth_cred_path_seam(self) -> None:
@@ -649,7 +649,7 @@ class TestG3cStructuralOnly:
             "reconcile module must expose _OAUTH_CRED_PATH at module level "
             "so the credential path is overridable in tests/config"
         )
-        path_val = getattr(reconcile, "_OAUTH_CRED_PATH")
+        path_val = reconcile._OAUTH_CRED_PATH
         assert isinstance(path_val, Path), (
             f"_OAUTH_CRED_PATH must be a pathlib.Path; got {type(path_val)}"
         )
