@@ -18,6 +18,10 @@ Coverage:
   token — the worker path must remain ``github_pat_``-only.
 - (C2) ``validate_daemon_token`` ACCEPTS a ``ghs_`` installation token
   and REJECTS ``github_pat_``, ``ghp_``, and empty strings.
+- (slice 3a) ``reconcile.py`` calls ``validate_daemon_token`` (not
+  ``validate_github_token``) at startup — auth gate swap regression.
+- (slice 3a) ``before_run.py`` still calls ``validate_github_token`` —
+  worker path regression guard.
 
 All ``gh`` subprocess calls are intercepted by patching
 ``baton_harness._auth._run`` so no real network calls are made.
@@ -26,6 +30,7 @@ All ``gh`` subprocess calls are intercepted by patching
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -697,3 +702,257 @@ class TestValidateDaemonToken:
         """An unrecognised token prefix must be rejected."""
         with pytest.raises(TokenValidationError):
             validate_daemon_token("v1_someoldstyletoken")
+
+
+# ---------------------------------------------------------------------------
+# Slice 3a regression: reconcile.py auth-gate swap
+# ---------------------------------------------------------------------------
+
+
+class TestReconcileUsesDaemonValidator:
+    """reconcile.py calls validate_daemon_token, not the worker validator.
+
+    These tests are RED until reconcile.py line 113 is swapped from
+    ``validate_github_token`` to ``validate_daemon_token`` (slice 3a).
+    """
+
+    def test_reconcile_startup_calls_validate_daemon_token(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """reconcile.reconcile_startup() calls validate_daemon_token.
+
+        Patch both validators in the reconcile module scope and assert that
+        validate_daemon_token is called while validate_github_token is NOT.
+        Today this FAILS because reconcile.py still calls
+        validate_github_token.
+        """
+        import asyncio  # noqa: PLC0415
+        import importlib  # noqa: PLC0415
+        from unittest.mock import patch  # noqa: PLC0415
+
+        reconcile = importlib.import_module("baton_harness.chain.reconcile")
+        from baton_harness.chain.obs_config import ObsConfig  # noqa: PLC0415
+        from baton_harness.chain.registry import RepoConfig  # noqa: PLC0415
+
+        harness_dir = tmp_path / ".baton-harness"
+        harness_dir.mkdir(parents=True, exist_ok=True)
+        obs = ObsConfig(
+            runlog_path=harness_dir / "runlog.jsonl",
+            heartbeat_file=harness_dir / "heartbeat",
+            redispatch_window_ticks=10,
+            redispatch_max=3,
+            heartbeat_stall_s=7200.0,
+            heartbeat_ping_url=None,
+            redispatch_counts_path=harness_dir / "dispatch-counts.json",
+        )
+        repo_cfgs = [
+            RepoConfig(
+                owner="glitchwerks",
+                repo="baton-harness",
+                project_root=tmp_path,
+            )
+        ]
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        cred_file = tmp_path / "fake_credentials.json"
+        cred_file.write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(
+            "baton_harness.chain.reconcile._OAUTH_CRED_PATH",
+            cred_file,
+        )
+
+        daemon_called: list[bool] = []
+        worker_called: list[bool] = []
+
+        with (
+            patch(
+                "baton_harness.chain.reconcile.validate_daemon_token",
+                side_effect=lambda token: daemon_called.append(True),
+            ),
+            patch(
+                "baton_harness.chain.reconcile.validate_github_token",
+                side_effect=lambda **kw: worker_called.append(True),
+            ),
+            patch(
+                "baton_harness.chain.reconcile.alert",
+                return_value=True,
+            ),
+            patch(
+                "baton_harness.chain.reconcile._list_claude_procs",
+                return_value=[],
+            ),
+        ):
+            # Provide a GH_TOKEN so the daemon validator can inspect it.
+            monkeypatch.setenv("GH_TOKEN", "ghs_TESTTOKEN_for_reconcile")
+            asyncio.run(
+                reconcile.reconcile_startup(repo_cfgs, obs, runlog=None)
+            )
+
+        assert daemon_called, (
+            "validate_daemon_token must be called by reconcile_startup "
+            "after slice 3a (currently FAILS — reconcile still calls "
+            "validate_github_token)"
+        )
+        assert not worker_called, (
+            "validate_github_token must NOT be called in the daemon path "
+            "after slice 3a"
+        )
+
+    def test_reconcile_startup_accepts_ghs_token(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """reconcile_startup succeeds when GH_TOKEN is a ghs_ token.
+
+        Today FAILS because validate_github_token rejects ghs_ prefix,
+        causing reconcile_startup to sys.exit(1).  After slice 3a, the
+        daemon validator accepts ghs_ and the function returns normally.
+        """
+        import asyncio  # noqa: PLC0415
+        import importlib  # noqa: PLC0415
+        from unittest.mock import patch  # noqa: PLC0415
+
+        reconcile = importlib.import_module("baton_harness.chain.reconcile")
+        from baton_harness.chain.obs_config import ObsConfig  # noqa: PLC0415
+        from baton_harness.chain.registry import RepoConfig  # noqa: PLC0415
+
+        harness_dir = tmp_path / ".baton-harness"
+        harness_dir.mkdir(parents=True, exist_ok=True)
+        obs = ObsConfig(
+            runlog_path=harness_dir / "runlog.jsonl",
+            heartbeat_file=harness_dir / "heartbeat",
+            redispatch_window_ticks=10,
+            redispatch_max=3,
+            heartbeat_stall_s=7200.0,
+            heartbeat_ping_url=None,
+            redispatch_counts_path=harness_dir / "dispatch-counts.json",
+        )
+        repo_cfgs = [
+            RepoConfig(
+                owner="glitchwerks",
+                repo="baton-harness",
+                project_root=tmp_path,
+            )
+        ]
+        # ghs_ is a valid installation token — must be accepted post-swap.
+        monkeypatch.setenv("GH_TOKEN", "ghs_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        cred_file = tmp_path / "fake_credentials.json"
+        cred_file.write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(
+            "baton_harness.chain.reconcile._OAUTH_CRED_PATH",
+            cred_file,
+        )
+
+        # Must NOT raise SystemExit after slice 3a.
+        # Today raises SystemExit(1) because the worker validator rejects
+        # ghs_ tokens — that is the RED signal for this test.
+        with (
+            patch(
+                "baton_harness.chain.reconcile.alert",
+                return_value=True,
+            ),
+            patch(
+                "baton_harness.chain.reconcile._list_claude_procs",
+                return_value=[],
+            ),
+        ):
+            asyncio.run(
+                reconcile.reconcile_startup(repo_cfgs, obs, runlog=None)
+            )
+        # If we reach here without SystemExit, the test passes.
+
+
+# ---------------------------------------------------------------------------
+# Slice 3a regression guard: worker path is unchanged
+# ---------------------------------------------------------------------------
+
+
+class TestWorkerPathAuthUnchanged:
+    """before_run.main() must continue to call validate_github_token.
+
+    This is the regression guard that slice 3a must NOT violate: the
+    daemon-side swap to validate_daemon_token must not bleed into the
+    worker (before_run) path.
+
+    This test MUST be GREEN today AND after slice 3a.
+    """
+
+    def test_before_run_still_calls_validate_github_token(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """before_run.main() calls validate_github_token, not daemon variant.
+
+        Patch both validators in the before_run module scope; confirm only
+        the worker validator fires.  This must remain GREEN after slice 3a —
+        it is the contract that the swap is daemon-only.
+        """
+        from unittest.mock import patch  # noqa: PLC0415
+
+        import baton_harness.before_run as before_run_mod  # noqa: PLC0415
+
+        worktree = tmp_path / "feat-2-sync"
+        worktree.mkdir()
+        monkeypatch.chdir(worktree)
+        monkeypatch.delenv("CHAIN_BASE_BRANCH", raising=False)
+
+        worker_called: list[bool] = []
+        daemon_called: list[bool] = []
+
+        def fake_worker_validate() -> None:
+            worker_called.append(True)
+
+        def fake_daemon_validate(token: str) -> None:
+            daemon_called.append(True)
+
+        import subprocess  # noqa: PLC0415
+
+        def fake_run(
+            cmd: list[str],
+        ) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="", stderr=""
+            )
+
+        def fake_run_capture(
+            cmd: list[str],
+        ) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=0,
+                stdout="abc1234abc1234abc1234abc1234abc1234abc1234\n",
+                stderr="",
+            )
+
+        monkeypatch.setattr(before_run_mod, "_run", fake_run)
+        monkeypatch.setattr(before_run_mod, "_run_capture", fake_run_capture)
+        monkeypatch.setattr(
+            before_run_mod,
+            "validate_github_token",
+            fake_worker_validate,
+        )
+
+        # Also patch validate_daemon_token if it somehow ends up imported
+        # in before_run after slice 3a changes.
+        with patch(
+            "baton_harness._auth.validate_daemon_token",
+            side_effect=fake_daemon_validate,
+        ):
+            from baton_harness.before_run import main  # noqa: PLC0415
+
+            result = main()
+
+        assert result == 0, f"Expected exit 0, got {result}"
+        assert worker_called, (
+            "validate_github_token must be called by before_run.main() "
+            "— worker path must remain github_pat_-only"
+        )
+        assert not daemon_called, (
+            "validate_daemon_token must NOT be called in the worker path"
+        )

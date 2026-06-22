@@ -8,6 +8,14 @@ Coverage:
 - ``--poll-interval`` override is threaded through.
 - ``os.chdir`` is called with the managed repo root before ``run_daemon``.
 - Workflow path is resolved to absolute BEFORE the ``os.chdir`` call.
+- (slice 3a) ``bootstrap_secrets`` is called after chdir and before
+  ``asyncio.run``.
+- (slice 3a) Returned installation token is validated via
+  ``validate_daemon_token``.
+- (slice 3a) Non-installation token from bootstrap causes exit non-zero
+  without entering ``asyncio.run``.
+- (slice 3a) ``BWS_ACCESS_TOKEN`` is removed from environ by bootstrap.
+- (slice 3a) Installation token is never written to environ after startup.
 """
 
 from __future__ import annotations
@@ -15,6 +23,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from baton_harness.chain.cli import main
 
@@ -24,7 +34,14 @@ from baton_harness.chain.cli import main
 
 
 def _run_main(*args: str) -> int:
-    """Run ``main`` with the given argv and return the exit code."""
+    """Run ``main`` with the given argv and return the exit code.
+
+    Args:
+        *args: Command-line arguments to pass to ``main``.
+
+    Returns:
+        The integer exit code returned by ``main``.
+    """
     return main(list(args))
 
 
@@ -267,3 +284,355 @@ def test_main_workflow_path_resolved_absolute_before_chdir() -> None:
 
     assert result == 0
     assert "load_workflow" in call_sequence
+
+
+# ---------------------------------------------------------------------------
+# Slice 3a — daemon startup App-token wiring (RED tests)
+#
+# Patch paths: code-writer must import bootstrap_secrets into cli.py so
+# the symbol is patchable at:
+#   baton_harness.chain.cli.bootstrap_secrets
+# Fallback: also patchable at source:
+#   baton_harness.chain.app_auth.bootstrap_secrets
+# Tests patch both so they survive either import style.
+# ---------------------------------------------------------------------------
+
+
+class TestDaemonStartupAuthWiring:
+    """Slice 3a: bootstrap_secrets + validate_daemon_token wired into main().
+
+    These tests are RED until cli.py calls bootstrap_secrets() after the
+    chdir step and validate_daemon_token() on the result.
+    """
+
+    def test_main_calls_bootstrap_secrets_after_cwd_validation(
+        self,
+    ) -> None:
+        """bootstrap_secrets is called after chdir and before asyncio.run.
+
+        Records the call-order of chdir and bootstrap_secrets via a shared
+        sequence list.  chdir MUST appear before bootstrap_secrets.
+        """
+        project_root = Path("/fake/project/root")
+        call_order: list[str] = []
+
+        # Sentinel bootstrap that records its position in the sequence.
+        def fake_bootstrap(**kwargs: object) -> str:
+            call_order.append("bootstrap_secrets")
+            return "ghs_TESTTOKEN_sentinel"
+
+        fake_repo_cfg = MagicMock()
+        fake_repo_cfg.project_root = project_root
+
+        async def fake_run_daemon(*args: object, **kwargs: object) -> None:
+            pass
+
+        # Patch bootstrap_secrets at both possible import locations so the
+        # test survives either import style the code-writer chooses.
+        with (
+            patch(
+                "baton_harness.chain.cli.load_workflow",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "baton_harness.chain.cli.load_registry",
+                return_value=[fake_repo_cfg],
+            ),
+            patch(
+                "baton_harness.chain.cli.run_daemon",
+                side_effect=fake_run_daemon,
+            ),
+            patch(
+                "baton_harness.chain.cli.os.chdir",
+                side_effect=lambda p: call_order.append("chdir"),
+            ),
+            patch(
+                "baton_harness.chain.cli.os.path.isdir",
+                return_value=True,
+            ),
+            # Primary patch location (code-writer imports into cli.py).
+            patch(
+                "baton_harness.chain.cli.bootstrap_secrets",
+                side_effect=fake_bootstrap,
+            ),
+        ):
+            result = _run_main("--once")
+
+        assert result == 0, f"Expected exit 0, got {result}"
+        assert "bootstrap_secrets" in call_order, (
+            "bootstrap_secrets was never called during main()"
+        )
+        chdir_pos = (
+            call_order.index("chdir")
+            if "chdir" in call_order
+            else len(call_order)
+        )
+        bootstrap_pos = call_order.index("bootstrap_secrets")
+        assert chdir_pos < bootstrap_pos, (
+            f"chdir must precede bootstrap_secrets; order was {call_order!r}"
+        )
+
+    def test_main_validates_minted_token_with_validate_daemon_token(
+        self,
+    ) -> None:
+        """validate_daemon_token is called with the bootstrap token.
+
+        bootstrap_secrets returns a sentinel ghs_ token;
+        validate_daemon_token must be called with exactly that value,
+        and main() must return 0.
+        """
+        project_root = Path("/fake/project/root")
+        _sentinel_token = "ghs_TESTTOKEN_sentinel_abc123"
+        validated_with: list[str] = []
+
+        def fake_bootstrap(**kwargs: object) -> str:
+            return _sentinel_token
+
+        def fake_validate(token: str) -> None:
+            validated_with.append(token)
+            # ghs_ is valid — do not raise.
+
+        fake_repo_cfg = MagicMock()
+        fake_repo_cfg.project_root = project_root
+
+        async def fake_run_daemon(*args: object, **kwargs: object) -> None:
+            pass
+
+        with (
+            patch(
+                "baton_harness.chain.cli.load_workflow",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "baton_harness.chain.cli.load_registry",
+                return_value=[fake_repo_cfg],
+            ),
+            patch(
+                "baton_harness.chain.cli.run_daemon",
+                side_effect=fake_run_daemon,
+            ),
+            patch("baton_harness.chain.cli.os.chdir"),
+            patch(
+                "baton_harness.chain.cli.os.path.isdir",
+                return_value=True,
+            ),
+            patch(
+                "baton_harness.chain.cli.bootstrap_secrets",
+                side_effect=fake_bootstrap,
+            ),
+            patch(
+                "baton_harness.chain.cli.validate_daemon_token",
+                side_effect=fake_validate,
+            ),
+        ):
+            result = _run_main("--once")
+
+        assert result == 0, f"Expected exit 0, got {result}"
+        assert validated_with, "validate_daemon_token was never called"
+        assert validated_with[0] == _sentinel_token, (
+            f"Expected validate_daemon_token({_sentinel_token!r}), "
+            f"got validate_daemon_token({validated_with[0]!r})"
+        )
+
+    def test_main_rejects_non_installation_token_from_bootstrap(
+        self,
+    ) -> None:
+        """A non-ghs_ token from bootstrap causes main() to return non-zero.
+
+        bootstrap_secrets returns a fine-grained PAT; validate_daemon_token
+        raises (it already does for non-ghs_); main() must return non-zero
+        WITHOUT entering asyncio.run.
+        """
+        project_root = Path("/fake/project/root")
+        asyncio_run_called = False
+
+        def fake_bootstrap(**kwargs: object) -> str:
+            # Return a worker-PAT, not an installation token.
+            return "github_pat_xyz_not_an_installation_token"
+
+        fake_repo_cfg = MagicMock()
+        fake_repo_cfg.project_root = project_root
+
+        async def sentinel_run_daemon(*args: object, **kwargs: object) -> None:
+            nonlocal asyncio_run_called
+            asyncio_run_called = True
+
+        with (
+            patch(
+                "baton_harness.chain.cli.load_workflow",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "baton_harness.chain.cli.load_registry",
+                return_value=[fake_repo_cfg],
+            ),
+            patch(
+                "baton_harness.chain.cli.run_daemon",
+                side_effect=sentinel_run_daemon,
+            ),
+            patch("baton_harness.chain.cli.os.chdir"),
+            patch(
+                "baton_harness.chain.cli.os.path.isdir",
+                return_value=True,
+            ),
+            patch(
+                "baton_harness.chain.cli.bootstrap_secrets",
+                side_effect=fake_bootstrap,
+            ),
+            # Use the REAL validate_daemon_token — it rejects github_pat_.
+            # Patch only its import location in cli.py so the real logic runs.
+        ):
+            real_validate = __import__(
+                "baton_harness._auth", fromlist=["validate_daemon_token"]
+            ).validate_daemon_token
+
+            with patch(
+                "baton_harness.chain.cli.validate_daemon_token",
+                side_effect=real_validate,
+            ):
+                result = _run_main("--once")
+
+        assert result != 0, (
+            "Expected non-zero exit when bootstrap returns a PAT,"
+            f" got {result}"
+        )
+        assert not asyncio_run_called, (
+            "asyncio.run (run_daemon) must NOT be called when token "
+            "validation fails"
+        )
+
+    def test_main_bws_access_token_popped_from_environ_before_daemon_starts(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """BWS_ACCESS_TOKEN is removed from environ before daemon starts.
+
+        Set BWS_ACCESS_TOKEN in environ; run main() with bootstrap
+        stubbed to pop it (matching the spec: bootstrap pops
+        BWS_ACCESS_TOKEN as its first operation).  After bootstrap,
+        the token must be absent.
+
+        Environ state is captured at the point bootstrap_secrets would
+        have run, not at asyncio.run, to avoid requiring the full loop.
+        """
+        sentinel_bws = "0.sentinel-bws-access-token-for-test"
+        monkeypatch.setenv("BWS_ACCESS_TOKEN", sentinel_bws)
+
+        project_root = Path("/fake/project/root")
+        environ_after_bootstrap: dict[str, str] = {}
+
+        def fake_bootstrap(**kwargs: object) -> str:
+            # Simulate the contract: pop BWS_ACCESS_TOKEN immediately.
+            os.environ.pop("BWS_ACCESS_TOKEN", None)
+            # Capture environ right after the pop.
+            environ_after_bootstrap.update(os.environ)
+            return "ghs_TESTTOKEN_from_bootstrap"
+
+        fake_repo_cfg = MagicMock()
+        fake_repo_cfg.project_root = project_root
+
+        async def fake_run_daemon(*args: object, **kwargs: object) -> None:
+            pass
+
+        with (
+            patch(
+                "baton_harness.chain.cli.load_workflow",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "baton_harness.chain.cli.load_registry",
+                return_value=[fake_repo_cfg],
+            ),
+            patch(
+                "baton_harness.chain.cli.run_daemon",
+                side_effect=fake_run_daemon,
+            ),
+            patch("baton_harness.chain.cli.os.chdir"),
+            patch(
+                "baton_harness.chain.cli.os.path.isdir",
+                return_value=True,
+            ),
+            patch(
+                "baton_harness.chain.cli.bootstrap_secrets",
+                side_effect=fake_bootstrap,
+            ),
+            patch("baton_harness.chain.cli.validate_daemon_token"),
+        ):
+            result = _run_main("--once")
+
+        assert result == 0, f"Expected exit 0, got {result}"
+        assert "BWS_ACCESS_TOKEN" not in environ_after_bootstrap, (
+            "BWS_ACCESS_TOKEN must be removed from os.environ by "
+            "bootstrap_secrets before any other operation"
+        )
+        # Also assert it's absent from current environ (no accidental restore).
+        assert "BWS_ACCESS_TOKEN" not in os.environ, (
+            "BWS_ACCESS_TOKEN must not be present in os.environ after main()"
+        )
+
+    def test_main_installation_token_never_written_to_environ(
+        self,
+    ) -> None:
+        """The installation token is never written to os.environ.
+
+        After main() setup, neither GH_TOKEN, GITHUB_TOKEN, nor any environ
+        key contains the sentinel ghs_ token value.  This is the
+        env-discipline invariant: the token is passed by value to the daemon,
+        never stored in the process environment.
+        """
+        sentinel_token = "ghs_SENTINEL_NEVER_IN_ENVIRON_xyz999"
+        project_root = Path("/fake/project/root")
+        environ_snapshot: dict[str, str] = {}
+
+        def fake_bootstrap(**kwargs: object) -> str:
+            return sentinel_token
+
+        fake_repo_cfg = MagicMock()
+        fake_repo_cfg.project_root = project_root
+
+        async def fake_run_daemon(*args: object, **kwargs: object) -> None:
+            # Capture environ at daemon entry to catch any write that
+            # happened during startup.
+            environ_snapshot.update(os.environ)
+
+        with (
+            patch(
+                "baton_harness.chain.cli.load_workflow",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "baton_harness.chain.cli.load_registry",
+                return_value=[fake_repo_cfg],
+            ),
+            patch(
+                "baton_harness.chain.cli.run_daemon",
+                side_effect=fake_run_daemon,
+            ),
+            patch("baton_harness.chain.cli.os.chdir"),
+            patch(
+                "baton_harness.chain.cli.os.path.isdir",
+                return_value=True,
+            ),
+            patch(
+                "baton_harness.chain.cli.bootstrap_secrets",
+                side_effect=fake_bootstrap,
+            ),
+            patch("baton_harness.chain.cli.validate_daemon_token"),
+        ):
+            result = _run_main("--once")
+
+        assert result == 0, f"Expected exit 0, got {result}"
+        # Verify the sentinel token value is not in any environ key.
+        leaked_keys = [
+            k for k, v in environ_snapshot.items() if sentinel_token in v
+        ]
+        assert not leaked_keys, (
+            f"Installation token was written to environ key(s): "
+            f"{leaked_keys!r} — env-discipline invariant violated"
+        )
+        # Specifically check the canonical token keys.
+        for key in ("GH_TOKEN", "GITHUB_TOKEN"):
+            val = environ_snapshot.get(key, "")
+            assert sentinel_token not in val, (
+                f"Installation token found in os.environ[{key!r}]"
+            )

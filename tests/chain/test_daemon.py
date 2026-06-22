@@ -20,6 +20,11 @@ Coverage:
 - ``--draft`` flag present in ``gh pr create`` call.
 - Mid-DAG block parks only its sub-tree.
 - Serial dispatch: one ``_run_worker`` at a time (call order).
+- (slice 3a) Daemon-side gh subprocess calls inject GH_TOKEN from the
+  installation token, overriding any existing token in the env dict.
+- (slice 3a) The per-call env override does NOT mutate os.environ.
+- (slice 3a) merge.py:_query_action_jobs uses the installation token.
+- (slice 3a) escalation.py:escalate uses the installation token.
 """
 
 from __future__ import annotations
@@ -8842,3 +8847,336 @@ class TestDrainAgentReadyRevalidation:
             " dispatched; it was never agent-ready and has no dependency"
             f" resolution. worker_calls={worker_calls}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Slice 3a — daemon gh subprocess env-override (RED tests)
+#
+# Contract: every daemon-side ``gh`` subprocess call must pass an ``env``
+# kwarg that contains ``GH_TOKEN=<installation_token>``, overriding any
+# existing value in the environment.  The override must be per-call
+# (copying os.environ) and must NOT mutate os.environ itself.
+#
+# The tests in this class are RED until the daemon/merge/escalation modules
+# grow the per-call env-override helper described in the slice 3a spec.
+# ---------------------------------------------------------------------------
+
+_INSTALLATION_TOKEN = "ghs_INSTALLATION_TOKEN_sentinel_xyz"
+
+
+class TestDaemonGhCallsUseInstallationToken:
+    """Slice 3a: gh subprocess calls inject the installation token in env.
+
+    All tests in this class are expected to FAIL today because the daemon
+    does not yet pass an ``env`` kwarg to subprocess.run.  After slice 3a
+    the daemon-side helper builds a per-call env dict with
+    ``GH_TOKEN=<installation_token>`` before every gh subprocess call.
+    """
+
+    def test_daemon_gh_subprocess_calls_inject_installation_token(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """_label_edit injects GH_TOKEN=<token> in the subprocess env dict.
+
+        Monkeypatches subprocess.run in daemon.py; triggers _label_edit
+        by running a minimal one-issue loop.  Asserts that the ``env``
+        kwarg passed to subprocess.run contains GH_TOKEN set to the
+        installation token.
+
+        Today FAILS because _run() calls subprocess.run without an ``env``
+        kwarg, so GH_TOKEN from os.environ (or absent) is inherited as-is
+        rather than being overridden to the installation token.
+        """
+        env_dicts_seen: list[dict[str, str] | None] = []
+
+        def recording_run(
+            cmd: list[str] | str,
+            *args: object,
+            **kwargs: object,
+        ) -> subprocess.CompletedProcess[str]:
+            # Record the env kwarg for gh calls only.
+            if isinstance(cmd, list) and cmd and cmd[0] == "gh":
+                env_dicts_seen.append(kwargs.get("env"))
+            # Route non-gh calls through the existing _make_run_side_effect
+            # logic (issue list, issue view, etc.).
+            ready_issues = [
+                {
+                    "number": 10,
+                    "title": "Issue 10",
+                    "state": "open",
+                    "body": "",
+                    "url": "https://github.com/o/r/issues/10",
+                    "labels": [{"name": "agent-ready"}],
+                    "milestone": None,
+                    "assignees": [],
+                }
+            ]
+            side_effect = _make_run_side_effect(
+                ready_issues=ready_issues,
+                pr_head_sha="abc123",
+                issue_branch="baton/issue-10-10",
+                feature_branch_exists=False,
+            )
+            return side_effect(cmd if isinstance(cmd, list) else [cmd])
+
+        with (
+            patch.object(
+                subprocess,
+                "run",
+                side_effect=recording_run,
+            ),
+            patch(
+                "baton_harness.chain.daemon.fetch_blocked_by",
+                return_value=[],
+            ),
+            patch("baton_harness.chain.branches.create_feature_branch"),
+            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch(
+                "baton_harness.chain.branches.record_cut_point",
+                return_value="deadbeef" * 5,
+            ),
+            patch(
+                "baton_harness.chain.recovery.reconstruct",
+                return_value=RecoveryResult(
+                    done=set(),
+                    parked_seed=set(),
+                    ci_gate_reentry=set(),
+                    redispatch=set(),
+                ),
+            ),
+            patch(
+                "baton_harness.chain.daemon.merge_issue_branch",
+                return_value=MergeOutcome.MERGED,
+            ),
+            patch("baton_harness.chain.daemon.alert", return_value=True),
+            patch(
+                "baton_harness.vendor.symphony.orchestrator"
+                ".Orchestrator._run_worker",
+                new_callable=AsyncMock,
+                return_value="pr_created",
+            ),
+        ):
+            asyncio.run(
+                run_daemon(
+                    _minimal_wf_config(),
+                    [_repo_cfg()],
+                    once=True,
+                    poll_interval_s=0,
+                    installation_token=_INSTALLATION_TOKEN,
+                )
+            )
+
+        assert env_dicts_seen, (
+            "No gh subprocess calls were recorded — check patch target"
+        )
+        for env in env_dicts_seen:
+            assert env is not None, (
+                "gh subprocess call had no env kwarg — installation token "
+                "env override not wired (slice 3a not yet implemented)"
+            )
+            assert env.get("GH_TOKEN") == _INSTALLATION_TOKEN, (
+                f"Expected GH_TOKEN={_INSTALLATION_TOKEN!r} in subprocess "
+                f"env, got GH_TOKEN={env.get('GH_TOKEN')!r} — "
+                "daemon-side token threading not implemented yet"
+            )
+
+    def test_daemon_gh_subprocess_does_not_mutate_os_environ(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Installation-token env override must NOT write back to os.environ.
+
+        Set os.environ[GH_TOKEN] to a placeholder; run the daemon loop;
+        assert os.environ[GH_TOKEN] is unchanged after the call.  The
+        token must be per-call only — never stored in the process env.
+
+        Today this passes trivially because no env kwarg is set at all.
+        After slice 3a it must still pass: the helper copies os.environ
+        and overrides GH_TOKEN in the copy, NOT in os.environ itself.
+        """
+        gh_token_placeholder = "ghp_PLACEHOLDER_MUST_NOT_CHANGE"
+        monkeypatch.setenv("GH_TOKEN", gh_token_placeholder)
+
+        with (
+            patch.object(
+                daemon_mod,
+                "_run",
+                side_effect=_make_run_side_effect(
+                    ready_issues=[
+                        {
+                            "number": 10,
+                            "title": "Issue 10",
+                            "state": "open",
+                            "body": "",
+                            "url": "https://github.com/o/r/issues/10",
+                            "labels": [{"name": "agent-ready"}],
+                            "milestone": None,
+                            "assignees": [],
+                        }
+                    ],
+                    pr_head_sha="abc123",
+                    issue_branch="baton/issue-10-10",
+                    feature_branch_exists=False,
+                ),
+            ),
+            patch(
+                "baton_harness.chain.daemon.fetch_blocked_by",
+                return_value=[],
+            ),
+            patch("baton_harness.chain.branches.create_feature_branch"),
+            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch(
+                "baton_harness.chain.branches.record_cut_point",
+                return_value="deadbeef" * 5,
+            ),
+            patch(
+                "baton_harness.chain.recovery.reconstruct",
+                return_value=RecoveryResult(
+                    done=set(),
+                    parked_seed=set(),
+                    ci_gate_reentry=set(),
+                    redispatch=set(),
+                ),
+            ),
+            patch(
+                "baton_harness.chain.daemon.merge_issue_branch",
+                return_value=MergeOutcome.MERGED,
+            ),
+            patch("baton_harness.chain.daemon.alert", return_value=True),
+            patch(
+                "baton_harness.vendor.symphony.orchestrator"
+                ".Orchestrator._run_worker",
+                new_callable=AsyncMock,
+                return_value="pr_created",
+            ),
+        ):
+            asyncio.run(
+                run_daemon(
+                    _minimal_wf_config(),
+                    [_repo_cfg()],
+                    once=True,
+                    poll_interval_s=0,
+                    installation_token=_INSTALLATION_TOKEN,
+                )
+            )
+
+        assert os.environ.get("GH_TOKEN") == gh_token_placeholder, (
+            f"os.environ[GH_TOKEN] was mutated — expected"
+            f" {gh_token_placeholder!r}, got {os.environ.get('GH_TOKEN')!r}."
+            " The per-call env override must copy os.environ, not mutate it."
+        )
+
+    def test_merge_query_action_jobs_uses_installation_token(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """merge.py:_query_action_jobs passes GH_TOKEN override to subprocess.
+
+        Monkeypatches subprocess.run in merge.py; calls _query_action_jobs
+        directly with an installation_token kwarg.  Asserts the env dict
+        passed to the gh api call has GH_TOKEN set to the installation token.
+
+        Today FAILS because merge._run() calls subprocess.run without env.
+        """
+        import json as _json  # noqa: PLC0415
+
+        import baton_harness.chain.merge as merge_mod  # noqa: PLC0415
+
+        env_dicts_seen: list[dict[str, str] | None] = []
+
+        def recording_run(
+            cmd: list[str] | str,
+            *args: object,
+            **kwargs: object,
+        ) -> subprocess.CompletedProcess[str]:
+            env_dicts_seen.append(kwargs.get("env"))
+            # Return a minimal workflow runs response so the function exits
+            # cleanly rather than raising on bad JSON.
+            fake_runs = _json.dumps({"workflow_runs": []})
+            return subprocess.CompletedProcess(
+                args=cmd if isinstance(cmd, list) else [str(cmd)],
+                returncode=0,
+                stdout=fake_runs,
+                stderr="",
+            )
+
+        with patch.object(subprocess, "run", side_effect=recording_run):
+            merge_mod._query_action_jobs(
+                "glitchwerks",
+                "baton-harness",
+                "abc123sha",
+                installation_token=_INSTALLATION_TOKEN,
+            )
+
+        assert env_dicts_seen, (
+            "No subprocess.run calls were recorded in _query_action_jobs"
+        )
+        for env in env_dicts_seen:
+            assert env is not None, (
+                "merge._query_action_jobs subprocess call had no env kwarg — "
+                "installation token env override not wired (slice 3a)"
+            )
+            assert env.get("GH_TOKEN") == _INSTALLATION_TOKEN, (
+                f"Expected GH_TOKEN={_INSTALLATION_TOKEN!r} in merge "
+                f"subprocess env, got {env.get('GH_TOKEN')!r}"
+            )
+
+    def test_escalation_uses_installation_token(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """escalation.py:escalate passes GH_TOKEN override to subprocess.
+
+        Monkeypatches subprocess.run in escalation.py; calls escalate()
+        with an installation_token kwarg.  Asserts the env dict passed to
+        the gh issue comment call has GH_TOKEN set to the installation token.
+
+        Today FAILS because escalation._run() calls subprocess.run without
+        an env kwarg.
+        """
+        import baton_harness.chain.escalation as escalation_mod  # noqa: PLC0415
+
+        env_dicts_seen: list[dict[str, str] | None] = []
+
+        def recording_run(
+            cmd: list[str] | str,
+            *args: object,
+            **kwargs: object,
+        ) -> subprocess.CompletedProcess[str]:
+            if isinstance(cmd, list) and cmd and cmd[0] == "gh":
+                env_dicts_seen.append(kwargs.get("env"))
+            return subprocess.CompletedProcess(
+                args=cmd if isinstance(cmd, list) else [str(cmd)],
+                returncode=0,
+                stdout="",
+                stderr="",
+            )
+
+        with (
+            patch.object(subprocess, "run", side_effect=recording_run),
+            # Suppress Slack webhook calls.
+            monkeypatch.delenv("BH_SLACK_WEBHOOK_URL", raising=False)
+            or patch("baton_harness.chain.escalation.urllib"),
+        ):
+            escalation_mod.escalate(
+                "glitchwerks",
+                "baton-harness",
+                42,
+                "Test escalation from slice 3a test",
+                installation_token=_INSTALLATION_TOKEN,
+            )
+
+        assert env_dicts_seen, (
+            "No gh subprocess calls were recorded in escalate() — "
+            "is issue number > 0 and the gh path taken?"
+        )
+        for env in env_dicts_seen:
+            assert env is not None, (
+                "escalate() subprocess call had no env kwarg — "
+                "installation token env override not wired (slice 3a)"
+            )
+            assert env.get("GH_TOKEN") == _INSTALLATION_TOKEN, (
+                f"Expected GH_TOKEN={_INSTALLATION_TOKEN!r} in escalation "
+                f"subprocess env, got {env.get('GH_TOKEN')!r}"
+            )
