@@ -158,24 +158,30 @@ echo "baton-harness: creating required labels in ${REPO_SLUG} ..."
 _create_label() {
     local name="$1"
     local color="$2"
-    local existing
-    # Check-then-act: GET the label list first; create only when absent.
-    # Any GET failure is fatal (network error, auth issue, etc.).
-    # Any CREATE failure is also fatal — if the label was absent and creation
-    # fails it is a genuine error, not a duplicate-label race.
-    existing="$(gh label list -R "${REPO_SLUG}" --limit 200 \
-        --json name --jq ".[].name" 2>&1)" || {
-        echo "baton-harness: error: gh label list failed for '${name}': ${existing}" >&2
-        exit 1
-    }
-    if printf '%s' "${existing}" | grep -qx "${name}"; then
+    local probe_out probe_status
+    # Existence probe: exact GET for this one label (O(1), no pagination cap).
+    # --include emits the HTTP status line as the first line of output so we
+    # can distinguish 200 (exists), 404 (absent), and unexpected errors without
+    # grepping error-message text.
+    # Suppress gh's own stderr so only the --include header line is captured;
+    # any stderr noise from a genuine network error surfaces via the fatal branch.
+    probe_out="$(gh api "repos/${REPO_SLUG}/labels/${name}" \
+        --include 2>/dev/null | head -n1)" || true
+    probe_status="$(printf '%s' "${probe_out}" | awk '{print $2}')"
+    if [[ "${probe_status}" == "200" ]]; then
         echo "baton-harness:   label exists, skipping: ${name}"
-    else
+    elif [[ "${probe_status}" == "404" ]]; then
+        # Absent — create it; any failure here is a genuine error.
         gh label create "${name}" -R "${REPO_SLUG}" --color "${color}" || {
             echo "baton-harness: error: gh label create failed for '${name}'" >&2
             exit 1
         }
         echo "baton-harness:   label created: ${name}"
+    else
+        # Unexpected HTTP status (5xx, network failure, auth error, etc.) — fatal.
+        echo "baton-harness: error: unexpected HTTP status '${probe_status}' probing label '${name}' in ${REPO_SLUG}" >&2
+        echo "  (expected 200 or 404 — check gh auth, repo name, and network)" >&2
+        exit 1
     fi
 }
 
