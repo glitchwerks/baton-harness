@@ -1,9 +1,10 @@
 """Startup reconciliation sweep for the baton-harness daemon.
 
-Runs three independent checks at daemon startup (issue #40):
+Runs startup checks at daemon startup (issues #40, #108):
 
 - **G3a** — GitHub token validation (fatal on failure).
 - **G3b** — ``ANTHROPIC_API_KEY`` presence check (fatal on failure).
+- **G3c** — OAuth credential-volume health-check (fatal on failure).
 - **G2** — Ungraceful-prior-exit detection via a marker file.
 - **G1** — Orphan ``claude`` process sweep (detect-only, non-fatal).
 
@@ -42,6 +43,11 @@ _log = logging.getLogger(__name__)
 # Marker filename — the literal string "daemon.alive" must appear in source
 # (contract pinned by TestMarkerPathConstant).
 _ALIVE_MARKER = "daemon.alive"
+
+# OAuth credential file path — structural-only check (presence + readability).
+# Tests monkeypatch this seam to avoid touching real credentials.
+# Default: ~/.claude/.credentials.json (Claude Code OAuth volume).
+_OAUTH_CRED_PATH: Path = Path.home() / ".claude" / ".credentials.json"
 
 
 def _list_claude_procs() -> list[int]:
@@ -83,8 +89,9 @@ async def reconcile_startup(
     Execution order:
         1. G3a — GitHub token validation (fatal).
         2. G3b — ``ANTHROPIC_API_KEY`` presence (fatal).
-        3. G2 — Ungraceful-prior-exit marker check (non-fatal, critical).
-        4. G1 — Orphan ``claude`` process sweep (non-fatal, warn).
+        3. G3c — OAuth credential-volume readability (fatal).
+        4. G2 — Ungraceful-prior-exit marker check (non-fatal, critical).
+        5. G1 — Orphan ``claude`` process sweep (non-fatal, warn).
 
     Args:
         repo_cfgs: List of repo registry entries.  ``repo_cfgs[0]`` is
@@ -129,6 +136,32 @@ async def reconcile_startup(
             None,
             "ANTHROPIC_API_KEY must not be set (OAuth/subscription deployment;"
             " prevents per-token billing)",
+            severity="critical",
+            runlog=runlog,
+        )
+        sys.exit(1)
+
+    # ------------------------------------------------------------------
+    # G3c: OAuth credential-volume check — FATAL if absent or unreadable.
+    # Structural check only: presence + readability via open().
+    # Contents are never read, decoded, or logged (CLAUDE.md § Credentials
+    # and Secrets).
+    # ------------------------------------------------------------------
+    _cred_ok = False
+    try:
+        with open(_OAUTH_CRED_PATH):  # noqa: PTH123
+            pass
+        _cred_ok = True
+    except OSError:
+        pass
+
+    if not _cred_ok:
+        alert(
+            owner,
+            repo,
+            None,
+            f"OAuth credential file absent or unreadable: {_OAUTH_CRED_PATH}"
+            " — mount the Claude credential volume before starting the daemon",
             severity="critical",
             runlog=runlog,
         )

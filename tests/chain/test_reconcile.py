@@ -89,6 +89,41 @@ def _no_sleep(_: float) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Module-level autouse fixture: neutralise G3c for all tests in this file.
+#
+# These tests pre-date the G3c OAuth credential-volume gate (issue #108).
+# On CI (Ubuntu runner) ~/.claude/.credentials.json is absent, which causes
+# G3c to fire sys.exit(1) and fail every test that calls reconcile_startup.
+#
+# We patch the module-level seam _OAUTH_CRED_PATH to a readable tmp file
+# so G3c always passes here, independent of the runner's home directory.
+# Tests that specifically validate G3c live in test_reconcile_oauth_cred.py.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _patch_oauth_cred_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Point _OAUTH_CRED_PATH at a readable temp file for every test here.
+
+    Ensures G3c passes deterministically on any runner (local or CI)
+    without reading the real ~/.claude/.credentials.json.
+
+    Args:
+        tmp_path: Pytest-provided per-test temporary directory.
+        monkeypatch: Pytest monkeypatch fixture for attribute patching.
+    """
+    cred_file = tmp_path / "fake_credentials.json"
+    cred_file.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        "baton_harness.chain.reconcile._OAUTH_CRED_PATH",
+        cred_file,
+    )
+
+
+# ---------------------------------------------------------------------------
 # G3 — Credential validation
 # ---------------------------------------------------------------------------
 
