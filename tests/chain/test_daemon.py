@@ -7872,6 +7872,367 @@ def test_second_work_unit_skipped_when_agent_ready_removed_mid_drain() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Issue #135: malformed 3-label pre-dispatch state must fire critical alert
+# ---------------------------------------------------------------------------
+# The pre-dispatch live re-check silently skips any issue whose live label
+# set contains both ``agent-ready`` and ``blocked`` (torn snapshot guard).
+# That is correct for the 2-label case {agent-ready, blocked}.
+#
+# Bug: if an issue carries a 3-label set {agent-ready, agent-done, blocked},
+# the same skip path fires — but the issue never reaches the post-run
+# invariant check that would fire a critical alert.  The operator is never
+# paged about the invariant violation.
+#
+# Required fix: when the pre-dispatch skip fires AND the live label set
+# contains ``blocked`` PLUS at least one other state label beyond
+# ``agent-ready`` (i.e., any member of STATE_LABELS - {agent-ready}),
+# the daemon must ALSO emit a critical alert (severity="critical") naming
+# the malformed label set so the operator is paged.
+#
+# The 2-label case {agent-ready, blocked} must be preserved: skipped
+# silently, no multi-state invariant alert.
+# ---------------------------------------------------------------------------
+
+
+def _run_side_effect_for_135(
+    ready_issues: list[dict[str, Any]],
+    issue_number: int = 10,
+) -> Any:  # noqa: ANN401
+    """Build a ``_run`` side-effect for the #135 malformed-state tests.
+
+    Mirrors ``_run_side_effect_for_128``: returns the polling list for
+    ``gh issue list`` and a plausible single-object body for
+    ``gh issue view``.  ``_fetch_issue_labels`` is patched separately in
+    each test so only the structural shell response is provided here.
+
+    Args:
+        ready_issues: Issue dicts returned by the polling query.
+        issue_number: Default issue number for ``issue view`` fallback.
+
+    Returns:
+        A callable matching the ``_run(cmd)`` signature.
+    """
+
+    def side_effect(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        import json as _json
+
+        cmd_str = " ".join(cmd)
+        # Polling query (agent-ready list).
+        if (
+            "issue" in cmd_str
+            and "list" in cmd_str
+            and "agent-ready" in cmd_str
+        ):
+            return _ok(_json.dumps(ready_issues))
+        # Orphan scan (agent-in-progress list) — return empty list.
+        if (
+            "issue" in cmd_str
+            and "list" in cmd_str
+            and "agent-in-progress" in cmd_str
+        ):
+            return _ok(_json.dumps([]))
+        # issue view — structural response for _fetch_issue_obj.
+        if "issue" in cmd_str and "view" in cmd_str and "edit" not in cmd_str:
+            nums = [p for p in cmd if p.isdigit()]
+            n = int(nums[0]) if nums else issue_number
+            return _ok(
+                _json.dumps(
+                    {
+                        "number": n,
+                        "title": f"Issue {n}",
+                        "state": "open",
+                        "body": "",
+                        "url": f"https://github.com/o/r/issues/{n}",
+                        "labels": [{"name": "agent-done"}],
+                        "assignees": [],
+                    }
+                )
+            )
+        # Label edits, git push, PR create, PR list — all succeed.
+        if "edit" in cmd_str:
+            return _ok()
+        if "push" in cmd_str:
+            return _ok()
+        if "pr" in cmd_str and "create" in cmd_str:
+            return _ok("https://github.com/o/r/pull/99")
+        if "pr" in cmd_str and "list" in cmd_str:
+            return _ok(_json.dumps([]))
+        if "rev-list" in cmd_str:
+            return _ok("0")
+        return _ok()
+
+    return side_effect
+
+
+def test_malformed_3_label_state_fires_critical_alert() -> None:
+    """Labels {agent-ready, agent-done, blocked} trigger a critical alert.
+
+    The pre-dispatch skip prevents dispatch of a blocked issue.  But the
+    3-label state {agent-ready, agent-done, blocked} is a genuine
+    invariant violation — more than one state label is present.  The
+    daemon must ALSO emit an alert with severity="critical" so the
+    operator is paged; silently dropping the issue is not acceptable.
+
+    Assertions:
+    - The worker is NOT called (dispatch blocked — safety preserved).
+    - ``alert`` is called with ``severity="critical"`` at least once, and
+      the message identifies issue #10 or the malformed multi-state.
+    """
+    from baton_harness.chain.labels import (
+        LABEL_AGENT_DONE,
+        LABEL_AGENT_READY,
+    )
+
+    ready_issues = [
+        {
+            "number": 10,
+            "title": "Issue 10",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/10",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        }
+    ]
+
+    worker_calls: list[int] = []
+    alert_calls: list[dict[str, Any]] = []
+
+    async def fake_run_worker(issue: Any) -> str:  # noqa: ANN401
+        worker_calls.append(issue.number)
+        return "pr_created"
+
+    def fake_fetch_labels(
+        owner: str,  # noqa: ARG001
+        repo: str,  # noqa: ARG001
+        issue: int,  # noqa: ARG001
+    ) -> set[str]:
+        # Malformed 3-label state: agent-ready + agent-done + blocked.
+        return {LABEL_AGENT_READY, LABEL_AGENT_DONE, "blocked"}
+
+    def capturing_alert(
+        owner: str,  # noqa: ARG001
+        repo: str,  # noqa: ARG001
+        issue: Any,  # noqa: ANN401, ARG001
+        message: str,
+        *,
+        severity: str = "info",
+        kind: str = "debug",
+        runlog: Any = None,  # noqa: ANN401, ARG001
+    ) -> bool:
+        alert_calls.append(
+            {"severity": severity, "kind": kind, "msg": message}
+        )
+        return True
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=_run_side_effect_for_135(ready_issues),
+        ),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            return_value=[],
+        ),
+        patch(
+            "baton_harness.chain.daemon._fetch_issue_labels",
+            side_effect=fake_fetch_labels,
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch(
+            "baton_harness.chain.daemon.alert",
+            side_effect=capturing_alert,
+        ),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.Orchestrator"
+            "._run_worker",
+            side_effect=fake_run_worker,
+        ),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    # Safety: dispatch must still be blocked in the 3-label state.
+    assert 10 not in worker_calls, (
+        "Issue #10 carries live 'blocked' label; it must NOT be dispatched"
+        " even when extra state labels are present (malformed 3-label"
+        f" state); worker_calls={worker_calls}"
+    )
+
+    # Invariant alert: a critical alert must be emitted for the operator.
+    critical_alerts = [a for a in alert_calls if a["severity"] == "critical"]
+    assert critical_alerts, (
+        "Malformed 3-label state {agent-ready, agent-done, blocked} must"
+        " emit a critical alert so the operator is paged — the pre-dispatch"
+        " skip path silently drops the issue without one."
+        f" alert_calls={alert_calls}"
+    )
+
+
+def test_two_label_torn_state_no_multi_state_critical_alert() -> None:
+    """2-label {agent-ready, blocked} skip emits no invariant alert.
+
+    The 2-label torn pre-dispatch state is a normal TOCTOU race: a label
+    was applied between the snapshot and the live re-check.  Skipping is
+    correct; emitting a critical invariant-violation alert would be noise.
+
+    This is the negative control for ``test_malformed_3_label_state_fires_
+    critical_alert``: the fix must add alerting only for 3+ label states,
+    not widen it to every blocked skip.
+
+    Assertions:
+    - Worker NOT called (existing skip behaviour preserved).
+    - No critical alert whose message mentions ``agent-done`` is emitted
+      (there is no extra state label to name).
+    """
+    from baton_harness.chain.labels import LABEL_AGENT_READY
+
+    ready_issues = [
+        {
+            "number": 10,
+            "title": "Issue 10",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/10",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        }
+    ]
+
+    worker_calls: list[int] = []
+    alert_calls: list[dict[str, Any]] = []
+
+    async def fake_run_worker(issue: Any) -> str:  # noqa: ANN401
+        worker_calls.append(issue.number)
+        return "pr_created"
+
+    def fake_fetch_labels(
+        owner: str,  # noqa: ARG001
+        repo: str,  # noqa: ARG001
+        issue: int,  # noqa: ARG001
+    ) -> set[str]:
+        # Standard 2-label torn pre-dispatch state.
+        return {LABEL_AGENT_READY, "blocked"}
+
+    def capturing_alert(
+        owner: str,  # noqa: ARG001
+        repo: str,  # noqa: ARG001
+        issue: Any,  # noqa: ANN401, ARG001
+        message: str,
+        *,
+        severity: str = "info",
+        kind: str = "debug",
+        runlog: Any = None,  # noqa: ANN401, ARG001
+    ) -> bool:
+        alert_calls.append(
+            {"severity": severity, "kind": kind, "msg": message}
+        )
+        return True
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=_run_side_effect_for_135(ready_issues),
+        ),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            return_value=[],
+        ),
+        patch(
+            "baton_harness.chain.daemon._fetch_issue_labels",
+            side_effect=fake_fetch_labels,
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch(
+            "baton_harness.chain.daemon.alert",
+            side_effect=capturing_alert,
+        ),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.Orchestrator"
+            "._run_worker",
+            side_effect=fake_run_worker,
+        ),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    # The 2-label skip must still suppress dispatch (existing behaviour).
+    assert 10 not in worker_calls, (
+        "Issue #10 carries live 'blocked' label; it must NOT be dispatched"
+        f" in the 2-label torn state; worker_calls={worker_calls}"
+    )
+
+    # The 2-label torn state must NOT trigger a multi-state invariant alert.
+    # We detect the invariant alert by looking for a critical message that
+    # names ``agent-done`` (the extra state label present only in 3-label
+    # states).  A critical alert without ``agent-done`` in the message does
+    # not constitute the new invariant-violation signal.
+    multi_state_critical = [
+        a
+        for a in alert_calls
+        if a["severity"] == "critical" and "agent-done" in a["msg"]
+    ]
+    assert not multi_state_critical, (
+        "2-label torn state {agent-ready, blocked} must NOT fire a"
+        " multi-state invariant alert — the fix must scope the new"
+        " alerting to 3+ label states only."
+        f" Unexpected multi-state alerts: {multi_state_critical}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # PR #145 (Codex P2): two race-condition findings in the drain loop
 # ---------------------------------------------------------------------------
 # Finding 1 (L1930): The mid-drain check currently iterates ``membership``
