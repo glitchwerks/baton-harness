@@ -8230,3 +8230,615 @@ def test_two_label_torn_state_no_multi_state_critical_alert() -> None:
         " alerting to 3+ label states only."
         f" Unexpected multi-state alerts: {multi_state_critical}"
     )
+
+
+# ---------------------------------------------------------------------------
+# PR #145 (Codex P2): two race-condition findings in the drain loop
+# ---------------------------------------------------------------------------
+# Finding 1 (L1930): The mid-drain check currently iterates ``membership``
+#   (which, for a milestone, has been expanded to the full open set via
+#   ``_fetch_full_milestone_members``). An un-milestoned issue that loses
+#   ``agent-ready`` between tick-start and its drain turn must NOT be
+#   dispatched. The existing test
+#   ``test_second_work_unit_skipped_when_agent_ready_removed_mid_drain``
+#   (above) confirms the un-milestoned path; the class below adds a second
+#   variant and the Finding 2 milestone scenario.
+#
+# Finding 2 (L1896): When the milestone's ``membership`` is expanded to
+#   include every open milestone member (ready + un-greenlit), the mid-drain
+#   re-check on drain_idx > 0 calls ``_fetch_issue_labels`` for EVERY
+#   member. An un-greenlit member naturally lacks ``agent-ready`` (a human
+#   has not greenlighted it yet). The current predicate treats "missing
+#   agent-ready" as a disqualification, so it fires on an innocent
+#   un-greenlit sibling and skips the ENTIRE milestone work unit — including
+#   the ready sibling that SHOULD be dispatched.
+#
+#   Correct behaviour: the mid-drain re-check must only validate the
+#   *ready* members of the milestone (those in ``all_ready_nums`` at tick-
+#   start), not the full expanded membership. The un-greenlit sibling
+#   should be left alone; the ready sibling should be dispatched.
+# ---------------------------------------------------------------------------
+
+
+class TestDrainAgentReadyRevalidation:
+    """PR #145 Codex P2: drain-loop agent-ready re-validation correctness.
+
+    Attributes:
+        _MS: Milestone dict shared across tests (Sprint 9, number 9).
+    """
+
+    _MS: dict[str, object] = {"number": 9, "title": "Sprint 9"}
+
+    # -----------------------------------------------------------------
+    # Shared stubs
+    # -----------------------------------------------------------------
+
+    @staticmethod
+    def _run_side_effect_two_unit_drain(
+        ready_issues: list[dict[str, Any]],
+        ms_number: int = 9,
+    ) -> Any:  # noqa: ANN401
+        """Build a ``_run`` side-effect for two-unit drain scenarios.
+
+        Serves the ready-issues poll, stubbed ``gh issue view`` responses,
+        label edits, PR list / create, git push, and ls-remote.
+
+        Args:
+            ready_issues: The full list returned by the agent-ready poll.
+            ms_number: Milestone number; used to build baton branch names.
+
+        Returns:
+            A callable matching the ``_run(cmd)`` signature.
+        """
+
+        def side_effect(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            """Dispatch stub responses by command shape.
+
+            Args:
+                cmd: Command token list passed to ``_run``.
+
+            Returns:
+                A successful ``CompletedProcess`` with appropriate JSON.
+            """
+            import json as _json
+
+            cmd_str = " ".join(cmd)
+            if (
+                "issue" in cmd_str
+                and "list" in cmd_str
+                and "agent-ready" in cmd_str
+            ):
+                return _ok(_json.dumps(ready_issues))
+            if (
+                "issue" in cmd_str
+                and "list" in cmd_str
+                and "agent-in-progress" in cmd_str
+            ):
+                return _ok(_json.dumps([]))
+            if (
+                "issue" in cmd_str
+                and "view" in cmd_str
+                and "edit" not in cmd_str
+            ):
+                nums = [p for p in cmd if p.isdigit()]
+                n = int(nums[0]) if nums else 1
+                return _ok(
+                    _json.dumps(
+                        {
+                            "number": n,
+                            "title": f"Issue {n}",
+                            "state": "open",
+                            "body": "",
+                            "url": (f"https://github.com/o/r/issues/{n}"),
+                            "labels": [{"name": "agent-done"}],
+                            "assignees": [],
+                        }
+                    )
+                )
+            if "issue" in cmd_str and "edit" in cmd_str:
+                return _ok()
+            if "pr" in cmd_str and "list" in cmd_str:
+                prs = [
+                    {
+                        "number": 5,
+                        "headRefName": (f"baton/sprint-{ms_number}-10"),
+                        "headRefOid": "sha10",
+                    }
+                ]
+                return _ok(_json.dumps(prs))
+            if "pr" in cmd_str and "create" in cmd_str:
+                return _ok("https://github.com/o/r/pull/99")
+            if "git" in cmd_str and "push" in cmd_str:
+                return _ok()
+            if "ls-remote" in cmd_str:
+                return _ok("")
+            if "rev-parse" in cmd_str:
+                return _ok("abc123\n")
+            return _ok()
+
+        return side_effect
+
+    # -----------------------------------------------------------------
+    # Finding 1 (L1930): un-milestoned issue de-greenlit mid-drain
+    # -----------------------------------------------------------------
+
+    def test_degreenlit_issue_skipped_when_agent_ready_removed_mid_drain(
+        self,
+    ) -> None:
+        """Un-milestoned issue de-greenlit mid-drain must not be dispatched.
+
+        Variant of the module-level
+        ``test_second_work_unit_skipped_when_agent_ready_removed_mid_drain``
+        written as a class method to make the PR #145 contract explicit.
+
+        Setup:
+        - Un-milestoned issue #1 runs first (drain_idx=0; no re-check).
+        - Un-milestoned issue #5 is the second unit (drain_idx=1).
+        - ``_fetch_issue_labels`` for #5: first call → ``{"agent-ready"}``
+          (tick-start pre-check, clean); second call → ``{"other-label"}``
+          (mid-drain re-check — ``agent-ready`` removed, no exclude label).
+
+        Expected:
+        - ``_run_worker`` NOT called for #5 (de-greenlit).
+        - ``alert`` fired with ``kind="block"``.
+        - ``_run_worker`` IS called for #1 (clean).
+
+        This test confirms the L1896 predicate
+        ``LABEL_AGENT_READY not in _md_labels`` fires on the de-greenlit
+        case, preventing dispatch. Current code at HEAD 23e1a89 satisfies
+        this (the fix is in); this test guards against regression.
+        """
+        ready_issues = [
+            {
+                "number": 1,
+                "title": "Issue 1 — first unit",
+                "state": "open",
+                "body": "",
+                "url": "https://github.com/o/r/issues/1",
+                "labels": [{"name": "agent-ready"}],
+                "milestone": None,
+                "assignees": [],
+            },
+            {
+                "number": 5,
+                "title": "Issue 5 — de-greenlit mid-drain",
+                "state": "open",
+                "body": "",
+                "url": "https://github.com/o/r/issues/5",
+                "labels": [{"name": "agent-ready"}],
+                "milestone": None,
+                "assignees": [],
+            },
+        ]
+
+        worker_calls: list[int] = []
+
+        async def fake_run_worker(issue: Any) -> str:  # noqa: ANN401
+            """Record dispatched issue numbers.
+
+            Args:
+                issue: Issue object passed to the worker.
+
+            Returns:
+                Worker outcome string.
+            """
+            worker_calls.append(issue.number)
+            return "pr_created"
+
+        # First call for #5 = tick-start pre-check (clean).
+        # Second call for #5 = mid-drain re-check (agent-ready gone).
+        fetch_calls_for_5: list[int] = []
+
+        def fake_fetch_labels(
+            owner: str, repo: str, n: int
+        ) -> set[str] | None:
+            """Return live labels; #5 loses agent-ready on second fetch.
+
+            Args:
+                owner: Repo owner (unused stub).
+                repo: Repo name (unused stub).
+                n: Issue number.
+
+            Returns:
+                Set of label name strings, or None on failure.
+            """
+            if n == 5:
+                fetch_calls_for_5.append(n)
+                if len(fetch_calls_for_5) >= 2:
+                    # Mid-drain re-check: agent-ready removed; no
+                    # exclude label present (pure de-greenlit).
+                    return {"other-label"}
+                return {"agent-ready"}
+            return {"agent-ready"}
+
+        alert_calls: list[dict[str, Any]] = []
+
+        def fake_alert(
+            owner: str,
+            repo: str,
+            issue: int,
+            message: str,
+            *,
+            severity: str = "critical",
+            kind: str = "block",
+            runlog: Any = None,  # noqa: ANN401
+        ) -> bool:
+            """Capture alert calls.
+
+            Args:
+                owner: Repo owner.
+                repo: Repo name.
+                issue: Issue number.
+                message: Human-readable alert text.
+                severity: Alert severity level.
+                kind: Alert kind.
+                runlog: Optional runlog handle.
+
+            Returns:
+                Always ``True`` (stub success).
+            """
+            alert_calls.append(
+                {"issue": issue, "severity": severity, "kind": kind}
+            )
+            return True
+
+        with (
+            patch.object(
+                daemon_mod,
+                "_run",
+                side_effect=self._run_side_effect_two_unit_drain(
+                    ready_issues, ms_number=9
+                ),
+            ),
+            patch(
+                "baton_harness.chain.daemon._fetch_issue_labels",
+                side_effect=fake_fetch_labels,
+            ),
+            patch(
+                "baton_harness.chain.daemon.fetch_blocked_by",
+                return_value=[],
+            ),
+            patch("baton_harness.chain.branches.create_feature_branch"),
+            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch(
+                "baton_harness.chain.branches.record_cut_point",
+                return_value="deadbeef" * 5,
+            ),
+            patch(
+                "baton_harness.chain.recovery.reconstruct",
+                return_value=RecoveryResult(
+                    done=set(),
+                    parked_seed=set(),
+                    ci_gate_reentry=set(),
+                    redispatch=set(),
+                ),
+            ),
+            patch(
+                "baton_harness.chain.daemon.merge_issue_branch",
+                return_value=MergeOutcome.MERGED,
+            ),
+            patch(
+                "baton_harness.chain.daemon.alert",
+                side_effect=fake_alert,
+            ),
+            patch(
+                "baton_harness.vendor.symphony.orchestrator"
+                ".Orchestrator._run_worker",
+                side_effect=fake_run_worker,
+            ),
+        ):
+            asyncio.run(
+                run_daemon(
+                    _minimal_wf_config(),
+                    [_repo_cfg()],
+                    once=True,
+                    poll_interval_s=0,
+                )
+            )
+
+        assert 1 in worker_calls, (
+            f"Issue #1 must be dispatched (first unit); "
+            f"worker_calls={worker_calls}"
+        )
+        assert 5 not in worker_calls, (
+            "Issue #5 lost agent-ready mid-drain (de-greenlit) and must"
+            " NOT be dispatched (PR #145 Codex P2 L1896 re-check);"
+            f" worker_calls={worker_calls}"
+        )
+        block_alerts = [a for a in alert_calls if a["kind"] == "block"]
+        assert block_alerts, (
+            "alert must fire with kind='block' for the de-greenlit unit;"
+            f" alert_calls={alert_calls}"
+        )
+
+    # -----------------------------------------------------------------
+    # Finding 2 (L1896): milestone mixed-readiness skipped on drain > 1
+    # -----------------------------------------------------------------
+
+    def test_milestone_with_mixed_readiness_dispatches_ready_sibling_on_second_drain(  # noqa: E501
+        self,
+    ) -> None:
+        """Milestone with un-greenlit sibling must not be skipped entirely.
+
+        Regression test for the Codex P2 finding at L1896 in PR #145.
+
+        Background: after ``_fetch_full_milestone_members`` expands the
+        milestone's ``membership`` to include every open member (both
+        ``agent-ready`` and un-greenlit), the mid-drain re-check on
+        ``drain_idx > 0`` iterates over the FULL ``membership``.  An
+        un-greenlit member (e.g. issue #20) has never had ``agent-ready``
+        applied by a human yet; when ``_fetch_issue_labels`` returns its
+        current live labels (no ``agent-ready``, no exclude label), the
+        current predicate:
+
+            ``LABEL_AGENT_READY not in _md_labels``
+
+        evaluates ``True`` for the innocent un-greenlit member, sets
+        ``mid_drain_excluded = 20``, and skips the entire Sprint-9 work
+        unit — including issue #10 (the ready sibling) that SHOULD be
+        dispatched.
+
+        Drain ordering rationale: ``_select_work_unit`` always picks
+        milestoned work units before un-milestoned, ordered by milestone
+        number.  To force Sprint-9 onto ``drain_idx=1`` (where the mid-
+        drain re-check fires), a Sprint-8 milestone (#5) runs first at
+        ``drain_idx=0``.  Un-milestoned issue #1 would run at
+        ``drain_idx=0`` too, but milestones are selected before it.
+
+        Setup:
+        - Drain unit 0: Sprint-8 milestone, issue #5 (``agent-ready``,
+          no un-greenlit siblings). Runs at ``drain_idx=0``; no mid-drain
+          re-check. Full membership = ``{5}`` (clean, all ready).
+        - Drain unit 1: Sprint-9 milestone, ``drain_idx=1``.
+          Full membership = ``{10, 20}``; only #10 is in
+          ``all_ready_nums`` (only #10 appeared in the ``agent-ready``
+          poll at tick-start). Issue #20 is in the milestone but NOT
+          ``agent-ready`` — a planned future issue not yet greenlighted.
+        - ``_fetch_issue_labels`` for #20 returns ``{"planned"}`` — no
+          ``agent-ready``, no exclude label.  This is the trigger.
+
+        Expected (after fix):
+        - ``_run_worker`` IS called for #5 (Sprint-8, drain unit 0).
+        - ``_run_worker`` IS called for #10 (Sprint-9 ready sibling).
+        - ``_run_worker`` is NOT called for #20 (un-greenlit sibling).
+        - The daemon completes normally (``once=True``).
+
+        Current behaviour (pre-fix, HEAD 23e1a89):
+        - On ``drain_idx=1`` the mid-drain re-check hits #20 in Sprint-9's
+          full ``membership``, sees missing ``agent-ready``, fires
+          ``mid_drain_excluded = 20``, skips the whole Sprint-9 unit.
+        - ``_run_worker`` is NOT called for #10 — the ready sibling is
+          silently abandoned.
+
+        This test FAILS against the pre-fix code and must PASS after the
+        implementer limits the mid-drain re-check to
+        ``membership ∩ all_ready_nums`` (the greenlit subset only).
+        """
+        ms8 = {"number": 8, "title": "Sprint 8"}
+        ms9 = self._MS  # {"number": 9, "title": "Sprint 9"}
+        # Poll returns three issues:
+        # - #5 (Sprint-8, agent-ready, no un-greenlit siblings)
+        # - #10 (Sprint-9, agent-ready — the ready sibling)
+        # Issue #20 is in Sprint-9 but NOT in the poll — not agent-ready.
+        ready_issues = [
+            {
+                "number": 5,
+                "title": "Issue 5 — Sprint-8 (first drain unit)",
+                "state": "open",
+                "body": "",
+                "url": "https://github.com/o/r/issues/5",
+                "labels": [{"name": "agent-ready"}],
+                "milestone": ms8,
+                "assignees": [],
+            },
+            {
+                "number": 10,
+                "title": "Issue 10 — Sprint-9 ready sibling",
+                "state": "open",
+                "body": "",
+                "url": "https://github.com/o/r/issues/10",
+                "labels": [{"name": "agent-ready"}],
+                "milestone": ms9,
+                "assignees": [],
+            },
+        ]
+        # Full memberships per milestone.
+        # Sprint-8: only {5} (all ready, no un-greenlit members).
+        # Sprint-9: {10, 20}; #20 is un-greenlit (not in poll).
+        full_memberships: dict[int, frozenset[int]] = {
+            8: frozenset({5}),
+            9: frozenset({10, 20}),
+        }
+
+        worker_calls: list[int] = []
+
+        async def fake_run_worker(issue: Any) -> str:  # noqa: ANN401
+            """Record dispatched issue numbers.
+
+            Args:
+                issue: Issue object passed to the worker.
+
+            Returns:
+                Worker outcome string.
+            """
+            worker_calls.append(issue.number)
+            return "pr_created"
+
+        def fake_full_members(
+            owner: str,
+            repo: str,
+            ms_num: int,
+            ms_title: str,
+        ) -> frozenset[int]:
+            """Return the full open member set for each milestone.
+
+            Args:
+                owner: Repo owner (unused stub).
+                repo: Repo name (unused stub).
+                ms_num: Milestone number.
+                ms_title: Milestone title (unused stub).
+
+            Returns:
+                Full open-member frozenset for the given milestone.
+            """
+            return full_memberships.get(ms_num, frozenset())
+
+        def fake_fetch_labels(
+            owner: str, repo: str, n: int
+        ) -> set[str] | None:
+            """Return live labels reflecting each issue's true state.
+
+            Issue #5 and #10: agent-ready (ready issues that must be
+            dispatched).
+            Issue #20: only ``planned`` (un-greenlit — never had
+            agent-ready; must NOT trigger a skip of Sprint-9 milestone).
+
+            Args:
+                owner: Repo owner (unused stub).
+                repo: Repo name (unused stub).
+                n: Issue number.
+
+            Returns:
+                Set of label name strings, or None on failure.
+            """
+            if n == 20:
+                # Un-greenlit sibling of Sprint-9: no agent-ready, no
+                # exclude label.  Must NOT be used to skip the milestone.
+                return {"planned"}
+            return {"agent-ready"}
+
+        def run_side_effect(
+            cmd: list[str],
+        ) -> subprocess.CompletedProcess[str]:
+            """Stub gh/git calls for the two-milestone drain scenario.
+
+            Args:
+                cmd: Command token list passed to ``_run``.
+
+            Returns:
+                A successful ``CompletedProcess`` with appropriate JSON.
+            """
+            import json as _json
+
+            cmd_str = " ".join(cmd)
+            if (
+                "issue" in cmd_str
+                and "list" in cmd_str
+                and "agent-ready" in cmd_str
+            ):
+                return _ok(_json.dumps(ready_issues))
+            if (
+                "issue" in cmd_str
+                and "list" in cmd_str
+                and "agent-in-progress" in cmd_str
+            ):
+                return _ok(_json.dumps([]))
+            if (
+                "issue" in cmd_str
+                and "view" in cmd_str
+                and "edit" not in cmd_str
+            ):
+                nums = [p for p in cmd if p.isdigit()]
+                n = int(nums[0]) if nums else 5
+                return _ok(
+                    _json.dumps(
+                        {
+                            "number": n,
+                            "title": f"Issue {n}",
+                            "state": "open",
+                            "body": "",
+                            "url": (f"https://github.com/o/r/issues/{n}"),
+                            "labels": [{"name": "agent-done"}],
+                            "assignees": [],
+                        }
+                    )
+                )
+            if "issue" in cmd_str and "edit" in cmd_str:
+                return _ok()
+            if "pr" in cmd_str and "list" in cmd_str:
+                prs = [
+                    {
+                        "number": i,
+                        "headRefName": f"baton/sprint-{ms}-{n}",
+                        "headRefOid": f"sha{n}",
+                    }
+                    for i, (ms, n) in enumerate([(8, 5), (9, 10)], start=1)
+                ]
+                return _ok(_json.dumps(prs))
+            if "pr" in cmd_str and "create" in cmd_str:
+                return _ok("https://github.com/o/r/pull/99")
+            if "git" in cmd_str and "push" in cmd_str:
+                return _ok()
+            if "ls-remote" in cmd_str:
+                return _ok("")
+            if "rev-parse" in cmd_str:
+                return _ok("abc123\n")
+            return _ok()
+
+        with (
+            patch.object(daemon_mod, "_run", side_effect=run_side_effect),
+            patch(
+                "baton_harness.chain.daemon._fetch_issue_labels",
+                side_effect=fake_fetch_labels,
+            ),
+            patch(
+                "baton_harness.chain.daemon.fetch_blocked_by",
+                return_value=[],
+            ),
+            patch(
+                "baton_harness.chain.daemon._fetch_full_milestone_members",
+                side_effect=fake_full_members,
+            ),
+            patch("baton_harness.chain.branches.create_feature_branch"),
+            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch(
+                "baton_harness.chain.branches.record_cut_point",
+                return_value="deadbeef" * 5,
+            ),
+            patch(
+                "baton_harness.chain.recovery.reconstruct",
+                return_value=RecoveryResult(
+                    done=set(),
+                    parked_seed=set(),
+                    ci_gate_reentry=set(),
+                    redispatch=set(),
+                ),
+            ),
+            patch(
+                "baton_harness.chain.daemon.merge_issue_branch",
+                return_value=MergeOutcome.MERGED,
+            ),
+            patch("baton_harness.chain.daemon.alert", return_value=True),
+            patch(
+                "baton_harness.vendor.symphony.orchestrator"
+                ".Orchestrator._run_worker",
+                side_effect=fake_run_worker,
+            ),
+        ):
+            asyncio.run(
+                run_daemon(
+                    _minimal_wf_config(),
+                    [_repo_cfg()],
+                    once=True,
+                    poll_interval_s=0,
+                )
+            )
+
+        assert 5 in worker_calls, (
+            "Issue #5 (Sprint-8, drain unit 0) MUST be dispatched;"
+            f" worker_calls={worker_calls}"
+        )
+        assert 10 in worker_calls, (
+            "Issue #10 (ready sibling in Sprint-9 milestone) MUST be"
+            " dispatched even though Sprint-9 also contains un-greenlit"
+            " issue #20. The mid-drain re-check must only validate"
+            " members in all_ready_nums (greenlighted at tick-start),"
+            " NOT the full expanded membership. Current code skips the"
+            " whole Sprint-9 unit because #20 lacks agent-ready"
+            " (PR #145 Codex P2 L1896); worker_calls={worker_calls}"
+        )
+        assert 20 not in worker_calls, (
+            "Issue #20 (un-greenlit Sprint-9 sibling) must NOT be"
+            " dispatched; it was never agent-ready and has no dependency"
+            f" resolution. worker_calls={worker_calls}"
+        )

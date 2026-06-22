@@ -1894,15 +1894,17 @@ async def _poll_and_run(
             # code paths.  Single fetch per member covers both checks
             # (Codex P2, #145).
             if _drain_idx > 0:
-                # Re-check live labels for every member using the same
-                # ``_DISPATCH_EXCLUDE_LABELS`` set as the tick-start gate
-                # so "blocked or other exclude labels" is consistent.
-                # Also re-verify ``agent-ready`` is still present: a human
-                # may have removed it mid-drain (de-greenlit), which is a
-                # complementary TOCTOU gap to the exclude-label check.
+                # Re-check live labels for members that were greenlit at
+                # tick-start (``membership ∩ all_ready_nums``).  Un-greenlit
+                # milestone siblings were never going to be dispatched this
+                # tick — iterating the full ``membership`` would trip the
+                # ``LABEL_AGENT_READY not in labels`` check on them and
+                # incorrectly skip the whole work unit (Codex P2 #132).
+                # Uses the same ``_DISPATCH_EXCLUDE_LABELS`` set and
+                # ``agent-ready`` re-check as the tick-start gate.
                 # Fail-closed: ``None`` (unreadable) also skips the unit.
                 mid_drain_excluded: int | None = None
-                for _md_n in membership:
+                for _md_n in membership & all_ready_nums:
                     _md_labels = _fetch_issue_labels(owner, repo, _md_n)
                     if (
                         _md_labels is None

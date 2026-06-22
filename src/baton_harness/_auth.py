@@ -349,3 +349,52 @@ def validate_github_token(
             f"response — {exc} "
             f"(see gh output above)."
         ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Daemon-side token validator
+# ---------------------------------------------------------------------------
+
+#: Token prefix for GitHub App installation tokens — the only type
+#: accepted by the daemon (harness) auth gate.
+_INSTALLATION_PREFIX = "ghs_"
+
+
+def validate_daemon_token(token: str) -> None:
+    """Validate a GitHub App installation token for daemon-side use.
+
+    This is a **type-gate only** — no live ``gh`` call is made.  The
+    daemon uses a ``ghs_`` installation token minted by the GitHub App
+    auth flow, not a fine-grained PAT.  All worker-token forms and
+    unknown prefixes are rejected so the daemon cannot accidentally use
+    a worker credential (and vice-versa).
+
+    Args:
+        token: The token string to validate.
+
+    Raises:
+        TokenValidationError: When the token is empty, has an unexpected
+            prefix (e.g. ``github_pat_``, ``ghp_``, ``gho_``), or is
+            otherwise not a ``ghs_`` installation token.
+
+    Example::
+
+        try:
+            validate_daemon_token(installation_token)
+        except TokenValidationError as exc:
+            sys.exit(f"daemon auth gate: {exc.message}")
+    """
+    if not token:
+        raise TokenValidationError(
+            "validate_daemon_token: token is empty. "
+            "A GitHub App installation token (ghs_ prefix) is required."
+        )
+
+    if not token.startswith(_INSTALLATION_PREFIX):
+        raise TokenValidationError(
+            f"validate_daemon_token: token has unexpected prefix — "
+            f"expected '{_INSTALLATION_PREFIX}' (GitHub App installation "
+            f"token), got a token starting with "
+            f"'{token[:12]}...'. "
+            "Only ghs_ installation tokens are accepted by the daemon."
+        )
