@@ -253,6 +253,33 @@ echo "baton-harness: preflight checks passed"
 echo ""
 
 # ---------------------------------------------------------------------------
+# G3c preflight: OAuth credential file presence check
+#
+# Once the G3c gate lands in reconcile.py, every scenario that starts the
+# daemon will sys.exit(1) when ~/.claude/.credentials.json is absent (CI is
+# the canonical case).  Skip the entire scenario block rather than running
+# five tests that are guaranteed to fail.
+#
+# Path mirrors reconcile.py _OAUTH_CRED_PATH exactly:
+#   Path.home() / ".claude" / ".credentials.json"  →  ${HOME}/.claude/.credentials.json
+# No $CLAUDE_HOME indirection in reconcile.py — mirror that exactly.
+#
+# Structural check only: test -r (presence + readability). Never cat/head/grep
+# the file — credential-handling discipline (CLAUDE.md § Credentials and Secrets).
+# ---------------------------------------------------------------------------
+
+_cred_path="${HOME}/.claude/.credentials.json"
+
+if [[ ! -r "${_cred_path}" ]]; then
+    echo "baton-harness: G3c preflight: OAuth creds absent at ${_cred_path} — skipping all daemon-startup scenarios"
+    echo "baton-harness: RESULT: SKIPPED"
+    exit 0
+fi
+
+echo "baton-harness: OAuth creds present (structural check only): ${_cred_path}"
+echo ""
+
+# ---------------------------------------------------------------------------
 # Global cleanup trap — reap any decoy process and remove any marker we wrote
 # ---------------------------------------------------------------------------
 
