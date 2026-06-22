@@ -62,6 +62,7 @@ from baton_harness.chain.heartbeat import LivenessState, run_heartbeat_loop
 from baton_harness.chain.labels import (
     LABEL_AGENT_READY,
     LABEL_BLOCKED,
+    STATE_LABELS,
     assert_single_state,
     target_state_from_observed,
 )
@@ -1782,13 +1783,30 @@ async def _poll_and_run(
         if (
             live_labels is not None
             and not _DISPATCH_EXCLUDE_LABELS.isdisjoint(live_labels)
-            and "agent-ready" in live_labels
+            and LABEL_AGENT_READY in live_labels
         ):
             _log.info(
                 "daemon: #%d is live-excluded (torn snapshot); skipping"
                 " this poll cycle",
                 n,
             )
+            # Malformed multi-state: blocked + ≥2 state labels is a
+            # genuine invariant violation — page the operator.
+            if len(live_labels & STATE_LABELS) >= 2:
+                extra = sorted(
+                    (live_labels & STATE_LABELS) - {LABEL_BLOCKED}
+                )
+                alert(
+                    owner,
+                    repo,
+                    n,
+                    f"Issue #{n} has malformed multi-state labels:"
+                    f" {sorted(live_labels & STATE_LABELS)!r};"
+                    f" extra state labels beyond {LABEL_BLOCKED!r}:"
+                    f" {extra!r} — operator action required.",
+                    severity="critical",
+                    kind="block",
+                )
             _label_edit(owner, repo, n, remove=["agent-in-progress"])
         else:
             ready_issues_live.append(issue)
