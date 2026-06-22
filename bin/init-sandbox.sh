@@ -62,7 +62,7 @@ Required environment variables:
 
 Steps performed:
   1. Preflight checks (gh auth, git, BH_PROJECT_ROOT is a git repo)
-  2. Create required labels (idempotent — dup errors tolerated)
+  2. Create required labels (idempotent — skipped if already present)
   3. Create a trivial trigger issue (agent-ready, no milestone)
   4. Create hello-feature milestone + 2 DAG-ordered issues (B blocked_by A)
   5. Write stub CI workflow (.github/workflows/ci.yml) to BH_PROJECT_ROOT
@@ -71,7 +71,7 @@ Steps performed:
      (idempotent — skipped if the entry is already present)
 
 Idempotency notes:
-  - Labels: duplicates are tolerated; existing labels are left unchanged.
+  - Labels: checked before creation; existing labels are skipped, not re-created.
   - Workflow file: if .github/workflows/ci.yml is already identical, the
     commit+push step is skipped.
   - Issues/milestones: new ones are created each run; intended for a CLEAN
@@ -150,7 +150,7 @@ echo "baton-harness: BH_PROJECT_ROOT is a git repo: ${BH_PROJECT_ROOT}"
 echo "baton-harness: target repo: ${REPO_SLUG}"
 
 # ---------------------------------------------------------------------------
-# Create required labels (idempotent — tolerate already-exists errors)
+# Create required labels (idempotent — check-then-act; skip if present)
 # ---------------------------------------------------------------------------
 
 echo "baton-harness: creating required labels in ${REPO_SLUG} ..."
@@ -158,18 +158,24 @@ echo "baton-harness: creating required labels in ${REPO_SLUG} ..."
 _create_label() {
     local name="$1"
     local color="$2"
-    local output
-    # Capture stderr; gh exits non-zero if the label already exists.
-    if output="$(gh label create "${name}" -R "${REPO_SLUG}" --color "${color}" 2>&1)"; then
-        echo "baton-harness:   label created: ${name}"
+    local existing
+    # Check-then-act: GET the label list first; create only when absent.
+    # Any GET failure is fatal (network error, auth issue, etc.).
+    # Any CREATE failure is also fatal — if the label was absent and creation
+    # fails it is a genuine error, not a duplicate-label race.
+    existing="$(gh label list -R "${REPO_SLUG}" --limit 200 \
+        --json name --jq ".[].name" 2>&1)" || {
+        echo "baton-harness: error: gh label list failed for '${name}': ${existing}" >&2
+        exit 1
+    }
+    if printf '%s' "${existing}" | grep -qx "${name}"; then
+        echo "baton-harness:   label exists, skipping: ${name}"
     else
-        # Treat "already exists" as success; re-raise any other error.
-        if echo "${output}" | grep -qi "already exists"; then
-            echo "baton-harness:   label exists, skipping: ${name}"
-        else
-            echo "baton-harness: error creating label '${name}': ${output}" >&2
+        gh label create "${name}" -R "${REPO_SLUG}" --color "${color}" || {
+            echo "baton-harness: error: gh label create failed for '${name}'" >&2
             exit 1
-        fi
+        }
+        echo "baton-harness:   label created: ${name}"
     fi
 }
 
