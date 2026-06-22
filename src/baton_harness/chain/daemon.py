@@ -5,9 +5,10 @@ The daemon is the central orchestrator.  It:
 1. Polls the repo registry for ready work units (milestoned issues with
    at least one ``agent-ready`` issue, or un-milestoned ``agent-ready``
    issues as N=1 units).
-2. Selects **exactly ONE** ready work unit and awaits it to completion
-   before selecting the next (B-I3 serial — never spawns concurrent
-   ``asyncio.Task`` objects per work unit).
+2. Serially drains **all** ready work units per tick — selects one,
+   awaits it to completion, then selects the next until none remain
+   (B-I3 serial contract — never spawns concurrent ``asyncio.Task``
+   objects per work unit).
 3. For each work unit, runs the per-DAG serial loop:
    - Builds the DAG via ``gh_deps`` + ``dag.build_dag``.
    - Uses ``IssueScheduler`` for topological ordering.
@@ -59,6 +60,8 @@ from baton_harness.chain.gh_deps import (
 )
 from baton_harness.chain.heartbeat import LivenessState, run_heartbeat_loop
 from baton_harness.chain.labels import (
+    LABEL_AGENT_READY,
+    LABEL_BLOCKED,
     assert_single_state,
     target_state_from_observed,
 )
@@ -76,6 +79,13 @@ from baton_harness.vendor.symphony.tracker import Issue
 from baton_harness.vendor.symphony.workspace import WorkspaceManager
 
 _log = logging.getLogger(__name__)
+
+#: Labels that disqualify an issue from dispatch.  Used by both the
+#: tick-start snapshot filter, the tick-start live re-check, and the
+#: mid-drain live re-check so all three gates share a single definition.
+#: Currently contains only ``LABEL_BLOCKED`` (``"blocked"``); adding an
+#: entry here automatically applies to all three gates.
+_DISPATCH_EXCLUDE_LABELS: frozenset[str] = frozenset({LABEL_BLOCKED})
 
 
 def reconstruct(
@@ -1662,9 +1672,13 @@ async def _poll_and_run(
     The poll cycle has three sequential phases (B-I3 serial invariant —
     no concurrent tasks are spawned):
 
-    1. **Primary scan** — query ``agent-ready`` issues, select one work
-       unit, and run it.  Tracks which milestone number was processed
-       (``processed_ms_nums``) so the secondary scan can dedup.
+    1. **Primary scan** — query ``agent-ready`` issues, then serially
+       drain all ready work units (one at a time, each awaited to
+       completion).  Before dispatching each work unit, re-fetches live
+       labels for every member issue and skips any whose ``blocked`` (or
+       other exclude) label was applied mid-drain.  Tracks which milestone
+       numbers were processed (``processed_ms_nums``) so the secondary
+       scan can dedup.
 
     2. **Secondary orphan scan** — query open ``agent-in-progress``
        issues.  For each orphan whose milestone was *not* already
@@ -1741,12 +1755,15 @@ async def _poll_and_run(
         _log.error("daemon: issue list parse error: %s", exc)
         return
 
-    # Filter out issues that also have "blocked" label.
+    # Filter out issues that carry any dispatch-exclude label (e.g.
+    # ``blocked``).  Uses the module-level ``_DISPATCH_EXCLUDE_LABELS``
+    # set so the mid-drain re-check and this snapshot gate stay in sync.
     ready_issues = [
         i
         for i in issues_raw
-        if "blocked"
-        not in {lbl["name"].lower() for lbl in i.get("labels", [])}
+        if _DISPATCH_EXCLUDE_LABELS.isdisjoint(
+            {lbl["name"].lower() for lbl in i.get("labels", [])}
+        )
     ]
 
     # Live blocked re-check (#128): the snapshot above may race with a
@@ -1764,11 +1781,11 @@ async def _poll_and_run(
         live_labels = _fetch_issue_labels(owner, repo, n)
         if (
             live_labels is not None
-            and "blocked" in live_labels
+            and not _DISPATCH_EXCLUDE_LABELS.isdisjoint(live_labels)
             and "agent-ready" in live_labels
         ):
             _log.info(
-                "daemon: #%d is live-blocked (torn snapshot); skipping"
+                "daemon: #%d is live-excluded (torn snapshot); skipping"
                 " this poll cycle",
                 n,
             )
@@ -1778,10 +1795,43 @@ async def _poll_and_run(
     ready_issues = ready_issues_live
 
     if ready_issues:
-        # Select ONE ready work unit (B-I3 serial).
-        # Priority: milestoned first; then un-milestoned by number.
-        work_unit = _select_work_unit(ready_issues)
-        if work_unit is not None:
+        # FIX #132: process ALL ready work units in a single tick —
+        # milestoned first (lowest number), then un-milestoned by issue
+        # number.  Before this fix, only ONE work unit was selected per
+        # tick, silently dropping un-milestoned agent-ready issues whenever
+        # a milestoned issue was also present.  With ``--once`` (smoke-run
+        # mode) those un-milestoned issues were NEVER dispatched.
+        #
+        # Design constraint (non-negotiable): each un-milestoned issue is
+        # treated as a degenerate N=1 DAG routed through the standard
+        # build_dag → IssueScheduler path inside ``_run_work_unit``.
+        # B-I3 serial contract is maintained: we ``await`` each work unit
+        # to completion before starting the next; no concurrent tasks are
+        # spawned.
+        #
+        # ``remaining`` is the shrinking pool of issues not yet assigned
+        # to a work unit.  After each selection we remove the issues that
+        # belong to the selected work unit so ``_select_work_unit`` does
+        # not re-select the same milestone or issue on the next iteration.
+        remaining: list[dict[str, Any]] = list(ready_issues)
+        # Capture the full agent_ready_issues set once (used inside
+        # _run_work_unit to distinguish actionable issues from un-greenlit
+        # milestone members — same semantics as before the fix).
+        all_ready_nums: frozenset[int] = frozenset(
+            i["number"] for i in ready_issues
+        )
+        # Index of the current drain iteration (0-based).  The mid-drain
+        # blocked re-check only fires on iterations > 0: the first work
+        # unit was already validated by the tick-start live re-check at
+        # L~1764; subsequent units may have become blocked while the
+        # first unit ran.
+        _drain_idx: int = 0
+
+        while remaining:
+            # Priority: milestoned first; then un-milestoned by number.
+            work_unit = _select_work_unit(remaining)
+            if work_unit is None:
+                break
             branch_name, slug, membership, milestone_info = work_unit
 
             # FIX 1: Expand membership to ALL open milestone members so
@@ -1798,19 +1848,86 @@ async def _poll_and_run(
                     membership = full_members
                 # Record this milestone as processed so phase 2 skips it.
                 processed_ms_nums.add(ms_num)
+                # Remove all issues belonging to this milestone from the
+                # pool so the next iteration picks a different work unit.
+                remaining = [
+                    i
+                    for i in remaining
+                    if not (
+                        i.get("milestone") is not None
+                        and i.get("milestone", {}).get("number") == ms_num
+                    )
+                ]
             else:
-                # Un-milestoned: track by issue number.
+                # Un-milestoned N=1: track by issue number and remove from
+                # pool.
                 processed_issue_nums.update(membership)
+                remaining = [
+                    i for i in remaining if i["number"] not in membership
+                ]
 
+            # Mid-drain blocked re-check (VP-2 drain-level, #132):
+            # The tick-start live re-check (L~1764) already validated ALL
+            # issues before the drain loop started, so the first work unit
+            # is clean.  Subsequent units may have become blocked WHILE
+            # the preceding unit(s) ran — re-fetch their live labels and
+            # skip if any member now carries an exclude label OR has lost
+            # ``agent-ready`` (de-greenlit mid-drain).  Re-uses the same
+            # ``_fetch_issue_labels`` helper and ``alert`` path as the
+            # pre-dispatch gate inside ``_run_work_unit`` (L~984) — no new
+            # code paths.  Single fetch per member covers both checks
+            # (Codex P2, #145).
+            if _drain_idx > 0:
+                # Re-check live labels for every member using the same
+                # ``_DISPATCH_EXCLUDE_LABELS`` set as the tick-start gate
+                # so "blocked or other exclude labels" is consistent.
+                # Also re-verify ``agent-ready`` is still present: a human
+                # may have removed it mid-drain (de-greenlit), which is a
+                # complementary TOCTOU gap to the exclude-label check.
+                # Fail-closed: ``None`` (unreadable) also skips the unit.
+                mid_drain_excluded: int | None = None
+                for _md_n in membership:
+                    _md_labels = _fetch_issue_labels(owner, repo, _md_n)
+                    if (
+                        _md_labels is None
+                        or not (
+                            _DISPATCH_EXCLUDE_LABELS.isdisjoint(_md_labels)
+                        )
+                        or LABEL_AGENT_READY not in _md_labels
+                    ):
+                        mid_drain_excluded = _md_n
+                        break
+                if mid_drain_excluded is not None:
+                    _log.critical(
+                        "daemon: work unit %s skipped — issue #%d is "
+                        "excluded mid-drain (VP-2 invariant, #128/#132)",
+                        slug,
+                        mid_drain_excluded,
+                    )
+                    alert(
+                        owner,
+                        repo,
+                        mid_drain_excluded,
+                        (
+                            f"Issue #{mid_drain_excluded} became excluded"
+                            f" mid-drain; work unit '{slug}' skipped"
+                            f" (VP-2 invariant, #128/#132)."
+                        ),
+                        severity="critical",
+                        kind="block",
+                        runlog=runlog,
+                    )
+                    _drain_idx += 1
+                    continue
+
+            _drain_idx += 1
             await _run_work_unit(
                 config=config,
                 repo_cfg=repo_cfg,
                 branch_name=branch_name,
                 slug=slug,
                 membership=membership,
-                agent_ready_issues=frozenset(
-                    i["number"] for i in ready_issues
-                ),
+                agent_ready_issues=all_ready_nums,
                 ci_poll_interval=ci_poll_interval,
                 ci_timeout=ci_timeout,
                 runlog=runlog,
