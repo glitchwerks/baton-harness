@@ -300,6 +300,8 @@ def reconstruct(
     repo: str,
     feature_branch: str,
     membership: frozenset[int],
+    *,
+    installation_token: str = "",
 ) -> RecoveryResult:
     """Reconstruct the scheduler state for a work unit's membership.
 
@@ -321,6 +323,10 @@ def reconstruct(
         feature_branch: The feature branch to inspect for merge history.
         membership: The frozenset of issue numbers in the current work
             unit.
+        installation_token: Optional GitHub App installation access token
+            (``ghs_`` prefix).  Accepted for interface symmetry with the
+            daemon's env-discipline pattern; reserved for future gh calls
+            inside this function to use per-call env override.
 
     Returns:
         A ``RecoveryResult`` with the four classification sets populated.

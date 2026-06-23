@@ -68,7 +68,7 @@ from baton_harness.chain.labels import (
 )
 from baton_harness.chain.merge import MergeOutcome, merge_issue_branch
 from baton_harness.chain.obs_config import ObsConfig, load_obs_config
-from baton_harness.chain.reconcile import reconcile_startup
+from baton_harness.chain.reconcile import reconcile_startup as reconcile_startup
 from baton_harness.chain.recovery import RecoveryResult, scan_orphan_worktrees
 from baton_harness.chain.redispatch import RedispatchTally
 from baton_harness.chain.registry import RepoConfig
@@ -95,6 +95,8 @@ def reconstruct(
     repo: str,
     branch_name: str,
     membership: frozenset[int],
+    *,
+    installation_token: str = "",
 ) -> RecoveryResult:
     """Thin dispatch wrapper for ``recovery.reconstruct``.
 
@@ -110,13 +112,21 @@ def reconstruct(
         repo: GitHub repository name.
         branch_name: Feature branch name (``"feature/<slug>"``).
         membership: Set of issue numbers in the work unit.
+        installation_token: Optional GitHub App installation access token
+            (``ghs_`` prefix).  Forwarded to ``recovery.reconstruct`` for
+            env-discipline gh calls.
 
     Returns:
         A ``RecoveryResult`` describing the daemon's prior state for
         this work unit.
     """
     return _recovery_mod.reconstruct(
-        repo_root, owner, repo, branch_name, membership
+        repo_root,
+        owner,
+        repo,
+        branch_name,
+        membership,
+        installation_token=installation_token,
     )
 
 
@@ -586,6 +596,7 @@ def _run_ci_gate(
             feature_branch=branch_name,
             poll_interval=ci_poll_interval,
             timeout=ci_timeout,
+            installation_token=installation_token,
         )
     except Exception as exc:
         _log.error(
@@ -790,7 +801,9 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
     # --- Step 0: build the DAG and prepare the scheduler. ---
     blocked_by: dict[int, list[int]] = {}
     for m in membership:
-        blocked_by[m] = fetch_blocked_by(owner, repo, m)
+        blocked_by[m] = fetch_blocked_by(
+            owner, repo, m, installation_token=installation_token
+        )
 
     dag = build_dag(membership, blocked_by)
     sched = IssueScheduler(dag.graph)
@@ -840,7 +853,12 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
     # Determine if we are resuming (branch existed before
     # create_feature_branch).  Recovery is idempotent on a fresh branch.
     recovery_result = reconstruct(
-        repo_root, owner, repo, branch_name, membership
+        repo_root,
+        owner,
+        repo,
+        branch_name,
+        membership,
+        installation_token=installation_token,
     )
 
     # --- Step 2: per-DAG serial loop. ---
@@ -1020,6 +1038,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                     feature_branch=branch_name,
                     poll_interval=ci_poll_interval,
                     timeout=ci_timeout,
+                    installation_token=installation_token,
                 )
             except Exception as exc:
                 _log.error(

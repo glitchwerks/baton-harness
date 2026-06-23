@@ -145,7 +145,7 @@ def _common_patches(
             ) as mock_run,
             patch(
                 "baton_harness.chain.daemon.fetch_blocked_by",
-                side_effect=lambda o, r, n: blocked_by.get(n, []),
+                side_effect=lambda o, r, n, **_kw: blocked_by.get(n, []),
             ),
             patch(
                 "baton_harness.chain.branches.create_feature_branch",
@@ -779,7 +779,7 @@ def test_serial_dispatch_one_worker_at_a_time() -> None:
         patch.object(daemon_mod, "_run", side_effect=side_effect),
         patch(
             "baton_harness.chain.daemon.fetch_blocked_by",
-            side_effect=lambda o, r, n: blocked_by.get(n, []),
+            side_effect=lambda o, r, n, **_kw: blocked_by.get(n, []),
         ),
         patch("baton_harness.chain.branches.create_feature_branch"),
         patch("baton_harness.chain.branches.checkout_feature_branch"),
@@ -1039,7 +1039,7 @@ def test_milestone_membership_uses_full_set_not_just_agent_ready() -> None:
         patch.object(daemon_mod, "_run", side_effect=run_side_effect),
         patch(
             "baton_harness.chain.daemon.fetch_blocked_by",
-            side_effect=lambda o, r, n: [1] if n == 2 else [],
+            side_effect=lambda o, r, n, **_kw: [1] if n == 2 else [],
         ),
         patch(
             "baton_harness.chain.daemon._fetch_full_milestone_members",
@@ -1156,7 +1156,7 @@ def test_milestone_dispatch_order_a_before_b_when_both_ready() -> None:
         patch.object(daemon_mod, "_run", side_effect=run_side_effect),
         patch(
             "baton_harness.chain.daemon.fetch_blocked_by",
-            side_effect=lambda o, r, n: [1] if n == 2 else [],
+            side_effect=lambda o, r, n, **_kw: [1] if n == 2 else [],
         ),
         patch(
             "baton_harness.chain.daemon._fetch_full_milestone_members",
@@ -1252,7 +1252,7 @@ def test_waiting_for_greenlight_exits_work_unit_without_escalating() -> None:
         patch.object(daemon_mod, "_run", side_effect=run_side_effect),
         patch(
             "baton_harness.chain.daemon.fetch_blocked_by",
-            side_effect=lambda o, r, n: [1] if n == 2 else [],
+            side_effect=lambda o, r, n, **_kw: [1] if n == 2 else [],
         ),
         patch(
             "baton_harness.chain.daemon._fetch_full_milestone_members",
@@ -1845,7 +1845,7 @@ def test_integration_pr_body_contains_closes_keyword_per_issue_multi() -> None:
         patch.object(daemon_mod, "_run", side_effect=recording_run),
         patch(
             "baton_harness.chain.daemon.fetch_blocked_by",
-            side_effect=lambda o, r, n: [],
+            side_effect=lambda o, r, n, **_kw: [],
         ),
         patch(
             "baton_harness.chain.daemon._fetch_full_milestone_members",
@@ -6879,7 +6879,7 @@ def test_mixed_frontier_only_non_blocked_dispatched() -> None:
         ),
         patch(
             "baton_harness.chain.daemon.fetch_blocked_by",
-            side_effect=lambda o, r, n: [],
+            side_effect=lambda o, r, n, **_kw: [],
         ),
         patch(
             "baton_harness.chain.daemon._fetch_issue_labels",

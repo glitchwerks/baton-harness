@@ -39,7 +39,11 @@ from typing import cast
 # ---------------------------------------------------------------------------
 
 
-def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+def _run(
+    cmd: list[str],
+    *,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     """Run an external command and return its completed process.
 
     Centralises subprocess invocation so tests can patch a single symbol
@@ -47,6 +51,12 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
 
     Args:
         cmd: Command and arguments to execute (no shell interpolation).
+        env: Optional per-call environment dict.  When supplied, passed
+            directly to ``subprocess.run`` as ``env=``.  When ``None``,
+            the subprocess inherits the current process environment.
+            Callers must supply a FULL environment copy (e.g.
+            ``_gh_env(token)``); passing a partial dict causes missing
+            vars in the subprocess.
 
     Returns:
         A ``subprocess.CompletedProcess`` with captured stdout/stderr.
@@ -57,6 +67,7 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         encoding="utf-8",
+        env=env,
     )
 
 
@@ -67,7 +78,36 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
 _PAGE_SIZE = 100
 
 
-def _paginate(base_url: str) -> list[dict[str, object]]:
+def _gh_env(installation_token: str) -> dict[str, str]:
+    """Return os.environ overlaid with GH_TOKEN=<installation_token>.
+
+    Follows the same env-discipline pattern as daemon.py:_gh_env —
+    builds a full copy of the current environment so the subprocess
+    inherits all PATH / HOME vars, then overrides the two canonical
+    gh token keys.  ``os.environ`` is never mutated.
+
+    Args:
+        installation_token: GitHub App installation access token
+            (``ghs_`` prefix).
+
+    Returns:
+        A fresh ``dict`` with all current env vars plus
+        ``GH_TOKEN`` and ``GITHUB_TOKEN`` overridden to
+        ``installation_token``.
+    """
+    import os as _os  # noqa: PLC0415
+
+    env = dict(_os.environ)
+    env["GH_TOKEN"] = installation_token
+    env["GITHUB_TOKEN"] = installation_token
+    return env
+
+
+def _paginate(
+    base_url: str,
+    *,
+    installation_token: str = "",
+) -> list[dict[str, object]]:
     """Fetch all pages from a paginated ``gh api`` endpoint.
 
     Starts at page 1 and keeps fetching until a page with fewer than
@@ -81,6 +121,10 @@ def _paginate(base_url: str) -> list[dict[str, object]]:
         base_url: The endpoint URL, which may already contain query
             parameters.  This function appends ``per_page=100`` and
             ``page={n}`` as additional query string parameters.
+        installation_token: Optional GitHub App installation access token
+            (``ghs_`` prefix).  When non-empty, each ``gh api`` call uses
+            a per-call env copy with ``GH_TOKEN`` overridden —
+            ``os.environ`` is never mutated.
 
     Returns:
         The concatenated list of all items across all pages.
@@ -90,12 +134,13 @@ def _paginate(base_url: str) -> list[dict[str, object]]:
         ValueError: If any item in the response is missing the ``number``
             field.
     """
+    env = _gh_env(installation_token) if installation_token else None
     results: list[dict[str, object]] = []
     page = 1
     separator = "&" if "?" in base_url else "?"
     while True:
         url = f"{base_url}{separator}per_page={_PAGE_SIZE}&page={page}"
-        proc = _run(["gh", "api", url])
+        proc = _run(["gh", "api", url], env=env)
         if proc.returncode != 0:
             raise RuntimeError(
                 f"gh api call failed (exit {proc.returncode}): {proc.stderr}"
@@ -130,7 +175,13 @@ def _extract_number(item: dict[str, object]) -> int:
 # ---------------------------------------------------------------------------
 
 
-def fetch_blocked_by(owner: str, repo: str, issue: int) -> list[int]:
+def fetch_blocked_by(
+    owner: str,
+    repo: str,
+    issue: int,
+    *,
+    installation_token: str = "",
+) -> list[int]:
     """Fetch the issue numbers that block ``issue`` (its prerequisites).
 
     Calls the GitHub REST endpoint::
@@ -147,6 +198,10 @@ def fetch_blocked_by(owner: str, repo: str, issue: int) -> list[int]:
         owner: The GitHub repository owner (organisation or user).
         repo: The repository name.
         issue: The issue number whose blockers are fetched.
+        installation_token: Optional GitHub App installation access token
+            (``ghs_`` prefix).  When non-empty, the ``gh api`` subprocess
+            call uses a per-call env copy with ``GH_TOKEN`` overridden —
+            ``os.environ`` is never mutated (env-discipline invariant).
 
     Returns:
         A list of issue numbers that block ``issue``, in API-returned order.
@@ -157,7 +212,7 @@ def fetch_blocked_by(owner: str, repo: str, issue: int) -> list[int]:
         ValueError: If any API response item lacks a ``number`` field.
     """
     url = f"repos/{owner}/{repo}/issues/{issue}/dependencies/blocked_by"
-    items = _paginate(url)
+    items = _paginate(url, installation_token=installation_token)
     return [_extract_number(item) for item in items]
 
 

@@ -143,6 +143,7 @@ async def reconcile_startup(
             f"Startup credential check failed: GitHub token invalid — {exc}",
             severity="critical",
             runlog=runlog,
+            installation_token=installation_token,
         )
         sys.exit(1)
 
@@ -162,6 +163,7 @@ async def reconcile_startup(
             " prevents per-token billing)",
             severity="critical",
             runlog=runlog,
+            installation_token=installation_token,
         )
         sys.exit(1)
 
@@ -188,6 +190,7 @@ async def reconcile_startup(
             " — mount the Claude credential volume before starting the daemon",
             severity="critical",
             runlog=runlog,
+            installation_token=installation_token,
         )
         sys.exit(1)
 
@@ -204,6 +207,7 @@ async def reconcile_startup(
                 "in-flight work may have been lost",
                 severity="critical",
                 runlog=runlog,
+                installation_token=installation_token,
             )
         # (Re)create the marker for this run.
         marker.parent.mkdir(parents=True, exist_ok=True)
@@ -229,6 +233,7 @@ async def reconcile_startup(
                 " — inspect manually",
                 severity="warn",
                 runlog=runlog,
+                installation_token=installation_token,
             )
     except Exception:  # noqa: BLE001
         _log.warning(
