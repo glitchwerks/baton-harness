@@ -1021,3 +1021,230 @@ class TestMarkerPathConstant:
             "reconcile module must reference the literal 'daemon.alive' "
             "marker path (either as a module constant or inline string)"
         )
+
+
+# ---------------------------------------------------------------------------
+# Bug 1 — reconcile_startup must accept installation_token by-value
+#
+# Required behaviour (codex P1 #154):
+#   reconcile_startup(installation_token: str) must accept the minted
+#   ghs_ token as a parameter and validate THAT token, not os.environ.
+#
+# Current behaviour that causes tests to FAIL:
+#   reconcile_startup() has no installation_token parameter — calling it
+#   with the kwarg raises TypeError.  Even if the kwarg existed, the
+#   implementation reads GH_TOKEN/GITHUB_TOKEN from os.environ instead
+#   of the threaded value, so the validator receives the ambient env
+#   credential, not the minted token.
+# ---------------------------------------------------------------------------
+
+
+class TestReconcileStartupAcceptsInstallationToken:
+    """RED: reconcile_startup must thread installation_token by-value.
+
+    These tests fail until the implementation:
+    1. Adds ``installation_token: str`` as a parameter to
+       ``reconcile_startup``.
+    2. Passes that value to ``validate_daemon_token`` instead of reading
+       ``os.environ`` internally.
+    3. ``cli.main()`` passes the minted token into ``reconcile_startup``.
+    """
+
+    def test_reconcile_startup_accepts_installation_token_kwarg(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """reconcile_startup(installation_token=...) must not raise TypeError.
+
+        The contract requires the function signature to accept
+        ``installation_token`` as a keyword argument.  Currently the
+        parameter is absent, so calling with it raises ``TypeError``.
+
+        Args:
+            tmp_path: Pytest per-test temporary directory.
+            monkeypatch: Pytest monkeypatch fixture.
+        """
+        reconcile = _import_reconcile()
+
+        # Deliberately do NOT set GH_TOKEN/GITHUB_TOKEN in os.environ so
+        # that any ambient-env read would fail via TokenValidationError.
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        obs = _make_obs(tmp_path)
+        repo_cfgs = [_make_repo_cfg(tmp_path)]
+
+        with (
+            patch(
+                "baton_harness.chain.reconcile.validate_daemon_token",
+                return_value=None,
+            ) as mock_validator,
+            patch("baton_harness.chain.reconcile.alert", return_value=True),
+            patch(
+                "baton_harness.chain.reconcile._list_claude_procs",
+                return_value=[],
+            ),
+        ):
+            # Must accept installation_token without TypeError.
+            asyncio.run(
+                reconcile.reconcile_startup(
+                    repo_cfgs,
+                    obs,
+                    runlog=None,
+                    installation_token="ghs_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                )
+            )
+
+        # The validator must have been called with the threaded token value.
+        assert mock_validator.called, (
+            "validate_daemon_token must be called during reconcile_startup"
+        )
+        call_args = mock_validator.call_args
+        # The first positional arg (or any arg) must equal the minted token.
+        token_seen = (
+            call_args.args[0]
+            if call_args.args
+            else next(iter(call_args.kwargs.values()), None)
+        )
+        assert token_seen == "ghs_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", (
+            f"validate_daemon_token must receive the threaded installation "
+            f"token, got: {token_seen!r}"
+        )
+
+    def test_reconcile_startup_ignores_ambient_env_when_token_threaded(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Threaded token is validated; ambient GH_TOKEN is ignored.
+
+        Even when GH_TOKEN=garbage is set in the environment, the
+        ``validate_daemon_token`` call must receive the threaded
+        ``installation_token`` value — not the ambient env value.
+
+        Args:
+            tmp_path: Pytest per-test temporary directory.
+            monkeypatch: Pytest monkeypatch fixture.
+        """
+        reconcile = _import_reconcile()
+
+        # Poison the ambient env with an invalid value.
+        monkeypatch.setenv("GH_TOKEN", "garbage_not_a_real_token")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        obs = _make_obs(tmp_path)
+        repo_cfgs = [_make_repo_cfg(tmp_path)]
+
+        received_tokens: list[str] = []
+
+        def _capture_validate(token: str) -> None:
+            received_tokens.append(token)
+
+        with (
+            patch(
+                "baton_harness.chain.reconcile.validate_daemon_token",
+                side_effect=_capture_validate,
+            ),
+            patch("baton_harness.chain.reconcile.alert", return_value=True),
+            patch(
+                "baton_harness.chain.reconcile._list_claude_procs",
+                return_value=[],
+            ),
+        ):
+            asyncio.run(
+                reconcile.reconcile_startup(
+                    repo_cfgs,
+                    obs,
+                    runlog=None,
+                    installation_token="ghs_VALID_TOKEN",
+                )
+            )
+
+        assert received_tokens, (
+            "validate_daemon_token must be called during reconcile_startup"
+        )
+        assert received_tokens[0] == "ghs_VALID_TOKEN", (
+            "reconcile_startup must pass the threaded installation_token "
+            f"to validate_daemon_token; received {received_tokens[0]!r} "
+            "instead — the ambient GH_TOKEN=garbage must be ignored"
+        )
+
+    def test_cli_main_threads_installation_token_into_reconcile_startup(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """cli.main() must forward the minted token into reconcile_startup.
+
+        ``bootstrap_secrets`` returns the minted ``ghs_`` token.
+        ``main()`` must pass that token as ``installation_token`` to
+        ``reconcile_startup`` so the startup gate validates the minted
+        credential, not the ambient env.
+
+        Args:
+            tmp_path: Pytest per-test temporary directory.
+        """
+        from baton_harness.chain.cli import main as cli_main
+
+        minted_token = "ghs_MINTED_IN_BOOTSTRAP"
+        reconcile_calls: list[dict[str, object]] = []
+
+        async def _fake_reconcile_startup(
+            *args: object,
+            **kwargs: object,
+        ) -> None:
+            reconcile_calls.append({"args": args, "kwargs": kwargs})
+
+        async def _fake_run_daemon(
+            *args: object,
+            **kwargs: object,
+        ) -> None:
+            pass
+
+        fake_repo_cfg = MagicMock()
+        fake_repo_cfg.project_root = tmp_path
+
+        with (
+            patch(
+                "baton_harness.chain.cli.bootstrap_secrets",
+                return_value=minted_token,
+            ),
+            patch("baton_harness.chain.cli.validate_daemon_token"),
+            patch(
+                "baton_harness.chain.cli.load_workflow",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "baton_harness.chain.cli.load_registry",
+                return_value=[fake_repo_cfg],
+            ),
+            patch(
+                "baton_harness.chain.cli.run_daemon",
+                side_effect=_fake_run_daemon,
+            ),
+            patch("baton_harness.chain.cli.os.chdir"),
+            patch("baton_harness.chain.cli.os.path.isdir", return_value=True),
+            patch(
+                "baton_harness.chain.daemon.reconcile_startup",
+                side_effect=_fake_reconcile_startup,
+            ),
+            # Also patch the reconcile module directly so run_daemon's
+            # internal call lands on our spy.
+            patch(
+                "baton_harness.chain.reconcile.reconcile_startup",
+                side_effect=_fake_reconcile_startup,
+            ),
+        ):
+            cli_main(["--once"])
+
+        assert reconcile_calls, (
+            "reconcile_startup must be called during cli.main()"
+        )
+        call = reconcile_calls[0]
+        threaded = call["kwargs"].get("installation_token")
+        assert threaded == minted_token, (
+            f"cli.main() must thread the minted token ({minted_token!r}) "
+            f"into reconcile_startup as installation_token=; "
+            f"got installation_token={threaded!r}"
+        )
