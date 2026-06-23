@@ -25,6 +25,7 @@ import sys
 from pathlib import Path
 
 from baton_harness._auth import TokenValidationError, validate_daemon_token
+from baton_harness.chain import reconcile as _reconcile_mod
 from baton_harness.chain.app_auth import (
     AppAuthError,
 )
@@ -249,6 +250,25 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
+
+    # Run startup reconciliation sweep (G3 creds, G2 marker, G1 orphans).
+    # This call validates the minted token by-value (env-discipline
+    # invariant: the token is NEVER written to os.environ).  If the
+    # credential check fails, reconcile_startup raises SystemExit(1) and
+    # the daemon never enters the event loop.
+    try:
+        asyncio.run(
+            _reconcile_mod.reconcile_startup(
+                registry,
+                None,
+                None,
+                installation_token=installation_token,
+            )
+        )
+    except SystemExit:
+        # reconcile_startup calls sys.exit(1) on fatal credential failure.
+        # Re-raise so the process exits with the correct code.
+        raise
 
     # Run the daemon.
     try:

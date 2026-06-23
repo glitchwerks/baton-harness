@@ -239,6 +239,7 @@ def alert(
     severity: Literal["info", "warn", "critical"],
     runlog: RunLog | None = None,
     kind: str = "block",
+    installation_token: str = "",
 ) -> bool:
     """Post an alert through the severity-routing layer.
 
@@ -270,6 +271,11 @@ def alert(
             When ``None``, emission is skipped without error.
         kind: Escalation kind hint passed through to ``escalate()`` unchanged.
             Defaults to ``"block"``.
+        installation_token: GitHub App installation access token
+            (``ghs_`` prefix) forwarded to ``escalate()`` unchanged.
+            When non-empty, the ``gh`` subprocess call overrides ``GH_TOKEN``
+            via a per-call env copy — ``os.environ`` is never mutated.
+            Pass ``""`` (default) to inherit the ambient credential.
 
     Returns:
         ``True`` for ``severity="info"`` (no escalation attempted).
@@ -307,11 +313,25 @@ def alert(
         return True
 
     if severity == "warn":
-        return escalate(owner, repo, issue, summary, kind=kind)
+        return escalate(
+            owner,
+            repo,
+            issue,
+            summary,
+            kind=kind,
+            installation_token=installation_token,
+        )
 
     # severity == "critical"
     body = f"{_CRITICAL_PREFIX}{summary}"
-    return escalate(owner, repo, issue, body, kind=kind)
+    return escalate(
+        owner,
+        repo,
+        issue,
+        body,
+        kind=kind,
+        installation_token=installation_token,
+    )
 
 
 def _post_slack(

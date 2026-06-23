@@ -1077,7 +1077,7 @@ class TestEvaluateCiPollingAndTimeout:
         call_count = 0
 
         def fake_query(
-            owner: str, repo: str, sha: str
+            owner: str, repo: str, sha: str, **kwargs: object
         ) -> list[dict[str, str | None]]:
             nonlocal call_count
             call_count += 1
@@ -1111,7 +1111,7 @@ class TestEvaluateCiPollingAndTimeout:
         call_count = 0
 
         def fake_query(
-            owner: str, repo: str, sha: str
+            owner: str, repo: str, sha: str, **kwargs: object
         ) -> list[dict[str, str | None]]:
             nonlocal call_count
             call_count += 1
@@ -1145,7 +1145,7 @@ class TestEvaluateCiPollingAndTimeout:
         calls: list[tuple[str, str, str]] = []
 
         def fake_query(
-            owner: str, repo: str, sha: str
+            owner: str, repo: str, sha: str, **kwargs: object
         ) -> list[dict[str, str | None]]:
             calls.append((owner, repo, sha))
             return _all_required_success()
@@ -1174,7 +1174,7 @@ class TestEvaluateCiAuthErrorPropagation:
         call_count = 0
 
         def fake_query(
-            owner: str, repo: str, sha: str
+            owner: str, repo: str, sha: str, **kwargs: object
         ) -> list[dict[str, str | None]]:
             nonlocal call_count
             call_count += 1
@@ -1200,7 +1200,7 @@ class TestEvaluateCiAuthErrorPropagation:
         """``CiAuthError`` must NOT be swallowed and returned as TIMEOUT."""
 
         def fake_query(
-            owner: str, repo: str, sha: str
+            owner: str, repo: str, sha: str, **kwargs: object
         ) -> list[dict[str, str | None]]:
             raise CiAuthError("Resource not accessible by integration")
 
@@ -1708,7 +1708,7 @@ class TestDependencyOrderMerge:
         call_num = 0
 
         def fake_query(
-            owner: str, repo: str, sha: str
+            owner: str, repo: str, sha: str, **kwargs: object
         ) -> list[dict[str, str | None]]:
             nonlocal call_num
             call_num += 1

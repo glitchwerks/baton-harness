@@ -612,6 +612,7 @@ def _run_ci_gate(
             severity="warn",
             kind="debug",
             runlog=runlog,
+            installation_token=installation_token,
         )
         return
 
@@ -656,6 +657,7 @@ def _run_ci_gate(
             severity="critical",
             kind="debug",
             runlog=runlog,
+            installation_token=installation_token,
         )
 
 
@@ -808,6 +810,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
             severity="warn",
             kind="block",
             runlog=runlog,
+            installation_token=installation_token,
         )
         return
 
@@ -985,6 +988,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                     severity="critical",
                     kind="debug",
                     runlog=runlog,
+                    installation_token=installation_token,
                 )
                 continue
 
@@ -1043,6 +1047,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                     severity="warn",
                     kind="debug",
                     runlog=runlog,
+                    installation_token=installation_token,
                 )
                 continue
 
@@ -1078,6 +1083,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                     severity="critical",
                     kind="debug",
                     runlog=runlog,
+                    installation_token=installation_token,
                 )
             continue
 
@@ -1121,6 +1127,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                     severity="critical",
                     kind="block",
                     runlog=runlog,
+                    installation_token=installation_token,
                 )
                 _label_edit(
                     owner,
@@ -1173,6 +1180,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 severity="critical",
                 kind="block",
                 runlog=runlog,
+                installation_token=installation_token,
             )
             _label_edit(
                 owner,
@@ -1244,6 +1252,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 severity="warn",
                 kind="debug",
                 runlog=runlog,
+                installation_token=installation_token,
             )
             continue
 
@@ -1287,6 +1296,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 severity="warn",
                 kind="debug",
                 runlog=runlog,
+                installation_token=installation_token,
             )
             continue
 
@@ -1356,6 +1366,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 severity="critical",
                 kind="block",
                 runlog=runlog,
+                installation_token=installation_token,
             )
             _label_edit(
                 owner,
@@ -1502,6 +1513,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 severity="critical",
                 kind="block",
                 runlog=runlog,
+                installation_token=installation_token,
             )
             _label_edit(
                 owner,
@@ -1550,6 +1562,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                     severity="warn",
                     kind="debug",
                     runlog=runlog,
+                    installation_token=installation_token,
                 )
                 continue
 
@@ -1597,6 +1610,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 severity="warn",
                 kind=kind,
                 runlog=runlog,
+                installation_token=installation_token,
             )
 
     # --- Step 3: completion. ---
@@ -1781,7 +1795,12 @@ async def run_daemon(
     # that propagates out of run_daemon intentionally (the daemon cannot
     # operate without valid credentials).  All other failures are suppressed
     # inside reconcile_startup itself.
-    await reconcile_startup(registry, obs, runlog)
+    await reconcile_startup(
+        registry,
+        obs,
+        runlog,
+        installation_token=installation_token,
+    )
 
     # --- SIGTERM handler (Fix 3 / PR #107): graceful shutdown clears marker.
     # Build the marker path once so both the handler and the finally block
@@ -1877,6 +1896,7 @@ async def run_daemon(
                             severity="critical",
                             kind="debug",
                             runlog=runlog,
+                            installation_token=installation_token,
                         )
                     except Exception:
                         pass  # escalation may fail; daemon must survive
@@ -2061,6 +2081,7 @@ async def _poll_and_run(
                     f" {extra!r} — operator action required.",
                     severity="critical",
                     kind="block",
+                    installation_token=installation_token,
                 )
             _label_edit(
                 owner,
@@ -2206,6 +2227,7 @@ async def _poll_and_run(
                         severity="critical",
                         kind="block",
                         runlog=runlog,
+                        installation_token=installation_token,
                     )
                     _drain_idx += 1
                     continue

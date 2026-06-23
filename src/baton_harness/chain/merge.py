@@ -432,6 +432,8 @@ def evaluate_ci(
     required: list[str] | None = None,
     poll_interval: float = _DEFAULT_POLL_INTERVAL,
     timeout: float = _DEFAULT_TIMEOUT,
+    *,
+    installation_token: str = "",
 ) -> CiResult:
     """Evaluate the §3.3.1 CI green predicate for a commit SHA.
 
@@ -456,6 +458,10 @@ def evaluate_ci(
         timeout: Hard ceiling in seconds.  Returns ``CiResult.RED``
             (``ci-timeout`` semantics) if the deadline elapses with checks
             still pending.  Use ``0`` for an immediate-timeout in tests.
+        installation_token: Optional GitHub App installation access token
+            (``ghs_`` prefix).  Threaded to ``_query_action_jobs`` for
+            per-call env override.  Pass ``""`` (default) to inherit the
+            ambient credential unchanged.
 
     Returns:
         ``CiResult.GREEN`` if all required checks pass, ``CiResult.RED`` if
@@ -468,7 +474,9 @@ def evaluate_ci(
     deadline = time.monotonic() + timeout
 
     while True:
-        runs = _query_action_jobs(owner, repo, sha)
+        runs = _query_action_jobs(
+            owner, repo, sha, installation_token=installation_token
+        )
         result = _classify_check_runs(runs, required)
 
         if result == CiResult.GREEN:
@@ -504,6 +512,8 @@ def merge_issue_branch(
     required: list[str] | None = None,
     poll_interval: float = _DEFAULT_POLL_INTERVAL,
     timeout: float = _DEFAULT_TIMEOUT,
+    *,
+    installation_token: str = "",
 ) -> MergeOutcome:
     """Evaluate CI and ``--no-ff`` merge if green; persist provenance.
 
@@ -532,6 +542,11 @@ def merge_issue_branch(
         required: Required check names; defaults to ``REQUIRED_CHECKS``.
         poll_interval: Seconds between CI polls.  Use ``0`` in tests.
         timeout: Hard CI-poll ceiling in seconds.
+        installation_token: Optional GitHub App installation access token
+            (``ghs_`` prefix).  Threaded to ``evaluate_ci`` and to all
+            ``gh`` subprocess calls in the provenance-write path via a
+            per-call env copy — ``os.environ`` is never mutated.  Pass
+            ``""`` (default) to inherit the ambient credential unchanged.
 
     Returns:
         ``MergeOutcome.MERGED`` on a successful green merge.
@@ -557,6 +572,7 @@ def merge_issue_branch(
         required=required,
         poll_interval=poll_interval,
         timeout=timeout,
+        installation_token=installation_token,
     )
 
     if ci_result == CiResult.RED:
@@ -608,7 +624,13 @@ def merge_issue_branch(
         return MergeOutcome.MERGE_CONFLICT
 
     # Persist the CI-green-at-merge fact (B-I2 / §11.5).
-    provenance_persisted = _persist_ci_green(owner, repo, issue, pr_head_sha)
+    provenance_persisted = _persist_ci_green(
+        owner,
+        repo,
+        issue,
+        pr_head_sha,
+        installation_token=installation_token,
+    )
     if not provenance_persisted:
         _log.warning(
             "Provenance persistence failed for issue #%d sha=%s."
@@ -627,6 +649,8 @@ def _persist_ci_green(
     repo: str,
     issue: int,
     sha: str,
+    *,
+    installation_token: str = "",
 ) -> bool:
     """Persist the CI-green-at-merge fact for crash recovery.
 
@@ -644,12 +668,20 @@ def _persist_ci_green(
         repo: The repository name.
         issue: The issue number.
         sha: The PR head commit SHA at which CI was green.
+        installation_token: Optional GitHub App installation access token
+            (``ghs_`` prefix).  When non-empty, all ``gh`` subprocess
+            calls use a per-call env copy with ``GH_TOKEN`` overridden —
+            ``os.environ`` is never mutated.
 
     Returns:
         ``True`` if both the label and comment were persisted successfully,
         ``False`` if either write failed (a WARNING is logged in that case).
     """
     persisted = True
+    gh_call_env = _gh_env(installation_token) if installation_token else None
+    _env_kw: dict[str, dict[str, str]] = (
+        {"env": gh_call_env} if gh_call_env is not None else {}
+    )
 
     # Add agent-merged label.
     label_proc = _run(
@@ -662,7 +694,8 @@ def _persist_ci_green(
             f"{owner}/{repo}",
             "--add-label",
             "agent-merged",
-        ]
+        ],
+        **_env_kw,
     )
     if label_proc.returncode != 0:
         # FIX 5: loud warning — do NOT silently swallow this failure.
@@ -689,7 +722,8 @@ def _persist_ci_green(
             f"{owner}/{repo}",
             "--body",
             marker,
-        ]
+        ],
+        **_env_kw,
     )
     if comment_proc.returncode != 0:
         # FIX 5: loud warning — do NOT silently swallow this failure.

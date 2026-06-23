@@ -82,6 +82,8 @@ async def reconcile_startup(
     repo_cfgs: list[RepoConfig],
     obs: ObsConfig | None,
     runlog: RunLog | None,
+    *,
+    installation_token: str = "",
 ) -> None:
     """Run the startup reconciliation sweep.
 
@@ -104,6 +106,13 @@ async def reconcile_startup(
             but provided as a seam for future checks.
         runlog: Optional ``RunLog`` handle for best-effort event
             emission.  Passed through to ``alert()``.
+        installation_token: The minted GitHub App installation access
+            token (``ghs_`` prefix) returned by ``bootstrap_secrets()``.
+            When non-empty, this value is passed directly to
+            ``validate_daemon_token`` — ``os.environ`` is never read
+            for the token (env-discipline invariant).  Pass ``""``
+            (default) to fall back to the ambient ``GH_TOKEN`` /
+            ``GITHUB_TOKEN`` env var (legacy / test path).
     """
     owner = repo_cfgs[0].owner
     repo = repo_cfgs[0].repo
@@ -113,12 +122,17 @@ async def reconcile_startup(
     # ------------------------------------------------------------------
     # G3a: GitHub token validation — FATAL.
     # Daemon path uses validate_daemon_token (accepts ghs_ installation
-    # tokens).  The worker path (before_run.py) continues to use
-    # validate_github_token (github_pat_ only) — see slice 3a spec.
+    # tokens).  When installation_token is provided by-value (slice 3a
+    # env-discipline), validate that token directly — do NOT read from
+    # os.environ.  Fall back to os.environ only when no token was
+    # threaded (legacy / test path).
     # ------------------------------------------------------------------
-    token = os.environ.get("GH_TOKEN", "") or os.environ.get(
-        "GITHUB_TOKEN", ""
-    )
+    if installation_token:
+        token = installation_token
+    else:
+        token = os.environ.get("GH_TOKEN", "") or os.environ.get(
+            "GITHUB_TOKEN", ""
+        )
     try:
         validate_daemon_token(token)
     except TokenValidationError as exc:

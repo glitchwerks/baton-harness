@@ -6122,6 +6122,7 @@ def test_run_daemon_calls_reconcile_startup_exactly_once() -> None:
         repo_cfgs: Any,  # noqa: ANN401
         obs: Any,  # noqa: ANN401
         runlog: Any,  # noqa: ANN401
+        **kwargs: Any,  # noqa: ANN401 — accept installation_token kwarg
     ) -> None:
         nonlocal reconcile_call_count
         reconcile_call_count += 1
@@ -6193,6 +6194,7 @@ def test_run_daemon_reconcile_startup_called_before_heartbeat_thread() -> None:
         repo_cfgs: Any,  # noqa: ANN401
         obs: Any,  # noqa: ANN401
         runlog: Any,  # noqa: ANN401
+        **kwargs: Any,  # noqa: ANN401 — accept installation_token kwarg
     ) -> None:
         event_log.append("reconcile")
 
@@ -6628,6 +6630,7 @@ def test_blocked_live_label_prevents_dispatch() -> None:
         owner: str,
         repo: str,
         issue: int,
+        installation_token: str = "",
     ) -> set[str]:
         # Torn state: agent-ready in snapshot, but blocked is live.
         return {"agent-ready", "blocked"}
@@ -7356,6 +7359,7 @@ def test_second_work_unit_skipped_when_blocked_mid_drain() -> None:
         severity: str = "critical",
         kind: str = "block",
         runlog: Any = None,  # noqa: ANN401
+        installation_token: str = "",
     ) -> bool:
         """Capture alert calls."""
         alert_calls.append(
@@ -7574,6 +7578,7 @@ def test_second_work_unit_skipped_on_non_blocked_exclude_label_mid_drain() -> (
         severity: str = "critical",
         kind: str = "block",
         runlog: Any = None,  # noqa: ANN401
+        installation_token: str = "",
     ) -> bool:
         """Capture alert calls."""
         alert_calls.append(
@@ -7824,6 +7829,7 @@ def test_second_work_unit_skipped_when_agent_ready_removed_mid_drain() -> None:
         severity: str = "critical",
         kind: str = "block",
         runlog: Any = None,  # noqa: ANN401
+        installation_token: str = "",
     ) -> bool:
         """Capture alert calls.
 
@@ -7835,6 +7841,8 @@ def test_second_work_unit_skipped_when_agent_ready_removed_mid_drain() -> None:
             severity: Alert severity level.
             kind: Alert kind (e.g. ``"block"``).
             runlog: Optional runlog handle.
+            installation_token: GitHub App installation token (threaded
+                through; not inspected by this stub).
 
         Returns:
             Always ``True`` (stub success).
@@ -8045,6 +8053,7 @@ def test_malformed_3_label_state_fires_critical_alert() -> None:
         owner: str,  # noqa: ARG001
         repo: str,  # noqa: ARG001
         issue: int,  # noqa: ARG001
+        installation_token: str = "",  # noqa: ARG001
     ) -> set[str]:
         # Malformed 3-label state: agent-ready + agent-done + blocked.
         return {LABEL_AGENT_READY, LABEL_AGENT_DONE, "blocked"}
@@ -8058,6 +8067,7 @@ def test_malformed_3_label_state_fires_critical_alert() -> None:
         severity: str = "info",
         kind: str = "debug",
         runlog: Any = None,  # noqa: ANN401, ARG001
+        installation_token: str = "",  # noqa: ARG001
     ) -> bool:
         alert_calls.append(
             {"severity": severity, "kind": kind, "msg": message}
@@ -8175,6 +8185,7 @@ def test_two_label_torn_state_no_multi_state_critical_alert() -> None:
         owner: str,  # noqa: ARG001
         repo: str,  # noqa: ARG001
         issue: int,  # noqa: ARG001
+        installation_token: str = "",  # noqa: ARG001
     ) -> set[str]:
         # Standard 2-label torn pre-dispatch state.
         return {LABEL_AGENT_READY, "blocked"}
@@ -8188,6 +8199,7 @@ def test_two_label_torn_state_no_multi_state_critical_alert() -> None:
         severity: str = "info",
         kind: str = "debug",
         runlog: Any = None,  # noqa: ANN401, ARG001
+        installation_token: str = "",  # noqa: ARG001
     ) -> bool:
         alert_calls.append(
             {"severity": severity, "kind": kind, "msg": message}
@@ -8508,6 +8520,7 @@ class TestDrainAgentReadyRevalidation:
             severity: str = "critical",
             kind: str = "block",
             runlog: Any = None,  # noqa: ANN401
+            installation_token: str = "",
         ) -> bool:
             """Capture alert calls.
 
@@ -8519,6 +8532,8 @@ class TestDrainAgentReadyRevalidation:
                 severity: Alert severity level.
                 kind: Alert kind.
                 runlog: Optional runlog handle.
+                installation_token: GitHub App token (threaded through;
+                    not inspected by this stub).
 
             Returns:
                 Always ``True`` (stub success).
