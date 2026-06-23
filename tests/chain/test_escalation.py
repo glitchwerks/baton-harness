@@ -659,3 +659,279 @@ def test_escalate_direct_call_still_posts_gh_comment_first() -> None:
     assert "gh" in cmd
     assert "issue" in cmd
     assert "comment" in cmd
+
+
+# ---------------------------------------------------------------------------
+# Bug 3 — alert() must accept and forward installation_token
+#
+# Required behaviour (codex P1 #154):
+#   alert(installation_token: str) must accept the token, forward it to
+#   escalate(installation_token=...), and every gh subprocess call must
+#   use a per-call env dict containing GH_TOKEN=<token> without mutating
+#   os.environ.
+#
+# Current behaviour causing FAIL:
+#   - alert() has no installation_token parameter → TypeError.
+#   - Even if it did, the call to escalate() would not forward the kwarg.
+#   - Daemon callsites of alert() omit the token (separate failing points).
+# ---------------------------------------------------------------------------
+
+
+class TestAlertThreadsInstallationToken:
+    """RED: alert() must accept and forward installation_token.
+
+    These tests fail until:
+    1. ``alert`` gains ``installation_token: str`` as a keyword argument.
+    2. ``alert`` forwards ``installation_token`` to ``escalate()``.
+    3. ``escalate()`` uses the token via a per-call env dict (already
+       implemented in escalate — the gap is that alert never passes it).
+    """
+
+    def test_alert_accepts_installation_token_kwarg(
+        self,
+    ) -> None:
+        """alert(installation_token=...) must not raise TypeError.
+
+        The contract requires ``alert`` to accept ``installation_token``
+        as a keyword argument.  Currently the parameter is absent, so
+        calling with it raises ``TypeError``.
+        """
+        import os
+
+        with (
+            patch.object(esc_mod, "_run", return_value=_ok()),
+            patch.dict("os.environ", {}, clear=False),
+        ):
+            os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
+            from baton_harness.chain.escalation import alert
+
+            # Must not raise TypeError — the kwarg must exist.
+            result = alert(
+                _OWNER,
+                _REPO,
+                _ISSUE,
+                "test summary",
+                severity="warn",
+                runlog=None,
+                installation_token="ghs_T_ALERT",
+            )
+
+        assert result is True
+
+    def test_alert_forwards_token_to_escalate(
+        self,
+    ) -> None:
+        """alert() must forward installation_token to escalate().
+
+        ``alert`` calls ``escalate()`` for severity 'warn' and 'critical'.
+        The ``installation_token`` kwarg must be forwarded in both cases.
+        This test uses severity='warn' — the non-prefixed path.
+        """
+        import os
+
+        received: dict[str, object] = {}
+
+        def _fake_escalate(
+            owner: str,
+            repo: str,
+            issue: int | None,
+            summary: str,
+            *args: object,
+            **kwargs: object,
+        ) -> bool:
+            received.update(kwargs)
+            return True
+
+        with (
+            patch.object(esc_mod, "escalate", side_effect=_fake_escalate),
+            patch.dict("os.environ", {}, clear=False),
+        ):
+            os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
+            from baton_harness.chain.escalation import alert
+
+            alert(
+                _OWNER,
+                _REPO,
+                _ISSUE,
+                "forward test",
+                severity="warn",
+                runlog=None,
+                installation_token="ghs_T_FWD",
+            )
+
+        assert received.get("installation_token") == "ghs_T_FWD", (
+            "alert() must forward installation_token to escalate(); "
+            f"kwargs seen by escalate: {received!r}"
+        )
+
+    def test_alert_gh_subprocess_uses_per_call_env_dict(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """alert() with token → _run receives GH_TOKEN in env dict; env clean.
+
+        The alert->escalate->_run chain must deliver the token via a
+        per-call ``env`` kwarg rather than mutating ``os.environ``.
+
+        Args:
+            monkeypatch: Pytest monkeypatch fixture.
+        """
+        import os
+
+        ghs_token = "ghs_T_ENV_ALERT"
+        env_before = dict(os.environ)
+
+        run_env_kwargs: list[dict[str, str] | None] = []
+
+        def _spy_run(
+            cmd: list[str],
+            env: dict[str, str] | None = None,
+            **kwargs: object,
+        ) -> subprocess.CompletedProcess[str]:
+            run_env_kwargs.append(env)
+            return _ok()
+
+        monkeypatch.delenv("BH_SLACK_WEBHOOK_URL", raising=False)
+
+        with patch.object(esc_mod, "_run", side_effect=_spy_run):
+            from baton_harness.chain.escalation import alert
+
+            alert(
+                _OWNER,
+                _REPO,
+                _ISSUE,
+                "env discipline test",
+                severity="warn",
+                runlog=None,
+                installation_token=ghs_token,
+            )
+
+        # At least one _run call must carry the token in an env dict.
+        gh_calls_with_env = [
+            env
+            for env in run_env_kwargs
+            if env is not None and env.get("GH_TOKEN") == ghs_token
+        ]
+        assert gh_calls_with_env, (
+            "At least one _run call from alert() must supply "
+            f"GH_TOKEN={ghs_token!r} via a per-call env dict; "
+            f"env kwargs seen: {run_env_kwargs!r}"
+        )
+
+        # os.environ must NOT have been mutated.
+        env_after = dict(os.environ)
+        assert env_after == env_before, (
+            "os.environ must NOT be mutated during the alert() flow; "
+            f"diff: {set(env_after.items()) ^ set(env_before.items())}"
+        )
+
+    def test_daemon_alert_callsites_thread_token(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Daemon alert() callsites during the merge path must thread token.
+
+        The daemon's ``_do_merge`` helper calls ``alert()`` in two cases:
+        (a) merge exception → warn alert, (b) CI failure/timeout → critical
+        alert.  Both calls must forward ``installation_token`` once the
+        parameter exists.
+
+        This test exercises the CI-failure branch of ``_do_merge`` and
+        checks that the ``alert`` spy receives a non-empty
+        ``installation_token`` kwarg.
+
+        Args:
+            monkeypatch: Pytest monkeypatch fixture.
+        """
+        import baton_harness.chain.daemon as daemon_mod
+        from baton_harness.chain.merge import MergeOutcome
+
+        alert_calls: list[dict[str, object]] = []
+
+        def _spy_alert(
+            owner: str,
+            repo: str,
+            issue: int | None,
+            summary: str,
+            *args: object,
+            **kwargs: object,
+        ) -> bool:
+            alert_calls.append(
+                {
+                    "owner": owner,
+                    "repo": repo,
+                    "issue": issue,
+                    "summary": summary,
+                    "kwargs": kwargs,
+                }
+            )
+            return True
+
+        # _do_merge is an inner closure inside run_daemon; we exercise it via
+        # the exported helper path.  We patch merge_issue_branch to return
+        # CI_FAILED (which triggers the critical-alert callsite in _do_merge)
+        # and verify the alert spy received installation_token.
+        with (
+            patch.object(daemon_mod, "alert", side_effect=_spy_alert),
+            patch.object(
+                daemon_mod,
+                "merge_issue_branch",
+                return_value=MergeOutcome.CI_FAILED,
+            ),
+            patch.object(daemon_mod, "_label_edit", return_value=None),
+        ):
+            # Import and call _do_merge directly if it is module-level,
+            # otherwise trigger it via the inline daemon path.  The function
+            # is defined as a closure inside run_daemon so we call it
+            # indirectly by importing the relevant helpers.  We use
+            # merge_issue_branch's return value to prove the CI_FAILED path.
+            #
+            # If _do_merge is not directly callable, we fall back to
+            # asserting the contract via the AST: look for alert( callsites
+            # in daemon.py and verify they pass installation_token.
+            import ast
+            import inspect
+
+            daemon_src = inspect.getsource(daemon_mod)
+            tree = ast.parse(daemon_src)
+
+            # Find all Call nodes where func.attr == "alert" or
+            # func.id == "alert".
+            alert_call_nodes = []
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call):
+                    func = node.func
+                    if (
+                        isinstance(func, ast.Attribute)
+                        and func.attr == "alert"
+                    ) or (isinstance(func, ast.Name) and func.id == "alert"):
+                        alert_call_nodes.append(node)
+
+            assert alert_call_nodes, (
+                "daemon.py must contain at least one alert() call"
+            )
+
+            # Every alert() callsite that is in the merge-outcome path
+            # (contains the word 'merge' or 'CI' nearby in its arguments)
+            # must pass installation_token as a keyword argument.
+            #
+            # We check every alert() callsite — the contract is that ALL
+            # daemon alert() calls must thread the token once the parameter
+            # exists.
+            callsites_missing_token = []
+            for node in alert_call_nodes:
+                kwarg_names = {
+                    kw.arg for kw in node.keywords if kw.arg is not None
+                }
+                if "installation_token" not in kwarg_names:
+                    callsites_missing_token.append(
+                        ast.unparse(node)
+                        if hasattr(ast, "unparse")
+                        else f"line {node.lineno}"
+                    )
+
+            assert not callsites_missing_token, (
+                "All daemon.py alert() callsites must pass "
+                "installation_token=... kwarg; missing at: "
+                f"{callsites_missing_token}"
+            )

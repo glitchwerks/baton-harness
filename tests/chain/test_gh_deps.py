@@ -169,6 +169,8 @@ class TestFetchBlockedBy:
 
         def fake_run(
             cmd: list[str],
+            *,
+            env: dict[str, str] | None = None,
         ) -> subprocess.CompletedProcess[str]:
             nonlocal call_count
             result = pages[call_count]
@@ -189,6 +191,8 @@ class TestFetchBlockedBy:
 
         def fake_run(
             cmd: list[str],
+            *,
+            env: dict[str, str] | None = None,
         ) -> subprocess.CompletedProcess[str]:
             nonlocal call_count
             call_count += 1
@@ -211,6 +215,8 @@ class TestFetchBlockedBy:
 
         def fake_run(
             cmd: list[str],
+            *,
+            env: dict[str, str] | None = None,
         ) -> subprocess.CompletedProcess[str]:
             captured.append(cmd)
             return _ok([])
@@ -267,6 +273,8 @@ class TestFetchBlocking:
 
         def fake_run(
             cmd: list[str],
+            *,
+            env: dict[str, str] | None = None,
         ) -> subprocess.CompletedProcess[str]:
             nonlocal call_count
             result = pages[call_count]
@@ -291,6 +299,8 @@ class TestFetchBlocking:
 
         def fake_run(
             cmd: list[str],
+            *,
+            env: dict[str, str] | None = None,
         ) -> subprocess.CompletedProcess[str]:
             captured.append(cmd)
             return _ok([])
@@ -344,6 +354,8 @@ class TestFetchMilestoneMembers:
 
         def fake_run(
             cmd: list[str],
+            *,
+            env: dict[str, str] | None = None,
         ) -> subprocess.CompletedProcess[str]:
             nonlocal call_count
             result = pages[call_count]
@@ -368,6 +380,8 @@ class TestFetchMilestoneMembers:
 
         def fake_run(
             cmd: list[str],
+            *,
+            env: dict[str, str] | None = None,
         ) -> subprocess.CompletedProcess[str]:
             captured.append(cmd)
             return _ok([])
@@ -413,6 +427,8 @@ class TestGetMethodRegression:
 
         def fake_run(
             cmd: list[str],
+            *,
+            env: dict[str, str] | None = None,
         ) -> subprocess.CompletedProcess[str]:
             captured.append(cmd)
             return _ok([])
@@ -436,6 +452,8 @@ class TestGetMethodRegression:
 
         def fake_run(
             cmd: list[str],
+            *,
+            env: dict[str, str] | None = None,
         ) -> subprocess.CompletedProcess[str]:
             captured.append(cmd)
             return _ok([])
@@ -455,6 +473,8 @@ class TestGetMethodRegression:
 
         def fake_run(
             cmd: list[str],
+            *,
+            env: dict[str, str] | None = None,
         ) -> subprocess.CompletedProcess[str]:
             captured.append(cmd)
             return _ok([])
@@ -519,6 +539,8 @@ class TestThreePagePagination:
 
         def fake_run(
             cmd: list[str],
+            *,
+            env: dict[str, str] | None = None,
         ) -> subprocess.CompletedProcess[str]:
             nonlocal call_count
             result = pages[call_count]

@@ -295,3 +295,35 @@ class TestFetchSecretFailClosed:
                 access_token=_VALID_ACCESS_TOKEN,
                 run=no_value_run,
             )
+
+    def test_value_field_is_not_string_raises(self) -> None:
+        """Non-string ``value`` field raises ``BwsClientError``.
+
+        F2 polish (#133): ``bws_client.py`` must validate that the
+        ``value`` field in the response JSON is a ``str``.  A non-string
+        value (e.g. an integer) must be rejected with ``BwsClientError``
+        rather than returning the wrong type silently.
+
+        This test pins existing behaviour at bws_client.py line 174
+        and is expected to be GREEN today.
+        """
+        not_string_json = json.dumps({"id": _SECRET_ID, "value": 123})
+
+        def int_value_run(
+            args: list[str],
+            **_: object,
+        ) -> subprocess.CompletedProcess[str]:
+            """Return a response body where 'value' is an integer."""
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout=not_string_json,
+                stderr="",
+            )
+
+        with pytest.raises(BwsClientError):
+            fetch_secret(
+                _SECRET_ID,
+                access_token=_VALID_ACCESS_TOKEN,
+                run=int_value_run,
+            )

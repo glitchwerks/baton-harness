@@ -35,7 +35,31 @@ _CRITICAL_PREFIX = "🚨 CRITICAL: "
 # ---------------------------------------------------------------------------
 
 
-def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+def _gh_env(installation_token: str) -> dict[str, str]:
+    """Return os.environ overlaid with GH_TOKEN=<installation_token>.
+
+    Does not mutate os.environ.  Token is per-call; never persists
+    in the process environment.
+
+    Args:
+        installation_token: GitHub App installation access token
+            (``ghs_`` prefix) to inject as ``GH_TOKEN`` and
+            ``GITHUB_TOKEN`` in the subprocess environment.
+
+    Returns:
+        A shallow copy of ``os.environ`` with both ``GH_TOKEN`` and
+        ``GITHUB_TOKEN`` overridden to ``installation_token``.
+    """
+    env = dict(os.environ)
+    env["GH_TOKEN"] = installation_token
+    env["GITHUB_TOKEN"] = installation_token
+    return env
+
+
+def _run(
+    cmd: list[str],
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     """Run an external command and return its completed process.
 
     Centralises subprocess invocation so tests can patch a single symbol
@@ -43,6 +67,10 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
 
     Args:
         cmd: Command and arguments to execute (no shell interpolation).
+        env: Optional environment dict for the subprocess.  When
+            ``None``, the subprocess inherits ``os.environ`` unchanged.
+            Pass ``_gh_env(installation_token)`` for daemon-side calls
+            to override ``GH_TOKEN`` without mutating ``os.environ``.
 
     Returns:
         A ``subprocess.CompletedProcess`` with captured stdout/stderr.
@@ -53,6 +81,7 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         encoding="utf-8",
+        env=env,
     )
 
 
@@ -68,6 +97,7 @@ def escalate(
     summary: str,
     *,
     kind: str = "block",
+    installation_token: str = "",
 ) -> bool:
     """Post a stall summary as a GitHub comment and optionally to Slack.
 
@@ -111,6 +141,11 @@ def escalate(
             the ``blocked`` label) or ``"debug"`` (agent failed without
             blocking).  Not currently used to alter the message body; kept
             for caller-side logging and future filtering.
+        installation_token: Optional GitHub App installation access token
+            (``ghs_`` prefix).  When non-empty, the ``gh`` subprocess
+            call overrides ``GH_TOKEN`` with this value via a per-call
+            env copy — ``os.environ`` is never mutated.  Pass ``""``
+            (default) to inherit the ambient credential unchanged.
 
     Returns:
         ``True`` if the GitHub comment was posted successfully (the durable
@@ -118,6 +153,8 @@ def escalate(
         skipped (no valid issue target).  Slack success or failure has no
         bearing on the return value.
     """
+    gh_call_env = _gh_env(installation_token) if installation_token else None
+
     # ------------------------------------------------------------------
     # 1. GitHub comment — durable record; MUST be attempted first.
     # ------------------------------------------------------------------
@@ -139,6 +176,9 @@ def escalate(
         )
         durable_landed = False
     else:
+        _run_kwargs: dict[str, dict[str, str]] = (
+            {"env": gh_call_env} if gh_call_env is not None else {}
+        )
         gh_proc = _run(
             [
                 "gh",
@@ -149,7 +189,8 @@ def escalate(
                 f"{owner}/{repo}",
                 "--body",
                 summary,
-            ]
+            ],
+            **_run_kwargs,
         )
         if gh_proc.returncode != 0:
             _log.warning(
@@ -198,6 +239,7 @@ def alert(
     severity: Literal["info", "warn", "critical"],
     runlog: RunLog | None = None,
     kind: str = "block",
+    installation_token: str = "",
 ) -> bool:
     """Post an alert through the severity-routing layer.
 
@@ -229,6 +271,11 @@ def alert(
             When ``None``, emission is skipped without error.
         kind: Escalation kind hint passed through to ``escalate()`` unchanged.
             Defaults to ``"block"``.
+        installation_token: GitHub App installation access token
+            (``ghs_`` prefix) forwarded to ``escalate()`` unchanged.
+            When non-empty, the ``gh`` subprocess call overrides ``GH_TOKEN``
+            via a per-call env copy — ``os.environ`` is never mutated.
+            Pass ``""`` (default) to inherit the ambient credential.
 
     Returns:
         ``True`` for ``severity="info"`` (no escalation attempted).
@@ -266,11 +313,25 @@ def alert(
         return True
 
     if severity == "warn":
-        return escalate(owner, repo, issue, summary, kind=kind)
+        return escalate(
+            owner,
+            repo,
+            issue,
+            summary,
+            kind=kind,
+            installation_token=installation_token,
+        )
 
     # severity == "critical"
     body = f"{_CRITICAL_PREFIX}{summary}"
-    return escalate(owner, repo, issue, body, kind=kind)
+    return escalate(
+        owner,
+        repo,
+        issue,
+        body,
+        kind=kind,
+        installation_token=installation_token,
+    )
 
 
 def _post_slack(

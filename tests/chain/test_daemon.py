@@ -20,6 +20,11 @@ Coverage:
 - ``--draft`` flag present in ``gh pr create`` call.
 - Mid-DAG block parks only its sub-tree.
 - Serial dispatch: one ``_run_worker`` at a time (call order).
+- (slice 3a) Daemon-side gh subprocess calls inject GH_TOKEN from the
+  installation token, overriding any existing token in the env dict.
+- (slice 3a) The per-call env override does NOT mutate os.environ.
+- (slice 3a) merge.py:_query_action_jobs uses the installation token.
+- (slice 3a) escalation.py:escalate uses the installation token.
 """
 
 from __future__ import annotations
@@ -140,7 +145,7 @@ def _common_patches(
             ) as mock_run,
             patch(
                 "baton_harness.chain.daemon.fetch_blocked_by",
-                side_effect=lambda o, r, n: blocked_by.get(n, []),
+                side_effect=lambda o, r, n, **_kw: blocked_by.get(n, []),
             ),
             patch(
                 "baton_harness.chain.branches.create_feature_branch",
@@ -774,7 +779,7 @@ def test_serial_dispatch_one_worker_at_a_time() -> None:
         patch.object(daemon_mod, "_run", side_effect=side_effect),
         patch(
             "baton_harness.chain.daemon.fetch_blocked_by",
-            side_effect=lambda o, r, n: blocked_by.get(n, []),
+            side_effect=lambda o, r, n, **_kw: blocked_by.get(n, []),
         ),
         patch("baton_harness.chain.branches.create_feature_branch"),
         patch("baton_harness.chain.branches.checkout_feature_branch"),
@@ -1034,7 +1039,7 @@ def test_milestone_membership_uses_full_set_not_just_agent_ready() -> None:
         patch.object(daemon_mod, "_run", side_effect=run_side_effect),
         patch(
             "baton_harness.chain.daemon.fetch_blocked_by",
-            side_effect=lambda o, r, n: [1] if n == 2 else [],
+            side_effect=lambda o, r, n, **_kw: [1] if n == 2 else [],
         ),
         patch(
             "baton_harness.chain.daemon._fetch_full_milestone_members",
@@ -1151,7 +1156,7 @@ def test_milestone_dispatch_order_a_before_b_when_both_ready() -> None:
         patch.object(daemon_mod, "_run", side_effect=run_side_effect),
         patch(
             "baton_harness.chain.daemon.fetch_blocked_by",
-            side_effect=lambda o, r, n: [1] if n == 2 else [],
+            side_effect=lambda o, r, n, **_kw: [1] if n == 2 else [],
         ),
         patch(
             "baton_harness.chain.daemon._fetch_full_milestone_members",
@@ -1247,7 +1252,7 @@ def test_waiting_for_greenlight_exits_work_unit_without_escalating() -> None:
         patch.object(daemon_mod, "_run", side_effect=run_side_effect),
         patch(
             "baton_harness.chain.daemon.fetch_blocked_by",
-            side_effect=lambda o, r, n: [1] if n == 2 else [],
+            side_effect=lambda o, r, n, **_kw: [1] if n == 2 else [],
         ),
         patch(
             "baton_harness.chain.daemon._fetch_full_milestone_members",
@@ -1840,7 +1845,7 @@ def test_integration_pr_body_contains_closes_keyword_per_issue_multi() -> None:
         patch.object(daemon_mod, "_run", side_effect=recording_run),
         patch(
             "baton_harness.chain.daemon.fetch_blocked_by",
-            side_effect=lambda o, r, n: [],
+            side_effect=lambda o, r, n, **_kw: [],
         ),
         patch(
             "baton_harness.chain.daemon._fetch_full_milestone_members",
@@ -6117,6 +6122,7 @@ def test_run_daemon_calls_reconcile_startup_exactly_once() -> None:
         repo_cfgs: Any,  # noqa: ANN401
         obs: Any,  # noqa: ANN401
         runlog: Any,  # noqa: ANN401
+        **kwargs: Any,  # noqa: ANN401 — accept installation_token kwarg
     ) -> None:
         nonlocal reconcile_call_count
         reconcile_call_count += 1
@@ -6188,6 +6194,7 @@ def test_run_daemon_reconcile_startup_called_before_heartbeat_thread() -> None:
         repo_cfgs: Any,  # noqa: ANN401
         obs: Any,  # noqa: ANN401
         runlog: Any,  # noqa: ANN401
+        **kwargs: Any,  # noqa: ANN401 — accept installation_token kwarg
     ) -> None:
         event_log.append("reconcile")
 
@@ -6545,7 +6552,10 @@ def _run_side_effect_for_128(
         A callable matching the ``_run`` signature.
     """
 
-    def side_effect(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    def side_effect(
+        cmd: list[str],
+        env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         import json as _json
 
         cmd_str = " ".join(cmd)
@@ -6620,6 +6630,7 @@ def test_blocked_live_label_prevents_dispatch() -> None:
         owner: str,
         repo: str,
         issue: int,
+        installation_token: str = "",
     ) -> set[str]:
         # Torn state: agent-ready in snapshot, but blocked is live.
         return {"agent-ready", "blocked"}
@@ -6709,6 +6720,7 @@ def test_non_blocked_live_label_still_dispatches() -> None:
         owner: str,
         repo: str,
         issue: int,
+        installation_token: str = "",
     ) -> set[str]:
         # Clean state: agent-ready, no blocked.
         return {"agent-ready"}
@@ -6759,6 +6771,7 @@ def test_non_blocked_live_label_still_dispatches() -> None:
                 [_repo_cfg()],
                 once=True,
                 poll_interval_s=0,
+                installation_token="ghs_TESTTOKEN_xxxxxxx",
             )
         )
 
@@ -6808,6 +6821,7 @@ def test_mixed_frontier_only_non_blocked_dispatched() -> None:
         owner: str,
         repo: str,
         issue: int,
+        installation_token: str = "",
     ) -> set[str]:
         # #11 is live-blocked; #12 is clean.
         if issue == 11:
@@ -6816,6 +6830,7 @@ def test_mixed_frontier_only_non_blocked_dispatched() -> None:
 
     def mixed_run_side_effect(
         cmd: list[str],
+        env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         import json as _json
 
@@ -6864,7 +6879,7 @@ def test_mixed_frontier_only_non_blocked_dispatched() -> None:
         ),
         patch(
             "baton_harness.chain.daemon.fetch_blocked_by",
-            side_effect=lambda o, r, n: [],
+            side_effect=lambda o, r, n, **_kw: [],
         ),
         patch(
             "baton_harness.chain.daemon._fetch_issue_labels",
@@ -6902,6 +6917,7 @@ def test_mixed_frontier_only_non_blocked_dispatched() -> None:
                 [_repo_cfg()],
                 once=True,
                 poll_interval_s=0,
+                installation_token="ghs_TESTTOKEN_xxxxxxx",
             )
         )
 
@@ -7257,7 +7273,12 @@ def test_second_work_unit_skipped_when_blocked_mid_drain() -> None:
     # being applied after #1 finished.
     fetch_calls_for_5: list[int] = []
 
-    def fake_fetch_labels(owner: str, repo: str, n: int) -> set[str] | None:
+    def fake_fetch_labels(
+        owner: str,
+        repo: str,
+        n: int,
+        installation_token: str = "",
+    ) -> set[str] | None:
         """Return live labels; issue #5 becomes blocked on second fetch."""
         if n == 5:
             fetch_calls_for_5.append(n)
@@ -7269,7 +7290,10 @@ def test_second_work_unit_skipped_when_blocked_mid_drain() -> None:
         # All other issues: clean.
         return {"agent-ready"}
 
-    def run_side_effect(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    def run_side_effect(
+        cmd: list[str],
+        env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         """Stub gh/git calls for the two-unit mid-drain scenario."""
         import json as _json
 
@@ -7335,6 +7359,7 @@ def test_second_work_unit_skipped_when_blocked_mid_drain() -> None:
         severity: str = "critical",
         kind: str = "block",
         runlog: Any = None,  # noqa: ANN401
+        installation_token: str = "",
     ) -> bool:
         """Capture alert calls."""
         alert_calls.append(
@@ -7387,6 +7412,7 @@ def test_second_work_unit_skipped_when_blocked_mid_drain() -> None:
                 [_repo_cfg()],
                 once=True,
                 poll_interval_s=0,
+                installation_token="ghs_TESTTOKEN_xxxxxxx",
             )
         )
 
@@ -7466,7 +7492,12 @@ def test_second_work_unit_skipped_on_non_blocked_exclude_label_mid_drain() -> (
     # Issue #5 gets "on-hold" on the second label fetch (mid-drain re-check).
     fetch_calls_for_5: list[int] = []
 
-    def fake_fetch_labels(owner: str, repo: str, n: int) -> set[str] | None:
+    def fake_fetch_labels(
+        owner: str,
+        repo: str,
+        n: int,
+        installation_token: str = "",
+    ) -> set[str] | None:
         """Return live labels; issue #5 gets 'on-hold' on second fetch."""
         if n == 5:
             fetch_calls_for_5.append(n)
@@ -7480,6 +7511,7 @@ def test_second_work_unit_skipped_on_non_blocked_exclude_label_mid_drain() -> (
 
     def run_side_effect(
         cmd: list[str],
+        env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         """Stub gh/git calls for the non-blocked-exclude-label scenario."""
         import json as _json
@@ -7546,6 +7578,7 @@ def test_second_work_unit_skipped_on_non_blocked_exclude_label_mid_drain() -> (
         severity: str = "critical",
         kind: str = "block",
         runlog: Any = None,  # noqa: ANN401
+        installation_token: str = "",
     ) -> bool:
         """Capture alert calls."""
         alert_calls.append(
@@ -7603,6 +7636,7 @@ def test_second_work_unit_skipped_on_non_blocked_exclude_label_mid_drain() -> (
                 [_repo_cfg()],
                 once=True,
                 poll_interval_s=0,
+                installation_token="ghs_TESTTOKEN_xxxxxxx",
             )
         )
 
@@ -7690,13 +7724,19 @@ def test_second_work_unit_skipped_when_agent_ready_removed_mid_drain() -> None:
     # and WITHOUT any exclude label — pure de-greenlit scenario).
     fetch_calls_for_5: list[int] = []
 
-    def fake_fetch_labels(owner: str, repo: str, n: int) -> set[str] | None:
+    def fake_fetch_labels(
+        owner: str,
+        repo: str,
+        n: int,
+        installation_token: str = "",
+    ) -> set[str] | None:
         """Return live labels; issue #5 loses agent-ready on second fetch.
 
         Args:
             owner: Repository owner (unused in stub).
             repo: Repository name (unused in stub).
             n: Issue number to fetch labels for.
+            installation_token: Ignored in stub; accepted for compatibility.
 
         Returns:
             A set of label strings, or None on simulated fetch failure.
@@ -7714,11 +7754,13 @@ def test_second_work_unit_skipped_when_agent_ready_removed_mid_drain() -> None:
 
     def run_side_effect(
         cmd: list[str],
+        env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         """Stub gh/git calls for the two-unit mid-drain scenario.
 
         Args:
             cmd: The command list passed to ``_run``.
+            env: Environment dict passed by the daemon (ignored in stub).
 
         Returns:
             A successful CompletedProcess with appropriate JSON payloads.
@@ -7787,6 +7829,7 @@ def test_second_work_unit_skipped_when_agent_ready_removed_mid_drain() -> None:
         severity: str = "critical",
         kind: str = "block",
         runlog: Any = None,  # noqa: ANN401
+        installation_token: str = "",
     ) -> bool:
         """Capture alert calls.
 
@@ -7798,6 +7841,8 @@ def test_second_work_unit_skipped_when_agent_ready_removed_mid_drain() -> None:
             severity: Alert severity level.
             kind: Alert kind (e.g. ``"block"``).
             runlog: Optional runlog handle.
+            installation_token: GitHub App installation token (threaded
+                through; not inspected by this stub).
 
         Returns:
             Always ``True`` (stub success).
@@ -7852,6 +7897,7 @@ def test_second_work_unit_skipped_when_agent_ready_removed_mid_drain() -> None:
                 [_repo_cfg()],
                 once=True,
                 poll_interval_s=0,
+                installation_token="ghs_TESTTOKEN_xxxxxxx",
             )
         )
 
@@ -8007,6 +8053,7 @@ def test_malformed_3_label_state_fires_critical_alert() -> None:
         owner: str,  # noqa: ARG001
         repo: str,  # noqa: ARG001
         issue: int,  # noqa: ARG001
+        installation_token: str = "",  # noqa: ARG001
     ) -> set[str]:
         # Malformed 3-label state: agent-ready + agent-done + blocked.
         return {LABEL_AGENT_READY, LABEL_AGENT_DONE, "blocked"}
@@ -8020,6 +8067,7 @@ def test_malformed_3_label_state_fires_critical_alert() -> None:
         severity: str = "info",
         kind: str = "debug",
         runlog: Any = None,  # noqa: ANN401, ARG001
+        installation_token: str = "",  # noqa: ARG001
     ) -> bool:
         alert_calls.append(
             {"severity": severity, "kind": kind, "msg": message}
@@ -8137,6 +8185,7 @@ def test_two_label_torn_state_no_multi_state_critical_alert() -> None:
         owner: str,  # noqa: ARG001
         repo: str,  # noqa: ARG001
         issue: int,  # noqa: ARG001
+        installation_token: str = "",  # noqa: ARG001
     ) -> set[str]:
         # Standard 2-label torn pre-dispatch state.
         return {LABEL_AGENT_READY, "blocked"}
@@ -8150,6 +8199,7 @@ def test_two_label_torn_state_no_multi_state_critical_alert() -> None:
         severity: str = "info",
         kind: str = "debug",
         runlog: Any = None,  # noqa: ANN401, ARG001
+        installation_token: str = "",  # noqa: ARG001
     ) -> bool:
         alert_calls.append(
             {"severity": severity, "kind": kind, "msg": message}
@@ -8288,14 +8338,18 @@ class TestDrainAgentReadyRevalidation:
             ms_number: Milestone number; used to build baton branch names.
 
         Returns:
-            A callable matching the ``_run(cmd)`` signature.
+            A callable matching the ``_run(cmd, env)`` signature.
         """
 
-        def side_effect(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        def side_effect(
+            cmd: list[str],
+            env: dict[str, str] | None = None,
+        ) -> subprocess.CompletedProcess[str]:
             """Dispatch stub responses by command shape.
 
             Args:
                 cmd: Command token list passed to ``_run``.
+                env: Environment dict passed by the daemon (ignored in stub).
 
             Returns:
                 A successful ``CompletedProcess`` with appropriate JSON.
@@ -8430,7 +8484,10 @@ class TestDrainAgentReadyRevalidation:
         fetch_calls_for_5: list[int] = []
 
         def fake_fetch_labels(
-            owner: str, repo: str, n: int
+            owner: str,
+            repo: str,
+            n: int,
+            installation_token: str = "",
         ) -> set[str] | None:
             """Return live labels; #5 loses agent-ready on second fetch.
 
@@ -8438,6 +8495,7 @@ class TestDrainAgentReadyRevalidation:
                 owner: Repo owner (unused stub).
                 repo: Repo name (unused stub).
                 n: Issue number.
+                installation_token: Ignored in stub; accepted for compat.
 
             Returns:
                 Set of label name strings, or None on failure.
@@ -8462,6 +8520,7 @@ class TestDrainAgentReadyRevalidation:
             severity: str = "critical",
             kind: str = "block",
             runlog: Any = None,  # noqa: ANN401
+            installation_token: str = "",
         ) -> bool:
             """Capture alert calls.
 
@@ -8473,6 +8532,8 @@ class TestDrainAgentReadyRevalidation:
                 severity: Alert severity level.
                 kind: Alert kind.
                 runlog: Optional runlog handle.
+                installation_token: GitHub App token (threaded through;
+                    not inspected by this stub).
 
             Returns:
                 Always ``True`` (stub success).
@@ -8533,6 +8594,7 @@ class TestDrainAgentReadyRevalidation:
                     [_repo_cfg()],
                     once=True,
                     poll_interval_s=0,
+                    installation_token="ghs_TESTTOKEN_xxxxxxx",
                 )
             )
 
@@ -8669,6 +8731,8 @@ class TestDrainAgentReadyRevalidation:
             repo: str,
             ms_num: int,
             ms_title: str,
+            *,
+            installation_token: str = "",
         ) -> frozenset[int]:
             """Return the full open member set for each milestone.
 
@@ -8677,6 +8741,7 @@ class TestDrainAgentReadyRevalidation:
                 repo: Repo name (unused stub).
                 ms_num: Milestone number.
                 ms_title: Milestone title (unused stub).
+                installation_token: Ignored in stub; accepted for compat.
 
             Returns:
                 Full open-member frozenset for the given milestone.
@@ -8684,7 +8749,10 @@ class TestDrainAgentReadyRevalidation:
             return full_memberships.get(ms_num, frozenset())
 
         def fake_fetch_labels(
-            owner: str, repo: str, n: int
+            owner: str,
+            repo: str,
+            n: int,
+            installation_token: str = "",
         ) -> set[str] | None:
             """Return live labels reflecting each issue's true state.
 
@@ -8697,6 +8765,7 @@ class TestDrainAgentReadyRevalidation:
                 owner: Repo owner (unused stub).
                 repo: Repo name (unused stub).
                 n: Issue number.
+                installation_token: Ignored in stub; accepted for compat.
 
             Returns:
                 Set of label name strings, or None on failure.
@@ -8709,11 +8778,13 @@ class TestDrainAgentReadyRevalidation:
 
         def run_side_effect(
             cmd: list[str],
+            env: dict[str, str] | None = None,
         ) -> subprocess.CompletedProcess[str]:
             """Stub gh/git calls for the two-milestone drain scenario.
 
             Args:
                 cmd: Command token list passed to ``_run``.
+                env: Environment dict passed by the daemon (ignored in stub).
 
             Returns:
                 A successful ``CompletedProcess`` with appropriate JSON.
@@ -8821,6 +8892,7 @@ class TestDrainAgentReadyRevalidation:
                     [_repo_cfg()],
                     once=True,
                     poll_interval_s=0,
+                    installation_token="ghs_TESTTOKEN_xxxxxxx",
                 )
             )
 
@@ -8841,4 +8913,754 @@ class TestDrainAgentReadyRevalidation:
             "Issue #20 (un-greenlit Sprint-9 sibling) must NOT be"
             " dispatched; it was never agent-ready and has no dependency"
             f" resolution. worker_calls={worker_calls}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Slice 3a — daemon gh subprocess env-override (RED tests)
+#
+# Contract: every daemon-side ``gh`` subprocess call must pass an ``env``
+# kwarg that contains ``GH_TOKEN=<installation_token>``, overriding any
+# existing value in the environment.  The override must be per-call
+# (copying os.environ) and must NOT mutate os.environ itself.
+#
+# The tests in this class are RED until the daemon/merge/escalation modules
+# grow the per-call env-override helper described in the slice 3a spec.
+# ---------------------------------------------------------------------------
+
+_INSTALLATION_TOKEN = "ghs_INSTALLATION_TOKEN_sentinel_xyz"
+
+
+class TestDaemonGhCallsUseInstallationToken:
+    """Slice 3a: gh subprocess calls inject the installation token in env.
+
+    All tests in this class are expected to FAIL today because the daemon
+    does not yet pass an ``env`` kwarg to subprocess.run.  After slice 3a
+    the daemon-side helper builds a per-call env dict with
+    ``GH_TOKEN=<installation_token>`` before every gh subprocess call.
+    """
+
+    def test_daemon_gh_subprocess_calls_inject_installation_token(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """_label_edit injects GH_TOKEN=<token> in the subprocess env dict.
+
+        Monkeypatches subprocess.run in daemon.py; triggers _label_edit
+        by running a minimal one-issue loop.  Asserts that the ``env``
+        kwarg passed to subprocess.run contains GH_TOKEN set to the
+        installation token.
+
+        Today FAILS because _run() calls subprocess.run without an ``env``
+        kwarg, so GH_TOKEN from os.environ (or absent) is inherited as-is
+        rather than being overridden to the installation token.
+        """
+        env_dicts_seen: list[dict[str, str] | None] = []
+
+        def recording_run(
+            cmd: list[str] | str,
+            *args: object,
+            **kwargs: object,
+        ) -> subprocess.CompletedProcess[str]:
+            # Record the env kwarg for gh calls only.
+            if isinstance(cmd, list) and cmd and cmd[0] == "gh":
+                env_dicts_seen.append(kwargs.get("env"))
+            # Route non-gh calls through the existing _make_run_side_effect
+            # logic (issue list, issue view, etc.).
+            ready_issues = [
+                {
+                    "number": 10,
+                    "title": "Issue 10",
+                    "state": "open",
+                    "body": "",
+                    "url": "https://github.com/o/r/issues/10",
+                    "labels": [{"name": "agent-ready"}],
+                    "milestone": None,
+                    "assignees": [],
+                }
+            ]
+            side_effect = _make_run_side_effect(
+                ready_issues=ready_issues,
+                pr_head_sha="abc123",
+                issue_branch="baton/issue-10-10",
+                feature_branch_exists=False,
+            )
+            return side_effect(cmd if isinstance(cmd, list) else [cmd])
+
+        with (
+            patch.object(
+                subprocess,
+                "run",
+                side_effect=recording_run,
+            ),
+            patch(
+                "baton_harness.chain.daemon.fetch_blocked_by",
+                return_value=[],
+            ),
+            patch("baton_harness.chain.branches.create_feature_branch"),
+            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch(
+                "baton_harness.chain.branches.record_cut_point",
+                return_value="deadbeef" * 5,
+            ),
+            patch(
+                "baton_harness.chain.recovery.reconstruct",
+                return_value=RecoveryResult(
+                    done=set(),
+                    parked_seed=set(),
+                    ci_gate_reentry=set(),
+                    redispatch=set(),
+                ),
+            ),
+            patch(
+                "baton_harness.chain.daemon.merge_issue_branch",
+                return_value=MergeOutcome.MERGED,
+            ),
+            patch("baton_harness.chain.daemon.alert", return_value=True),
+            patch(
+                "baton_harness.vendor.symphony.orchestrator"
+                ".Orchestrator._run_worker",
+                new_callable=AsyncMock,
+                return_value="pr_created",
+            ),
+        ):
+            asyncio.run(
+                run_daemon(
+                    _minimal_wf_config(),
+                    [_repo_cfg()],
+                    once=True,
+                    poll_interval_s=0,
+                    installation_token=_INSTALLATION_TOKEN,
+                )
+            )
+
+        assert env_dicts_seen, (
+            "No gh subprocess calls were recorded — check patch target"
+        )
+        for env in env_dicts_seen:
+            assert env is not None, (
+                "gh subprocess call had no env kwarg — installation token "
+                "env override not wired (slice 3a not yet implemented)"
+            )
+            assert env.get("GH_TOKEN") == _INSTALLATION_TOKEN, (
+                f"Expected GH_TOKEN={_INSTALLATION_TOKEN!r} in subprocess "
+                f"env, got GH_TOKEN={env.get('GH_TOKEN')!r} — "
+                "daemon-side token threading not implemented yet"
+            )
+
+    def test_daemon_gh_subprocess_does_not_mutate_os_environ(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Installation-token env override must NOT write back to os.environ.
+
+        Set os.environ[GH_TOKEN] to a placeholder; run the daemon loop;
+        assert os.environ[GH_TOKEN] is unchanged after the call.  The
+        token must be per-call only — never stored in the process env.
+
+        Today this passes trivially because no env kwarg is set at all.
+        After slice 3a it must still pass: the helper copies os.environ
+        and overrides GH_TOKEN in the copy, NOT in os.environ itself.
+        """
+        gh_token_placeholder = "ghp_PLACEHOLDER_MUST_NOT_CHANGE"
+        monkeypatch.setenv("GH_TOKEN", gh_token_placeholder)
+
+        with (
+            patch.object(
+                daemon_mod,
+                "_run",
+                side_effect=_make_run_side_effect(
+                    ready_issues=[
+                        {
+                            "number": 10,
+                            "title": "Issue 10",
+                            "state": "open",
+                            "body": "",
+                            "url": "https://github.com/o/r/issues/10",
+                            "labels": [{"name": "agent-ready"}],
+                            "milestone": None,
+                            "assignees": [],
+                        }
+                    ],
+                    pr_head_sha="abc123",
+                    issue_branch="baton/issue-10-10",
+                    feature_branch_exists=False,
+                ),
+            ),
+            patch(
+                "baton_harness.chain.daemon.fetch_blocked_by",
+                return_value=[],
+            ),
+            patch("baton_harness.chain.branches.create_feature_branch"),
+            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch(
+                "baton_harness.chain.branches.record_cut_point",
+                return_value="deadbeef" * 5,
+            ),
+            patch(
+                "baton_harness.chain.recovery.reconstruct",
+                return_value=RecoveryResult(
+                    done=set(),
+                    parked_seed=set(),
+                    ci_gate_reentry=set(),
+                    redispatch=set(),
+                ),
+            ),
+            patch(
+                "baton_harness.chain.daemon.merge_issue_branch",
+                return_value=MergeOutcome.MERGED,
+            ),
+            patch("baton_harness.chain.daemon.alert", return_value=True),
+            patch(
+                "baton_harness.vendor.symphony.orchestrator"
+                ".Orchestrator._run_worker",
+                new_callable=AsyncMock,
+                return_value="pr_created",
+            ),
+        ):
+            asyncio.run(
+                run_daemon(
+                    _minimal_wf_config(),
+                    [_repo_cfg()],
+                    once=True,
+                    poll_interval_s=0,
+                    installation_token=_INSTALLATION_TOKEN,
+                )
+            )
+
+        assert os.environ.get("GH_TOKEN") == gh_token_placeholder, (
+            f"os.environ[GH_TOKEN] was mutated — expected"
+            f" {gh_token_placeholder!r}, got {os.environ.get('GH_TOKEN')!r}."
+            " The per-call env override must copy os.environ, not mutate it."
+        )
+
+    def test_merge_query_action_jobs_uses_installation_token(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """merge.py:_query_action_jobs passes GH_TOKEN override to subprocess.
+
+        Monkeypatches subprocess.run in merge.py; calls _query_action_jobs
+        directly with an installation_token kwarg.  Asserts the env dict
+        passed to the gh api call has GH_TOKEN set to the installation token.
+
+        Today FAILS because merge._run() calls subprocess.run without env.
+        """
+        import json as _json  # noqa: PLC0415
+
+        import baton_harness.chain.merge as merge_mod  # noqa: PLC0415
+
+        env_dicts_seen: list[dict[str, str] | None] = []
+
+        def recording_run(
+            cmd: list[str] | str,
+            *args: object,
+            **kwargs: object,
+        ) -> subprocess.CompletedProcess[str]:
+            env_dicts_seen.append(kwargs.get("env"))
+            # Return a minimal workflow runs response so the function exits
+            # cleanly rather than raising on bad JSON.
+            fake_runs = _json.dumps({"workflow_runs": []})
+            return subprocess.CompletedProcess(
+                args=cmd if isinstance(cmd, list) else [str(cmd)],
+                returncode=0,
+                stdout=fake_runs,
+                stderr="",
+            )
+
+        with patch.object(subprocess, "run", side_effect=recording_run):
+            merge_mod._query_action_jobs(
+                "glitchwerks",
+                "baton-harness",
+                "abc123sha",
+                installation_token=_INSTALLATION_TOKEN,
+            )
+
+        assert env_dicts_seen, (
+            "No subprocess.run calls were recorded in _query_action_jobs"
+        )
+        for env in env_dicts_seen:
+            assert env is not None, (
+                "merge._query_action_jobs subprocess call had no env kwarg — "
+                "installation token env override not wired (slice 3a)"
+            )
+            assert env.get("GH_TOKEN") == _INSTALLATION_TOKEN, (
+                f"Expected GH_TOKEN={_INSTALLATION_TOKEN!r} in merge "
+                f"subprocess env, got {env.get('GH_TOKEN')!r}"
+            )
+
+    def test_escalation_uses_installation_token(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """escalation.py:escalate passes GH_TOKEN override to subprocess.
+
+        Monkeypatches subprocess.run in escalation.py; calls escalate()
+        with an installation_token kwarg.  Asserts the env dict passed to
+        the gh issue comment call has GH_TOKEN set to the installation token.
+
+        Today FAILS because escalation._run() calls subprocess.run without
+        an env kwarg.
+        """
+        import baton_harness.chain.escalation as escalation_mod  # noqa: PLC0415
+
+        env_dicts_seen: list[dict[str, str] | None] = []
+
+        def recording_run(
+            cmd: list[str] | str,
+            *args: object,
+            **kwargs: object,
+        ) -> subprocess.CompletedProcess[str]:
+            if isinstance(cmd, list) and cmd and cmd[0] == "gh":
+                env_dicts_seen.append(kwargs.get("env"))
+            return subprocess.CompletedProcess(
+                args=cmd if isinstance(cmd, list) else [str(cmd)],
+                returncode=0,
+                stdout="",
+                stderr="",
+            )
+
+        with (
+            patch.object(subprocess, "run", side_effect=recording_run),
+            # Suppress Slack webhook calls.
+            monkeypatch.delenv("BH_SLACK_WEBHOOK_URL", raising=False)
+            or patch("baton_harness.chain.escalation.urllib"),
+        ):
+            escalation_mod.escalate(
+                "glitchwerks",
+                "baton-harness",
+                42,
+                "Test escalation from slice 3a test",
+                installation_token=_INSTALLATION_TOKEN,
+            )
+
+        assert env_dicts_seen, (
+            "No gh subprocess calls were recorded in escalate() — "
+            "is issue number > 0 and the gh path taken?"
+        )
+        for env in env_dicts_seen:
+            assert env is not None, (
+                "escalate() subprocess call had no env kwarg — "
+                "installation token env override not wired (slice 3a)"
+            )
+            assert env.get("GH_TOKEN") == _INSTALLATION_TOKEN, (
+                f"Expected GH_TOKEN={_INSTALLATION_TOKEN!r} in escalation "
+                f"subprocess env, got {env.get('GH_TOKEN')!r}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Gap 1C — run_daemon threads installation_token into reconcile_startup
+# (codex 3347f83 P2)
+# ---------------------------------------------------------------------------
+
+
+class TestRunDaemonThreadsTokenIntoReconcileStartup:
+    """Gap 1C: run_daemon must pass installation_token to reconcile_startup.
+
+    Currently FAILS because run_daemon calls reconcile_startup without
+    installation_token= (the kwarg is absent from the call at daemon.py:1798).
+    """
+
+    def test_run_daemon_threads_installation_token_into_reconcile_startup(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """run_daemon must await reconcile_startup(installation_token=token).
+
+        Patches reconcile_startup at its daemon.py import path to record
+        call kwargs.  Calls run_daemon(..., installation_token="ghs_TEST...")
+        with once=True so the loop exits immediately.  Asserts that
+        reconcile_startup was awaited with the correct installation_token.
+
+        Currently FAILS because daemon.py:1798 does not pass
+        installation_token= to reconcile_startup.
+        """
+        _token = "ghs_TEST_run_daemon_threads"
+        reconcile_kwargs: dict[str, object] = {}
+
+        async def _spy_reconcile(*args: object, **kwargs: object) -> None:
+            reconcile_kwargs.update(kwargs)
+
+        with (
+            patch(
+                "baton_harness.chain.daemon.reconcile_startup",
+                side_effect=_spy_reconcile,
+            ),
+            patch.object(
+                daemon_mod,
+                "_run",
+                return_value=_ok("[]"),
+            ),
+            patch(
+                "baton_harness.chain.daemon.fetch_blocked_by",
+                return_value=[],
+            ),
+            patch(
+                "baton_harness.chain.daemon.load_obs_config",
+                side_effect=RuntimeError("no obs"),
+            ),
+        ):
+            asyncio.run(
+                run_daemon(
+                    _minimal_wf_config(),
+                    [_repo_cfg()],
+                    once=True,
+                    poll_interval_s=0,
+                    installation_token=_token,
+                )
+            )
+
+        assert reconcile_kwargs.get("installation_token") == _token, (
+            "run_daemon must thread installation_token= into "
+            f"reconcile_startup; expected {_token!r}, "
+            f"got {reconcile_kwargs.get('installation_token')!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Gap 2 — _run_ci_gate forwards token to merge_issue_branch (codex P1)
+# ---------------------------------------------------------------------------
+
+
+class TestRunCiGateForwardsToken:
+    """Gap 2: _run_ci_gate must forward installation_token to callee.
+
+    Gap 2A: _run_ci_gate must pass installation_token= to merge_issue_branch.
+    Gap 2B: The ci_gate_reentry inline path in _run_work_unit must also
+        forward installation_token= to its merge_issue_branch call.
+
+    Both currently FAIL because the merge_issue_branch call sites do not
+    include the installation_token kwarg.
+    """
+
+    def test_run_ci_gate_forwards_token_to_merge_issue_branch(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """_run_ci_gate must call merge_issue_branch(installation_token=...).
+
+        Patches merge_issue_branch at
+        baton_harness.chain.daemon.merge_issue_branch to record kwargs.
+        Calls _run_ci_gate directly with
+        installation_token="ghs_TEST_ci_gate".  Asserts the recorded call
+        includes installation_token= with the correct value.
+
+        Currently FAILS because daemon.py:579 calls merge_issue_branch
+        without installation_token=.
+        """
+        import baton_harness.chain.daemon as _dm  # noqa: PLC0415
+
+        _token = "ghs_TEST_ci_gate_merge"
+        merge_kwargs: dict[str, object] = {}
+
+        def _capture_merge(**kwargs: object) -> MergeOutcome:
+            merge_kwargs.update(kwargs)
+            return MergeOutcome.MERGED
+
+        mock_sched = MagicMock()
+        mock_sched.mark_done = MagicMock()
+        mock_sched.mark_parked = MagicMock()
+
+        with (
+            patch(
+                "baton_harness.chain.daemon.merge_issue_branch",
+                side_effect=_capture_merge,
+            ),
+            patch("baton_harness.chain.daemon.alert", return_value=True),
+            patch("baton_harness.chain.daemon._label_edit"),
+        ):
+            _dm._run_ci_gate(
+                owner=_OWNER,
+                repo=_REPO_NAME,
+                n=42,
+                issue_branch="baton/issue-42-42",
+                pr_head_sha="deadbeef" * 5,
+                repo_root=_REPO_ROOT,
+                branch_name="feature/test-slug",
+                sched=mock_sched,
+                liveness_state=None,
+                runlog=None,
+                merged_issues=[],
+                parked_reasons={},
+                ci_poll_interval=0.1,
+                ci_timeout=5.0,
+                installation_token=_token,
+            )
+
+        assert merge_kwargs.get("installation_token") == _token, (
+            "_run_ci_gate must forward installation_token= to "
+            f"merge_issue_branch; expected {_token!r}, "
+            f"got {merge_kwargs.get('installation_token')!r}"
+        )
+
+    def test_ci_gate_reentry_path_forwards_token_to_merge_issue_branch(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """ci_gate_reentry inline path must pass installation_token to merge.
+
+        Drives _run_work_unit with a recovery_result whose ci_gate_reentry
+        set contains the test issue so the inline reentry path executes.
+        Patches merge_issue_branch to record kwargs and return MERGED.
+        Asserts installation_token= is forwarded.
+
+        Currently FAILS because daemon.py:1013 calls merge_issue_branch
+        in the ci_gate_reentry block without installation_token=.
+        """
+        _token = "ghs_TEST_ci_gate_reentry"
+        merge_kwargs_list: list[dict[str, object]] = []
+        _issue_n = 55
+
+        def _capture_merge(**kwargs: object) -> MergeOutcome:
+            merge_kwargs_list.append(dict(kwargs))
+            return MergeOutcome.MERGED
+
+        ready_issues = [
+            {
+                "number": _issue_n,
+                "title": f"Issue {_issue_n}",
+                "state": "open",
+                "body": "",
+                "url": f"https://github.com/o/r/issues/{_issue_n}",
+                "labels": [{"name": "agent-done"}],
+                "milestone": None,
+                "assignees": [],
+            }
+        ]
+
+        import json as _json  # noqa: PLC0415
+
+        def _run_side(
+            cmd: list[str], **_kw: object
+        ) -> subprocess.CompletedProcess[str]:
+            # Accept **_kw: daemon passes env= when installation_token is set.
+            cmd_str = " ".join(cmd)
+            if "pr" in cmd_str and "list" in cmd_str:
+                prs = [
+                    {
+                        "number": 1,
+                        "headRefName": (f"baton/issue-{_issue_n}-{_issue_n}"),
+                        "headRefOid": "abc123",
+                    }
+                ]
+                return _ok(_json.dumps(prs))
+            if "issue" in cmd_str and "edit" in cmd_str:
+                return _ok()
+            return _ok(_json.dumps(ready_issues))
+
+        with (
+            patch.object(daemon_mod, "_run", side_effect=_run_side),
+            patch(
+                "baton_harness.chain.daemon.fetch_blocked_by",
+                return_value=[],
+            ),
+            patch("baton_harness.chain.branches.create_feature_branch"),
+            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch(
+                "baton_harness.chain.branches.record_cut_point",
+                return_value="deadbeef" * 5,
+            ),
+            # Put issue into ci_gate_reentry so the inline path fires.
+            patch(
+                "baton_harness.chain.recovery.reconstruct",
+                return_value=RecoveryResult(
+                    done=set(),
+                    parked_seed=set(),
+                    ci_gate_reentry={_issue_n},
+                    redispatch=set(),
+                ),
+            ),
+            patch(
+                "baton_harness.chain.daemon.merge_issue_branch",
+                side_effect=_capture_merge,
+            ),
+            patch("baton_harness.chain.daemon.alert", return_value=True),
+            patch("baton_harness.chain.daemon._label_edit"),
+        ):
+            asyncio.run(
+                daemon_mod._run_work_unit(
+                    _minimal_wf_config(),
+                    _repo_cfg(),
+                    "feature/test-slug",
+                    "test-slug",
+                    frozenset({_issue_n}),
+                    installation_token=_token,
+                )
+            )
+
+        assert merge_kwargs_list, (
+            "merge_issue_branch was not called via the ci_gate_reentry path"
+        )
+        for call_kwargs in merge_kwargs_list:
+            assert call_kwargs.get("installation_token") == _token, (
+                "ci_gate_reentry inline path must forward installation_token= "
+                f"to merge_issue_branch; expected {_token!r}, "
+                f"got {call_kwargs.get('installation_token')!r}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Gap 4 — _run_work_unit forwards token to fetch_blocked_by / reconstruct
+# (codex 3347f83 P1)
+# ---------------------------------------------------------------------------
+
+
+class TestRunWorkUnitForwardsTokenToDagAndRecovery:
+    """Gap 4: _run_work_unit must forward installation_token to DAG helpers.
+
+    Gap 4A: fetch_blocked_by must receive installation_token=.
+    Gap 4B: reconstruct must receive installation_token=.
+
+    Both currently FAIL because daemon.py:793 and daemon.py:842 call
+    these helpers without installation_token=.
+    """
+
+    def test_run_work_unit_forwards_token_to_fetch_blocked_by(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """_run_work_unit must call fetch_blocked_by(installation_token=...).
+
+        Patches fetch_blocked_by at baton_harness.chain.daemon.fetch_blocked_by
+        to record call kwargs.  Drives _run_work_unit with once=False (returns
+        after scheduling exits).  Asserts installation_token= is present
+        in every recorded call.
+
+        Currently FAILS because daemon.py:793 does not pass
+        installation_token= to fetch_blocked_by.
+        """
+        _token = "ghs_TEST_fetch_blocked_by"
+        _issue_n = 77
+
+        # Raise a unique exception after the first call to stop _run_work_unit
+        # early — we only need to confirm the kwarg on the DAG-build call at
+        # line 793.  Must NOT be StopIteration (asyncio wraps it in
+        # RuntimeError in Python 3.12+).
+        class _SentinelError(Exception):
+            pass
+
+        fetch_blocked_calls: list[tuple[tuple, dict]] = []
+
+        def _capture_and_stop(
+            owner: str,
+            repo: str,
+            issue: int,
+            **kwargs: object,
+        ) -> list[int]:
+            fetch_blocked_calls.append(((owner, repo, issue), dict(kwargs)))
+            raise _SentinelError("stop after first fetch")
+
+        with (
+            patch.object(
+                daemon_mod,
+                "_run",
+                return_value=_ok("[]"),
+            ),
+            patch(
+                "baton_harness.chain.daemon.fetch_blocked_by",
+                side_effect=_capture_and_stop,
+            ),
+            patch("baton_harness.chain.branches.create_feature_branch"),
+        ):
+            try:
+                asyncio.run(
+                    daemon_mod._run_work_unit(
+                        _minimal_wf_config(),
+                        _repo_cfg(),
+                        "feature/test-slug",
+                        "test-slug",
+                        frozenset({_issue_n}),
+                        agent_ready_issues=frozenset({_issue_n}),
+                        installation_token=_token,
+                    )
+                )
+            except _SentinelError:
+                pass  # Expected: we stopped execution early on purpose.
+
+        assert fetch_blocked_calls, (
+            "fetch_blocked_by was never called from _run_work_unit"
+        )
+        _args, _kwargs = fetch_blocked_calls[0]
+        assert _kwargs.get("installation_token") == _token, (
+            "_run_work_unit must forward installation_token= to "
+            f"fetch_blocked_by; expected {_token!r}, "
+            f"got {_kwargs.get('installation_token')!r}"
+        )
+
+    def test_run_work_unit_forwards_token_to_reconstruct(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """_run_work_unit must call reconstruct(installation_token=...).
+
+        Patches reconstruct at baton_harness.chain.daemon.reconstruct to
+        record call kwargs.  Drives _run_work_unit and asserts the kwarg
+        is present.
+
+        Currently FAILS because daemon.py:842 does not pass
+        installation_token= to reconstruct.
+        """
+        _token = "ghs_TEST_reconstruct"
+        reconstruct_calls: list[tuple[tuple, dict]] = []
+        _issue_n = 88
+
+        # Raise a unique exception after the first call to stop _run_work_unit
+        # early — we only need to confirm the kwarg on the call at line 842.
+        # Must NOT be StopIteration (asyncio wraps it in RuntimeError 3.12+).
+        class _SentinelError(Exception):
+            pass
+
+        def _capture_and_stop(
+            repo_root: Any,  # noqa: ANN401
+            owner: str,
+            repo: str,
+            branch_name: str,
+            membership: frozenset[int],
+            **kwargs: object,
+        ) -> RecoveryResult:
+            reconstruct_calls.append(
+                ((owner, repo, branch_name), dict(kwargs))
+            )
+            raise _SentinelError("stop after first reconstruct")
+
+        with (
+            patch.object(
+                daemon_mod,
+                "_run",
+                return_value=_ok("[]"),
+            ),
+            patch(
+                "baton_harness.chain.daemon.fetch_blocked_by",
+                return_value=[],
+            ),
+            patch("baton_harness.chain.branches.create_feature_branch"),
+            patch(
+                "baton_harness.chain.daemon.reconstruct",
+                side_effect=_capture_and_stop,
+            ),
+        ):
+            try:
+                asyncio.run(
+                    daemon_mod._run_work_unit(
+                        _minimal_wf_config(),
+                        _repo_cfg(),
+                        "feature/test-slug",
+                        "test-slug",
+                        frozenset({_issue_n}),
+                        agent_ready_issues=frozenset({_issue_n}),
+                        installation_token=_token,
+                    )
+                )
+            except _SentinelError:
+                pass  # Expected: we stopped execution early on purpose.
+
+        assert reconstruct_calls, (
+            "reconstruct was never called from _run_work_unit"
+        )
+        _args, _kwargs = reconstruct_calls[0]
+        assert _kwargs.get("installation_token") == _token, (
+            "_run_work_unit must forward installation_token= to "
+            f"reconstruct; expected {_token!r}, "
+            f"got {_kwargs.get('installation_token')!r}"
         )

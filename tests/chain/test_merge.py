@@ -1077,7 +1077,7 @@ class TestEvaluateCiPollingAndTimeout:
         call_count = 0
 
         def fake_query(
-            owner: str, repo: str, sha: str
+            owner: str, repo: str, sha: str, **kwargs: object
         ) -> list[dict[str, str | None]]:
             nonlocal call_count
             call_count += 1
@@ -1111,7 +1111,7 @@ class TestEvaluateCiPollingAndTimeout:
         call_count = 0
 
         def fake_query(
-            owner: str, repo: str, sha: str
+            owner: str, repo: str, sha: str, **kwargs: object
         ) -> list[dict[str, str | None]]:
             nonlocal call_count
             call_count += 1
@@ -1145,7 +1145,7 @@ class TestEvaluateCiPollingAndTimeout:
         calls: list[tuple[str, str, str]] = []
 
         def fake_query(
-            owner: str, repo: str, sha: str
+            owner: str, repo: str, sha: str, **kwargs: object
         ) -> list[dict[str, str | None]]:
             calls.append((owner, repo, sha))
             return _all_required_success()
@@ -1174,7 +1174,7 @@ class TestEvaluateCiAuthErrorPropagation:
         call_count = 0
 
         def fake_query(
-            owner: str, repo: str, sha: str
+            owner: str, repo: str, sha: str, **kwargs: object
         ) -> list[dict[str, str | None]]:
             nonlocal call_count
             call_count += 1
@@ -1200,7 +1200,7 @@ class TestEvaluateCiAuthErrorPropagation:
         """``CiAuthError`` must NOT be swallowed and returned as TIMEOUT."""
 
         def fake_query(
-            owner: str, repo: str, sha: str
+            owner: str, repo: str, sha: str, **kwargs: object
         ) -> list[dict[str, str | None]]:
             raise CiAuthError("Resource not accessible by integration")
 
@@ -1708,7 +1708,7 @@ class TestDependencyOrderMerge:
         call_num = 0
 
         def fake_query(
-            owner: str, repo: str, sha: str
+            owner: str, repo: str, sha: str, **kwargs: object
         ) -> list[dict[str, str | None]]:
             nonlocal call_num
             call_num += 1
@@ -2145,3 +2145,223 @@ class TestProvenancePersistenceFailureSurfaced:
                 root.setLevel(old_level)
 
         return _ctx()
+
+
+# ---------------------------------------------------------------------------
+# Bug 2 — merge_issue_branch / evaluate_ci token-threading callgraph
+#
+# Required behaviour (codex P1 #154):
+#   merge_issue_branch(..., installation_token: str) must accept the token
+#   and forward it to evaluate_ci; evaluate_ci must forward to
+#   _query_action_jobs; every subprocess.run / _run call must receive the
+#   token via a per-call env dict — os.environ must NOT be mutated.
+#
+# Current behaviour causing FAIL:
+#   - merge_issue_branch has no installation_token parameter → TypeError.
+#   - evaluate_ci has no installation_token parameter → TypeError.
+#   - evaluate_ci calls _query_action_jobs without forwarding any token.
+#   - Subprocess env for provenance writes (gh issue) inherits ambient env.
+# ---------------------------------------------------------------------------
+
+
+class TestMergeIssueBranchThreadsInstallationToken:
+    """RED: token-threading callgraph for merge_issue_branch.
+
+    These tests fail until:
+    1. ``merge_issue_branch`` gains an ``installation_token`` parameter.
+    2. ``merge_issue_branch`` forwards the token to ``evaluate_ci``.
+    3. ``evaluate_ci`` gains an ``installation_token`` parameter.
+    4. ``evaluate_ci`` forwards the token to ``_query_action_jobs``.
+    5. All ``_run`` / subprocess calls inside the merge-and-provenance path
+       use a per-call env dict containing ``GH_TOKEN=<token>`` rather than
+       mutating ``os.environ``.
+    """
+
+    def test_merge_issue_branch_accepts_installation_token_kwarg(
+        self,
+    ) -> None:
+        """merge_issue_branch(installation_token=...) must not raise TypeError.
+
+        The contract requires the function signature to accept
+        ``installation_token`` as a keyword argument.  Currently the
+        parameter is absent, so calling with it raises ``TypeError``.
+        """
+        with (
+            patch.object(
+                merge_mod,
+                "_query_action_jobs",
+                return_value=_all_required_success(),
+            ),
+            patch.object(merge_mod, "_run", return_value=_ok()),
+        ):
+            # Must not raise TypeError — the kwarg must exist.
+            merge_issue_branch(
+                _REPO,
+                _OWNER,
+                _REPO_NAME,
+                issue=44,
+                pr_head_sha=_SHA,
+                issue_branch="baton/v2-daemon-44",
+                feature_branch=_FEATURE,
+                poll_interval=0,
+                timeout=1,
+                installation_token="ghs_T_MERGE",
+            )
+
+    def test_merge_issue_branch_forwards_token_to_evaluate_ci(
+        self,
+    ) -> None:
+        """merge_issue_branch forwards installation_token to evaluate_ci.
+
+        After ``merge_issue_branch`` accepts the token, it must pass
+        ``installation_token=<token>`` to ``evaluate_ci``.  Currently
+        ``evaluate_ci`` is called without the kwarg.
+        """
+        received: dict[str, object] = {}
+
+        def _fake_evaluate_ci(
+            owner: str,
+            repo: str,
+            sha: str,
+            *args: object,
+            **kwargs: object,
+        ) -> CiResult:
+            received.update(kwargs)
+            return CiResult.GREEN
+
+        with (
+            patch.object(
+                merge_mod, "evaluate_ci", side_effect=_fake_evaluate_ci
+            ),
+            patch.object(merge_mod, "_run", return_value=_ok()),
+        ):
+            merge_issue_branch(
+                _REPO,
+                _OWNER,
+                _REPO_NAME,
+                issue=44,
+                pr_head_sha=_SHA,
+                issue_branch="baton/v2-daemon-44",
+                feature_branch=_FEATURE,
+                poll_interval=0,
+                timeout=1,
+                installation_token="ghs_T_FORWARD",
+            )
+
+        assert received.get("installation_token") == "ghs_T_FORWARD", (
+            "merge_issue_branch must forward installation_token to "
+            f"evaluate_ci; kwargs seen: {received!r}"
+        )
+
+    def test_evaluate_ci_forwards_token_to_query_action_jobs(
+        self,
+    ) -> None:
+        """evaluate_ci forwards installation_token to _query_action_jobs.
+
+        When ``evaluate_ci`` gains ``installation_token``, it must pass it
+        to ``_query_action_jobs``.  Currently the call is made without
+        the kwarg, so the token is never forwarded to the gh subprocess.
+        """
+        received: dict[str, object] = {}
+
+        def _fake_query(
+            owner: str,
+            repo: str,
+            sha: str,
+            *args: object,
+            **kwargs: object,
+        ) -> list[dict[str, object]]:
+            received.update(kwargs)
+            return _all_required_success()
+
+        with patch.object(
+            merge_mod, "_query_action_jobs", side_effect=_fake_query
+        ):
+            from baton_harness.chain.merge import evaluate_ci
+
+            evaluate_ci(
+                _OWNER,
+                _REPO_NAME,
+                _SHA,
+                poll_interval=0,
+                timeout=1,
+                installation_token="ghs_T_QUERY",
+            )
+
+        assert received.get("installation_token") == "ghs_T_QUERY", (
+            "evaluate_ci must forward installation_token to "
+            f"_query_action_jobs; kwargs seen: {received!r}"
+        )
+
+    def test_merge_path_gh_calls_use_per_call_env_dict(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """All _run calls during a green merge receive GH_TOKEN in env dict.
+
+        The token must be delivered via a per-call ``env`` kwarg on each
+        ``subprocess.run`` / ``_run`` call.  ``os.environ`` must NOT be
+        mutated during the merge flow.
+
+        Args:
+            monkeypatch: Pytest monkeypatch fixture.
+        """
+        import os
+
+        ghs_token = "ghs_T_ENV_DISCIPLINE"
+
+        # Snapshot env BEFORE the call so we can compare after.
+        env_before = dict(os.environ)
+
+        run_env_kwargs: list[dict[str, str] | None] = []
+
+        def _spy_run(
+            cmd: list[str],
+            env: dict[str, str] | None = None,
+            **kwargs: object,
+        ) -> subprocess.CompletedProcess[str]:
+            run_env_kwargs.append(env)
+            return _ok()
+
+        with (
+            patch.object(
+                merge_mod,
+                "_query_action_jobs",
+                return_value=_all_required_success(),
+            ),
+            patch.object(merge_mod, "_run", side_effect=_spy_run),
+        ):
+            merge_issue_branch(
+                _REPO,
+                _OWNER,
+                _REPO_NAME,
+                issue=44,
+                pr_head_sha=_SHA,
+                issue_branch="baton/v2-daemon-44",
+                feature_branch=_FEATURE,
+                poll_interval=0,
+                timeout=1,
+                installation_token=ghs_token,
+            )
+
+        # Every _run call that uses the token must have a non-None env dict
+        # containing GH_TOKEN=ghs_token.
+        # (Git commands that don't touch gh may not need the env override,
+        # but at least one call — provenance writes — must carry it.)
+        gh_calls_with_env = [
+            env
+            for env in run_env_kwargs
+            if env is not None and env.get("GH_TOKEN") == ghs_token
+        ]
+        assert gh_calls_with_env, (
+            "At least one _run call during the merge-and-provenance path "
+            f"must supply GH_TOKEN={ghs_token!r} via a per-call env dict; "
+            f"env kwargs seen: {run_env_kwargs!r}"
+        )
+
+        # os.environ must NOT have been mutated.
+        env_after = dict(os.environ)
+        assert env_after == env_before, (
+            "os.environ must NOT be mutated during the merge flow; "
+            f"diff: {set(env_after.items()) ^ set(env_before.items())}"
+        )

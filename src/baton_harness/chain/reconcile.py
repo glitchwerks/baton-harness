@@ -30,7 +30,11 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from baton_harness._auth import TokenValidationError, validate_github_token
+from baton_harness._auth import (
+    TokenValidationError,
+    validate_daemon_token,
+    validate_github_token,  # noqa: F401 — kept for test patch target
+)
 from baton_harness.chain.escalation import alert
 
 if TYPE_CHECKING:
@@ -78,6 +82,8 @@ async def reconcile_startup(
     repo_cfgs: list[RepoConfig],
     obs: ObsConfig | None,
     runlog: RunLog | None,
+    *,
+    installation_token: str = "",
 ) -> None:
     """Run the startup reconciliation sweep.
 
@@ -100,6 +106,13 @@ async def reconcile_startup(
             but provided as a seam for future checks.
         runlog: Optional ``RunLog`` handle for best-effort event
             emission.  Passed through to ``alert()``.
+        installation_token: The minted GitHub App installation access
+            token (``ghs_`` prefix) returned by ``bootstrap_secrets()``.
+            When non-empty, this value is passed directly to
+            ``validate_daemon_token`` — ``os.environ`` is never read
+            for the token (env-discipline invariant).  Pass ``""``
+            (default) to fall back to the ambient ``GH_TOKEN`` /
+            ``GITHUB_TOKEN`` env var (legacy / test path).
     """
     owner = repo_cfgs[0].owner
     repo = repo_cfgs[0].repo
@@ -108,9 +121,20 @@ async def reconcile_startup(
 
     # ------------------------------------------------------------------
     # G3a: GitHub token validation — FATAL.
+    # Daemon path uses validate_daemon_token (accepts ghs_ installation
+    # tokens).  When installation_token is provided by-value (slice 3a
+    # env-discipline), validate that token directly — do NOT read from
+    # os.environ.  Fall back to os.environ only when no token was
+    # threaded (legacy / test path).
     # ------------------------------------------------------------------
+    if installation_token:
+        token = installation_token
+    else:
+        token = os.environ.get("GH_TOKEN", "") or os.environ.get(
+            "GITHUB_TOKEN", ""
+        )
     try:
-        validate_github_token()
+        validate_daemon_token(token)
     except TokenValidationError as exc:
         alert(
             owner,
@@ -119,6 +143,7 @@ async def reconcile_startup(
             f"Startup credential check failed: GitHub token invalid — {exc}",
             severity="critical",
             runlog=runlog,
+            installation_token=installation_token,
         )
         sys.exit(1)
 
@@ -138,6 +163,7 @@ async def reconcile_startup(
             " prevents per-token billing)",
             severity="critical",
             runlog=runlog,
+            installation_token=installation_token,
         )
         sys.exit(1)
 
@@ -164,6 +190,7 @@ async def reconcile_startup(
             " — mount the Claude credential volume before starting the daemon",
             severity="critical",
             runlog=runlog,
+            installation_token=installation_token,
         )
         sys.exit(1)
 
@@ -180,6 +207,7 @@ async def reconcile_startup(
                 "in-flight work may have been lost",
                 severity="critical",
                 runlog=runlog,
+                installation_token=installation_token,
             )
         # (Re)create the marker for this run.
         marker.parent.mkdir(parents=True, exist_ok=True)
@@ -205,6 +233,7 @@ async def reconcile_startup(
                 " — inspect manually",
                 severity="warn",
                 runlog=runlog,
+                installation_token=installation_token,
             )
     except Exception:  # noqa: BLE001
         _log.warning(

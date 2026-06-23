@@ -24,11 +24,69 @@ import os
 import sys
 from pathlib import Path
 
+from baton_harness._auth import TokenValidationError, validate_daemon_token
+from baton_harness.chain.app_auth import (
+    AppAuthError,
+)
+from baton_harness.chain.app_auth import (
+    bootstrap_secrets as _bootstrap_secrets_impl,
+)
 from baton_harness.chain.daemon import run_daemon
 from baton_harness.chain.registry import load_registry
 from baton_harness.vendor.symphony.config import load_workflow
 
 _log = logging.getLogger(__name__)
+
+
+def bootstrap_secrets(
+    *,
+    app_id: str = "",
+    app_private_key_bws_id: str = "",
+    installation_id: int = 0,
+) -> str:
+    """Fetch App private key from BWS and mint an installation token.
+
+    Thin wrapper around ``app_auth.bootstrap_secrets`` that reads env
+    vars, calls the real implementation, and returns only the token
+    string (discarding ``expires_at``).  ``BWS_ACCESS_TOKEN`` is popped
+    from ``os.environ`` by the inner call as its first operation.
+
+    This function exists as a named symbol in ``cli`` so tests can patch
+    ``baton_harness.chain.cli.bootstrap_secrets`` without touching the
+    implementation module.
+
+    Args:
+        app_id: GitHub App numeric ID string.  Defaults to
+            ``BWS_APP_ID`` env var.
+        app_private_key_bws_id: Bitwarden Secrets ID for the RSA PEM
+            key.  Defaults to ``BWS_PEM_SECRET_ID`` env var.
+        installation_id: GitHub App installation ID.  Defaults to
+            ``BWS_INSTALLATION_ID`` env var.
+
+    Returns:
+        The minted installation access token (``ghs_`` prefix).
+
+    Raises:
+        AppAuthError: Propagated from ``app_auth.bootstrap_secrets`` on
+            Bitwarden or GitHub API failure.
+    """
+    from baton_harness.chain import bws_client
+    from baton_harness.chain.app_auth import mint_installation_token
+
+    _app_id = app_id or os.environ.get("BWS_APP_ID", "")
+    _pem_id = app_private_key_bws_id or os.environ.get("BWS_PEM_SECRET_ID", "")
+    _install_id = installation_id or int(
+        os.environ.get("BWS_INSTALLATION_ID", "0")
+    )
+
+    token, _expires_at = _bootstrap_secrets_impl(
+        _app_id,
+        _pem_id,
+        _install_id,
+        fetch_secret=bws_client.fetch_secret,
+        mint_token=mint_installation_token,
+    )
+    return token
 
 
 def _default_workflow_path() -> Path:
@@ -166,7 +224,35 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    # Run the daemon.
+    # Bootstrap GitHub App installation token (slice 3a).
+    # Must run AFTER chdir so the managed repo is the process cwd.
+    # BWS_ACCESS_TOKEN is popped from os.environ by bootstrap_secrets
+    # as its first operation — never re-added after this point.
+    # The installation token is NEVER written to os.environ; it is
+    # passed by value to run_daemon (env-discipline invariant).
+    try:
+        installation_token = bootstrap_secrets()
+    except (AppAuthError, Exception) as exc:
+        print(
+            f"bh-daemon: error: failed to bootstrap GitHub App token: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Validate the minted token before entering the event loop.
+    try:
+        validate_daemon_token(installation_token)
+    except TokenValidationError as exc:
+        print(
+            f"bh-daemon: error: invalid installation token from bootstrap:"
+            f" {exc}",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Run the daemon.  run_daemon calls reconcile_startup internally as
+    # part of its startup sweep (Gap 1A invariant: cli.py must NOT call
+    # reconcile_startup directly through any import path).
     try:
         asyncio.run(
             run_daemon(
@@ -174,6 +260,7 @@ def main(argv: list[str] | None = None) -> int:
                 registry,
                 once=args.once,
                 poll_interval_s=args.poll_interval,
+                installation_token=installation_token,
             )
         )
     except KeyboardInterrupt:
