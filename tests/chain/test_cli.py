@@ -688,3 +688,135 @@ class TestDaemonStartupAuthWiring:
             assert sentinel_token not in val, (
                 f"Installation token found in os.environ[{key!r}]"
             )
+
+
+# ---------------------------------------------------------------------------
+# Gap 1 — duplicate reconcile_startup + token threading (codex 3347f83 P2)
+# ---------------------------------------------------------------------------
+
+
+class TestCliGap1DuplicateReconcileAndTokenThreading:
+    """Codex gap: cli.py must NOT call reconcile_startup directly.
+
+    Gap 1A: cli.main() must not call reconcile_startup itself — only
+        run_daemon should call it (via its own internal startup sweep).
+    Gap 1B: cli.main() must pass installation_token= to run_daemon so
+        run_daemon can thread it into its reconcile_startup call.
+    """
+
+    def test_cli_main_does_not_call_reconcile_startup_directly(
+        self,
+    ) -> None:
+        """cli.main() must NOT call reconcile_startup directly.
+
+        Both the reconcile-module symbol used by cli.py and the daemon
+        symbol are patched as spies.  After main() returns, the
+        reconcile-module spy must have zero calls — the startup sweep
+        must travel through run_daemon exclusively.
+
+        Currently FAILS because cli.py calls _reconcile_mod.reconcile_startup
+        before asyncio.run(run_daemon(...)).
+        """
+        reconcile_direct_calls: list[object] = []
+
+        async def _spy_reconcile(*args: object, **kwargs: object) -> None:
+            reconcile_direct_calls.append((args, kwargs))
+
+        async def _noop_run_daemon(*args: object, **kwargs: object) -> None:
+            pass
+
+        with (
+            patch(
+                "baton_harness.chain.cli.bootstrap_secrets",
+                return_value="ghs_TESTTOKEN_xxxxxxx",
+            ),
+            patch("baton_harness.chain.cli.validate_daemon_token"),
+            patch(
+                "baton_harness.chain.cli.load_workflow",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "baton_harness.chain.cli.load_registry",
+                return_value=[MagicMock()],
+            ),
+            # Spy on the reconcile symbol that cli.py imports via
+            # _reconcile_mod.  Any direct call from cli.py lands here.
+            patch(
+                "baton_harness.chain.reconcile.reconcile_startup",
+                side_effect=_spy_reconcile,
+            ),
+            # Also patch the daemon symbol so run_daemon (mocked below)
+            # does not make a real reconcile call.
+            patch(
+                "baton_harness.chain.daemon.reconcile_startup",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "baton_harness.chain.cli.run_daemon",
+                side_effect=_noop_run_daemon,
+            ),
+            patch("baton_harness.chain.cli.os.chdir"),
+            patch("baton_harness.chain.cli.os.path.isdir", return_value=True),
+        ):
+            result = _run_main("--once")
+
+        assert result == 0, f"Expected exit 0, got {result}"
+        assert not reconcile_direct_calls, (
+            "cli.main() called reconcile_startup directly "
+            f"({len(reconcile_direct_calls)} time(s)) — it must NOT; "
+            "only run_daemon should invoke the startup sweep."
+        )
+
+    def test_cli_main_passes_installation_token_to_run_daemon(
+        self,
+    ) -> None:
+        """cli.main() must forward the minted token to run_daemon.
+
+        Patches bootstrap_secrets to return a sentinel token.  Patches
+        run_daemon as an async spy.  After main() returns, asserts that
+        run_daemon was called with
+        installation_token="ghs_TESTTOKEN_xxxxxxx".
+
+        Currently FAILS if cli.py does not pass installation_token= to
+        run_daemon (the kwarg would be absent or empty string).
+        """
+        sentinel = "ghs_TESTTOKEN_xxxxxxx"
+        run_daemon_kwargs: dict[str, object] = {}
+
+        async def _capture_run_daemon(*args: object, **kwargs: object) -> None:
+            run_daemon_kwargs.update(kwargs)
+
+        with (
+            patch(
+                "baton_harness.chain.cli.bootstrap_secrets",
+                return_value=sentinel,
+            ),
+            patch("baton_harness.chain.cli.validate_daemon_token"),
+            patch(
+                "baton_harness.chain.cli.load_workflow",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "baton_harness.chain.cli.load_registry",
+                return_value=[MagicMock()],
+            ),
+            patch(
+                "baton_harness.chain.cli.run_daemon",
+                side_effect=_capture_run_daemon,
+            ),
+            patch("baton_harness.chain.cli.os.chdir"),
+            patch("baton_harness.chain.cli.os.path.isdir", return_value=True),
+            patch(
+                "baton_harness.chain.reconcile.reconcile_startup",
+                new_callable=AsyncMock,
+            ),
+        ):
+            result = _run_main("--once")
+
+        assert result == 0, f"Expected exit 0, got {result}"
+        assert run_daemon_kwargs.get("installation_token") == sentinel, (
+            "run_daemon must be called with "
+            f"installation_token={sentinel!r}; "
+            "got installation_token="
+            f"{run_daemon_kwargs.get('installation_token')!r}"
+        )

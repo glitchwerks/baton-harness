@@ -1248,3 +1248,319 @@ class TestReconcileStartupAcceptsInstallationToken:
             f"into reconcile_startup as installation_token=; "
             f"got installation_token={threaded!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Gap 3 — reconcile_startup alert() calls must thread installation_token
+# (codex 3347f83 P2)
+# ---------------------------------------------------------------------------
+
+
+class TestReconcileStartupAlertsThreadToken:
+    """Gap 3: all alert() calls inside reconcile_startup must forward token.
+
+    Each gate (G3a, G3b, G3c, G2) fires alert() on failure.  Currently none
+    of those calls pass installation_token=, so the GitHub comment posts
+    under ambient credentials rather than the App token.
+
+    All tests in this class currently FAIL because reconcile.py:139,
+    reconcile.py:157, reconcile.py:183, and reconcile.py:199 call alert()
+    without installation_token=.
+    """
+
+    def test_g3b_anthropic_api_key_alert_passes_token(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """G3b guard: alert() must receive installation_token= on key present.
+
+        Sets ANTHROPIC_API_KEY to a non-empty value to trigger the G3b
+        billing guard.  Patches alert() at the reconcile module.  Asserts
+        that every alert() call carries installation_token= equal to the
+        threaded value.
+
+        Currently FAILS because reconcile.py:157 calls alert() without
+        installation_token=.
+
+        Args:
+            tmp_path: Pytest per-test temporary directory.
+            monkeypatch: Pytest monkeypatch fixture.
+        """
+        reconcile = _import_reconcile()
+
+        _token = "ghs_TEST_G3b_alert_token"
+        monkeypatch.setenv("GH_TOKEN", _INSTALLATION_TOKEN)
+        # Trigger G3b: non-empty ANTHROPIC_API_KEY.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-billing")
+
+        alert_calls: list[dict[str, object]] = []
+
+        def _capture_alert(*args: object, **kwargs: object) -> bool:
+            alert_calls.append({"args": args, "kwargs": kwargs})
+            return True
+
+        obs = _make_obs(tmp_path)
+        repo_cfgs = [_make_repo_cfg(tmp_path)]
+
+        with (
+            patch(
+                "baton_harness.chain.reconcile.validate_daemon_token",
+                return_value=None,
+            ),
+            patch(
+                "baton_harness.chain.reconcile.alert",
+                side_effect=_capture_alert,
+            ),
+            patch(
+                "baton_harness.chain.reconcile._list_claude_procs",
+                return_value=[],
+            ),
+        ):
+            with pytest.raises(SystemExit):
+                asyncio.run(
+                    reconcile.reconcile_startup(
+                        repo_cfgs,
+                        obs,
+                        runlog=None,
+                        installation_token=_token,
+                    )
+                )
+
+        assert alert_calls, (
+            "alert() must be called on G3b failure before sys.exit"
+        )
+        for call in alert_calls:
+            got = call["kwargs"].get("installation_token")
+            assert got == _token, (
+                "G3b alert() call must forward installation_token= to "
+                f"alert(); expected {_token!r}, got {got!r}"
+            )
+
+    def test_g3c_oauth_cred_missing_alert_passes_token(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """G3c guard: alert() must receive installation_token= when cred absent.
+
+        Points _OAUTH_CRED_PATH at a non-existent path to trigger the G3c
+        guard.  Patches alert() to record calls.  Asserts installation_token=
+        is forwarded.
+
+        Currently FAILS because reconcile.py:183 calls alert() without
+        installation_token=.
+
+        Args:
+            tmp_path: Pytest per-test temporary directory.
+            monkeypatch: Pytest monkeypatch fixture.
+        """
+        reconcile = _import_reconcile()
+
+        _token = "ghs_TEST_G3c_alert_token"
+        monkeypatch.setenv("GH_TOKEN", _INSTALLATION_TOKEN)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        # Override the autouse fixture: point at an absent path to trigger G3c.
+        monkeypatch.setattr(
+            "baton_harness.chain.reconcile._OAUTH_CRED_PATH",
+            tmp_path / "absent_credentials.json",
+        )
+
+        alert_calls: list[dict[str, object]] = []
+
+        def _capture_alert(*args: object, **kwargs: object) -> bool:
+            alert_calls.append({"args": args, "kwargs": kwargs})
+            return True
+
+        obs = _make_obs(tmp_path)
+        repo_cfgs = [_make_repo_cfg(tmp_path)]
+
+        with (
+            patch(
+                "baton_harness.chain.reconcile.validate_daemon_token",
+                return_value=None,
+            ),
+            patch(
+                "baton_harness.chain.reconcile.alert",
+                side_effect=_capture_alert,
+            ),
+            patch(
+                "baton_harness.chain.reconcile._list_claude_procs",
+                return_value=[],
+            ),
+        ):
+            with pytest.raises(SystemExit):
+                asyncio.run(
+                    reconcile.reconcile_startup(
+                        repo_cfgs,
+                        obs,
+                        runlog=None,
+                        installation_token=_token,
+                    )
+                )
+
+        assert alert_calls, (
+            "alert() must be called on G3c failure before sys.exit"
+        )
+        for call in alert_calls:
+            got = call["kwargs"].get("installation_token")
+            assert got == _token, (
+                "G3c alert() call must forward installation_token= to "
+                f"alert(); expected {_token!r}, got {got!r}"
+            )
+
+    def test_g3a_invalid_token_alert_passes_token(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """G3a guard: alert() must receive installation_token= on bad token.
+
+        Passes a malformed token so validate_daemon_token raises
+        TokenValidationError (G3a).  Patches alert() to record calls.
+        Asserts installation_token= is forwarded — either the invalid
+        token value itself or the threaded value, whichever the
+        implementation chooses to propagate.
+
+        Currently FAILS because reconcile.py:139 calls alert() without
+        installation_token=.
+
+        Args:
+            tmp_path: Pytest per-test temporary directory.
+            monkeypatch: Pytest monkeypatch fixture.
+        """
+        from baton_harness._auth import TokenValidationError  # noqa: PLC0415
+
+        reconcile = _import_reconcile()
+
+        _token = "not_a_ghs_token_at_all"
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        alert_calls: list[dict[str, object]] = []
+
+        def _capture_alert(*args: object, **kwargs: object) -> bool:
+            alert_calls.append({"args": args, "kwargs": kwargs})
+            return True
+
+        obs = _make_obs(tmp_path)
+        repo_cfgs = [_make_repo_cfg(tmp_path)]
+
+        with (
+            patch(
+                "baton_harness.chain.reconcile.validate_daemon_token",
+                side_effect=TokenValidationError("bad token format"),
+            ),
+            patch(
+                "baton_harness.chain.reconcile.alert",
+                side_effect=_capture_alert,
+            ),
+            patch(
+                "baton_harness.chain.reconcile._list_claude_procs",
+                return_value=[],
+            ),
+        ):
+            with pytest.raises(SystemExit):
+                asyncio.run(
+                    reconcile.reconcile_startup(
+                        repo_cfgs,
+                        obs,
+                        runlog=None,
+                        installation_token=_token,
+                    )
+                )
+
+        assert alert_calls, (
+            "alert() must be called on G3a (token validation) failure"
+        )
+        # The alert must carry the threaded installation_token kwarg.
+        # Any non-empty token value forwarded is acceptable; the key
+        # invariant is that the kwarg is present (not absent/empty default).
+        for call in alert_calls:
+            got = call["kwargs"].get("installation_token")
+            assert got is not None and got != "", (
+                "G3a alert() call must forward installation_token= to "
+                f"alert(); expected a non-empty value, got {got!r}"
+            )
+
+    def test_g2_marker_present_alert_passes_token(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """G2 gate: alert() must receive installation_token= when marker exists.
+
+        Pre-creates the daemon.alive marker so the G2 ungraceful-exit alert
+        fires.  Patches alert() to record calls.  Asserts installation_token=
+        is forwarded.
+
+        Currently FAILS because reconcile.py:199 calls alert() without
+        installation_token=.
+
+        Args:
+            tmp_path: Pytest per-test temporary directory.
+            monkeypatch: Pytest monkeypatch fixture.
+        """
+        reconcile = _import_reconcile()
+
+        _token = "ghs_TEST_G2_alert_token"
+        monkeypatch.setenv("GH_TOKEN", _INSTALLATION_TOKEN)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        # Pre-create the marker file so G2 detects an ungraceful prior exit.
+        harness_dir = tmp_path / ".baton-harness"
+        harness_dir.mkdir(parents=True, exist_ok=True)
+        marker = harness_dir / "daemon.alive"
+        marker.write_text("alive", encoding="utf-8")
+
+        alert_calls: list[dict[str, object]] = []
+
+        def _capture_alert(*args: object, **kwargs: object) -> bool:
+            alert_calls.append({"args": args, "kwargs": kwargs})
+            return True
+
+        obs = _make_obs(tmp_path)
+        repo_cfgs = [_make_repo_cfg(tmp_path)]
+
+        with (
+            patch(
+                "baton_harness.chain.reconcile.validate_daemon_token",
+                return_value=None,
+            ),
+            patch(
+                "baton_harness.chain.reconcile.alert",
+                side_effect=_capture_alert,
+            ),
+            patch(
+                "baton_harness.chain.reconcile._list_claude_procs",
+                return_value=[],
+            ),
+        ):
+            # G2 is non-fatal — reconcile_startup must not raise here.
+            asyncio.run(
+                reconcile.reconcile_startup(
+                    repo_cfgs,
+                    obs,
+                    runlog=None,
+                    installation_token=_token,
+                )
+            )
+
+        # Find the G2-specific alert call (critical severity, no issue number).
+        g2_calls = [
+            c
+            for c in alert_calls
+            if c["kwargs"].get("severity") == "critical"
+            and c["args"][2] is None
+        ]
+        assert g2_calls, (
+            "A critical alert with issue=None must be emitted when the G2 "
+            "marker is present; none found in alert_calls: "
+            f"{alert_calls!r}"
+        )
+        for call in g2_calls:
+            got = call["kwargs"].get("installation_token")
+            assert got == _token, (
+                "G2 alert() call must forward installation_token= to "
+                f"alert(); expected {_token!r}, got {got!r}"
+            )

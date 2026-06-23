@@ -9247,3 +9247,419 @@ class TestDaemonGhCallsUseInstallationToken:
                 f"Expected GH_TOKEN={_INSTALLATION_TOKEN!r} in escalation "
                 f"subprocess env, got {env.get('GH_TOKEN')!r}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Gap 1C — run_daemon threads installation_token into reconcile_startup
+# (codex 3347f83 P2)
+# ---------------------------------------------------------------------------
+
+
+class TestRunDaemonThreadsTokenIntoReconcileStartup:
+    """Gap 1C: run_daemon must pass installation_token to reconcile_startup.
+
+    Currently FAILS because run_daemon calls reconcile_startup without
+    installation_token= (the kwarg is absent from the call at daemon.py:1798).
+    """
+
+    def test_run_daemon_threads_installation_token_into_reconcile_startup(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """run_daemon must await reconcile_startup(installation_token=token).
+
+        Patches reconcile_startup at its daemon.py import path to record
+        call kwargs.  Calls run_daemon(..., installation_token="ghs_TEST...")
+        with once=True so the loop exits immediately.  Asserts that
+        reconcile_startup was awaited with the correct installation_token.
+
+        Currently FAILS because daemon.py:1798 does not pass
+        installation_token= to reconcile_startup.
+        """
+        _token = "ghs_TEST_run_daemon_threads"
+        reconcile_kwargs: dict[str, object] = {}
+
+        async def _spy_reconcile(*args: object, **kwargs: object) -> None:
+            reconcile_kwargs.update(kwargs)
+
+        with (
+            patch(
+                "baton_harness.chain.daemon.reconcile_startup",
+                side_effect=_spy_reconcile,
+            ),
+            patch.object(
+                daemon_mod,
+                "_run",
+                return_value=_ok("[]"),
+            ),
+            patch(
+                "baton_harness.chain.daemon.fetch_blocked_by",
+                return_value=[],
+            ),
+            patch(
+                "baton_harness.chain.daemon.load_obs_config",
+                side_effect=RuntimeError("no obs"),
+            ),
+        ):
+            asyncio.run(
+                run_daemon(
+                    _minimal_wf_config(),
+                    [_repo_cfg()],
+                    once=True,
+                    poll_interval_s=0,
+                    installation_token=_token,
+                )
+            )
+
+        assert reconcile_kwargs.get("installation_token") == _token, (
+            "run_daemon must thread installation_token= into "
+            f"reconcile_startup; expected {_token!r}, "
+            f"got {reconcile_kwargs.get('installation_token')!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Gap 2 — _run_ci_gate forwards token to merge_issue_branch (codex P1)
+# ---------------------------------------------------------------------------
+
+
+class TestRunCiGateForwardsToken:
+    """Gap 2: _run_ci_gate must forward installation_token to callee.
+
+    Gap 2A: _run_ci_gate must pass installation_token= to merge_issue_branch.
+    Gap 2B: The ci_gate_reentry inline path in _run_work_unit must also
+        forward installation_token= to its merge_issue_branch call.
+
+    Both currently FAIL because the merge_issue_branch call sites do not
+    include the installation_token kwarg.
+    """
+
+    def test_run_ci_gate_forwards_token_to_merge_issue_branch(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """_run_ci_gate must call merge_issue_branch(installation_token=...).
+
+        Patches merge_issue_branch at baton_harness.chain.daemon.merge_issue_branch
+        to record kwargs.  Calls _run_ci_gate directly with
+        installation_token="ghs_TEST_ci_gate".  Asserts the recorded call
+        includes installation_token= with the correct value.
+
+        Currently FAILS because daemon.py:579 calls merge_issue_branch
+        without installation_token=.
+        """
+        import baton_harness.chain.daemon as _dm  # noqa: PLC0415
+
+        _token = "ghs_TEST_ci_gate_merge"
+        merge_kwargs: dict[str, object] = {}
+
+        def _capture_merge(**kwargs: object) -> MergeOutcome:
+            merge_kwargs.update(kwargs)
+            return MergeOutcome.MERGED
+
+        mock_sched = MagicMock()
+        mock_sched.mark_done = MagicMock()
+        mock_sched.mark_parked = MagicMock()
+
+        with (
+            patch(
+                "baton_harness.chain.daemon.merge_issue_branch",
+                side_effect=_capture_merge,
+            ),
+            patch("baton_harness.chain.daemon.alert", return_value=True),
+            patch("baton_harness.chain.daemon._label_edit"),
+        ):
+            _dm._run_ci_gate(
+                owner=_OWNER,
+                repo=_REPO_NAME,
+                n=42,
+                issue_branch="baton/issue-42-42",
+                pr_head_sha="deadbeef" * 5,
+                repo_root=_REPO_ROOT,
+                branch_name="feature/test-slug",
+                sched=mock_sched,
+                liveness_state=None,
+                runlog=None,
+                merged_issues=[],
+                parked_reasons={},
+                ci_poll_interval=0.1,
+                ci_timeout=5.0,
+                installation_token=_token,
+            )
+
+        assert merge_kwargs.get("installation_token") == _token, (
+            "_run_ci_gate must forward installation_token= to "
+            f"merge_issue_branch; expected {_token!r}, "
+            f"got {merge_kwargs.get('installation_token')!r}"
+        )
+
+    def test_ci_gate_reentry_path_forwards_token_to_merge_issue_branch(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """ci_gate_reentry inline path must pass installation_token to merge.
+
+        Drives _run_work_unit with a recovery_result whose ci_gate_reentry
+        set contains the test issue so the inline reentry path executes.
+        Patches merge_issue_branch to record kwargs and return MERGED.
+        Asserts installation_token= is forwarded.
+
+        Currently FAILS because daemon.py:1013 calls merge_issue_branch
+        in the ci_gate_reentry block without installation_token=.
+        """
+        _token = "ghs_TEST_ci_gate_reentry"
+        merge_kwargs_list: list[dict[str, object]] = []
+        _issue_n = 55
+
+        def _capture_merge(**kwargs: object) -> MergeOutcome:
+            merge_kwargs_list.append(dict(kwargs))
+            return MergeOutcome.MERGED
+
+        ready_issues = [
+            {
+                "number": _issue_n,
+                "title": f"Issue {_issue_n}",
+                "state": "open",
+                "body": "",
+                "url": f"https://github.com/o/r/issues/{_issue_n}",
+                "labels": [{"name": "agent-done"}],
+                "milestone": None,
+                "assignees": [],
+            }
+        ]
+
+        import json as _json  # noqa: PLC0415
+
+        def _run_side(
+            cmd: list[str], **_kw: object
+        ) -> subprocess.CompletedProcess[str]:
+            # Accept **_kw: daemon passes env= when installation_token is set.
+            cmd_str = " ".join(cmd)
+            if "pr" in cmd_str and "list" in cmd_str:
+                prs = [
+                    {
+                        "number": 1,
+                        "headRefName": (f"baton/issue-{_issue_n}-{_issue_n}"),
+                        "headRefOid": "abc123",
+                    }
+                ]
+                return _ok(_json.dumps(prs))
+            if "issue" in cmd_str and "edit" in cmd_str:
+                return _ok()
+            return _ok(_json.dumps(ready_issues))
+
+        with (
+            patch.object(daemon_mod, "_run", side_effect=_run_side),
+            patch(
+                "baton_harness.chain.daemon.fetch_blocked_by",
+                return_value=[],
+            ),
+            patch("baton_harness.chain.branches.create_feature_branch"),
+            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch(
+                "baton_harness.chain.branches.record_cut_point",
+                return_value="deadbeef" * 5,
+            ),
+            # Put issue into ci_gate_reentry so the inline path fires.
+            patch(
+                "baton_harness.chain.recovery.reconstruct",
+                return_value=RecoveryResult(
+                    done=set(),
+                    parked_seed=set(),
+                    ci_gate_reentry={_issue_n},
+                    redispatch=set(),
+                ),
+            ),
+            patch(
+                "baton_harness.chain.daemon.merge_issue_branch",
+                side_effect=_capture_merge,
+            ),
+            patch("baton_harness.chain.daemon.alert", return_value=True),
+            patch("baton_harness.chain.daemon._label_edit"),
+        ):
+            asyncio.run(
+                daemon_mod._run_work_unit(
+                    _minimal_wf_config(),
+                    _repo_cfg(),
+                    "feature/test-slug",
+                    "test-slug",
+                    frozenset({_issue_n}),
+                    installation_token=_token,
+                )
+            )
+
+        assert merge_kwargs_list, (
+            "merge_issue_branch was not called via the ci_gate_reentry path"
+        )
+        for call_kwargs in merge_kwargs_list:
+            assert call_kwargs.get("installation_token") == _token, (
+                "ci_gate_reentry inline path must forward installation_token= "
+                f"to merge_issue_branch; expected {_token!r}, "
+                f"got {call_kwargs.get('installation_token')!r}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Gap 4 — _run_work_unit forwards token to fetch_blocked_by / reconstruct
+# (codex 3347f83 P1)
+# ---------------------------------------------------------------------------
+
+
+class TestRunWorkUnitForwardsTokenToDagAndRecovery:
+    """Gap 4: _run_work_unit must forward installation_token to DAG helpers.
+
+    Gap 4A: fetch_blocked_by must receive installation_token=.
+    Gap 4B: reconstruct must receive installation_token=.
+
+    Both currently FAIL because daemon.py:793 and daemon.py:842 call
+    these helpers without installation_token=.
+    """
+
+    def test_run_work_unit_forwards_token_to_fetch_blocked_by(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """_run_work_unit must call fetch_blocked_by(installation_token=...).
+
+        Patches fetch_blocked_by at baton_harness.chain.daemon.fetch_blocked_by
+        to record call kwargs.  Drives _run_work_unit with once=False (returns
+        after scheduling exits).  Asserts installation_token= is present
+        in every recorded call.
+
+        Currently FAILS because daemon.py:793 does not pass
+        installation_token= to fetch_blocked_by.
+        """
+        _token = "ghs_TEST_fetch_blocked_by"
+        _issue_n = 77
+
+        # Raise a unique exception after the first call to stop _run_work_unit
+        # early — we only need to confirm the kwarg on the DAG-build call at
+        # line 793.  Must NOT be StopIteration (asyncio wraps it in
+        # RuntimeError in Python 3.12+).
+        class _Sentinel(Exception):
+            pass
+
+        fetch_blocked_calls: list[tuple[tuple, dict]] = []
+
+        def _capture_and_stop(
+            owner: str,
+            repo: str,
+            issue: int,
+            **kwargs: object,
+        ) -> list[int]:
+            fetch_blocked_calls.append(((owner, repo, issue), dict(kwargs)))
+            raise _Sentinel("stop after first fetch")
+
+        with (
+            patch.object(
+                daemon_mod,
+                "_run",
+                return_value=_ok("[]"),
+            ),
+            patch(
+                "baton_harness.chain.daemon.fetch_blocked_by",
+                side_effect=_capture_and_stop,
+            ),
+            patch("baton_harness.chain.branches.create_feature_branch"),
+        ):
+            try:
+                asyncio.run(
+                    daemon_mod._run_work_unit(
+                        _minimal_wf_config(),
+                        _repo_cfg(),
+                        "feature/test-slug",
+                        "test-slug",
+                        frozenset({_issue_n}),
+                        agent_ready_issues=frozenset({_issue_n}),
+                        installation_token=_token,
+                    )
+                )
+            except _Sentinel:
+                pass  # Expected: we stopped execution early on purpose.
+
+        assert fetch_blocked_calls, (
+            "fetch_blocked_by was never called from _run_work_unit"
+        )
+        _args, _kwargs = fetch_blocked_calls[0]
+        assert _kwargs.get("installation_token") == _token, (
+            "_run_work_unit must forward installation_token= to "
+            f"fetch_blocked_by; expected {_token!r}, "
+            f"got {_kwargs.get('installation_token')!r}"
+        )
+
+    def test_run_work_unit_forwards_token_to_reconstruct(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """_run_work_unit must call reconstruct(installation_token=...).
+
+        Patches reconstruct at baton_harness.chain.daemon.reconstruct to
+        record call kwargs.  Drives _run_work_unit and asserts the kwarg
+        is present.
+
+        Currently FAILS because daemon.py:842 does not pass
+        installation_token= to reconstruct.
+        """
+        _token = "ghs_TEST_reconstruct"
+        reconstruct_calls: list[tuple[tuple, dict]] = []
+        _issue_n = 88
+
+        # Raise a unique exception after the first call to stop _run_work_unit
+        # early — we only need to confirm the kwarg on the call at line 842.
+        # Must NOT be StopIteration (asyncio wraps it in RuntimeError 3.12+).
+        class _Sentinel(Exception):
+            pass
+
+        def _capture_and_stop(
+            repo_root: Any,  # noqa: ANN401
+            owner: str,
+            repo: str,
+            branch_name: str,
+            membership: frozenset[int],
+            **kwargs: object,
+        ) -> RecoveryResult:
+            reconstruct_calls.append(
+                ((owner, repo, branch_name), dict(kwargs))
+            )
+            raise _Sentinel("stop after first reconstruct")
+
+        with (
+            patch.object(
+                daemon_mod,
+                "_run",
+                return_value=_ok("[]"),
+            ),
+            patch(
+                "baton_harness.chain.daemon.fetch_blocked_by",
+                return_value=[],
+            ),
+            patch("baton_harness.chain.branches.create_feature_branch"),
+            patch(
+                "baton_harness.chain.daemon.reconstruct",
+                side_effect=_capture_and_stop,
+            ),
+        ):
+            try:
+                asyncio.run(
+                    daemon_mod._run_work_unit(
+                        _minimal_wf_config(),
+                        _repo_cfg(),
+                        "feature/test-slug",
+                        "test-slug",
+                        frozenset({_issue_n}),
+                        agent_ready_issues=frozenset({_issue_n}),
+                        installation_token=_token,
+                    )
+                )
+            except _Sentinel:
+                pass  # Expected: we stopped execution early on purpose.
+
+        assert reconstruct_calls, (
+            "reconstruct was never called from _run_work_unit"
+        )
+        _args, _kwargs = reconstruct_calls[0]
+        assert _kwargs.get("installation_token") == _token, (
+            "_run_work_unit must forward installation_token= to "
+            f"reconstruct; expected {_token!r}, "
+            f"got {_kwargs.get('installation_token')!r}"
+        )
