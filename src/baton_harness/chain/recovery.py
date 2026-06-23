@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -59,7 +60,32 @@ _PROVENANCE_PREFIX = "Baton-Harness-Merge: issue-"
 # ---------------------------------------------------------------------------
 
 
-def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+def _gh_env(installation_token: str) -> dict[str, str]:
+    """Return os.environ overlaid with GH_TOKEN=<installation_token>.
+
+    Does not mutate os.environ.  Token is per-call; never persists
+    in the process environment.  Follows the same env-discipline pattern
+    as merge.py and gh_deps.py.
+
+    Args:
+        installation_token: GitHub App installation access token
+            (``ghs_`` prefix) to inject as ``GH_TOKEN`` and
+            ``GITHUB_TOKEN`` in the subprocess environment.
+
+    Returns:
+        A shallow copy of ``os.environ`` with both ``GH_TOKEN`` and
+        ``GITHUB_TOKEN`` overridden to ``installation_token``.
+    """
+    env = dict(os.environ)
+    env["GH_TOKEN"] = installation_token
+    env["GITHUB_TOKEN"] = installation_token
+    return env
+
+
+def _run(
+    cmd: list[str],
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     """Run an external command and return its completed process.
 
     Centralises subprocess invocation so tests can patch a single symbol
@@ -67,6 +93,10 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
 
     Args:
         cmd: Command and arguments to execute (no shell interpolation).
+        env: Optional environment dict for the subprocess.  When
+            ``None``, the subprocess inherits ``os.environ`` unchanged.
+            Pass ``_gh_env(installation_token)`` for daemon-side calls
+            to override ``GH_TOKEN`` without mutating ``os.environ``.
 
     Returns:
         A ``subprocess.CompletedProcess`` with captured stdout/stderr.
@@ -77,6 +107,7 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         encoding="utf-8",
+        env=env,
     )
 
 
@@ -183,7 +214,13 @@ def _fetch_provenance_merges(repo_root: Path, feature_branch: str) -> set[int]:
     return found
 
 
-def _fetch_labels(owner: str, repo: str, issue: int) -> set[str]:
+def _fetch_labels(
+    owner: str,
+    repo: str,
+    issue: int,
+    *,
+    installation_token: str = "",
+) -> set[str]:
     """Fetch the current labels for an issue (lowercase).
 
     Calls ``gh issue view <N> --json labels`` and returns a set of
@@ -193,11 +230,16 @@ def _fetch_labels(owner: str, repo: str, issue: int) -> set[str]:
         owner: The GitHub repository owner.
         repo: The repository name.
         issue: The issue number.
+        installation_token: Optional GitHub App installation access token
+            (``ghs_`` prefix).  When non-empty, the ``gh`` subprocess uses
+            a per-call env copy with ``GH_TOKEN`` overridden —
+            ``os.environ`` is never mutated.
 
     Returns:
         A set of lowercase label name strings.  Returns an empty set on
         error (best-effort; a failed label fetch is not fatal for recovery).
     """
+    env = _gh_env(installation_token) if installation_token else None
     proc = _run(
         [
             "gh",
@@ -208,7 +250,8 @@ def _fetch_labels(owner: str, repo: str, issue: int) -> set[str]:
             f"{owner}/{repo}",
             "--json",
             "labels",
-        ]
+        ],
+        env=env,
     )
     if proc.returncode != 0:
         _log.debug(
@@ -226,7 +269,12 @@ def _fetch_labels(owner: str, repo: str, issue: int) -> set[str]:
         return set()
 
 
-def _fetch_open_prs(owner: str, repo: str) -> list[str]:
+def _fetch_open_prs(
+    owner: str,
+    repo: str,
+    *,
+    installation_token: str = "",
+) -> list[str]:
     """Fetch the head-ref names of all open PRs.
 
     Calls ``gh pr list --state open --json number,headRefName`` and
@@ -235,11 +283,16 @@ def _fetch_open_prs(owner: str, repo: str) -> list[str]:
     Args:
         owner: The GitHub repository owner.
         repo: The repository name.
+        installation_token: Optional GitHub App installation access token
+            (``ghs_`` prefix).  When non-empty, the ``gh`` subprocess uses
+            a per-call env copy with ``GH_TOKEN`` overridden —
+            ``os.environ`` is never mutated.
 
     Returns:
         A list of head-ref names for open PRs.  Returns an empty list on
         error (best-effort).
     """
+    env = _gh_env(installation_token) if installation_token else None
     proc = _run(
         [
             "gh",
@@ -253,7 +306,8 @@ def _fetch_open_prs(owner: str, repo: str) -> list[str]:
             "number,headRefName",
             "--limit",
             "100",
-        ]
+        ],
+        env=env,
     )
     if proc.returncode != 0:
         _log.debug(
@@ -324,16 +378,19 @@ def reconstruct(
         membership: The frozenset of issue numbers in the current work
             unit.
         installation_token: Optional GitHub App installation access token
-            (``ghs_`` prefix).  Accepted for interface symmetry with the
-            daemon's env-discipline pattern; reserved for future gh calls
-            inside this function to use per-call env override.
+            (``ghs_`` prefix).  When non-empty, forwarded to
+            ``_fetch_open_prs`` and ``_fetch_labels`` so each ``gh``
+            subprocess call uses a per-call env copy with ``GH_TOKEN``
+            overridden — ``os.environ`` is never mutated.
 
     Returns:
         A ``RecoveryResult`` with the four classification sets populated.
     """
     # Gather provenance merges and open PRs once for the whole unit.
     provenance_merges = _fetch_provenance_merges(repo_root, feature_branch)
-    open_pr_heads = _fetch_open_prs(owner, repo)
+    open_pr_heads = _fetch_open_prs(
+        owner, repo, installation_token=installation_token
+    )
 
     done: set[int] = set()
     parked_seed: set[int] = set()
@@ -341,7 +398,9 @@ def reconstruct(
     redispatch: set[int] = set()
 
     for n in membership:
-        labels = _fetch_labels(owner, repo, n)
+        labels = _fetch_labels(
+            owner, repo, n, installation_token=installation_token
+        )
         has_provenance_merge = n in provenance_merges
         has_agent_merged = "agent-merged" in labels
         has_blocked = "blocked" in labels

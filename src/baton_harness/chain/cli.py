@@ -25,7 +25,6 @@ import sys
 from pathlib import Path
 
 from baton_harness._auth import TokenValidationError, validate_daemon_token
-from baton_harness.chain import daemon as _daemon_mod
 from baton_harness.chain.app_auth import (
     AppAuthError,
 )
@@ -251,28 +250,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    # Run startup reconciliation sweep via the daemon module's symbol.
-    # cli.py MUST NOT call baton_harness.chain.reconcile.reconcile_startup
-    # directly (Gap 1A invariant).  The call below uses the daemon module's
-    # imported reference (_daemon_mod.reconcile_startup) so the reconcile
-    # module symbol is never touched from cli.py.  run_daemon repeats the
-    # call internally for the serial-daemon case; the G2 marker check is
-    # non-fatal so the second invocation is safe.
-    try:
-        asyncio.run(
-            _daemon_mod.reconcile_startup(
-                registry,
-                None,
-                None,
-                installation_token=installation_token,
-            )
-        )
-    except SystemExit:
-        # reconcile_startup calls sys.exit(1) on fatal credential failure.
-        # Re-raise so the process exits with the correct code.
-        raise
-
-    # Run the daemon.
+    # Run the daemon.  run_daemon calls reconcile_startup internally as
+    # part of its startup sweep (Gap 1A invariant: cli.py must NOT call
+    # reconcile_startup directly through any import path).
     try:
         asyncio.run(
             run_daemon(

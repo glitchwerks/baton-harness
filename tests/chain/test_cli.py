@@ -675,20 +675,25 @@ class TestCliGap1DuplicateReconcileAndTokenThreading:
     def test_cli_main_does_not_call_reconcile_startup_directly(
         self,
     ) -> None:
-        """cli.main() must NOT call reconcile_startup directly.
+        """cli.main() must NOT call reconcile_startup through ANY path.
 
-        Both the reconcile-module symbol used by cli.py and the daemon
-        symbol are patched as spies.  After main() returns, the
-        reconcile-module spy must have zero calls — the startup sweep
-        must travel through run_daemon exclusively.
-
-        Currently FAILS because cli.py calls _reconcile_mod.reconcile_startup
-        before asyncio.run(run_daemon(...)).
+        Both the reconcile-module symbol and the daemon-module re-export
+        are patched as spies.  After main() returns, BOTH spies must have
+        zero calls — the startup sweep must travel through run_daemon
+        exclusively and must not be reachable by routing through any
+        module alias (closing the indirection escape hatch used by the
+        prior sub-agent via _daemon_mod.reconcile_startup).
         """
-        reconcile_direct_calls: list[object] = []
+        direct_calls_via_reconcile_mod: list[object] = []
+        direct_calls_via_daemon_mod: list[object] = []
 
         async def _spy_reconcile(*args: object, **kwargs: object) -> None:
-            reconcile_direct_calls.append((args, kwargs))
+            direct_calls_via_reconcile_mod.append((args, kwargs))
+
+        async def _spy_daemon_reconcile(
+            *args: object, **kwargs: object
+        ) -> None:
+            direct_calls_via_daemon_mod.append((args, kwargs))
 
         async def _noop_run_daemon(*args: object, **kwargs: object) -> None:
             pass
@@ -707,17 +712,17 @@ class TestCliGap1DuplicateReconcileAndTokenThreading:
                 "baton_harness.chain.cli.load_registry",
                 return_value=[MagicMock()],
             ),
-            # Spy on the reconcile symbol that cli.py imports via
-            # _reconcile_mod.  Any direct call from cli.py lands here.
+            # Spy on the reconcile module symbol directly — catches any
+            # call routed through baton_harness.chain.reconcile.
             patch(
                 "baton_harness.chain.reconcile.reconcile_startup",
                 side_effect=_spy_reconcile,
             ),
-            # Also patch the daemon symbol so run_daemon (mocked below)
-            # does not make a real reconcile call.
+            # Spy on the daemon module re-export — catches the prior
+            # sub-agent's indirection via _daemon_mod.reconcile_startup.
             patch(
                 "baton_harness.chain.daemon.reconcile_startup",
-                new_callable=AsyncMock,
+                side_effect=_spy_daemon_reconcile,
             ),
             patch(
                 "baton_harness.chain.cli.run_daemon",
@@ -729,9 +734,15 @@ class TestCliGap1DuplicateReconcileAndTokenThreading:
             result = _run_main("--once")
 
         assert result == 0, f"Expected exit 0, got {result}"
-        assert not reconcile_direct_calls, (
-            "cli.main() called reconcile_startup directly "
-            f"({len(reconcile_direct_calls)} time(s)) — it must NOT; "
+        assert not direct_calls_via_reconcile_mod, (
+            "cli.main() called reconcile_startup via reconcile module "
+            f"({len(direct_calls_via_reconcile_mod)} time(s)) — it must "
+            "NOT; only run_daemon should invoke the startup sweep."
+        )
+        assert not direct_calls_via_daemon_mod, (
+            "cli.main() called reconcile_startup via daemon module "
+            f"re-export ({len(direct_calls_via_daemon_mod)} time(s)) — "
+            "re-routing through _daemon_mod is still a direct call; "
             "only run_daemon should invoke the startup sweep."
         )
 
