@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -113,6 +113,10 @@ def test_main_once_calls_run_daemon_with_once_true() -> None:
         ),
         patch("baton_harness.chain.cli.os.chdir"),
         patch("baton_harness.chain.cli.os.path.isdir", return_value=True),
+        patch(
+            "baton_harness.chain.reconcile.reconcile_startup",
+            new=AsyncMock(return_value=None),
+        ),
     ):
         result = _run_main("--once")
 
@@ -147,6 +151,10 @@ def test_main_poll_interval_override() -> None:
         ),
         patch("baton_harness.chain.cli.os.chdir"),
         patch("baton_harness.chain.cli.os.path.isdir", return_value=True),
+        patch(
+            "baton_harness.chain.reconcile.reconcile_startup",
+            new=AsyncMock(return_value=None),
+        ),
     ):
         result = _run_main("--once", "--poll-interval", "5")
 
@@ -201,6 +209,10 @@ def test_main_chdirs_into_project_root_before_run_daemon() -> None:
             side_effect=lambda p: chdir_calls.append(p),
         ),
         patch("baton_harness.chain.cli.os.path.isdir", return_value=True),
+        patch(
+            "baton_harness.chain.reconcile.reconcile_startup",
+            new=AsyncMock(return_value=None),
+        ),
     ):
         result = _run_main("--once")
 
@@ -298,6 +310,10 @@ def test_main_workflow_path_resolved_absolute_before_chdir() -> None:
         ),
         patch("baton_harness.chain.cli.os.chdir"),
         patch("baton_harness.chain.cli.os.path.isdir", return_value=True),
+        patch(
+            "baton_harness.chain.reconcile.reconcile_startup",
+            new=AsyncMock(return_value=None),
+        ),
     ):
         # Pass a relative path to simulate operator usage.
         result = _run_main("--once", "--workflow", "config/WORKFLOW.md")
@@ -375,6 +391,10 @@ class TestDaemonStartupAuthWiring:
                 "baton_harness.chain.cli.bootstrap_secrets",
                 side_effect=fake_bootstrap,
             ),
+            patch(
+                "baton_harness.chain.reconcile.reconcile_startup",
+                new=AsyncMock(return_value=None),
+            ),
         ):
             result = _run_main("--once")
 
@@ -443,6 +463,10 @@ class TestDaemonStartupAuthWiring:
             patch(
                 "baton_harness.chain.cli.validate_daemon_token",
                 side_effect=fake_validate,
+            ),
+            patch(
+                "baton_harness.chain.reconcile.reconcile_startup",
+                new=AsyncMock(return_value=None),
             ),
         ):
             result = _run_main("--once")
@@ -577,6 +601,10 @@ class TestDaemonStartupAuthWiring:
                 side_effect=fake_bootstrap,
             ),
             patch("baton_harness.chain.cli.validate_daemon_token"),
+            patch(
+                "baton_harness.chain.reconcile.reconcile_startup",
+                new=AsyncMock(return_value=None),
+            ),
         ):
             result = _run_main("--once")
 
@@ -638,6 +666,10 @@ class TestDaemonStartupAuthWiring:
                 side_effect=fake_bootstrap,
             ),
             patch("baton_harness.chain.cli.validate_daemon_token"),
+            patch(
+                "baton_harness.chain.reconcile.reconcile_startup",
+                new=AsyncMock(return_value=None),
+            ),
         ):
             result = _run_main("--once")
 
