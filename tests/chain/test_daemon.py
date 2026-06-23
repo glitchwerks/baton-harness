@@ -9340,8 +9340,9 @@ class TestRunCiGateForwardsToken:
     ) -> None:
         """_run_ci_gate must call merge_issue_branch(installation_token=...).
 
-        Patches merge_issue_branch at baton_harness.chain.daemon.merge_issue_branch
-        to record kwargs.  Calls _run_ci_gate directly with
+        Patches merge_issue_branch at
+        baton_harness.chain.daemon.merge_issue_branch to record kwargs.
+        Calls _run_ci_gate directly with
         installation_token="ghs_TEST_ci_gate".  Asserts the recorded call
         includes installation_token= with the correct value.
 
@@ -9536,7 +9537,7 @@ class TestRunWorkUnitForwardsTokenToDagAndRecovery:
         # early — we only need to confirm the kwarg on the DAG-build call at
         # line 793.  Must NOT be StopIteration (asyncio wraps it in
         # RuntimeError in Python 3.12+).
-        class _Sentinel(Exception):
+        class _SentinelError(Exception):
             pass
 
         fetch_blocked_calls: list[tuple[tuple, dict]] = []
@@ -9548,7 +9549,7 @@ class TestRunWorkUnitForwardsTokenToDagAndRecovery:
             **kwargs: object,
         ) -> list[int]:
             fetch_blocked_calls.append(((owner, repo, issue), dict(kwargs)))
-            raise _Sentinel("stop after first fetch")
+            raise _SentinelError("stop after first fetch")
 
         with (
             patch.object(
@@ -9574,7 +9575,7 @@ class TestRunWorkUnitForwardsTokenToDagAndRecovery:
                         installation_token=_token,
                     )
                 )
-            except _Sentinel:
+            except _SentinelError:
                 pass  # Expected: we stopped execution early on purpose.
 
         assert fetch_blocked_calls, (
@@ -9607,7 +9608,7 @@ class TestRunWorkUnitForwardsTokenToDagAndRecovery:
         # Raise a unique exception after the first call to stop _run_work_unit
         # early — we only need to confirm the kwarg on the call at line 842.
         # Must NOT be StopIteration (asyncio wraps it in RuntimeError 3.12+).
-        class _Sentinel(Exception):
+        class _SentinelError(Exception):
             pass
 
         def _capture_and_stop(
@@ -9621,7 +9622,7 @@ class TestRunWorkUnitForwardsTokenToDagAndRecovery:
             reconstruct_calls.append(
                 ((owner, repo, branch_name), dict(kwargs))
             )
-            raise _Sentinel("stop after first reconstruct")
+            raise _SentinelError("stop after first reconstruct")
 
         with (
             patch.object(
@@ -9651,7 +9652,7 @@ class TestRunWorkUnitForwardsTokenToDagAndRecovery:
                         installation_token=_token,
                     )
                 )
-            except _Sentinel:
+            except _SentinelError:
                 pass  # Expected: we stopped execution early on purpose.
 
         assert reconstruct_calls, (

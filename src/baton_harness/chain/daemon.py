@@ -68,7 +68,9 @@ from baton_harness.chain.labels import (
 )
 from baton_harness.chain.merge import MergeOutcome, merge_issue_branch
 from baton_harness.chain.obs_config import ObsConfig, load_obs_config
-from baton_harness.chain.reconcile import reconcile_startup as reconcile_startup
+from baton_harness.chain.reconcile import (
+    reconcile_startup as reconcile_startup,
+)
 from baton_harness.chain.recovery import RecoveryResult, scan_orphan_worktrees
 from baton_harness.chain.redispatch import RedispatchTally
 from baton_harness.chain.registry import RepoConfig

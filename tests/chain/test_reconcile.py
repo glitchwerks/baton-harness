@@ -1342,7 +1342,7 @@ class TestReconcileStartupAlertsThreadToken:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """G3c guard: alert() must receive installation_token= when cred absent.
+        """G3c: alert() must receive installation_token= when cred absent.
 
         Points _OAUTH_CRED_PATH at a non-existent path to trigger the G3c
         guard.  Patches alert() to record calls.  Asserts installation_token=
@@ -1488,7 +1488,7 @@ class TestReconcileStartupAlertsThreadToken:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """G2 gate: alert() must receive installation_token= when marker exists.
+        """G2: alert() must receive installation_token= when marker exists.
 
         Pre-creates the daemon.alive marker so the G2 ungraceful-exit alert
         fires.  Patches alert() to record calls.  Asserts installation_token=
