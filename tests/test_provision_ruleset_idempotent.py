@@ -205,9 +205,9 @@ def test_identical_state_is_noop(tmp_path: Path) -> None:
     rc, _stdout, log = _invoke(tmp_path, canned)
 
     assert rc == 0, f"script exited {rc}"
-    assert (
-        _writes(_calls(log)) == []
-    ), "expected zero writes on identical state"
+    assert _writes(_calls(log)) == [], (
+        "expected zero writes on identical state"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -305,17 +305,17 @@ def test_preexisting_with_stale_id_uses_list_filter_path(
     assert rc == 0, f"script exited {rc}"
     calls = _calls(log)
     # Zero writes — bodies matched after discovery.
-    assert (
-        _writes(calls) == []
-    ), "expected no writes for matching stale-id state"
+    assert _writes(calls) == [], (
+        "expected no writes for matching stale-id state"
+    )
     # GET URLs must use discovered numeric IDs.
     get_urls = [c["url"] for c in calls if c["method"] == "GET"]
-    assert any(
-        u.endswith("/rulesets/99") for u in get_urls
-    ), f"expected GET on /rulesets/99 in {get_urls}"
-    assert any(
-        u.endswith("/rulesets/77") for u in get_urls
-    ), f"expected GET on /rulesets/77 in {get_urls}"
+    assert any(u.endswith("/rulesets/99") for u in get_urls), (
+        f"expected GET on /rulesets/99 in {get_urls}"
+    )
+    assert any(u.endswith("/rulesets/77") for u in get_urls), (
+        f"expected GET on /rulesets/77 in {get_urls}"
+    )
     # Name strings must NOT appear as URL path segments after "/rulesets/".
     assert not any(
         "harness-main-no-merge" in u for u in get_urls if "/rulesets/" in u
@@ -347,9 +347,9 @@ def test_preflight_app_id_mismatch_aborts(tmp_path: Path) -> None:
     )
 
     assert rc == 2, f"expected exit 2 for App-ID mismatch, got {rc}"
-    assert (
-        _writes(_calls(log)) == []
-    ), "script must write zero ruleset mutations on preflight failure"
+    assert _writes(_calls(log)) == [], (
+        "script must write zero ruleset mutations on preflight failure"
+    )
 
 
 # ---------------------------------------------------------------------------

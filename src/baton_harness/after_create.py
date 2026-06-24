@@ -262,9 +262,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
     # worker-side `gh pr merge` is stopped before the ruleset would have
     # denied it at the API layer. BH_VENV absence is FATAL (C4) — a
     # silent skip would ship workers without defense-in-depth.
-    rc_settings = _write_claude_settings_if_configured(
-        issue=issue, cwd=cwd
-    )
+    rc_settings = _write_claude_settings_if_configured(issue=issue, cwd=cwd)
     if rc_settings != 0:
         return rc_settings
 

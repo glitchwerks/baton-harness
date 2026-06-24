@@ -67,26 +67,26 @@ fi
 if [[ "${_method}" == "POST" || "${_method}" == "PUT" ]]; then
     # Consume stdin; tolerate no stdin gracefully.
     _body="$(cat 2>/dev/null || true)"
-    _ruleset_name="$(
-        printf '%s' "${_body}" \
-            | python3 -c \
-                'import json,sys; d=json.loads(sys.stdin.read() or "{}"); print(d.get("name",""))' \
-                2>/dev/null \
-            || true
-    )"
+    # Extract "name" value from JSON body using pure sed/bash — no python3.
+    # Matches: "name": "some-value" (the only key we need).
+    _ruleset_name="$(printf '%s' "${_body}" \
+        | sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+        | head -1 || true)"
 fi
 
-# Append structured call record to the log.
-_log "$(python3 -c "
-import json, sys
-print(json.dumps({
-    'method': '${_method}',
-    'url': '${_url}',
-    'endpoint': '${_endpoint}',
-    'ruleset_id': '${_ruleset_id}',
-    'ruleset_name': '${_ruleset_name}',
-}))
-")"
+# Append structured call record to the log as a JSONL line.
+# Pure bash printf — no python3 dependency.
+_json_escape() {
+    # Escape backslashes, double-quotes, tabs, and carriage-returns for JSON.
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g; s/\r/\\r/g'
+}
+_record="$(printf '{"method":"%s","url":"%s","endpoint":"%s","ruleset_id":"%s","ruleset_name":"%s"}' \
+    "$(_json_escape "${_method}")" \
+    "$(_json_escape "${_url}")" \
+    "$(_json_escape "${_endpoint}")" \
+    "$(_json_escape "${_ruleset_id}")" \
+    "$(_json_escape "${_ruleset_name}")")"
+_log "${_record}"
 
 # Serve canned responses.
 case "${_endpoint}" in

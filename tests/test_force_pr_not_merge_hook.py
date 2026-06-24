@@ -259,15 +259,11 @@ def test_compound_safe_first_then_api_put_still_blocks(
     independently by the C3 regex.  The combined command must block because
     segment 2 matches the gh-api-pulls-merge pattern.
     """
-    command = (
-        "gh pr merge --help && gh api -X PUT repos/o/r/pulls/42/merge"
-    )
+    command = "gh pr merge --help && gh api -X PUT repos/o/r/pulls/42/merge"
     rc, stderr = _run(
         {"tool_name": "Bash", "tool_input": {"command": command}}
     )
-    assert rc != 0, (
-        f"safe-first + api-PUT compound must block: {command!r}"
-    )
+    assert rc != 0, f"safe-first + api-PUT compound must block: {command!r}"
     assert stderr.startswith("BH_WORKER_TRIED_MERGE:"), (
         f"stderr marker missing: {stderr!r}"
     )
