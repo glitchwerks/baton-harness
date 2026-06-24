@@ -1,4 +1,5 @@
 {
+  "_comment": "The 'update' rule is the load-bearing control that denies worker-identity direct pushes AND gh pr merge to main. Worker identity (daemon App installation) is NOT in bypass_actors; only the admin RepositoryRole bypasses. The pull_request rule forces the CI path (required_approving_review_count:0 is intentional — operator self-merges after CI green; the update rule, not approval count, is the boundary). required_status_checks carries the CI gate. See https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets#restrict-updates",
   "name": "harness-main-no-merge",
   "target": "branch",
   "enforcement": "active",
@@ -18,6 +19,12 @@
   "rules": [
     {"type": "deletion"},
     {"type": "non_fast_forward"},
+    {
+      "type": "update",
+      "parameters": {
+        "update_allows_fetch_and_merge": false
+      }
+    },
     {
       "type": "pull_request",
       "parameters": {

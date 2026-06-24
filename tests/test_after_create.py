@@ -370,3 +370,141 @@ class TestAfterCreateBadWorktreeName:
         result = main()
 
         assert result == 1
+
+
+# ---------------------------------------------------------------------------
+# _write_claude_settings — git-exclude and backup behaviour
+# ---------------------------------------------------------------------------
+
+
+def _init_git_repo(path: Path) -> None:
+    """Initialise a minimal git repo at *path* for testing.
+
+    Args:
+        path: Directory to initialise.  Must already exist.
+    """
+    subprocess.run(
+        ["git", "init", "-q", str(path)],
+        check=True,
+        encoding="utf-8",
+        capture_output=True,
+    )
+
+
+class TestWriteClaudeSettingsExclude:
+    """Tests for the .git/info/exclude injection in _write_claude_settings."""
+
+    def test_exclude_line_written_on_fresh_repo(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Fresh git repo: settings file written and exclude line added.
+
+        After calling ``_write_claude_settings``:
+        - ``.claude/settings.json`` must exist.
+        - ``.git/info/exclude`` must contain a line equal to
+          ``.claude/settings.json``.
+        """
+        worktree = tmp_path / "feat-99-test"
+        worktree.mkdir()
+        _init_git_repo(worktree)
+
+        rc = after_create_mod._write_claude_settings(
+            issue=99,
+            cwd=worktree,
+            venv_root=tmp_path / "fakevenv",
+        )
+
+        assert rc == 0
+        assert (worktree / ".claude" / "settings.json").exists()
+        exclude_path = worktree / ".git" / "info" / "exclude"
+        assert exclude_path.exists(), ".git/info/exclude was not created"
+        lines = [
+            ln.rstrip()
+            for ln in exclude_path.read_text(encoding="utf-8").splitlines()
+        ]
+        assert ".claude/settings.json" in lines, (
+            f".claude/settings.json not found in exclude; lines={lines}"
+        )
+
+    def test_exclude_line_not_duplicated_on_second_call(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Running _write_claude_settings twice does not duplicate the line.
+
+        The idempotency guard must prevent appending ``.claude/settings.json``
+        a second time to ``.git/info/exclude``.
+        """
+        worktree = tmp_path / "feat-99-test"
+        worktree.mkdir()
+        _init_git_repo(worktree)
+
+        rc1 = after_create_mod._write_claude_settings(
+            issue=99,
+            cwd=worktree,
+            venv_root=tmp_path / "fakevenv",
+        )
+        rc2 = after_create_mod._write_claude_settings(
+            issue=99,
+            cwd=worktree,
+            venv_root=tmp_path / "fakevenv",
+        )
+
+        assert rc1 == 0
+        assert rc2 == 0
+        exclude_path = worktree / ".git" / "info" / "exclude"
+        lines = [
+            ln.rstrip()
+            for ln in exclude_path.read_text(encoding="utf-8").splitlines()
+        ]
+        count = lines.count(".claude/settings.json")
+        assert count == 1, (
+            f"'.claude/settings.json' appears {count} times in exclude "
+            f"after two calls; expected exactly 1"
+        )
+
+    def test_existing_settings_backed_up(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Pre-existing .claude/settings.json is backed up before overwrite.
+
+        When ``.claude/settings.json`` already exists (tracked or untracked),
+        ``_write_claude_settings`` must copy it to
+        ``.claude/settings.json.bh-backup`` before writing the harness version.
+        """
+        worktree = tmp_path / "feat-99-test"
+        worktree.mkdir()
+        _init_git_repo(worktree)
+
+        # Plant a pre-existing settings file representing the target repo's
+        # own Claude configuration.
+        claude_dir = worktree / ".claude"
+        claude_dir.mkdir()
+        original_content = '{"original": true}\n'
+        (claude_dir / "settings.json").write_text(
+            original_content, encoding="utf-8"
+        )
+
+        rc = after_create_mod._write_claude_settings(
+            issue=99,
+            cwd=worktree,
+            venv_root=tmp_path / "fakevenv",
+        )
+
+        assert rc == 0
+        backup_path = claude_dir / "settings.json.bh-backup"
+        assert backup_path.exists(), (
+            ".claude/settings.json.bh-backup was not created"
+        )
+        backed_up = backup_path.read_text(encoding="utf-8")
+        assert backed_up == original_content, (
+            "backup content does not match original; "
+            f"got {backed_up!r}, want {original_content!r}"
+        )
+        # The active settings.json must now be the harness version.
+        active = (claude_dir / "settings.json").read_text(encoding="utf-8")
+        assert active != original_content, (
+            "settings.json was not overwritten with harness content"
+        )
