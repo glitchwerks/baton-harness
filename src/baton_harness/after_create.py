@@ -27,12 +27,19 @@ Context:
 
 from __future__ import annotations
 
+import json
+import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-from baton_harness._cli import err, log, resolve_issue_number
+from baton_harness._cli import (
+    claude_settings_json_for_worktree,
+    err,
+    log,
+    resolve_issue_number,
+)
 
 #: Short name used in log/err prefixes.
 _HOOK = "after-create"
@@ -145,6 +152,64 @@ def _install_pyproject(issue: int) -> int:
     return result.returncode
 
 
+def _write_claude_settings(issue: int, cwd: Path, venv_root: Path) -> int:
+    """Drop a per-worktree .claude/settings.json.
+
+    Registers the force-pr-not-merge PreToolUse hook.
+
+    Args:
+        issue: Issue number (used in log prefix).
+        cwd: The freshly-created worktree directory.
+        venv_root: Absolute path to the harness venv.
+
+    Returns:
+        ``0`` on success; non-zero on filesystem error.
+    """
+    settings = claude_settings_json_for_worktree(venv_root)
+    out_dir = cwd / ".claude"
+    out_dir.mkdir(exist_ok=True)
+    out_path = out_dir / "settings.json"
+    try:
+        out_path.write_text(
+            json.dumps(settings, indent=2) + "\n", encoding="utf-8"
+        )
+    except OSError as exc:
+        err(_HOOK, issue, f"failed to write .claude/settings.json: {exc}")
+        return 1
+    log(_HOOK, issue, f"wrote {out_path}")
+    return 0
+
+
+def _write_claude_settings_if_configured(issue: int, cwd: Path) -> int:
+    """Drop .claude/settings.json or FAIL LOUDLY if BH_VENV is absent (C4).
+
+    Args:
+        issue: Issue number (used in log prefix).
+        cwd: The freshly-created worktree directory.
+
+    Returns:
+        ``0`` on success; non-zero on misconfiguration or write failure.
+        Specifically: BH_VENV absent returns ``1`` — a worker without the
+        force-pr-not-merge hook would silently lose defense-in-depth, and
+        the operator MUST notice at first worktree creation rather than at
+        first merge attempt.
+    """
+    venv_root_env = os.environ.get("BH_VENV")
+    if not venv_root_env:
+        err(
+            _HOOK,
+            issue,
+            "BH_VENV not set — refusing to create worktree without the "
+            "force-pr-not-merge PreToolUse hook. Set BH_VENV in the "
+            "daemon environment (bin/run-daemon.sh:L65-L66 normally "
+            "exports it) and re-run.",
+        )
+        return 1
+    return _write_claude_settings(
+        issue=issue, cwd=cwd, venv_root=Path(venv_root_env)
+    )
+
+
 def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
     """Entry point for the ``bh-after-create`` console script.
 
@@ -174,20 +239,33 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
     cwd = Path.cwd()
 
     if (cwd / "package.json").exists():
-        return _install_npm(issue, cwd)
+        rc_install = _install_npm(issue, cwd)
+    elif (cwd / "requirements.txt").exists():
+        rc_install = _install_requirements(issue)
+    elif (cwd / "pyproject.toml").exists():
+        rc_install = _install_pyproject(issue)
+    else:
+        log(
+            _HOOK,
+            issue,
+            "no recognised project files found "
+            "(package.json / requirements.txt / pyproject.toml) — skipping",
+        )
+        rc_install = 0
 
-    if (cwd / "requirements.txt").exists():
-        return _install_requirements(issue)
+    if rc_install != 0:
+        return rc_install
 
-    if (cwd / "pyproject.toml").exists():
-        return _install_pyproject(issue)
-
-    log(
-        _HOOK,
-        issue,
-        "no recognised project files found "
-        "(package.json / requirements.txt / pyproject.toml) — skipping",
+    # Slice 3b — install the force-pr-not-merge PreToolUse hook so any
+    # worker-side `gh pr merge` is stopped before the ruleset would have
+    # denied it at the API layer. BH_VENV absence is FATAL (C4) — a
+    # silent skip would ship workers without defense-in-depth.
+    rc_settings = _write_claude_settings_if_configured(
+        issue=issue, cwd=cwd
     )
+    if rc_settings != 0:
+        return rc_settings
+
     return 0
 
 
