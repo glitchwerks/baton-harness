@@ -77,8 +77,10 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 from baton_harness._cli import err, log, resolve_issue_number
+from baton_harness.chain.escalation import alert
 from baton_harness.chain.labels import (
     LABEL_AGENT_DONE,
     LABEL_AGENT_READY,
@@ -97,6 +99,17 @@ _HOOK = "after-run"
 #: ``origin/main`` for flat (N=1 DAG / un-milestoned) runs.
 _ENV_CHAIN_BASE_BRANCH = "CHAIN_BASE_BRANCH"
 _DEFAULT_BASE = "origin/main"
+
+# Slice 3b — sentinel file written by the force-pr-not-merge PreToolUse hook
+# (src/baton_harness/hooks/force_pr_not_merge.py) when a worker attempts to
+# merge a PR directly.  _classify() checks this as its FIRST step so the
+# outcome is terminal regardless of any other git or gh state.
+#
+# IMPORTANT: ``alert`` is imported as the bare name (no ``as`` alias) so that
+# ``monkeypatch.setattr(after_run, "alert", ...)`` in tests patches the same
+# module-namespace attribute that the _reconcile_labels call site resolves.
+_SENTINEL_DIR = ".bh-state"
+_SENTINEL_NAME = "worker-tried-merge"
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +140,7 @@ class RunOutcome(enum.Enum):
     COMMITTED_NO_PR = "committed-no-pr"
     PR_OPENED = "pr-opened"
     TRANSIENT_ERROR = "transient-error"
+    WORKER_TRIED_MERGE = "worker-tried-merge"  # slice 3b
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +247,13 @@ def _classify() -> RunOutcome:
     Returns:
         The ``RunOutcome`` value matching the current worktree state.
     """
+    # Slice 3b: sentinel check is FIRST — the force-pr-not-merge hook writes
+    # ${PWD}/.bh-state/worker-tried-merge on a worker merge attempt, and
+    # that outcome is terminal regardless of any other git or gh state.
+    # See src/baton_harness/hooks/force_pr_not_merge.py.
+    if (Path.cwd() / _SENTINEL_DIR / _SENTINEL_NAME).exists():
+        return RunOutcome.WORKER_TRIED_MERGE
+
     # Step 1: uncommitted changes?
     status = _run(["git", "status", "--porcelain", "--untracked-files=no"])
     if status.stdout.strip():
@@ -426,6 +447,32 @@ def _reconcile_labels(issue: int, outcome: RunOutcome) -> int:
             "agent-ready left intact for future run.",
         )
         return 0
+
+    # Priority 0.5 (slice 3b): WORKER_TRIED_MERGE emits a critical escalation
+    # alert BEFORE the label-fetch so the operator is paged even if the
+    # subsequent label work fails (e.g. _current_labels returns None on a
+    # transient gh error).  After the alert, execution falls through to the
+    # existing Priority-3 label flow (remove agent-ready, add blocked).
+    if outcome == RunOutcome.WORKER_TRIED_MERGE:
+        log(
+            _HOOK,
+            issue,
+            "outcome=worker-tried-merge: force-pr-not-merge hook fired — "
+            "emitting critical escalation, then applying blocked label.",
+        )
+        try:
+            alert(
+                os.environ.get("BH_REPO_OWNER", ""),
+                os.environ.get("BH_REPO_NAME", ""),
+                issue,
+                "worker attempted to merge a PR"
+                " — see .bh-state/worker-tried-merge sentinel",
+                severity="critical",
+            )
+        except Exception as exc:  # noqa: BLE001 — escalation must not crash hook.
+            err(_HOOK, issue, f"escalation alert failed: {exc}")
+        # Fall through to Priority-3 label flow below (remove agent-ready,
+        # add blocked).
 
     # MAJOR 2 (#32): fetch labels BEFORE any mutation path.  None signals a
     # fetch failure (non-JSON or non-zero returncode) — distinct from [] which
