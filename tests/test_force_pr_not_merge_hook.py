@@ -18,6 +18,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 import pytest
+
 from baton_harness.hooks.force_pr_not_merge import main as hook_main
 
 
@@ -202,3 +203,75 @@ def test_c3_url_first_gh_api_x_put_is_blocked(in_tmp_cwd: Path) -> None:
     assert rc != 0, "URL-first -X PUT form must be blocked (C3)"
     sentinel = in_tmp_cwd / ".bh-state" / "worker-tried-merge"
     assert sentinel.exists()
+
+
+# ---------------------------------------------------------------------------
+# Compound-command bypass regression (C4)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "separator",
+    [
+        ";",
+        "&&",
+        "||",
+        "|",
+        "\n",
+    ],
+)
+def test_compound_command_bypass_does_not_evade_block(
+    in_tmp_cwd: Path, separator: str
+) -> None:
+    """Compound commands with a safe first segment must NOT bypass the block.
+
+    C4 regression — ``gh pr merge --help; gh pr merge 42`` previously allowed
+    because ``_is_gh_pr_merge_safe()`` only inspected the first ``gh pr merge``
+    segment and returned True, causing ``_match()`` to return None (allow).
+
+    Every separator form must produce: non-zero exit, BH_WORKER_TRIED_MERGE:
+    on stderr, and sentinel written.
+    """
+    command = f"gh pr merge --help {separator} gh pr merge 42"
+    rc, stderr = _run(
+        {"tool_name": "Bash", "tool_input": {"command": command}}
+    )
+    assert rc != 0, (
+        f"compound bypass must be blocked for separator "
+        f"{separator!r}: {command!r}"
+    )
+    assert stderr.startswith("BH_WORKER_TRIED_MERGE:"), (
+        f"stderr marker missing for separator {separator!r}: {stderr!r}"
+    )
+    sentinel = in_tmp_cwd / ".bh-state" / "worker-tried-merge"
+    assert sentinel.exists(), (
+        f"sentinel missing for separator {separator!r}: {command!r}"
+    )
+
+
+def test_compound_safe_first_then_api_put_still_blocks(
+    in_tmp_cwd: Path,
+) -> None:
+    """Compound: safe ``gh pr merge --help`` then ``gh api PUT merge`` blocks.
+
+    Segment 1 is a safe ``gh pr merge --help`` (would be allowed alone).
+    Segment 2 is a ``gh api ... PUT ... pulls/N/merge`` attack pattern caught
+    independently by the C3 regex.  The combined command must block because
+    segment 2 matches the gh-api-pulls-merge pattern.
+    """
+    command = (
+        "gh pr merge --help && gh api -X PUT repos/o/r/pulls/42/merge"
+    )
+    rc, stderr = _run(
+        {"tool_name": "Bash", "tool_input": {"command": command}}
+    )
+    assert rc != 0, (
+        f"safe-first + api-PUT compound must block: {command!r}"
+    )
+    assert stderr.startswith("BH_WORKER_TRIED_MERGE:"), (
+        f"stderr marker missing: {stderr!r}"
+    )
+    sentinel = in_tmp_cwd / ".bh-state" / "worker-tried-merge"
+    assert sentinel.exists(), (
+        "sentinel missing for safe-first+api-PUT compound"
+    )

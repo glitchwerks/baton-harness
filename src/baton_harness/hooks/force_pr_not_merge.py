@@ -80,12 +80,21 @@ def _is_gh_pr_merge_safe(command: str) -> bool:
     "Safe" means non-mutating reconnaissance flags (``--help``, ``--dry-run``)
     with no PR number or action flags that would actually trigger a merge.
 
+    A compound command containing MORE THAN ONE ``gh pr merge`` occurrence is
+    never safe — the safe-suffix gate only evaluates the first match, so a
+    compound like ``gh pr merge --help; gh pr merge 42`` would otherwise evade
+    the block (C4 bypass).
+
     Args:
         command: Full Bash command string.
 
     Returns:
-        True when the only tokens after ``gh pr merge`` are safe flags.
+        True when the only tokens after ``gh pr merge`` are safe flags and the
+        command contains exactly one ``gh pr merge`` invocation.
     """
+    # Option A (C4 fix): more than one `gh pr merge` occurrence → not safe.
+    if len(_RE_GH_PR_MERGE.findall(command)) > 1:
+        return False
     m = _RE_GH_PR_MERGE_SAFE_SUFFIX.search(command)
     if m is None:
         return False
@@ -105,10 +114,12 @@ def _match(command: str) -> str | None:
         a known merge pattern, otherwise ``None``.
     """
     if _RE_GH_PR_MERGE.search(command):
-        # Allow non-mutating reconnaissance invocations (--help, --dry-run).
-        if _is_gh_pr_merge_safe(command):
-            return None
-        return "gh-pr-merge"
+        # Allow non-mutating reconnaissance invocations (--help, --dry-run),
+        # but only if the entire command is safe.  If safe, fall through to
+        # check the other merge patterns (e.g. a compound command may have a
+        # safe ``gh pr merge --help`` segment followed by ``gh api ... PUT``).
+        if not _is_gh_pr_merge_safe(command):
+            return "gh-pr-merge"
     if (
         _RE_GH_API.search(command)
         and _RE_PULLS_MERGE.search(command)
