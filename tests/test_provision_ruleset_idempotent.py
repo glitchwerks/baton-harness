@@ -101,6 +101,16 @@ def _invoke(
         text=True,
         encoding="utf-8",
     )
+    if proc.returncode != 0:
+        # Surface script stderr + stdout on any non-zero exit so CI logs are
+        # self-diagnosing without a separate debug-instrumentation commit.
+        print(
+            f"\n--- provision-ruleset.sh stdout (rc={proc.returncode}) ---\n"
+            f"{proc.stdout}"
+            f"--- provision-ruleset.sh stderr ---\n"
+            f"{proc.stderr}"
+            f"---"
+        )
     return proc.returncode, proc.stdout, log_path
 
 
