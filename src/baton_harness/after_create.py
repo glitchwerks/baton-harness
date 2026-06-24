@@ -167,9 +167,9 @@ def _write_claude_settings(issue: int, cwd: Path, venv_root: Path) -> int:
     """
     settings = claude_settings_json_for_worktree(venv_root)
     out_dir = cwd / ".claude"
-    out_dir.mkdir(exist_ok=True)
     out_path = out_dir / "settings.json"
     try:
+        out_dir.mkdir(exist_ok=True)
         out_path.write_text(
             json.dumps(settings, indent=2) + "\n", encoding="utf-8"
         )
@@ -223,7 +223,9 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
     Returns:
         ``0`` on success or when no project files are found; ``1`` when the
         issue number cannot be resolved; non-zero (propagated from the
-        install command) on install failure.
+        install command) on install failure; non-zero (``1``) when
+        ``BH_VENV`` is absent or unset (C4 fatal: workers without the
+        force-pr-not-merge hook lose defense-in-depth).
     """
     issue = resolve_issue_number()
     if issue is None:

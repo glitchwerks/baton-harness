@@ -30,6 +30,31 @@ import baton_harness.after_create as after_create_mod
 from baton_harness.after_create import main
 
 # ---------------------------------------------------------------------------
+# Module-level fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _stub_claude_settings_for_legacy_tests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stub out the C4 BH_VENV gate so pre-3b tests stay focused.
+
+    The new ``_write_claude_settings_if_configured`` call added in slice 3b
+    fatally exits when ``BH_VENV`` is unset.  These tests were written before
+    that contract existed and are not about settings-write behaviour; mocking
+    the function out keeps them exercising only the dep-install paths they were
+    designed for, and avoids false failures on clean CI environments where
+    ``BH_VENV`` is not exported.
+    """
+    monkeypatch.setattr(
+        after_create_mod,
+        "_write_claude_settings_if_configured",
+        lambda **_: 0,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
