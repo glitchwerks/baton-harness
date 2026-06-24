@@ -1007,3 +1007,375 @@ class TestReconcileCrashRecoveryScenarioF:
             f"Final state label must be exactly {{agent-done}}; "
             f"got {state_in_final!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Slice 3b Task 6: RunOutcome.WORKER_TRIED_MERGE + sentinel + escalation
+# ---------------------------------------------------------------------------
+
+
+class TestRunOutcomeWorkerTriedMerge:
+    """RunOutcome enum must expose a WORKER_TRIED_MERGE member (slice 3b).
+
+    The member is the terminal signal produced when the
+    force-pr-not-merge PreToolUse hook fires and writes the sentinel
+    file ``${PWD}/.bh-state/worker-tried-merge``.
+    """
+
+    def test_has_worker_tried_merge_member(self) -> None:
+        """RunOutcome.WORKER_TRIED_MERGE exists as an enum member."""
+        assert RunOutcome.WORKER_TRIED_MERGE
+
+    def test_worker_tried_merge_is_distinct_from_existing_members(
+        self,
+    ) -> None:
+        """WORKER_TRIED_MERGE value is distinct from all prior members."""
+        prior = {
+            RunOutcome.UNCOMMITTED_CHANGES,
+            RunOutcome.NO_COMMITS,
+            RunOutcome.COMMITTED_NO_PR,
+            RunOutcome.PR_OPENED,
+            RunOutcome.TRANSIENT_ERROR,
+        }
+        assert RunOutcome.WORKER_TRIED_MERGE not in prior
+
+
+class TestImportContractAlert:
+    """The ``alert`` callable must be importable as a bare name (no alias).
+
+    The monkeypatch contract (``monkeypatch.setattr(after_run, "alert",
+    ...)``) requires that ``alert`` sits in ``after_run``'s module
+    namespace under exactly that name.  An ``as _escalation_alert``
+    alias silently breaks all tests that intercept the call.
+    """
+
+    def test_after_run_has_alert_attribute(self) -> None:
+        """``after_run.alert`` must exist after the slice 3b import."""
+        assert hasattr(after_run, "alert"), (
+            "after_run must expose 'alert' in its module namespace — "
+            "import it as `from baton_harness.chain.escalation import alert` "
+            "(bare name, no 'as' alias)"
+        )
+
+    def test_after_run_has_no_escalation_alert_alias(self) -> None:
+        """``after_run._escalation_alert`` must NOT exist (alias regression).
+
+        If the import lands as ``_escalation_alert``, the monkeypatch
+        ``monkeypatch.setattr(after_run, "alert", ...)`` silently no-ops and
+        every escalation test passes green while the runtime call raises
+        ``NameError``.  This test catches that aliasing mistake.
+        """
+        assert not hasattr(after_run, "_escalation_alert"), (
+            "after_run must NOT alias the import as '_escalation_alert'; "
+            "the monkeypatch contract requires the bare name 'alert'"
+        )
+
+
+class TestClassifySentinelPresent:
+    """_classify short-circuits on sentinel before any git inspection."""
+
+    def test_classify_returns_worker_tried_merge_on_sentinel(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """B2: presence of .bh-state/worker-tried-merge under cwd is terminal.
+
+        The sentinel takes precedence regardless of git state.  ``_run``
+        is patched to raise on any call so the test proves _classify did
+        NOT reach git/gh.
+        """
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".bh-state").mkdir()
+        (tmp_path / ".bh-state" / "worker-tried-merge").touch()
+
+        def _no_git_calls_expected(cmd: list[str]) -> None:
+            """Fail loudly if _classify reaches git/gh after sentinel."""
+            raise AssertionError(
+                f"_classify must short-circuit on sentinel; got call: {cmd}"
+            )
+
+        monkeypatch.setattr(after_run, "_run", _no_git_calls_expected)
+        assert after_run._classify() is RunOutcome.WORKER_TRIED_MERGE
+
+    def test_sentinel_path_matches_task4_hook_convention(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Sentinel path is exactly ${PWD}/.bh-state/worker-tried-merge.
+
+        Validates the Task 4 / Task 6 cross-boundary contract: the hook
+        writes ``${PWD}/.bh-state/worker-tried-merge`` and the classifier
+        reads the same path.  The test names the components explicitly so
+        a path drift is immediately visible in the failure message.
+        """
+        sentinel_dir = ".bh-state"
+        sentinel_name = "worker-tried-merge"
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / sentinel_dir).mkdir()
+        (tmp_path / sentinel_dir / sentinel_name).touch()
+
+        monkeypatch.setattr(
+            after_run,
+            "_run",
+            lambda cmd: (_ for _ in ()).throw(
+                AssertionError(f"sentinel must short-circuit; got: {cmd}")
+            ),
+        )
+        result = after_run._classify()
+        assert result is RunOutcome.WORKER_TRIED_MERGE, (
+            f"Expected WORKER_TRIED_MERGE for sentinel at "
+            f"{sentinel_dir}/{sentinel_name}; got {result!r}"
+        )
+
+
+class TestClassifySentinelAbsent:
+    """_classify falls through to normal git logic when sentinel is absent."""
+
+    def test_sibling_cwd_sentinel_does_not_affect_classify(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Sentinel in a sibling directory must NOT affect classification.
+
+        Proves sentinel detection is cwd-relative: a sentinel present in
+        another worktree must not pollute the current worktree's outcome.
+        """
+        sibling = tmp_path / "other-worktree"
+        sibling.mkdir()
+        (sibling / ".bh-state").mkdir()
+        (sibling / ".bh-state" / "worker-tried-merge").touch()
+
+        target = tmp_path / "this-worktree"
+        target.mkdir()
+        monkeypatch.chdir(target)
+
+        def _fake(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            """Stub git calls so the test requires no real git repo."""
+            if cmd[:2] == ["git", "status"]:
+                return _completed(stdout="")
+            if cmd[:2] == ["git", "rev-parse"]:
+                return _completed(stdout="abc123\n")
+            if cmd[:2] == ["git", "cherry"]:
+                return _completed(stdout="")  # no '+' lines → NO_COMMITS
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        monkeypatch.setattr(after_run, "_run", _fake)
+        # Without sentinel under cwd the fall-through outcome applies.
+        result = after_run._classify()
+        assert result is not RunOutcome.WORKER_TRIED_MERGE, (
+            "Sentinel in a sibling directory must NOT trigger "
+            "WORKER_TRIED_MERGE for the current worktree"
+        )
+
+    def test_absent_sentinel_does_not_prevent_pr_opened_classification(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """No sentinel + open PR → PR_OPENED (no regression from B2 guard)."""
+        worktree = tmp_path / "feat-99-test"
+        worktree.mkdir()
+        monkeypatch.chdir(worktree)
+
+        pr_json = json.dumps([{"number": 99}])
+
+        with patch("baton_harness.after_run._run") as mock_run:
+            mock_run.side_effect = [
+                _completed(stdout=""),  # git status — clean
+                _completed(stdout="abc123\n"),  # git rev-parse — base SHA
+                _completed(stdout="+ abc123\n"),  # git cherry — ahead
+                _completed(stdout="feat-99\n"),  # git rev-parse (branch)
+                _completed(stdout=pr_json),  # gh pr list — PR exists
+            ]
+            result = after_run._classify()
+        assert result is RunOutcome.PR_OPENED
+
+
+class TestReconcileLabelsWorkerTriedMerge:
+    """_reconcile_labels routes WORKER_TRIED_MERGE to blocked + escalation.
+
+    The escalation ``alert()`` call must use the verified signature:
+    ``alert(owner, repo, issue, summary, *, severity, ...)`` where
+    ``owner`` and ``repo`` are POSITIONAL, read from the daemon-exported
+    env vars ``BH_REPO_OWNER`` and ``BH_REPO_NAME``.
+
+    The test patches via ``monkeypatch.setattr(after_run, "alert", ...)``
+    which requires the bare-name import contract enforced by
+    ``TestImportContractAlert``.
+    """
+
+    def test_reconcile_worker_tried_merge_happy_path(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """WORKER_TRIED_MERGE → blocked label + critical escalation alert.
+
+        Asserts:
+        - ``alert`` receives positional owner/repo/issue/summary.
+        - ``severity`` kwarg is ``"critical"``.
+        - No ``source`` kwarg (not in the real signature).
+        - ``agent-ready`` is removed and ``blocked`` is added.
+        """
+        monkeypatch.setenv("BH_REPO_OWNER", "test-owner")
+        monkeypatch.setenv("BH_REPO_NAME", "test-repo")
+
+        monkeypatch.setattr(
+            after_run, "_current_labels", lambda issue: ["agent-ready"]
+        )
+
+        run_calls: list[list[str]] = []
+
+        def _fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            run_calls.append(cmd)
+            return _completed()
+
+        monkeypatch.setattr(after_run, "_run", _fake_run)
+
+        alerts: list[dict] = []
+
+        def _capture_alert(*args: object, **kwargs: object) -> bool:
+            """Capture positional and keyword args for assertion."""
+            alerts.append({"args": args, "kwargs": kwargs})
+            return True
+
+        monkeypatch.setattr(after_run, "alert", _capture_alert, raising=False)
+
+        rc = after_run._reconcile_labels(42, RunOutcome.WORKER_TRIED_MERGE)
+        assert rc == 0
+
+        # Label operations: agent-ready removed, blocked added.
+        cmd_strs = [" ".join(str(t) for t in c) for c in run_calls]
+        assert any(
+            "--remove-label" in s and "agent-ready" in s for s in cmd_strs
+        ), f"--remove-label agent-ready not found in calls: {cmd_strs}"
+        assert any("--add-label" in s and "blocked" in s for s in cmd_strs), (
+            f"--add-label blocked not found in calls: {cmd_strs}"
+        )
+
+        # Escalation fired exactly once with correct positional + kw args.
+        assert len(alerts) == 1, (
+            f"Expected exactly 1 alert() call; got {len(alerts)}: {alerts}"
+        )
+        call = alerts[0]
+        assert call["args"][0] == "test-owner", (
+            f"args[0] (owner) must be 'test-owner'; got {call['args'][0]!r}"
+        )
+        assert call["args"][1] == "test-repo", (
+            f"args[1] (repo) must be 'test-repo'; got {call['args'][1]!r}"
+        )
+        assert call["args"][2] == 42, (
+            f"args[2] (issue) must be 42; got {call['args'][2]!r}"
+        )
+        assert "worker attempted to merge" in str(call["args"][3]).lower(), (
+            f"args[3] (summary) must mention 'worker attempted to merge'; "
+            f"got {call['args'][3]!r}"
+        )
+        assert call["kwargs"].get("severity") == "critical", (
+            f"kwargs['severity'] must be 'critical'; got "
+            f"{call['kwargs'].get('severity')!r}"
+        )
+        assert "source" not in call["kwargs"], (
+            f"'source' kwarg must NOT be present (not in real signature); "
+            f"got kwargs={call['kwargs']!r}"
+        )
+
+    def test_reconcile_worker_tried_merge_missing_env_is_best_effort(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """B2 defensive: missing env vars → alert called with empty strings.
+
+        When ``BH_REPO_OWNER``/``BH_REPO_NAME`` are absent, the call
+        still proceeds (best-effort) with empty positional owner/repo.
+        No exception must escape (caught by the ``except Exception`` guard).
+        """
+        monkeypatch.delenv("BH_REPO_OWNER", raising=False)
+        monkeypatch.delenv("BH_REPO_NAME", raising=False)
+
+        monkeypatch.setattr(
+            after_run, "_current_labels", lambda issue: ["agent-ready"]
+        )
+
+        def _fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            return _completed()
+
+        monkeypatch.setattr(after_run, "_run", _fake_run)
+
+        alerts: list[dict] = []
+
+        def _capture_alert(*args: object, **kwargs: object) -> bool:
+            alerts.append({"args": args, "kwargs": kwargs})
+            return True
+
+        monkeypatch.setattr(after_run, "alert", _capture_alert, raising=False)
+
+        # Must not raise — the except guard makes escalation best-effort.
+        rc = after_run._reconcile_labels(42, RunOutcome.WORKER_TRIED_MERGE)
+        assert rc == 0
+
+        # Alert still called with empty-string owner/repo.
+        assert len(alerts) == 1, (
+            f"Expected 1 alert() call even with missing env vars; "
+            f"got {len(alerts)}"
+        )
+        assert alerts[0]["args"][0] == "", (
+            f"owner must be '' when BH_REPO_OWNER is unset; "
+            f"got {alerts[0]['args'][0]!r}"
+        )
+        assert alerts[0]["args"][1] == "", (
+            f"repo must be '' when BH_REPO_NAME is unset; "
+            f"got {alerts[0]['args'][1]!r}"
+        )
+
+    def test_reconcile_worker_tried_merge_current_labels_none_alert_fires(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """_current_labels=None: alert still fires (best-effort).
+
+        Documented tradeoff: if ``_current_labels`` returns None (transient
+        gh error), the ``agent-ready → blocked`` label transition may not
+        land, but the escalation alert must still fire so the operator is
+        paged.  No exception must escape from ``_reconcile_labels``.
+        """
+        monkeypatch.setenv("BH_REPO_OWNER", "test-owner")
+        monkeypatch.setenv("BH_REPO_NAME", "test-repo")
+
+        # Simulate _current_labels returning None (transient error).
+        monkeypatch.setattr(after_run, "_current_labels", lambda issue: None)
+
+        def _fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            return _completed()
+
+        monkeypatch.setattr(after_run, "_run", _fake_run)
+
+        alerts: list[dict] = []
+
+        def _capture_alert(*args: object, **kwargs: object) -> bool:
+            alerts.append({"args": args, "kwargs": kwargs})
+            return True
+
+        monkeypatch.setattr(after_run, "alert", _capture_alert, raising=False)
+
+        # Must not raise regardless of None from _current_labels.
+        try:
+            after_run._reconcile_labels(99, RunOutcome.WORKER_TRIED_MERGE)
+        except Exception as exc:  # noqa: BLE001
+            raise AssertionError(
+                f"_reconcile_labels must not raise on _current_labels=None; "
+                f"got {type(exc).__name__}: {exc}"
+            ) from exc
+
+        # Alert must have fired (Priority-0.5 branch runs before label work).
+        assert len(alerts) >= 1, (
+            "alert() must fire even when _current_labels returns None — "
+            "escalation is Priority-0.5, label work is Priority-3"
+        )
+        assert alerts[0]["kwargs"].get("severity") == "critical", (
+            f"Alert severity must be 'critical'; "
+            f"got {alerts[0]['kwargs'].get('severity')!r}"
+        )
