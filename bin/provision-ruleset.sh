@@ -126,11 +126,17 @@ _render_config() {
 _lookup_id() {
     local target_name="$1"
     local list_json
-    list_json="$(gh api "repos/${REPO_SLUG}/rulesets")"
+    # --paginate follows Link: rel="next" headers to fetch all pages.
+    # --slurp wraps the per-page JSON arrays into an outer array:
+    # [[page1-entry, ...], [page2-entry, ...], ...].
+    # The Python snippet below flattens one level before searching.
+    list_json="$(gh api --paginate --slurp "repos/${REPO_SLUG}/rulesets")"
     "${_PYTHON}" -c "
 import json, sys
-data = json.loads(sys.argv[1])
-for entry in data:
+pages = json.loads(sys.argv[1])
+# --slurp produces a list-of-lists; flatten one level.
+entries = [e for page in pages for e in page]
+for entry in entries:
     if entry.get('name') == sys.argv[2]:
         print(entry['id'])
         sys.exit(0)

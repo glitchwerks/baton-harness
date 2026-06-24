@@ -392,3 +392,148 @@ def test_admin_bypass_actor_id_logged_before_writes(tmp_path: Path) -> None:
         f"actor_id '{custom_role_id}' not found in script stdout; "
         f"stdout was:\n{stdout}"
     )
+
+
+# ---------------------------------------------------------------------------
+# P2-A: pagination — codex review PR #158
+# ---------------------------------------------------------------------------
+
+
+def test_pagination_ruleset_on_page1_found_and_noop(
+    tmp_path: Path,
+) -> None:
+    """P2-A page 1: both rulesets on page 1 are found; zero writes.
+
+    Regression-protection: verifies the --paginate --slurp path does NOT
+    break existing single-page behaviour (the common case).
+    """
+    canned = tmp_path / "canned"
+    canned.mkdir()
+    # Page 1 contains both rulesets — no page 2 file.
+    (canned / "list.body").write_text(
+        json.dumps(
+            [
+                {"id": 11, "name": "harness-main-no-merge"},
+                {"id": 22, "name": "harness-feature-daemon-only"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    main_body = json.loads(
+        (HARNESS / "config" / "ruleset.main.json").read_text(encoding="utf-8")
+    )
+    main_body["bypass_actors"][0]["actor_id"] = 5
+    (canned / "byid_11.body").write_text(
+        json.dumps(main_body), encoding="utf-8"
+    )
+    feature_body = json.loads(
+        (HARNESS / "config" / "ruleset.feature.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    feature_body["bypass_actors"][0]["actor_id"] = 111
+    (canned / "byid_22.body").write_text(
+        json.dumps(feature_body), encoding="utf-8"
+    )
+
+    rc, _stdout, log = _invoke(tmp_path, canned)
+
+    assert rc == 0, f"script exited {rc}"
+    assert _writes(_calls(log)) == [], (
+        "expected zero writes when rulesets match on page 1"
+    )
+
+
+def test_pagination_ruleset_on_page2_found_and_noop(
+    tmp_path: Path,
+) -> None:
+    """P2-A page 2: rulesets discovered only on the second page; zero writes.
+
+    Before the P2-A fix, _lookup_id fetched only one page so a ruleset
+    that happened to land on page 2+ was treated as absent — causing a
+    duplicate POST instead of the correct no-op or PUT.  After the fix
+    (--paginate --slurp), the shim emits a two-page slurped response and
+    the script must discover both rulesets and write nothing.
+    """
+    canned = tmp_path / "canned"
+    canned.mkdir()
+    # Page 1 is empty (e.g. 30+ other rulesets exist before ours).
+    (canned / "list.body").write_text("[]", encoding="utf-8")
+    # Page 2 contains our two rulesets.
+    (canned / "list_page2.body").write_text(
+        json.dumps(
+            [
+                {"id": 55, "name": "harness-main-no-merge"},
+                {"id": 66, "name": "harness-feature-daemon-only"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    main_body = json.loads(
+        (HARNESS / "config" / "ruleset.main.json").read_text(encoding="utf-8")
+    )
+    main_body["bypass_actors"][0]["actor_id"] = 5
+    (canned / "byid_55.body").write_text(
+        json.dumps(main_body), encoding="utf-8"
+    )
+    feature_body = json.loads(
+        (HARNESS / "config" / "ruleset.feature.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    feature_body["bypass_actors"][0]["actor_id"] = 111
+    (canned / "byid_66.body").write_text(
+        json.dumps(feature_body), encoding="utf-8"
+    )
+
+    rc, _stdout, log = _invoke(tmp_path, canned)
+
+    assert rc == 0, f"script exited {rc}"
+    calls = _calls(log)
+    writes = _writes(calls)
+    assert writes == [], (
+        f"expected zero writes when page-2 rulesets match; got {writes}"
+    )
+    # GET calls must reference the page-2 discovered IDs.
+    get_urls = [c["url"] for c in calls if c["method"] == "GET"]
+    assert any(u.endswith("/rulesets/55") for u in get_urls), (
+        f"expected GET on /rulesets/55 (page-2 id); got {get_urls}"
+    )
+    assert any(u.endswith("/rulesets/66") for u in get_urls), (
+        f"expected GET on /rulesets/66 (page-2 id); got {get_urls}"
+    )
+
+
+def test_pagination_absent_on_all_pages_triggers_post(
+    tmp_path: Path,
+) -> None:
+    """P2-A absent: rulesets missing on both pages -> two POSTs.
+
+    Both pages return unrelated entries.  The script must conclude the
+    target rulesets are absent and POST-create them — not raise an error.
+    """
+    canned = tmp_path / "canned"
+    canned.mkdir()
+    # Page 1: unrelated rulesets.
+    (canned / "list.body").write_text(
+        json.dumps([{"id": 1, "name": "some-other-ruleset"}]),
+        encoding="utf-8",
+    )
+    # Page 2: also unrelated.
+    (canned / "list_page2.body").write_text(
+        json.dumps([{"id": 2, "name": "yet-another-ruleset"}]),
+        encoding="utf-8",
+    )
+
+    rc, _stdout, log = _invoke(tmp_path, canned)
+
+    assert rc == 0, f"script exited {rc}"
+    writes = _writes(_calls(log))
+    assert len(writes) == 2, (
+        f"expected 2 POSTs when absent on all pages; got {writes}"
+    )
+    assert all(c["method"] == "POST" for c in writes)
+    assert {c["ruleset_name"] for c in writes} == {
+        "harness-main-no-merge",
+        "harness-feature-daemon-only",
+    }

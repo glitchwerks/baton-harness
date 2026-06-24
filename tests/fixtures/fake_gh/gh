@@ -10,7 +10,9 @@
 #
 # Canned responses live in $BH_FAKE_GH_CANNED_DIR:
 #   app_id.txt          — integer written as the "id" field for GET /app
-#   list.body           — body for the LIST endpoint
+#   list.body           — page 1 body for the LIST endpoint
+#   list_page2.body     — optional page 2 body; when present, emitted as a
+#                         second page under --paginate --slurp
 #   byid_<id>.body      — body for GET /rulesets/<id>
 #
 # Every call is appended as a JSON line to $BH_FAKE_GH_LOG.
@@ -22,11 +24,16 @@ _log() {
 }
 
 # Default to GET; override on --method / -X.
+# Track --paginate and --slurp flags (used by _lookup_id in provision-ruleset.sh).
 _method="GET"
+_paginate=0
+_slurp=0
 _args=("$@")
 for i in "${!_args[@]}"; do
     case "${_args[$i]}" in
         --method | -X) _method="${_args[$((i + 1))]}" ;;
+        --paginate)    _paginate=1 ;;
+        --slurp)       _slurp=1 ;;
     esac
 done
 
@@ -95,7 +102,25 @@ case "${_endpoint}" in
         exit 0
         ;;
     get_list)
-        cat "${BH_FAKE_GH_CANNED_DIR}/list.body"
+        # When --paginate --slurp is used, gh wraps each page's JSON array
+        # into an outer array: [[page1-entry, ...], [page2-entry, ...]].
+        # If list_page2.body exists in the canned dir, the shim emits a
+        # two-page slurped response so tests can exercise pagination.
+        if [[ "${_slurp}" -eq 1 ]]; then
+            if [[ -f "${BH_FAKE_GH_CANNED_DIR}/list_page2.body" ]]; then
+                printf '['
+                cat "${BH_FAKE_GH_CANNED_DIR}/list.body"
+                printf ','
+                cat "${BH_FAKE_GH_CANNED_DIR}/list_page2.body"
+                printf ']\n'
+            else
+                printf '['
+                cat "${BH_FAKE_GH_CANNED_DIR}/list.body"
+                printf ']\n'
+            fi
+        else
+            cat "${BH_FAKE_GH_CANNED_DIR}/list.body"
+        fi
         exit 0
         ;;
     get_byid)

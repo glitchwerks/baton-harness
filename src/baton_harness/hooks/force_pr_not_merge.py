@@ -49,11 +49,11 @@ _RE_GH_PR_MERGE_SAFE_SUFFIX = re.compile(
 # (C3 — `gh api repos/o/r/pulls/42/merge --method PUT` evaded the old form).
 _RE_GH_API = re.compile(r"\bgh\s+api\b")
 _RE_PULLS_MERGE = re.compile(r"\bpulls/\d+/merge\b")
-_RE_PUT_METHOD = re.compile(r"(?:(?:^|\s)(?:-X\s+PUT|--method\s+PUT))")
+_RE_PUT_METHOD = re.compile(r"(?:(?:^|\s)(?:-X[=\s]+PUT|--method[=\s]+PUT))")
 
 # curl direct API — same any-order composition.
 _RE_CURL = re.compile(r"\bcurl\b")
-_RE_CURL_PUT = re.compile(r"(?:(?:^|\s)(?:-X\s+PUT|--request\s+PUT))")
+_RE_CURL_PUT = re.compile(r"(?:(?:^|\s)(?:-X[=\s]+PUT|--request[=\s]+PUT))")
 
 #: Maximum command length echoed in the marker (avoid runaway stderr).
 _MAX_ECHO_LEN: int = 200

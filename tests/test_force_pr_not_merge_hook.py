@@ -271,3 +271,63 @@ def test_compound_safe_first_then_api_put_still_blocks(
     assert sentinel.exists(), (
         "sentinel missing for safe-first+api-PUT compound"
     )
+
+
+# ---------------------------------------------------------------------------
+# P2-B: equals-form flag separator regression (codex review PR #158)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # gh api: equals form, flag before URL.
+        "gh api --method=PUT repos/o/r/pulls/42/merge",
+        # gh api: equals form, flag after URL (any-order).
+        "gh api repos/o/r/pulls/42/merge --method=PUT",
+        # curl: equals form with --request.
+        "curl --request=PUT https://api.github.com/repos/o/r/pulls/42/merge",
+        # curl: equals form with short -X.
+        "curl -X=PUT https://api.github.com/repos/o/r/pulls/42/merge",
+    ],
+)
+def test_equals_form_method_flag_is_blocked(
+    in_tmp_cwd: Path, command: str
+) -> None:
+    """P2-B: ``--method=PUT`` / ``--request=PUT`` / ``-X=PUT`` must block.
+
+    The codex review (PR #158) found that the original patterns only
+    accepted whitespace-separated flags (``--method PUT``) and allowed
+    the equals form (``--method=PUT``) as a bypass of the worker stop
+    signal.  After the P2-B fix, all equals forms must produce: non-zero
+    exit, ``BH_WORKER_TRIED_MERGE:`` on stderr, and sentinel written.
+    """
+    rc, stderr = _run(
+        {"tool_name": "Bash", "tool_input": {"command": command}}
+    )
+    assert rc != 0, f"expected block for equals-form command: {command!r}"
+    assert stderr.startswith("BH_WORKER_TRIED_MERGE:"), (
+        f"stderr marker missing for {command!r}: {stderr!r}"
+    )
+    sentinel = in_tmp_cwd / ".bh-state" / "worker-tried-merge"
+    assert sentinel.exists(), f"sentinel missing for: {command!r}"
+
+
+def test_whitespace_form_still_blocked_after_p2b_fix(
+    in_tmp_cwd: Path,
+) -> None:
+    r"""P2-B regression: whitespace form (``--method PUT``) still blocks.
+
+    Ensures the widened ``[=\s]+`` pattern does not break the original
+    whitespace-separated form that was already covered.
+    """
+    command = "gh api --method PUT repos/o/r/pulls/42/merge"
+    rc, stderr = _run(
+        {"tool_name": "Bash", "tool_input": {"command": command}}
+    )
+    assert rc != 0, "whitespace-form --method PUT must still be blocked"
+    assert stderr.startswith("BH_WORKER_TRIED_MERGE:"), (
+        f"stderr marker missing: {stderr!r}"
+    )
+    sentinel = in_tmp_cwd / ".bh-state" / "worker-tried-merge"
+    assert sentinel.exists(), "sentinel must exist for whitespace-form block"
