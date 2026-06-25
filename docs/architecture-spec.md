@@ -163,6 +163,8 @@ Each dispatched issue runs `claude -p` against an isolated git worktree, inside 
 
 **Merge boundary (slice 3b):** worker-identity direct pushes AND `gh pr merge` to `main` and `feature/<slug>` are denied by the `update` rule in each GitHub Repository Ruleset (worker identity is not in `bypass_actors` for either ruleset). The daemon's GitHub App installation is the sole bypass actor on `feature/<slug>`; only the admin RepositoryRole bypasses on `main`. The `pull_request` rule on `main` remains to force the CI path; `required_status_checks` carries the CI gate. `required_approving_review_count: 0` is intentional — the operator self-merges after CI green; the `update` rule, not approval count, is the load-bearing boundary. See issue #157 and PR #158 for the design.
 
+**Verification:** `bin/probe-merge-denial.sh` (slice 3c, #160) demonstrates the boundary against a sandbox repo end-to-end.
+
 ---
 
 ## 4. The two-dial confidence model
