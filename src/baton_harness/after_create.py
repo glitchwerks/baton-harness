@@ -161,11 +161,19 @@ _RC_NO_GIT = 2
 
 
 def _register_git_exclude(issue: int, cwd: Path) -> int:
-    """Add ``.claude/settings.json`` to ``.git/info/exclude`` in *cwd*.
+    """Add ``.claude/settings.json`` to the git exclude file in *cwd*.
 
-    The ``.git/info/exclude`` file is a per-checkout, never-committed
-    ignore file.  Adding the settings path here prevents ``git add -A``
-    from staging the harness-injected file into the target repo.
+    The per-checkout exclude file (``info/exclude`` under the git dir)
+    is never committed.  Adding the settings path here prevents
+    ``git add -A`` from staging the harness-injected file into the
+    target repo.
+
+    Works correctly for both plain repos (where ``.git`` is a
+    directory) and linked worktrees created by ``git worktree add``
+    (where ``.git`` is a pointer file).  The actual git dir is
+    resolved via ``git rev-parse --git-path info/exclude`` so that
+    the real ``info/exclude`` path is always used regardless of
+    worktree topology.
 
     Idempotent: the line is only appended if not already present.
 
@@ -174,29 +182,47 @@ def _register_git_exclude(issue: int, cwd: Path) -> int:
         cwd: The freshly-created worktree directory.
 
     Returns:
-        ``0`` on success; ``_RC_NO_GIT`` (2) when *cwd* has no
-        ``.git`` directory (caller decides whether this is fatal);
-        ``1`` on an OSError writing the file.
+        ``0`` on success; ``_RC_NO_GIT`` (2) when *cwd* is not inside
+        a git worktree (``git rev-parse`` fails); ``1`` on an OSError
+        writing the file.
 
     Raises:
         Nothing — all errors surface via :func:`err` or :func:`log`
         and a non-zero return code.
     """
-    git_dir = cwd / ".git"
-    if not git_dir.exists():
+    # Resolve the real exclude path via git so that linked worktrees
+    # (where .git is a pointer file, not a directory) are handled
+    # correctly.  For plain repos this returns a relative path like
+    # ".git/info/exclude"; for linked worktrees it returns the
+    # absolute path under <main>/.git/worktrees/<name>/info/exclude.
+    result = subprocess.run(
+        ["git", "rev-parse", "--git-path", "info/exclude"],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    if result.returncode != 0:
         err(
             _HOOK,
             issue,
-            f"cwd {cwd} has no .git directory — not a git worktree; "
-            "cannot register .git/info/exclude entry",
+            f"cwd {cwd} is not inside a git worktree "
+            "(git rev-parse --git-path failed) — "
+            "cannot register git exclude entry",
         )
         return _RC_NO_GIT
 
-    info_dir = git_dir / "info"
-    exclude_path = info_dir / "exclude"
+    raw_path = result.stdout.strip()
+    # git may return a relative or absolute path depending on version.
+    if Path(raw_path).is_absolute():
+        exclude_path = Path(raw_path)
+    else:
+        exclude_path = (cwd / raw_path).resolve()
 
+    info_dir = exclude_path.parent
     try:
-        info_dir.mkdir(exist_ok=True)
+        info_dir.mkdir(parents=True, exist_ok=True)
         # Read existing content to check idempotency.
         existing = ""
         if exclude_path.exists():
@@ -207,7 +233,7 @@ def _register_git_exclude(issue: int, cwd: Path) -> int:
             log(
                 _HOOK,
                 issue,
-                f".git/info/exclude already contains '{_EXCLUDE_LINE}' — skip",
+                f"git exclude already contains '{_EXCLUDE_LINE}' — skip",
             )
             return 0
         # Ensure file ends with a newline before appending.
@@ -219,11 +245,15 @@ def _register_git_exclude(issue: int, cwd: Path) -> int:
         err(
             _HOOK,
             issue,
-            f"failed to update .git/info/exclude: {exc}",
+            f"failed to update git exclude file: {exc}",
         )
         return 1
 
-    log(_HOOK, issue, f"registered '{_EXCLUDE_LINE}' in .git/info/exclude")
+    log(
+        _HOOK,
+        issue,
+        f"registered '{_EXCLUDE_LINE}' in git exclude ({exclude_path})",
+    )
     return 0
 
 
@@ -231,16 +261,25 @@ def _write_claude_settings(issue: int, cwd: Path, venv_root: Path) -> int:
     """Drop a per-worktree .claude/settings.json.
 
     Registers the force-pr-not-merge PreToolUse hook.  Before writing,
-    attempts to add ``.claude/settings.json`` to ``.git/info/exclude``
+    attempts to add ``.claude/settings.json`` to the git exclude file
     so that ``git add -A`` will not stage the harness-local file into
-    the target repo.  If *cwd* has no ``.git`` directory the exclude
+    the target repo.  If *cwd* is not inside a git worktree the exclude
     step is skipped with a warning (degraded mode — the file is still
-    written; callers in real worktrees always have ``.git``).  A hard
-    OSError writing the exclude file is fatal and propagates as 1.
+    written; callers in real worktrees always have a ``.git``).  A hard
+    OSError writing the exclude file is fatal and propagates as ``1``.
 
-    Also backs up any pre-existing ``.claude/settings.json`` (tracked
-    or untracked) to ``.claude/settings.json.bh-backup`` so the target
-    repo's own Claude settings are not silently lost.
+    If ``.claude/settings.json`` is **tracked** by git in the target
+    repo, the hook refuses to overwrite it and returns ``1`` (FATAL).
+    The git exclude entry only protects untracked files, so overwriting
+    a tracked file would cause ``git add -A`` to stage the harness
+    payload as a modification, potentially deleting the repo's real
+    Claude configuration from the PR.  Running a worker without the
+    PreToolUse tripwire is worse than refusing startup; the operator
+    must resolve the tracked-file conflict explicitly.
+
+    If ``.claude/settings.json`` is **untracked but already present**,
+    it is backed up to ``.claude/settings.json.bh-backup`` before being
+    overwritten so the operator's local-only settings are preserved.
 
     Args:
         issue: Issue number (used in log prefix).
@@ -248,11 +287,12 @@ def _write_claude_settings(issue: int, cwd: Path, venv_root: Path) -> int:
         venv_root: Absolute path to the harness venv.
 
     Returns:
-        ``0`` on success; non-zero on filesystem error.
+        ``0`` on success; ``1`` on filesystem error or when the target
+        repo has a tracked ``.claude/settings.json``.
     """
-    # Step 1: register in .git/info/exclude BEFORE writing the file so
-    # that even a crash between step 1 and step 2 leaves git ignoring
-    # the path.  Missing .git → degraded mode (warn, continue).
+    # Step 1: register in git exclude BEFORE writing the file so that
+    # even a crash between step 1 and step 2 leaves git ignoring the
+    # path.  Missing git worktree → degraded mode (warn, continue).
     rc = _register_git_exclude(issue, cwd)
     if rc == 1:
         # Hard OSError — propagate.
@@ -266,8 +306,33 @@ def _write_claude_settings(issue: int, cwd: Path, venv_root: Path) -> int:
     try:
         out_dir.mkdir(exist_ok=True)
 
-        # Step 2: backup any pre-existing settings file so the target
-        # repo's own Claude config is not silently overwritten.
+        # Step 2: detect tracked .claude/settings.json — FATAL if
+        # present.  The git exclude entry only prevents staging of
+        # *untracked* files; if the file is already tracked, git add -A
+        # would stage our overwrite as a modification, clobbering the
+        # target repo's real Claude configuration in the PR.
+        ls_result = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", ".claude/settings.json"],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        if ls_result.returncode == 0:
+            err(
+                _HOOK,
+                issue,
+                "FATAL: target repo has a tracked .claude/settings.json — "
+                "refusing to overwrite. Worker will NOT start. "
+                "Operator must remove the tracked file "
+                "(`git rm .claude/settings.json`) or merge the harness "
+                "hook config into the existing file manually.",
+            )
+            return 1
+
+        # Step 3: backup any untracked pre-existing settings file so
+        # the operator's local-only Claude config is not silently lost.
         if out_path.exists():
             shutil.copy2(str(out_path), str(backup_path))
             log(
@@ -277,15 +342,16 @@ def _write_claude_settings(issue: int, cwd: Path, venv_root: Path) -> int:
                 ".claude/settings.json.bh-backup",
             )
             print(
-                f"[{_HOOK}] WARNING: target repo has .claude/settings.json; "
-                "backed up to .claude/settings.json.bh-backup before "
-                "injecting harness settings.  Restore manually after run "
+                f"[{_HOOK}] WARNING: target repo has an untracked "
+                ".claude/settings.json; backed up to "
+                ".claude/settings.json.bh-backup before injecting "
+                "harness settings.  Restore manually after run "
                 "or add bh-after-run cleanup if needed.",
                 file=sys.stderr,
                 flush=True,
             )
 
-        # Step 3: write harness settings.
+        # Step 4: write harness settings.
         settings = claude_settings_json_for_worktree(venv_root)
         out_path.write_text(
             json.dumps(settings, indent=2) + "\n", encoding="utf-8"
