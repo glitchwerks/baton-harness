@@ -25,3 +25,6 @@ __pycache__/
 .mypy_cache/
 *.pyc
 *.pyo
+
+# SDD ledger + scratch (per-worktree, not shared)
+.superpowers/

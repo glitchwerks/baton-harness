@@ -47,6 +47,7 @@ bh-after-create = "baton_harness.after_create:main"
 bh-before-run = "baton_harness.before_run:main"
 bh-after-run = "baton_harness.after_run:main"
 bh-daemon = "baton_harness.chain.cli:main"
+bh-force-pr-not-merge = "baton_harness.hooks.force_pr_not_merge:main"
 
 # ---------------------------------------------------------------------------
 # Tool configuration

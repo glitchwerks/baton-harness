@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+# tests/fixtures/fake_gh/gh — recording shim for provision-ruleset.sh tests.
+#
+# Simulates the GitHub Rulesets REST API endpoints used by the script:
+#   GET /app                                          (preflight)
+#   GET /repos/<owner>/<repo>/rulesets                (LIST)
+#   GET /repos/<owner>/<repo>/rulesets/<integer-id>   (BY-ID)
+#   POST /repos/<owner>/<repo>/rulesets               (create)
+#   PUT /repos/<owner>/<repo>/rulesets/<integer-id>   (update)
+#
+# Canned responses live in $BH_FAKE_GH_CANNED_DIR:
+#   app_id.txt          — integer written as the "id" field for GET /app
+#   list.body           — page 1 body for the LIST endpoint
+#   list_page2.body     — optional page 2 body; when present, emitted as a
+#                         second page under --paginate --slurp
+#   byid_<id>.body      — body for GET /rulesets/<id>
+#
+# Every call is appended as a JSON line to $BH_FAKE_GH_LOG.
+
+set -euo pipefail
+
+_log() {
+    printf '%s\n' "$1" >> "${BH_FAKE_GH_LOG}"
+}
+
+# Default to GET; override on --method / -X.
+# Track --paginate and --slurp flags (used by _lookup_id in provision-ruleset.sh).
+_method="GET"
+_paginate=0
+_slurp=0
+_args=("$@")
+for i in "${!_args[@]}"; do
+    case "${_args[$i]}" in
+        --method | -X) _method="${_args[$((i + 1))]}" ;;
+        --paginate)    _paginate=1 ;;
+        --slurp)       _slurp=1 ;;
+    esac
+done
+
+# Find the URL path (first arg matching a known prefix).
+_url=""
+for a in "${_args[@]}"; do
+    case "${a}" in
+        repos/* | /repos/* | /app | app)
+            _url="${a#/}"
+            break
+            ;;
+    esac
+done
+
+# Classify the request into a logical endpoint.
+_endpoint=""
+_ruleset_id=""
+_ruleset_name=""
+
+if [[ "${_url}" == "app" ]]; then
+    _endpoint="get_app"
+elif [[ "${_url}" =~ ^repos/[^/]+/[^/]+/rulesets/([0-9]+)$ ]]; then
+    _ruleset_id="${BASH_REMATCH[1]}"
+    if [[ "${_method}" == "PUT" ]]; then
+        _endpoint="put_update"
+    else
+        _endpoint="get_byid"
+    fi
+elif [[ "${_url}" =~ ^repos/[^/]+/[^/]+/rulesets$ ]]; then
+    if [[ "${_method}" == "POST" ]]; then
+        _endpoint="post_create"
+    else
+        _endpoint="get_list"
+    fi
+fi
+
+# On write verbs, read stdin to extract the ruleset name for the call log.
+if [[ "${_method}" == "POST" || "${_method}" == "PUT" ]]; then
+    # Consume stdin; tolerate no stdin gracefully.
+    _body="$(cat 2>/dev/null || true)"
+    # Extract "name" value from JSON body using pure sed/bash — no python3.
+    # Matches: "name": "some-value" (the only key we need).
+    _ruleset_name="$(printf '%s' "${_body}" \
+        | sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+        | head -1 || true)"
+fi
+
+# Append structured call record to the log as a JSONL line.
+# Pure bash printf — no python3 dependency.
+_json_escape() {
+    # Escape backslashes, double-quotes, tabs, and carriage-returns for JSON.
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g; s/\r/\\r/g'
+}
+_record="$(printf '{"method":"%s","url":"%s","endpoint":"%s","ruleset_id":"%s","ruleset_name":"%s"}' \
+    "$(_json_escape "${_method}")" \
+    "$(_json_escape "${_url}")" \
+    "$(_json_escape "${_endpoint}")" \
+    "$(_json_escape "${_ruleset_id}")" \
+    "$(_json_escape "${_ruleset_name}")")"
+_log "${_record}"
+
+# Serve canned responses.
+case "${_endpoint}" in
+    get_app)
+        printf '{"id":%s}\n' "$(cat "${BH_FAKE_GH_CANNED_DIR}/app_id.txt")"
+        exit 0
+        ;;
+    get_list)
+        # When --paginate --slurp is used, gh wraps each page's JSON array
+        # into an outer array: [[page1-entry, ...], [page2-entry, ...]].
+        # If list_page2.body exists in the canned dir, the shim emits a
+        # two-page slurped response so tests can exercise pagination.
+        if [[ "${_slurp}" -eq 1 ]]; then
+            if [[ -f "${BH_FAKE_GH_CANNED_DIR}/list_page2.body" ]]; then
+                printf '['
+                cat "${BH_FAKE_GH_CANNED_DIR}/list.body"
+                printf ','
+                cat "${BH_FAKE_GH_CANNED_DIR}/list_page2.body"
+                printf ']\n'
+            else
+                printf '['
+                cat "${BH_FAKE_GH_CANNED_DIR}/list.body"
+                printf ']\n'
+            fi
+        else
+            cat "${BH_FAKE_GH_CANNED_DIR}/list.body"
+        fi
+        exit 0
+        ;;
+    get_byid)
+        _body_file="${BH_FAKE_GH_CANNED_DIR}/byid_${_ruleset_id}.body"
+        if [[ -f "${_body_file}" ]]; then
+            cat "${_body_file}"
+            exit 0
+        fi
+        printf 'gh: Not Found (HTTP 404)\n' >&2
+        exit 1
+        ;;
+    post_create | put_update)
+        # Write operations: echo a minimal success body.
+        printf '{"id":1,"name":"%s"}\n' "${_ruleset_name}"
+        exit 0
+        ;;
+    *)
+        printf 'gh: unknown endpoint for url=%s method=%s\n' \
+            "${_url}" "${_method}" >&2
+        exit 1
+        ;;
+esac

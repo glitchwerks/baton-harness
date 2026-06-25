@@ -387,6 +387,39 @@ For the full first-run walkthrough — sandbox setup, trigger-issue creation, DA
 wiring, CI-gate behaviour, and expected log output — see
 [docs/smoke-test-daemon.md](docs/smoke-test-daemon.md).
 
+### GitHub repository ruleset (sandbox setup — issue #157)
+
+After running `bin/init-sandbox.sh`, provision the merge-boundary rulesets:
+
+```bash
+# Required: BOTH App identifiers (they are different integers).
+#   BH_GITHUB_APP_ID is shown at https://github.com/settings/apps/<slug>
+#     (also returned by `gh api /app --jq .id`).
+#   BH_GITHUB_APP_INSTALLATION_ID is returned by
+#     `gh api /repos/<owner>/<repo>/installation --jq .id`.
+export BH_REPO_OWNER=<owner>
+export BH_REPO_NAME=<sandbox-repo>
+export BH_GITHUB_APP_ID=<numeric-from-/app>
+export BH_GITHUB_APP_INSTALLATION_ID=<numeric-from-/repos/.../installation>
+# Optional: override the RepositoryRole admin actor_id (default 5).
+# Only needed if your org has remapped role ids.
+# export BH_ADMIN_ROLE_ID=5
+bin/provision-ruleset.sh
+```
+
+This creates two rulesets:
+
+- `harness-main-no-merge` — denies any push/merge into the default branch except by a
+  repository admin (RepositoryRole bypass).
+- `harness-feature-daemon-only` — denies pushes to `feature/*` branches except by the
+  daemon's GitHub App installation (the legitimate per-issue merger).
+
+The script is idempotent — safe to re-run. It uses the GitHub Rulesets REST API's
+list-then-by-id endpoint shape (per the [API contract](https://docs.github.com/en/rest/repos/rules?apiVersion=2022-11-28)
+— `GET /rulesets/{ruleset_id}` requires a numeric id) and runs a preflight cross-check
+that `BH_GITHUB_APP_ID` matches `GET /app`. See issue #157 and the merge PR for the
+design.
+
 ## CLAUDE.md for the pilot project
 
 Each target project must have a committed `CLAUDE.md` so Claude Code can discover

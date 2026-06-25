@@ -15,6 +15,18 @@ hooks:
   before_run: . "$BH_VENV/bin/activate" && bh-before-run
   after_run: . "$BH_VENV/bin/activate" && bh-after-run
 ---
+<!--
+NOTE on hook categories (slice 3b — issue #157):
+The `hooks:` block above lists the THREE Python-baton-hooks fired by the
+daemon's worker turn loop (after_create / before_run / after_run).
+
+There is a SECOND category — Claude Code PreToolUse hooks — installed
+per-worktree by bh-after-create via a generated .claude/settings.json.
+The current PreToolUse hook is `force-pr-not-merge`
+(`src/baton_harness/hooks/force_pr_not_merge.py`); it is paired with the
+branch ruleset provisioned via `bin/provision-ruleset.sh`. See
+docs/architecture-spec.md §3.5 for the canonical list.
+-->
 You are working on issue #{{ issue.number }}: {{ issue.title }}
 
 {{ issue.body }}

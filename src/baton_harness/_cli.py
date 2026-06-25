@@ -102,3 +102,54 @@ def err(hook: str, issue: int, message: str) -> None:
         message: Human-readable error message body.
     """
     print(f"[{hook} #{issue}] {message}", file=sys.stderr, flush=True)
+
+
+def claude_settings_json_for_worktree(venv_root: Path) -> dict[str, object]:
+    """Build the .claude/settings.json payload for a per-worker worktree.
+
+    Registers the force-pr-not-merge PreToolUse hook so any worker
+    ``gh pr merge`` (or moral equivalent) is loudly stopped before the
+    GitHub Ruleset would have denied it at the API.
+
+    POSIX ``bin/`` is preferred when it exists; Windows ``Scripts/`` (with
+    or without the ``.exe`` suffix) is used as a fallback.
+
+    Args:
+        venv_root: Absolute path to the venv that contains the
+            ``bh-force-pr-not-merge`` console script.  Both Windows
+            (``Scripts/``) and POSIX (``bin/``) layouts are probed.
+
+    Returns:
+        A dict ready to ``json.dumps`` into ``.claude/settings.json``.
+    """
+    posix = venv_root / "bin" / "bh-force-pr-not-merge"
+    win = venv_root / "Scripts" / "bh-force-pr-not-merge"
+    win_exe = win.with_suffix(".exe")
+
+    if posix.exists():
+        cmd = str(posix)
+    elif win_exe.exists():
+        cmd = str(win_exe)
+    elif win.exists():
+        cmd = str(win)
+    elif (venv_root / "Scripts").exists():
+        # Scripts/ dir present but no script yet (e.g. not yet installed);
+        # fall back to the non-.exe form so the path is deterministic.
+        cmd = str(win)
+    else:
+        # Neither layout found — default to POSIX form; operator will notice
+        # when the hook fails at runtime.
+        cmd = str(posix)
+
+    return {
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": "Bash",
+                    "hooks": [
+                        {"type": "command", "command": cmd},
+                    ],
+                }
+            ]
+        }
+    }

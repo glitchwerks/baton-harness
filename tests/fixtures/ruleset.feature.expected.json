@@ -1,0 +1,29 @@
+{
+  "_comment": "required_status_checks intentionally omitted — daemon pushes already-merged feature/<slug> refs via git push; PR status-check gate does not apply to that path. See docs/architecture-spec.md §3 and src/baton_harness/chain/merge.py:merge_issue_branch. The 'update' rule below is the load-bearing control: without it, any actor with Contents:write can fast-forward push even when deletion and non-fast-forward are blocked. Only the App installation bypass actor can push to feature/*. See https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets#restrict-updates",
+  "name": "harness-feature-daemon-only",
+  "target": "branch",
+  "enforcement": "active",
+  "bypass_actors": [
+    {
+      "actor_id": "__BH_GITHUB_APP_ID__",
+      "actor_type": "Integration",
+      "bypass_mode": "always"
+    }
+  ],
+  "conditions": {
+    "ref_name": {
+      "include": ["refs/heads/feature/*"],
+      "exclude": []
+    }
+  },
+  "rules": [
+    {"type": "deletion"},
+    {"type": "non_fast_forward"},
+    {
+      "type": "update",
+      "parameters": {
+        "update_allows_fetch_and_merge": false
+      }
+    }
+  ]
+}
