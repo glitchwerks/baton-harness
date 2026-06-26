@@ -467,8 +467,7 @@ def _github_http_post(
             parsed = json.loads(body)
         except json.JSONDecodeError as exc:
             raise AppAuthError(
-                "GitHub installation-token POST returned invalid JSON: "
-                f"{exc}"
+                f"GitHub installation-token POST returned invalid JSON: {exc}"
             ) from exc
 
         if not isinstance(parsed, dict):
