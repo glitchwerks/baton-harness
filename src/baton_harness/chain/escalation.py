@@ -23,6 +23,10 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Literal
 
+from baton_harness.chain.app_auth import (
+    InstallationTokenSource,
+    resolve_installation_token,
+)
 from baton_harness.chain.runlog import RunLog
 
 _log = logging.getLogger(__name__)
@@ -35,24 +39,27 @@ _CRITICAL_PREFIX = "🚨 CRITICAL: "
 # ---------------------------------------------------------------------------
 
 
-def _gh_env(installation_token: str) -> dict[str, str]:
+def _gh_env(
+    installation_token: InstallationTokenSource,
+) -> dict[str, str]:
     """Return os.environ overlaid with GH_TOKEN=<installation_token>.
 
     Does not mutate os.environ.  Token is per-call; never persists
     in the process environment.
 
     Args:
-        installation_token: GitHub App installation access token
-            (``ghs_`` prefix) to inject as ``GH_TOKEN`` and
-            ``GITHUB_TOKEN`` in the subprocess environment.
+        installation_token: GitHub App installation token source to resolve
+            and inject as ``GH_TOKEN`` and ``GITHUB_TOKEN`` in the
+            subprocess environment.
 
     Returns:
         A shallow copy of ``os.environ`` with both ``GH_TOKEN`` and
         ``GITHUB_TOKEN`` overridden to ``installation_token``.
     """
     env = dict(os.environ)
-    env["GH_TOKEN"] = installation_token
-    env["GITHUB_TOKEN"] = installation_token
+    token = resolve_installation_token(installation_token)
+    env["GH_TOKEN"] = token
+    env["GITHUB_TOKEN"] = token
     return env
 
 
@@ -97,7 +104,7 @@ def escalate(
     summary: str,
     *,
     kind: str = "block",
-    installation_token: str = "",
+    installation_token: InstallationTokenSource = "",
 ) -> bool:
     """Post a stall summary as a GitHub comment and optionally to Slack.
 
@@ -239,7 +246,7 @@ def alert(
     severity: Literal["info", "warn", "critical"],
     runlog: RunLog | None = None,
     kind: str = "block",
-    installation_token: str = "",
+    installation_token: InstallationTokenSource = "",
 ) -> bool:
     """Post an alert through the severity-routing layer.
 

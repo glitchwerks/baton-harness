@@ -45,6 +45,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+from baton_harness.chain.app_auth import (
+    InstallationTokenSource,
+    resolve_installation_token,
+)
 from baton_harness.chain.escalation import alert
 
 if TYPE_CHECKING:
@@ -60,7 +64,9 @@ _PROVENANCE_PREFIX = "Baton-Harness-Merge: issue-"
 # ---------------------------------------------------------------------------
 
 
-def _gh_env(installation_token: str) -> dict[str, str]:
+def _gh_env(
+    installation_token: InstallationTokenSource,
+) -> dict[str, str]:
     """Return os.environ overlaid with GH_TOKEN=<installation_token>.
 
     Does not mutate os.environ.  Token is per-call; never persists
@@ -68,17 +74,18 @@ def _gh_env(installation_token: str) -> dict[str, str]:
     as merge.py and gh_deps.py.
 
     Args:
-        installation_token: GitHub App installation access token
-            (``ghs_`` prefix) to inject as ``GH_TOKEN`` and
-            ``GITHUB_TOKEN`` in the subprocess environment.
+        installation_token: GitHub App installation token source to resolve
+            and inject as ``GH_TOKEN`` and ``GITHUB_TOKEN`` in the
+            subprocess environment.
 
     Returns:
         A shallow copy of ``os.environ`` with both ``GH_TOKEN`` and
         ``GITHUB_TOKEN`` overridden to ``installation_token``.
     """
     env = dict(os.environ)
-    env["GH_TOKEN"] = installation_token
-    env["GITHUB_TOKEN"] = installation_token
+    token = resolve_installation_token(installation_token)
+    env["GH_TOKEN"] = token
+    env["GITHUB_TOKEN"] = token
     return env
 
 
@@ -219,7 +226,7 @@ def _fetch_labels(
     repo: str,
     issue: int,
     *,
-    installation_token: str = "",
+    installation_token: InstallationTokenSource = "",
 ) -> set[str]:
     """Fetch the current labels for an issue (lowercase).
 
@@ -273,7 +280,7 @@ def _fetch_open_prs(
     owner: str,
     repo: str,
     *,
-    installation_token: str = "",
+    installation_token: InstallationTokenSource = "",
 ) -> list[str]:
     """Fetch the head-ref names of all open PRs.
 
@@ -355,7 +362,7 @@ def reconstruct(
     feature_branch: str,
     membership: frozenset[int],
     *,
-    installation_token: str = "",
+    installation_token: InstallationTokenSource = "",
 ) -> RecoveryResult:
     """Reconstruct the scheduler state for a work unit's membership.
 

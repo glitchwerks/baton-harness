@@ -34,6 +34,11 @@ import json
 import subprocess
 from typing import cast
 
+from baton_harness.chain.app_auth import (
+    InstallationTokenSource,
+    resolve_installation_token,
+)
+
 # ---------------------------------------------------------------------------
 # Subprocess helper (the sole I/O seam; patch this in tests)
 # ---------------------------------------------------------------------------
@@ -78,7 +83,9 @@ def _run(
 _PAGE_SIZE = 100
 
 
-def _gh_env(installation_token: str) -> dict[str, str]:
+def _gh_env(
+    installation_token: InstallationTokenSource,
+) -> dict[str, str]:
     """Return os.environ overlaid with GH_TOKEN=<installation_token>.
 
     Follows the same env-discipline pattern as daemon.py:_gh_env —
@@ -87,8 +94,7 @@ def _gh_env(installation_token: str) -> dict[str, str]:
     gh token keys.  ``os.environ`` is never mutated.
 
     Args:
-        installation_token: GitHub App installation access token
-            (``ghs_`` prefix).
+        installation_token: GitHub App installation token source.
 
     Returns:
         A fresh ``dict`` with all current env vars plus
@@ -98,15 +104,16 @@ def _gh_env(installation_token: str) -> dict[str, str]:
     import os as _os  # noqa: PLC0415
 
     env = dict(_os.environ)
-    env["GH_TOKEN"] = installation_token
-    env["GITHUB_TOKEN"] = installation_token
+    token = resolve_installation_token(installation_token)
+    env["GH_TOKEN"] = token
+    env["GITHUB_TOKEN"] = token
     return env
 
 
 def _paginate(
     base_url: str,
     *,
-    installation_token: str = "",
+    installation_token: InstallationTokenSource = "",
 ) -> list[dict[str, object]]:
     """Fetch all pages from a paginated ``gh api`` endpoint.
 
@@ -180,7 +187,7 @@ def fetch_blocked_by(
     repo: str,
     issue: int,
     *,
-    installation_token: str = "",
+    installation_token: InstallationTokenSource = "",
 ) -> list[int]:
     """Fetch the issue numbers that block ``issue`` (its prerequisites).
 

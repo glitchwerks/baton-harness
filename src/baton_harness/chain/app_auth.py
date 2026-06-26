@@ -33,7 +33,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 import jwt
 
@@ -96,6 +96,17 @@ MintTokenFn = Callable[
     [str, str, int],
     tuple[str, str],
 ]
+
+
+@runtime_checkable
+class InstallationTokenSourceProtocol(Protocol):
+    """Protocol for objects that can resolve a current installation token."""
+
+    def get_token(self) -> str:
+        """Return the current installation token string."""
+
+
+InstallationTokenSource = str | InstallationTokenSourceProtocol
 
 
 # ---------------------------------------------------------------------------
@@ -407,6 +418,59 @@ def bootstrap_secrets(
     # Invariant: never write the installation token into os.environ.
     # The caller receives it as a return value and stores it outside env.
     return token, expires_at
+
+
+def build_installation_token_provider(
+    app_id: str,
+    app_private_key_bws_id: str,
+    installation_id: int,
+    *,
+    fetch_secret: Callable[..., str],
+) -> InstallationTokenProvider:
+    """Fetch the App private key and return a refreshable token provider.
+
+    Mirrors the env-discipline behavior of ``bootstrap_secrets`` while
+    returning an ``InstallationTokenProvider`` that can mint fresh tokens
+    on demand for long-running daemon work.
+
+    Args:
+        app_id: GitHub App numeric ID.
+        app_private_key_bws_id: Bitwarden secret ID for the RSA PEM key.
+        installation_id: GitHub App installation ID.
+        fetch_secret: Callable used to retrieve the private key PEM.
+
+    Returns:
+        A configured ``InstallationTokenProvider`` that mints via the real
+        GitHub HTTP transport and keeps the private key outside ``os.environ``.
+    """
+    bws_token = os.environ.pop("BWS_ACCESS_TOKEN", None) or ""
+    private_key_pem = fetch_secret(
+        app_private_key_bws_id,
+        access_token=bws_token,
+    )
+    return InstallationTokenProvider(
+        app_id=app_id,
+        private_key_pem=private_key_pem,
+        installation_id=installation_id,
+        http_post=_github_http_post,
+    )
+
+
+def resolve_installation_token(
+    installation_token: InstallationTokenSource,
+) -> str:
+    """Resolve a token source to the current installation-token string.
+
+    Args:
+        installation_token: Either a literal token string or a refreshable
+            provider object exposing ``get_token()``.
+
+    Returns:
+        The current GitHub App installation token string.
+    """
+    if isinstance(installation_token, str):
+        return installation_token
+    return installation_token.get_token()
 
 
 def _github_http_post(
