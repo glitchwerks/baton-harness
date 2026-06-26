@@ -93,6 +93,11 @@ import time
 from enum import Enum, auto
 from pathlib import Path
 
+from baton_harness.chain.app_auth import (
+    InstallationTokenSource,
+    resolve_installation_token,
+)
+
 _log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -171,24 +176,27 @@ class CiAuthError(RuntimeError):
 # ---------------------------------------------------------------------------
 
 
-def _gh_env(installation_token: str) -> dict[str, str]:
+def _gh_env(
+    installation_token: InstallationTokenSource,
+) -> dict[str, str]:
     """Return os.environ overlaid with GH_TOKEN=<installation_token>.
 
     Does not mutate os.environ.  Token is per-call; never persists
     in the process environment.
 
     Args:
-        installation_token: GitHub App installation access token
-            (``ghs_`` prefix) to inject as ``GH_TOKEN`` and
-            ``GITHUB_TOKEN`` in the subprocess environment.
+        installation_token: GitHub App installation token source to resolve
+            and inject as ``GH_TOKEN`` and ``GITHUB_TOKEN`` in the
+            subprocess environment.
 
     Returns:
         A shallow copy of ``os.environ`` with both ``GH_TOKEN`` and
         ``GITHUB_TOKEN`` overridden to ``installation_token``.
     """
     env = dict(os.environ)
-    env["GH_TOKEN"] = installation_token
-    env["GITHUB_TOKEN"] = installation_token
+    token = resolve_installation_token(installation_token)
+    env["GH_TOKEN"] = token
+    env["GITHUB_TOKEN"] = token
     return env
 
 
@@ -244,7 +252,7 @@ def _query_action_jobs(
     repo: str,
     sha: str,
     *,
-    installation_token: str = "",
+    installation_token: InstallationTokenSource = "",
 ) -> list[dict[str, object]]:
     """Query the GitHub Actions API for jobs associated with a commit SHA.
 
@@ -433,7 +441,7 @@ def evaluate_ci(
     poll_interval: float = _DEFAULT_POLL_INTERVAL,
     timeout: float = _DEFAULT_TIMEOUT,
     *,
-    installation_token: str = "",
+    installation_token: InstallationTokenSource = "",
 ) -> CiResult:
     """Evaluate the §3.3.1 CI green predicate for a commit SHA.
 
@@ -513,7 +521,7 @@ def merge_issue_branch(
     poll_interval: float = _DEFAULT_POLL_INTERVAL,
     timeout: float = _DEFAULT_TIMEOUT,
     *,
-    installation_token: str = "",
+    installation_token: InstallationTokenSource = "",
 ) -> MergeOutcome:
     """Evaluate CI and ``--no-ff`` merge if green; persist provenance.
 
@@ -650,7 +658,7 @@ def _persist_ci_green(
     issue: int,
     sha: str,
     *,
-    installation_token: str = "",
+    installation_token: InstallationTokenSource = "",
 ) -> bool:
     """Persist the CI-green-at-merge fact for crash recovery.
 

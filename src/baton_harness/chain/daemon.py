@@ -53,6 +53,10 @@ from typing import Any
 
 from baton_harness.chain import branches
 from baton_harness.chain import recovery as _recovery_mod
+from baton_harness.chain.app_auth import (
+    InstallationTokenSource,
+    resolve_installation_token,
+)
 from baton_harness.chain.dag import build_dag
 from baton_harness.chain.escalation import alert
 from baton_harness.chain.gh_deps import (
@@ -98,7 +102,7 @@ def reconstruct(
     branch_name: str,
     membership: frozenset[int],
     *,
-    installation_token: str = "",
+    installation_token: InstallationTokenSource = "",
 ) -> RecoveryResult:
     """Thin dispatch wrapper for ``recovery.reconstruct``.
 
@@ -147,7 +151,9 @@ _CLAUDE_ATTRIBUTION = (
 # ---------------------------------------------------------------------------
 
 
-def _gh_env(installation_token: str) -> dict[str, str]:
+def _gh_env(
+    installation_token: InstallationTokenSource,
+) -> dict[str, str]:
     """Return os.environ overlaid with GH_TOKEN=<installation_token>.
 
     Does not mutate os.environ.  Token is per-call; never persists
@@ -163,8 +169,9 @@ def _gh_env(installation_token: str) -> dict[str, str]:
         ``GITHUB_TOKEN`` overridden to ``installation_token``.
     """
     env = dict(os.environ)
-    env["GH_TOKEN"] = installation_token
-    env["GITHUB_TOKEN"] = installation_token
+    token = resolve_installation_token(installation_token)
+    env["GH_TOKEN"] = token
+    env["GITHUB_TOKEN"] = token
     return env
 
 
@@ -235,7 +242,7 @@ def _label_edit(
     *,
     add: list[str] | None = None,
     remove: list[str] | None = None,
-    installation_token: str = "",
+    installation_token: InstallationTokenSource = "",
 ) -> None:
     """Edit labels on a GitHub issue.
 
@@ -273,7 +280,7 @@ def _find_issue_pr(
     repo: str,
     issue: int,
     *,
-    installation_token: str = "",
+    installation_token: InstallationTokenSource = "",
 ) -> tuple[str | None, str | None]:
     """Find an open PR's head branch and SHA for a given issue number.
 
@@ -340,7 +347,7 @@ def _fetch_issue_labels(
     repo: str,
     issue: int,
     *,
-    installation_token: str = "",
+    installation_token: InstallationTokenSource = "",
 ) -> set[str] | None:
     """Fetch current labels for an issue (lowercase).
 
@@ -401,7 +408,7 @@ def _fetch_issue_obj(
     repo: str,
     issue_number: int,
     *,
-    installation_token: str = "",
+    installation_token: InstallationTokenSource = "",
 ) -> Issue | None:
     """Fetch a single issue as an ``Issue`` dataclass.
 
@@ -456,7 +463,7 @@ def _fetch_full_milestone_members(
     milestone_number: int,
     milestone_title: str,
     *,
-    installation_token: str = "",
+    installation_token: InstallationTokenSource = "",
 ) -> frozenset[int]:
     """Fetch all OPEN issues for a milestone — the full DAG membership set.
 
@@ -545,7 +552,7 @@ def _run_ci_gate(
     parked_reasons: dict[int, str],
     ci_poll_interval: float,
     ci_timeout: float,
-    installation_token: str = "",
+    installation_token: InstallationTokenSource = "",
 ) -> None:
     """Run the CI gate and apply the merge/park terminal for one issue.
 
@@ -681,7 +688,7 @@ def _open_draft_pr(
     title: str,
     body: str,
     *,
-    installation_token: str = "",
+    installation_token: InstallationTokenSource = "",
 ) -> None:
     """Open a draft PR from ``branch_name`` → main.
 
@@ -756,7 +763,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
     runlog: RunLog | None = None,
     tally: RedispatchTally | None = None,
     liveness_state: LivenessState | None = None,
-    installation_token: str = "",
+    installation_token: InstallationTokenSource = "",
 ) -> None:
     """Run one work unit (one DAG) to completion.
 
@@ -1747,7 +1754,7 @@ async def run_daemon(
     poll_interval_s: float | None = None,
     ci_poll_interval: float = _DEFAULT_CI_POLL_INTERVAL,
     ci_timeout: float = _DEFAULT_CI_TIMEOUT,
-    installation_token: str = "",
+    installation_token: InstallationTokenSource = "",
 ) -> None:
     """Run the always-on serial daemon outer loop.
 
@@ -1951,7 +1958,7 @@ async def _poll_and_run(
     tally: RedispatchTally | None = None,
     liveness_state: LivenessState | None = None,
     obs: ObsConfig | None = None,
-    installation_token: str = "",
+    installation_token: InstallationTokenSource = "",
 ) -> None:
     """Poll one repo for a ready work unit and run it if found.
 
