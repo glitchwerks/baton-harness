@@ -63,6 +63,8 @@ def _invoke(
     app_id: str = "111",
     preflight_app_id: str = "111",
     admin_role_id: str = "5",
+    admin_collaborators_body: str | None = None,
+    custom_roles_body: str | None = None,
 ) -> tuple[int, str, Path]:
     """Run the provisioning script with the fake gh on PATH.
 
@@ -75,6 +77,12 @@ def _invoke(
             (may differ from app_id to trigger B3 mismatch).
         admin_role_id: Value of BH_ADMIN_ROLE_ID passed to the
             script; defaults to the spec default of "5".
+        admin_collaborators_body: Optional canned JSON body for
+            GET /collaborators?permission=admin. Defaults to one
+            collaborator with role_name="admin".
+        custom_roles_body: Optional canned JSON body for
+            GET /orgs/.../custom-repository-roles. When absent, the
+            fake gh returns a 404-style "feature not available" error.
 
     Returns:
         A three-tuple of (returncode, combined_stdout, gh_call_log_path).
@@ -84,6 +92,24 @@ def _invoke(
     (canned_state_dir / "app_id.txt").write_text(
         preflight_app_id, encoding="utf-8"
     )
+    (canned_state_dir / "collaborators_admin.body").write_text(
+        admin_collaborators_body
+        if admin_collaborators_body is not None
+        else json.dumps(
+            [
+                {
+                    "login": "repo-admin",
+                    "permissions": {"admin": True},
+                    "role_name": "admin",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    if custom_roles_body is not None:
+        (canned_state_dir / "custom_roles.body").write_text(
+            custom_roles_body, encoding="utf-8"
+        )
     env = {
         **os.environ,
         "PATH": os.pathsep.join(
@@ -390,7 +416,20 @@ def test_admin_bypass_actor_id_logged_before_writes(tmp_path: Path) -> None:
     (canned / "list.body").write_text("[]", encoding="utf-8")
 
     custom_role_id = "42"
-    rc, stdout, log = _invoke(tmp_path, canned, admin_role_id=custom_role_id)
+    rc, stdout, log = _invoke(
+        tmp_path,
+        canned,
+        admin_role_id=custom_role_id,
+        custom_roles_body=json.dumps(
+            [
+                {
+                    "id": 42,
+                    "name": "Platform Admin",
+                    "base_role": "admin",
+                }
+            ]
+        ),
+    )
 
     assert rc == 0, f"script exited {rc}"
     writes = _writes(_calls(log))
@@ -400,6 +439,83 @@ def test_admin_bypass_actor_id_logged_before_writes(tmp_path: Path) -> None:
     assert custom_role_id in stdout, (
         f"actor_id '{custom_role_id}' not found in script stdout; "
         f"stdout was:\n{stdout}"
+    )
+
+
+def test_preflight_admin_role_requires_admin_collaborator(
+    tmp_path: Path,
+) -> None:
+    """Admin-role preflight fails closed when the repo has no admins."""
+    canned = tmp_path / "canned"
+    canned.mkdir()
+    (canned / "list.body").write_text("[]", encoding="utf-8")
+
+    rc, _stdout, log = _invoke(
+        tmp_path,
+        canned,
+        admin_collaborators_body="[]",
+    )
+
+    assert rc == 2, f"expected exit 2 when no admin collaborators, got {rc}"
+    assert _writes(_calls(log)) == [], (
+        "script must write zero ruleset mutations when admin-role "
+        "preflight fails"
+    )
+
+
+def test_nondefault_admin_role_requires_custom_role_validation(
+    tmp_path: Path,
+) -> None:
+    """Non-default role id fails if GitHub cannot validate the override."""
+    canned = tmp_path / "canned"
+    canned.mkdir()
+    (canned / "list.body").write_text("[]", encoding="utf-8")
+
+    rc, _stdout, log = _invoke(
+        tmp_path,
+        canned,
+        admin_role_id="42",
+    )
+
+    assert rc == 2, (
+        "expected exit 2 when custom-role validation is unavailable for a "
+        "non-default BH_ADMIN_ROLE_ID override"
+    )
+    assert _writes(_calls(log)) == [], (
+        "script must write zero ruleset mutations when overridden admin "
+        "role id cannot be validated"
+    )
+
+
+def test_nondefault_admin_role_passes_when_custom_role_matches(
+    tmp_path: Path,
+) -> None:
+    """Custom admin-role override succeeds when validation matches."""
+    canned = tmp_path / "canned"
+    canned.mkdir()
+    (canned / "list.body").write_text("[]", encoding="utf-8")
+
+    rc, _stdout, log = _invoke(
+        tmp_path,
+        canned,
+        admin_role_id="42",
+        custom_roles_body=json.dumps(
+            [
+                {
+                    "id": 42,
+                    "name": "Platform Admin",
+                    "base_role": "admin",
+                }
+            ]
+        ),
+    )
+
+    assert rc == 0, (
+        f"expected exit 0 for validated custom admin role, got {rc}"
+    )
+    writes = _writes(_calls(log))
+    assert len(writes) == 2, (
+        f"expected provisioning writes after preflight, got {writes}"
     )
 
 
