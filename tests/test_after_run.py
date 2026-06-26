@@ -1283,15 +1283,16 @@ class TestReconcileLabelsWorkerTriedMerge:
             f"got kwargs={call['kwargs']!r}"
         )
 
-    def test_reconcile_worker_tried_merge_missing_env_is_best_effort(
+    def test_reconcile_worker_tried_merge_missing_env_logs_loud_failure(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """B2 defensive: missing env vars → alert called with empty strings.
+        """Missing repo identity logs loudly instead of alerting with blanks.
 
-        When ``BH_REPO_OWNER``/``BH_REPO_NAME`` are absent, the call
-        still proceeds (best-effort) with empty positional owner/repo.
-        No exception must escape (caught by the ``except Exception`` guard).
+        Issue #159 Charge 5: missing ``BH_REPO_OWNER`` / ``BH_REPO_NAME``
+        must not silently degrade into ``alert("", "", ...)``. The hook
+        should skip the alert call, log an explicit failure, and continue
+        the blocked-label path without raising.
         """
         monkeypatch.delenv("BH_REPO_OWNER", raising=False)
         monkeypatch.delenv("BH_REPO_NAME", raising=False)
@@ -1306,30 +1307,27 @@ class TestReconcileLabelsWorkerTriedMerge:
         monkeypatch.setattr(after_run, "_run", _fake_run)
 
         alerts: list[dict] = []
+        err_calls: list[tuple[str, int, str]] = []
 
         def _capture_alert(*args: object, **kwargs: object) -> bool:
             alerts.append({"args": args, "kwargs": kwargs})
             return True
 
-        monkeypatch.setattr(after_run, "alert", _capture_alert, raising=False)
+        def _capture_err(hook: str, issue: int, message: str) -> None:
+            err_calls.append((hook, issue, message))
 
-        # Must not raise — the except guard makes escalation best-effort.
+        monkeypatch.setattr(after_run, "alert", _capture_alert, raising=False)
+        monkeypatch.setattr(after_run, "err", _capture_err, raising=False)
+
         rc = after_run._reconcile_labels(42, RunOutcome.WORKER_TRIED_MERGE)
         assert rc == 0
 
-        # Alert still called with empty-string owner/repo.
-        assert len(alerts) == 1, (
-            f"Expected 1 alert() call even with missing env vars; "
-            f"got {len(alerts)}"
-        )
-        assert alerts[0]["args"][0] == "", (
-            f"owner must be '' when BH_REPO_OWNER is unset; "
-            f"got {alerts[0]['args'][0]!r}"
-        )
-        assert alerts[0]["args"][1] == "", (
-            f"repo must be '' when BH_REPO_NAME is unset; "
-            f"got {alerts[0]['args'][1]!r}"
-        )
+        assert alerts == [], "alert() must not be called with blank owner/repo"
+        assert err_calls, "missing repo identity must be logged loudly"
+        assert err_calls[-1][0] == "after-run"
+        assert err_calls[-1][1] == 42
+        assert "escalation alert failed" in err_calls[-1][2]
+        assert "BH_REPO_OWNER" in err_calls[-1][2]
 
     def test_reconcile_worker_tried_merge_current_labels_none_alert_fires(
         self,
