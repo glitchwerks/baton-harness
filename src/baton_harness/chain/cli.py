@@ -282,9 +282,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Validate the minted token before entering the event loop.
     try:
-        validate_daemon_token(
-            resolve_installation_token(installation_token)
-        )
+        validate_daemon_token(resolve_installation_token(installation_token))
     except TokenValidationError as exc:
         print(
             f"bh-daemon: error: invalid installation token from bootstrap:"
