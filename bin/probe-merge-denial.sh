@@ -48,7 +48,10 @@ _PYTHON="${HARNESS_DIR}/.venv/Scripts/python.exe"
 # Probe-assert helper (Approach B — Python helper for result parsing).
 # ---------------------------------------------------------------------------
 _probe_assert() {
-    "${_PYTHON}" -m scripts.probe_assert "$@"
+    (
+        cd "${HARNESS_DIR}"
+        "${_PYTHON}" -m scripts.probe_assert "$@"
+    )
 }
 
 # ---------------------------------------------------------------------------
@@ -276,21 +279,38 @@ _exit_ok="$(printf '%s' "${_exit_result}" | "${_PYTHON}" -c \
 _http_result="$(_probe_assert check_http_403 "${_v2_combined}" 2>&1)"
 _http_ok="$(printf '%s' "${_http_result}" | "${_PYTHON}" -c \
     'import json,sys; print(json.loads(sys.stdin.read())["ok"])' 2>/dev/null || echo False)"
-
-_hook_exit_ok="$(_probe_assert check_exit_code 2 "${_v2_hook_exit}" 2>&1 | \
-    "${_PYTHON}" -c 'import json,sys; print(json.loads(sys.stdin.read())["ok"])' 2>/dev/null || echo False)"
+_hook_result="$(_probe_assert check_exit_code 2 "${_v2_hook_exit}" 2>&1)"
+_hook_exit_ok="$(printf '%s' "${_hook_result}" | "${_PYTHON}" -c \
+    'import json,sys; print(json.loads(sys.stdin.read())["ok"])' 2>/dev/null || echo False)"
+if [[ "${DRY_RUN}" != "1" ]]; then
+    _sentinel_result="$(_probe_assert check_sentinel "${_v2_sentinel_dir}" 2>&1)"
+    _sentinel_ok="$(printf '%s' "${_sentinel_result}" | "${_PYTHON}" -c \
+        'import json,sys; print(json.loads(sys.stdin.read())["ok"])' 2>/dev/null || echo False)"
+    _marker_result="$(_probe_assert check_stderr_marker "${_v2_hook_stderr}" 2>&1)"
+    _marker_ok="$(printf '%s' "${_marker_result}" | "${_PYTHON}" -c \
+        'import json,sys; print(json.loads(sys.stdin.read())["ok"])' 2>/dev/null || echo False)"
+else
+    _sentinel_ok="True"
+    _marker_ok="True"
+fi
 
 if [[ "${_HOOK_MISSING}" == "1" ]]; then
     echo "  FAIL — hook coverage unavailable for vector 2"
     _record 2 "gh-api-X-PUT-flag-first" "FAIL" "hook_missing=1"
-elif [[ "${_exit_ok}" == "True" && ("${DRY_RUN}" == "1" || "${_http_ok}" == "True") ]]; then
+elif [[
+    "${_exit_ok}" == "True" &&
+    ("${DRY_RUN}" == "1" || "${_http_ok}" == "True") &&
+    "${_hook_exit_ok}" == "True" &&
+    "${_sentinel_ok}" == "True" &&
+    "${_marker_ok}" == "True"
+]]; then
     echo "  PASS — API exit=${_CMD_EXIT} 403-in-body=${_http_ok}, hook exit=${_v2_hook_exit}"
     _record 2 "gh-api-X-PUT-flag-first" "PASS" \
         "api_exit=${_CMD_EXIT} 403=${_http_ok} hook_exit=${_v2_hook_exit}"
 else
-    echo "  FAIL — exit_ok=${_exit_ok} http_ok=${_http_ok} hook_exit_ok=${_hook_exit_ok}"
+    echo "  FAIL — exit_ok=${_exit_ok} http_ok=${_http_ok} hook_exit_ok=${_hook_exit_ok} sentinel_ok=${_sentinel_ok} marker_ok=${_marker_ok}"
     _record 2 "gh-api-X-PUT-flag-first" "FAIL" \
-        "exit_ok=${_exit_ok} http_ok=${_http_ok} hook_exit_ok=${_hook_exit_ok}"
+        "exit_ok=${_exit_ok} http_ok=${_http_ok} hook_exit_ok=${_hook_exit_ok} sentinel_ok=${_sentinel_ok} marker_ok=${_marker_ok}"
 fi
 echo ""
 
@@ -302,6 +322,8 @@ echo "=== Vector 3: gh api URL-first -X PUT ==="
 _V3_CMD="gh api repos/${SANDBOX_REPO}/pulls/${PR_NUM}/merge -X PUT"
 _hook_vector "${_V3_CMD}"
 _v3_hook_exit="${_CMD_EXIT}"
+_v3_hook_stderr="${_HOOK_STDERR:-}"
+_v3_sentinel_dir="${_SENTINEL_DIR:-}"
 
 _GH_TOKEN="$(cat "${BH_PROBE_WORKER_TOKEN_PATH}")"
 export GH_TOKEN="${_GH_TOKEN}"
@@ -317,17 +339,38 @@ _exit_ok="$(printf '%s' "${_exit_result}" | "${_PYTHON}" -c \
 _http_result="$(_probe_assert check_http_403 "${_v3_combined}" 2>&1)"
 _http_ok="$(printf '%s' "${_http_result}" | "${_PYTHON}" -c \
     'import json,sys; print(json.loads(sys.stdin.read())["ok"])' 2>/dev/null || echo False)"
+_hook_result="$(_probe_assert check_exit_code 2 "${_v3_hook_exit}" 2>&1)"
+_hook_exit_ok="$(printf '%s' "${_hook_result}" | "${_PYTHON}" -c \
+    'import json,sys; print(json.loads(sys.stdin.read())["ok"])' 2>/dev/null || echo False)"
+if [[ "${DRY_RUN}" != "1" ]]; then
+    _sentinel_result="$(_probe_assert check_sentinel "${_v3_sentinel_dir}" 2>&1)"
+    _sentinel_ok="$(printf '%s' "${_sentinel_result}" | "${_PYTHON}" -c \
+        'import json,sys; print(json.loads(sys.stdin.read())["ok"])' 2>/dev/null || echo False)"
+    _marker_result="$(_probe_assert check_stderr_marker "${_v3_hook_stderr}" 2>&1)"
+    _marker_ok="$(printf '%s' "${_marker_result}" | "${_PYTHON}" -c \
+        'import json,sys; print(json.loads(sys.stdin.read())["ok"])' 2>/dev/null || echo False)"
+else
+    _sentinel_ok="True"
+    _marker_ok="True"
+fi
 
 if [[ "${_HOOK_MISSING}" == "1" ]]; then
     echo "  FAIL — hook coverage unavailable for vector 3"
     _record 3 "gh-api-URL-first-PUT" "FAIL" "hook_missing=1"
-elif [[ "${_exit_ok}" == "True" && ("${DRY_RUN}" == "1" || "${_http_ok}" == "True") ]]; then
+elif [[
+    "${_exit_ok}" == "True" &&
+    ("${DRY_RUN}" == "1" || "${_http_ok}" == "True") &&
+    "${_hook_exit_ok}" == "True" &&
+    "${_sentinel_ok}" == "True" &&
+    "${_marker_ok}" == "True"
+]]; then
     echo "  PASS — API exit=${_CMD_EXIT} 403-in-body=${_http_ok}, hook exit=${_v3_hook_exit}"
     _record 3 "gh-api-URL-first-PUT" "PASS" \
         "api_exit=${_CMD_EXIT} 403=${_http_ok} hook_exit=${_v3_hook_exit}"
 else
-    echo "  FAIL — exit_ok=${_exit_ok} http_ok=${_http_ok}"
-    _record 3 "gh-api-URL-first-PUT" "FAIL" "exit_ok=${_exit_ok} http_ok=${_http_ok}"
+    echo "  FAIL — exit_ok=${_exit_ok} http_ok=${_http_ok} hook_exit_ok=${_hook_exit_ok} sentinel_ok=${_sentinel_ok} marker_ok=${_marker_ok}"
+    _record 3 "gh-api-URL-first-PUT" "FAIL" \
+        "exit_ok=${_exit_ok} http_ok=${_http_ok} hook_exit_ok=${_hook_exit_ok} sentinel_ok=${_sentinel_ok} marker_ok=${_marker_ok}"
 fi
 echo ""
 
@@ -339,6 +382,8 @@ echo "=== Vector 4: gh api --method=PUT (equals form) ==="
 _V4_CMD="gh api --method=PUT repos/${SANDBOX_REPO}/pulls/${PR_NUM}/merge"
 _hook_vector "${_V4_CMD}"
 _v4_hook_exit="${_CMD_EXIT}"
+_v4_hook_stderr="${_HOOK_STDERR:-}"
+_v4_sentinel_dir="${_SENTINEL_DIR:-}"
 
 _GH_TOKEN="$(cat "${BH_PROBE_WORKER_TOKEN_PATH}")"
 export GH_TOKEN="${_GH_TOKEN}"
@@ -354,17 +399,38 @@ _exit_ok="$(printf '%s' "${_exit_result}" | "${_PYTHON}" -c \
 _http_result="$(_probe_assert check_http_403 "${_v4_combined}" 2>&1)"
 _http_ok="$(printf '%s' "${_http_result}" | "${_PYTHON}" -c \
     'import json,sys; print(json.loads(sys.stdin.read())["ok"])' 2>/dev/null || echo False)"
+_hook_result="$(_probe_assert check_exit_code 2 "${_v4_hook_exit}" 2>&1)"
+_hook_exit_ok="$(printf '%s' "${_hook_result}" | "${_PYTHON}" -c \
+    'import json,sys; print(json.loads(sys.stdin.read())["ok"])' 2>/dev/null || echo False)"
+if [[ "${DRY_RUN}" != "1" ]]; then
+    _sentinel_result="$(_probe_assert check_sentinel "${_v4_sentinel_dir}" 2>&1)"
+    _sentinel_ok="$(printf '%s' "${_sentinel_result}" | "${_PYTHON}" -c \
+        'import json,sys; print(json.loads(sys.stdin.read())["ok"])' 2>/dev/null || echo False)"
+    _marker_result="$(_probe_assert check_stderr_marker "${_v4_hook_stderr}" 2>&1)"
+    _marker_ok="$(printf '%s' "${_marker_result}" | "${_PYTHON}" -c \
+        'import json,sys; print(json.loads(sys.stdin.read())["ok"])' 2>/dev/null || echo False)"
+else
+    _sentinel_ok="True"
+    _marker_ok="True"
+fi
 
 if [[ "${_HOOK_MISSING}" == "1" ]]; then
     echo "  FAIL — hook coverage unavailable for vector 4"
     _record 4 "gh-api-method-equals-PUT" "FAIL" "hook_missing=1"
-elif [[ "${_exit_ok}" == "True" && ("${DRY_RUN}" == "1" || "${_http_ok}" == "True") ]]; then
+elif [[
+    "${_exit_ok}" == "True" &&
+    ("${DRY_RUN}" == "1" || "${_http_ok}" == "True") &&
+    "${_hook_exit_ok}" == "True" &&
+    "${_sentinel_ok}" == "True" &&
+    "${_marker_ok}" == "True"
+]]; then
     echo "  PASS — API exit=${_CMD_EXIT} 403-in-body=${_http_ok}, hook exit=${_v4_hook_exit}"
     _record 4 "gh-api-method-equals-PUT" "PASS" \
         "api_exit=${_CMD_EXIT} 403=${_http_ok} hook_exit=${_v4_hook_exit}"
 else
-    echo "  FAIL — exit_ok=${_exit_ok} http_ok=${_http_ok}"
-    _record 4 "gh-api-method-equals-PUT" "FAIL" "exit_ok=${_exit_ok} http_ok=${_http_ok}"
+    echo "  FAIL — exit_ok=${_exit_ok} http_ok=${_http_ok} hook_exit_ok=${_hook_exit_ok} sentinel_ok=${_sentinel_ok} marker_ok=${_marker_ok}"
+    _record 4 "gh-api-method-equals-PUT" "FAIL" \
+        "exit_ok=${_exit_ok} http_ok=${_http_ok} hook_exit_ok=${_hook_exit_ok} sentinel_ok=${_sentinel_ok} marker_ok=${_marker_ok}"
 fi
 echo ""
 

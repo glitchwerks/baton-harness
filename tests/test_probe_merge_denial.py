@@ -364,6 +364,7 @@ def _make_probe_harness(
     with_hook: bool = True,
     curl_requires_fail_with_body: bool = False,
     python_requires_env_token: bool = False,
+    hook_blocks_api_put: bool = True,
 ) -> tuple[Path, dict[str, str]]:
     """Create a temp harness with fake binaries for probe-script tests."""
     harness = tmp_path / "harness"
@@ -381,10 +382,16 @@ def _make_probe_harness(
 
     hook_path = tmp_path / "bh-force-pr-not-merge"
     if with_hook:
+        hook_api_mode = "strict" if hook_blocks_api_put else "loose"
         _write_executable(
             hook_path,
-            """#!/usr/bin/env bash
+            f"""#!/usr/bin/env bash
 set -eu
+mode="{hook_api_mode}"
+payload="$(cat)"
+if [[ "$mode" == "loose" && "$payload" == *"gh api"* ]]; then
+  exit 0
+fi
 mkdir -p .bh-state
 touch .bh-state/worker-tried-merge
 echo "BH_WORKER_TRIED_MERGE: fake hook block" >&2
@@ -480,12 +487,12 @@ exec "$real_python" "$@"
 
 
 def _run_probe(
-    harness: Path, env: dict[str, str]
+    harness: Path, env: dict[str, str], *, cwd: Path | None = None
 ) -> subprocess.CompletedProcess[str]:
     """Run the real probe script from a temp harness."""
     return subprocess.run(
         [_BASH, str(harness / "bin" / "probe-merge-denial.sh")],
-        cwd=harness,
+        cwd=cwd or harness,
         env=env,
         capture_output=True,
         text=True,
@@ -507,9 +514,7 @@ class TestProbeScriptRegressions:
         assert proc.returncode == 0, proc.stdout + proc.stderr
         assert "RESULT: PASS" in proc.stdout
 
-    def test_curl_vectors_require_fail_with_body(
-        self, tmp_path: Path
-    ) -> None:
+    def test_curl_vectors_require_fail_with_body(self, tmp_path: Path) -> None:
         """Curl vectors must ask curl to fail on HTTP 403 responses."""
         harness, env = _make_probe_harness(
             tmp_path, curl_requires_fail_with_body=True
@@ -533,6 +538,33 @@ class TestProbeScriptRegressions:
 
         assert proc.returncode == 0, proc.stdout + proc.stderr
         assert "python-urllib-PUT" in proc.stdout
+
+    def test_probe_assert_helper_resolves_when_run_outside_harness_cwd(
+        self, tmp_path: Path
+    ) -> None:
+        """probe_assert must resolve from HARNESS_DIR, not caller cwd."""
+        harness, env = _make_probe_harness(tmp_path)
+        outside_cwd = tmp_path / "outside"
+        outside_cwd.mkdir()
+
+        proc = _run_probe(harness, env, cwd=outside_cwd)
+
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "RESULT: PASS" in proc.stdout
+
+    def test_gh_api_vectors_fail_when_hook_no_longer_blocks_put(
+        self, tmp_path: Path
+    ) -> None:
+        """Vectors 2-4 must fail if only the ruleset blocks the merge."""
+        harness, env = _make_probe_harness(tmp_path, hook_blocks_api_put=False)
+
+        proc = _run_probe(harness, env)
+
+        assert proc.returncode == 1, proc.stdout + proc.stderr
+        assert "gh-api-X-PUT-flag-first" in proc.stdout
+        assert "gh-api-URL-first-PUT" in proc.stdout
+        assert "gh-api-method-equals-PUT" in proc.stdout
+        assert "hook_exit_ok=False" in proc.stdout
 
     def test_missing_hook_is_a_probe_failure_not_a_pass(
         self, tmp_path: Path
