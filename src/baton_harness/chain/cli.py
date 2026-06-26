@@ -19,9 +19,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from baton_harness._auth import TokenValidationError, validate_daemon_token
@@ -36,6 +39,13 @@ from baton_harness.chain.registry import load_registry
 from baton_harness.vendor.symphony.config import load_workflow
 
 _log = logging.getLogger(__name__)
+
+_FORCE_PR_NOT_MERGE_SELF_TEST_PAYLOAD = json.dumps(
+    {
+        "tool_name": "Bash",
+        "tool_input": {"command": "gh pr merge 42"},
+    }
+)
 
 
 def bootstrap_secrets(
@@ -104,6 +114,30 @@ def _default_workflow_path() -> Path:
     here = Path(__file__).resolve()
     repo_root = here.parent.parent.parent.parent
     return repo_root / "config" / "WORKFLOW.md"
+
+
+def _assert_force_pr_not_merge_tripwire() -> None:
+    """Fail if the force-pr-not-merge hook no longer blocks a known payload."""
+    cmd = [sys.executable, "-m", "baton_harness.hooks.force_pr_not_merge"]
+    with tempfile.TemporaryDirectory(
+        prefix="bh-force-pr-not-merge-self-test-"
+    ) as tmpdir:
+        result = subprocess.run(
+            cmd,
+            input=_FORCE_PR_NOT_MERGE_SELF_TEST_PAYLOAD,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=tmpdir,
+        )
+    if result.returncode != 2 or not result.stderr.startswith(
+        "BH_WORKER_TRIED_MERGE:"
+    ):
+        raise RuntimeError(
+            "expected force-pr-not-merge hook to exit 2 with "
+            f"BH_WORKER_TRIED_MERGE marker; got rc={result.returncode}, "
+            f"stderr={result.stderr!r}"
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -220,6 +254,16 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"bh-daemon: error: BH_PROJECT_ROOT does not exist or is not a"
             f" directory: {project_root}: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        _assert_force_pr_not_merge_tripwire()
+    except Exception as exc:
+        print(
+            "bh-daemon: error: force-pr-not-merge startup self-test failed:"
+            f" {exc}",
             file=sys.stderr,
         )
         return 1

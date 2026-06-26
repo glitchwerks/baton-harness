@@ -1,4 +1,4 @@
-"""Slice 3b — ``force-pr-not-merge`` Claude Code PreToolUse hook.
+"""Slice 3b — ``force-pr-not-merge`` Claude Code PreToolUse tripwire.
 
 Reads a Claude Code PreToolUse payload from stdin and:
 
@@ -7,12 +7,15 @@ Reads a Claude Code PreToolUse payload from stdin and:
     ``BH_WORKER_TRIED_MERGE:`` stderr marker.
   - Otherwise: exits 0 (allow).
 
-The sentinel file is the LOAD-BEARING signal — ``after_run._classify()``
-inspects it as its first step. The stderr marker is live-tail debugging
+This hook is a tripwire for honest mistakes by an otherwise well-behaved
+worker. It is NOT the merge boundary: runtime command assembly, other tool
+surfaces, or deliberate misuse can bypass this layer. The sentinel file is
+the LOAD-BEARING signal — ``after_run._classify()`` inspects it as its
+first step and escalates loudly. The stderr marker is live-tail debugging
 only.
 
-Defense-in-depth Layer 5 mechanism per ``docs/architecture-spec.md``
-§3.5; the GitHub Repository Ruleset is the actual boundary.
+The GitHub Repository Ruleset is the actual merge boundary; this tripwire
+exists to surface "worker tried to merge" intent immediately.
 
 Payload shape (per Anthropic Docs, fetched 2026-06-23):
     {"tool_name": "Bash", "tool_input": {"command": "<the command>"}}
