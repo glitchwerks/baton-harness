@@ -48,6 +48,7 @@ if sys.platform == "win32" and _GIT_BASH.exists():
     _BASH = str(_GIT_BASH)
 else:
     _BASH = "bash"
+_BASH_BIN_DIR = str(Path(_BASH).parent) if Path(_BASH).exists() else ""
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +86,15 @@ def _invoke(
     )
     env = {
         **os.environ,
-        "PATH": f"{FAKE_GH_DIR}{os.pathsep}{os.environ.get('PATH', '')}",
+        "PATH": os.pathsep.join(
+            part
+            for part in [
+                str(FAKE_GH_DIR),
+                _BASH_BIN_DIR,
+                os.environ.get("PATH", ""),
+            ]
+            if part
+        ),
         "BH_REPO_OWNER": "fake-owner",
         "BH_REPO_NAME": "fake-repo",
         "BH_GITHUB_APP_ID": app_id,
