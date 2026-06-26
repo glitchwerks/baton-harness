@@ -21,9 +21,12 @@ Coverage:
 
 from __future__ import annotations
 
+import json
 import os
 import time
+import urllib.error
 from typing import Any
+from unittest.mock import MagicMock, patch
 
 import jwt
 import pytest
@@ -90,6 +93,22 @@ def _http_post_ok(
         "token": _FAKE_TOKEN,
         "expires_at": _FAKE_EXPIRES_AT,
     }
+
+
+def _make_http_error(
+    code: int,
+    payload: dict[str, Any],
+) -> urllib.error.HTTPError:
+    """Create an HTTPError with a readable JSON body."""
+    body = MagicMock()
+    body.read.return_value = json.dumps(payload).encode("utf-8")
+    return urllib.error.HTTPError(
+        url="https://api.github.com/test",
+        code=code,
+        msg=f"HTTP {code}",
+        hdrs=None,
+        fp=body,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -476,6 +495,105 @@ class TestInstallationTokenProvider:
 
 class TestBootstrapSecretsEnvDiscipline:
     """``bootstrap_secrets`` scrubs privileged tokens from ``os.environ``."""
+
+    def test_real_mint_path_uses_http_transport(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Bootstrap with the real mint function must call GitHub over HTTP."""
+        monkeypatch.setenv("BWS_ACCESS_TOKEN", "fake-bws-token-for-test")
+        pem, _ = _generate_rsa_keypair()
+
+        def fake_fetch_secret(
+            secret_id: str,
+            *,
+            access_token: str,
+            run: object = None,
+        ) -> str:
+            """Return a valid test PEM without touching Bitwarden."""
+            return pem
+
+        response = MagicMock()
+        response.read.return_value = json.dumps(
+            {
+                "token": _FAKE_TOKEN,
+                "expires_at": _FAKE_EXPIRES_AT,
+            }
+        ).encode("utf-8")
+        response.__enter__.return_value = response
+        response.__exit__.return_value = None
+
+        with patch(
+            "urllib.request.urlopen",
+            return_value=response,
+        ) as mock_open:
+            token, expires_at = bootstrap_secrets(
+                app_id=_APP_ID,
+                app_private_key_bws_id="bws-secret-id-for-key",
+                installation_id=_INSTALLATION_ID,
+                fetch_secret=fake_fetch_secret,
+                mint_token=mint_installation_token,
+            )
+
+        assert token == _FAKE_TOKEN
+        assert expires_at == _FAKE_EXPIRES_AT
+        mock_open.assert_called_once()
+
+
+class TestGithubHttpPost:
+    """Real GitHub HTTP transport for installation-token minting."""
+
+    def test_retries_retryable_5xx_then_returns_json(self) -> None:
+        """A transient 5xx from GitHub must be retried and then succeed."""
+        import baton_harness.chain.app_auth as app_auth
+
+        response = MagicMock()
+        response.read.return_value = json.dumps(
+            {
+                "token": _FAKE_TOKEN,
+                "expires_at": _FAKE_EXPIRES_AT,
+            }
+        ).encode("utf-8")
+        response.__enter__.return_value = response
+        response.__exit__.return_value = None
+
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=[
+                _make_http_error(502, {"message": "bad gateway"}),
+                response,
+            ],
+        ) as mock_open:
+            result = app_auth._github_http_post(
+                "https://api.github.com/test",
+                {"Authorization": "Bearer fake"},
+            )
+
+        assert result["token"] == _FAKE_TOKEN
+        assert mock_open.call_count == 2
+
+    def test_http_401_raises_without_retry(self) -> None:
+        """A non-retryable 4xx from GitHub must fail closed immediately."""
+        import baton_harness.chain.app_auth as app_auth
+
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_make_http_error(
+                401,
+                {"message": "Bad credentials"},
+            ),
+        ) as mock_open:
+            with pytest.raises(AppAuthError, match="HTTP 401"):
+                app_auth._github_http_post(
+                    "https://api.github.com/test",
+                    {"Authorization": "Bearer fake"},
+                )
+
+        assert mock_open.call_count == 1
+
+
+class TestBootstrapSecretsEnvDisciplineInvariants:
+    """Bootstrap invariants beyond the real-mint transport path."""
 
     def test_bws_access_token_not_in_environ_after_bootstrap(
         self,
