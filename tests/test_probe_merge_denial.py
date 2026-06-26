@@ -17,6 +17,9 @@ Approach B was chosen over Approach A (fake_gh subprocess shim) because:
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -29,6 +32,16 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 import scripts.probe_assert as pa  # noqa: E402
+
+SCRIPT = _REPO_ROOT / "bin" / "probe-merge-denial.sh"
+HELPER = _REPO_ROOT / "scripts" / "probe_assert.py"
+
+_GIT_BASH = Path("C:/Program Files/Git/usr/bin/bash.exe")
+if sys.platform == "win32" and _GIT_BASH.exists():
+    _BASH = str(_GIT_BASH)
+else:
+    _BASH = "bash"
+_BASH_BIN_DIR = str(Path(_BASH).parent) if Path(_BASH).exists() else ""
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -332,3 +345,203 @@ class TestCLIDispatch:
         assert rc == 0
         result = _parse_stdout(capsys)
         assert result["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# Script integration regressions
+# ---------------------------------------------------------------------------
+
+
+def _write_executable(path: Path, content: str) -> None:
+    """Write an executable script file."""
+    path.write_text(content, encoding="utf-8", newline="\n")
+    path.chmod(0o755)
+
+
+def _make_probe_harness(
+    tmp_path: Path,
+    *,
+    with_hook: bool = True,
+    curl_requires_fail_with_body: bool = False,
+    python_requires_env_token: bool = False,
+) -> tuple[Path, dict[str, str]]:
+    """Create a temp harness with fake binaries for probe-script tests."""
+    harness = tmp_path / "harness"
+    (harness / "bin").mkdir(parents=True)
+    (harness / "scripts").mkdir()
+    (harness / ".venv" / "bin").mkdir(parents=True)
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+
+    shutil.copy2(SCRIPT, harness / "bin" / "probe-merge-denial.sh")
+    shutil.copy2(HELPER, harness / "scripts" / "probe_assert.py")
+
+    token_path = tmp_path / "worker-token.txt"
+    token_path.write_text("worker-token-123\n", encoding="utf-8")
+
+    hook_path = tmp_path / "bh-force-pr-not-merge"
+    if with_hook:
+        _write_executable(
+            hook_path,
+            """#!/usr/bin/env bash
+set -eu
+mkdir -p .bh-state
+touch .bh-state/worker-tried-merge
+echo "BH_WORKER_TRIED_MERGE: fake hook block" >&2
+exit 2
+""",
+        )
+
+    _write_executable(
+        fakebin / "gh",
+        """#!/usr/bin/env bash
+set -eu
+if [[ "$1" == "api" ]]; then
+  echo '403 Forbidden harness-main-no-merge' >&2
+  exit 1
+fi
+echo "unexpected gh invocation: $*" >&2
+exit 9
+""",
+    )
+
+    curl_mode = "strict" if curl_requires_fail_with_body else "loose"
+    _write_executable(
+        fakebin / "curl",
+        f"""#!/usr/bin/env bash
+set -eu
+mode="{curl_mode}"
+has_fail=0
+for arg in "$@"; do
+  if [[ "$arg" == "--fail-with-body" ]]; then
+    has_fail=1
+  fi
+done
+echo '403 harness-main-no-merge'
+echo 'HTTP_STATUS:403'
+if [[ "$mode" == "strict" && "$has_fail" -ne 1 ]]; then
+  exit 0
+fi
+exit 22
+""",
+    )
+
+    python_mode = "strict" if python_requires_env_token else "loose"
+    real_python = sys.executable.replace("\\", "/")
+    _write_executable(
+        harness / ".venv" / "bin" / "python",
+        f"""#!/usr/bin/env bash
+set -eu
+mode="{python_mode}"
+real_python="{real_python}"
+if [[ "${{1:-}}" == "-m" && "${{2:-}}" == "scripts.probe_assert" ]]; then
+  exec "$real_python" "$@"
+fi
+if [[ "${{1:-}}" == "-c" ]]; then
+  if [[ "${{2:-}}" == *"urllib.request"* ]]; then
+    if [[ "$mode" == "strict" ]]; then
+      if [[ "${{_BH_PROBE_TOKEN_INNER:-}}" == "worker-token-123" ]]; then
+        echo 'HTTP_STATUS:403'
+        echo 'harness-main-no-merge'
+        exit 1
+      fi
+      echo 'HTTP_STATUS:401'
+      echo 'missing token'
+      exit 1
+    fi
+    echo 'HTTP_STATUS:403'
+    echo 'harness-main-no-merge'
+    exit 1
+  fi
+  exec "$real_python" "$@"
+fi
+exec "$real_python" "$@"
+""",
+    )
+
+    env = {
+        **os.environ,
+        "PATH": os.pathsep.join(
+            part
+            for part in [
+                str(fakebin),
+                _BASH_BIN_DIR,
+                os.environ.get("PATH", ""),
+            ]
+            if part
+        ),
+        "BH_PROBE_SANDBOX_REPO": "fake-owner/fake-repo",
+        "BH_PROBE_PR_NUMBER": "42",
+        "BH_PROBE_WORKER_TOKEN_PATH": str(token_path),
+    }
+    if with_hook:
+        env["BH_PROBE_HOOK_SCRIPT"] = str(hook_path)
+    return harness, env
+
+
+def _run_probe(
+    harness: Path, env: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
+    """Run the real probe script from a temp harness."""
+    return subprocess.run(
+        [_BASH, str(harness / "bin" / "probe-merge-denial.sh")],
+        cwd=harness,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+
+class TestProbeScriptRegressions:
+    """Regression tests for PR #161 review findings."""
+
+    def test_preserves_nonzero_exits_from_denied_commands(
+        self, tmp_path: Path
+    ) -> None:
+        """Non-zero gh/hook exits must survive capture and count as PASS."""
+        harness, env = _make_probe_harness(tmp_path)
+
+        proc = _run_probe(harness, env)
+
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "RESULT: PASS" in proc.stdout
+
+    def test_curl_vectors_require_fail_with_body(
+        self, tmp_path: Path
+    ) -> None:
+        """Curl vectors must ask curl to fail on HTTP 403 responses."""
+        harness, env = _make_probe_harness(
+            tmp_path, curl_requires_fail_with_body=True
+        )
+
+        proc = _run_probe(harness, env)
+
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "curl-X-PUT-flag-space" in proc.stdout
+        assert "curl-request-equals-PUT" in proc.stdout
+
+    def test_python_vector_exports_worker_token_before_subprocess(
+        self, tmp_path: Path
+    ) -> None:
+        """Vector 7 must set _BH_PROBE_TOKEN_INNER before spawning Python."""
+        harness, env = _make_probe_harness(
+            tmp_path, python_requires_env_token=True
+        )
+
+        proc = _run_probe(harness, env)
+
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "python-urllib-PUT" in proc.stdout
+
+    def test_missing_hook_is_a_probe_failure_not_a_pass(
+        self, tmp_path: Path
+    ) -> None:
+        """If hook coverage is unavailable, vector 1 must fail loudly."""
+        harness, env = _make_probe_harness(tmp_path, with_hook=False)
+
+        proc = _run_probe(harness, env)
+
+        assert proc.returncode == 1, proc.stdout + proc.stderr
+        assert "gh-pr-merge" in proc.stdout
+        assert "FAIL" in proc.stdout

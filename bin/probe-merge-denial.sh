@@ -153,8 +153,8 @@ _run_vector() {
     local _tmp_out _tmp_err
     _tmp_out="$(mktemp)"
     _tmp_err="$(mktemp)"
-    # Run command; capture exit code without aborting the script.
-    "$@" >"${_tmp_out}" 2>"${_tmp_err}" || true
+    # Run command; capture the original exit code before any later command.
+    "$@" >"${_tmp_out}" 2>"${_tmp_err}"
     _CMD_EXIT=$?
     _CMD_STDOUT="$(cat "${_tmp_out}")"
     _CMD_STDERR="$(cat "${_tmp_err}")"
@@ -168,6 +168,7 @@ _run_vector() {
 # ---------------------------------------------------------------------------
 _hook_vector() {
     local cmd_string="$1"
+    _HOOK_MISSING=0
 
     # Build a tmp dir so each vector gets its own sentinel dir.
     local tmpdir
@@ -187,11 +188,11 @@ _hook_vector() {
     fi
 
     if [[ -z "${_HOOK_SCRIPT}" ]]; then
-        # Hook not installed — mark as SKIP (counts as PASS with caveat).
-        echo "  [SKIP] hook not installed; cannot verify sentinel/marker for this vector"
-        _CMD_EXIT=1
+        echo "  [FAIL] hook not installed; cannot verify hook-covered vector"
+        _HOOK_MISSING=1
+        _CMD_EXIT=0
         _HOOK_EXIT=0
-        _HOOK_STDERR=""
+        _HOOK_STDERR="hook missing"
         return
     fi
 
@@ -201,7 +202,7 @@ _hook_vector() {
     (
         cd "${tmpdir}"
         printf '%s' "${payload}" | "${_HOOK_SCRIPT}" 2>"${_tmp_herr}"
-    ) || true
+    )
     _HOOK_EXIT=$?
     _HOOK_STDERR="$(cat "${_tmp_herr}")"
     rm -f "${_tmp_herr}"
@@ -236,7 +237,10 @@ else
     _marker_ok="True"
 fi
 
-if [[ "${_exit_ok}" == "True" && "${_sentinel_ok}" == "True" && "${_marker_ok:-True}" == "True" ]]; then
+if [[ "${_HOOK_MISSING}" == "1" ]]; then
+    echo "  FAIL — hook coverage unavailable for vector 1"
+    _record 1 "gh-pr-merge" "FAIL" "hook_missing=1"
+elif [[ "${_exit_ok}" == "True" && "${_sentinel_ok}" == "True" && "${_marker_ok:-True}" == "True" ]]; then
     echo "  PASS — hook exit=${_CMD_EXIT}, sentinel present, marker in stderr"
     _record 1 "gh-pr-merge" "PASS" "exit=${_CMD_EXIT} sentinel=ok marker=ok"
 else
@@ -276,7 +280,10 @@ _http_ok="$(printf '%s' "${_http_result}" | "${_PYTHON}" -c \
 _hook_exit_ok="$(_probe_assert check_exit_code 2 "${_v2_hook_exit}" 2>&1 | \
     "${_PYTHON}" -c 'import json,sys; print(json.loads(sys.stdin.read())["ok"])' 2>/dev/null || echo False)"
 
-if [[ "${_exit_ok}" == "True" && ("${DRY_RUN}" == "1" || "${_http_ok}" == "True") ]]; then
+if [[ "${_HOOK_MISSING}" == "1" ]]; then
+    echo "  FAIL — hook coverage unavailable for vector 2"
+    _record 2 "gh-api-X-PUT-flag-first" "FAIL" "hook_missing=1"
+elif [[ "${_exit_ok}" == "True" && ("${DRY_RUN}" == "1" || "${_http_ok}" == "True") ]]; then
     echo "  PASS — API exit=${_CMD_EXIT} 403-in-body=${_http_ok}, hook exit=${_v2_hook_exit}"
     _record 2 "gh-api-X-PUT-flag-first" "PASS" \
         "api_exit=${_CMD_EXIT} 403=${_http_ok} hook_exit=${_v2_hook_exit}"
@@ -311,7 +318,10 @@ _http_result="$(_probe_assert check_http_403 "${_v3_combined}" 2>&1)"
 _http_ok="$(printf '%s' "${_http_result}" | "${_PYTHON}" -c \
     'import json,sys; print(json.loads(sys.stdin.read())["ok"])' 2>/dev/null || echo False)"
 
-if [[ "${_exit_ok}" == "True" && ("${DRY_RUN}" == "1" || "${_http_ok}" == "True") ]]; then
+if [[ "${_HOOK_MISSING}" == "1" ]]; then
+    echo "  FAIL — hook coverage unavailable for vector 3"
+    _record 3 "gh-api-URL-first-PUT" "FAIL" "hook_missing=1"
+elif [[ "${_exit_ok}" == "True" && ("${DRY_RUN}" == "1" || "${_http_ok}" == "True") ]]; then
     echo "  PASS — API exit=${_CMD_EXIT} 403-in-body=${_http_ok}, hook exit=${_v3_hook_exit}"
     _record 3 "gh-api-URL-first-PUT" "PASS" \
         "api_exit=${_CMD_EXIT} 403=${_http_ok} hook_exit=${_v3_hook_exit}"
@@ -345,7 +355,10 @@ _http_result="$(_probe_assert check_http_403 "${_v4_combined}" 2>&1)"
 _http_ok="$(printf '%s' "${_http_result}" | "${_PYTHON}" -c \
     'import json,sys; print(json.loads(sys.stdin.read())["ok"])' 2>/dev/null || echo False)"
 
-if [[ "${_exit_ok}" == "True" && ("${DRY_RUN}" == "1" || "${_http_ok}" == "True") ]]; then
+if [[ "${_HOOK_MISSING}" == "1" ]]; then
+    echo "  FAIL — hook coverage unavailable for vector 4"
+    _record 4 "gh-api-method-equals-PUT" "FAIL" "hook_missing=1"
+elif [[ "${_exit_ok}" == "True" && ("${DRY_RUN}" == "1" || "${_http_ok}" == "True") ]]; then
     echo "  PASS — API exit=${_CMD_EXIT} 403-in-body=${_http_ok}, hook exit=${_v4_hook_exit}"
     _record 4 "gh-api-method-equals-PUT" "PASS" \
         "api_exit=${_CMD_EXIT} 403=${_http_ok} hook_exit=${_v4_hook_exit}"
@@ -364,6 +377,7 @@ echo ""
 echo "=== Vector 5: curl -X PUT (raw HTTP, flag-space form) ==="
 _GH_TOKEN="$(cat "${BH_PROBE_WORKER_TOKEN_PATH}")"
 _run_vector curl --silent --show-error --write-out "\nHTTP_STATUS:%{http_code}" \
+    --fail-with-body \
     -X PUT \
     -H "Authorization: token ${_GH_TOKEN}" \
     -H "Accept: application/vnd.github+json" \
@@ -397,6 +411,7 @@ echo ""
 echo "=== Vector 6: curl --request=PUT (raw HTTP, equals form) ==="
 _GH_TOKEN="$(cat "${BH_PROBE_WORKER_TOKEN_PATH}")"
 _run_vector curl --silent --show-error --write-out "\nHTTP_STATUS:%{http_code}" \
+    --fail-with-body \
     "--request=PUT" \
     -H "Authorization: token ${_GH_TOKEN}" \
     -H "Accept: application/vnd.github+json" \
@@ -438,7 +453,7 @@ if [[ "${DRY_RUN}" == "1" ]]; then
 else
     # Pass token length only to diagnostics; token itself goes through env var
     # scoped strictly to the python subprocess (never printed/logged).
-    _run_vector "${_PYTHON}" -c "
+    _run_vector env _BH_PROBE_TOKEN_INNER="${_GH_TOKEN}" "${_PYTHON}" -c "
 import urllib.request, urllib.error, json, os, sys
 token = os.environ.get('_BH_PROBE_TOKEN_INNER', '')
 url = '${API_URL}'
@@ -465,11 +480,8 @@ except Exception as exc:
     print('ERROR: ' + str(exc), file=sys.stderr)
     sys.exit(1)
 " 2>&1
-    # Pass token as a scoped env var to the subprocess (never echoed).
 fi
-export _BH_PROBE_TOKEN_INNER="${_GH_TOKEN}"
 unset _GH_TOKEN
-unset _BH_PROBE_TOKEN_INNER
 _v7_combined="${_CMD_STDOUT} ${_CMD_STDERR}"
 
 _exit_result="$(_probe_assert check_exit_code 1 "${_CMD_EXIT}" 2>&1)"
