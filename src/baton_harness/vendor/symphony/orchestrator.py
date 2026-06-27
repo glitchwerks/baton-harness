@@ -29,6 +29,7 @@ class Orchestrator:
         self.state_path = state_path
         self.workflow_path = workflow_path
         self.state = OrchestratorState(max_concurrent=config.max_concurrent)
+        self.state.load(state_path)  # VENDOR-PATCH VP-6: transparent restore on startup
         self.tracker = GitHubTracker(
             labels=config.tracker_labels,
             exclude_labels=config.tracker_exclude_labels,

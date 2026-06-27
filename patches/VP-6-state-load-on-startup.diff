@@ -1,0 +1,129 @@
+diff --git a/src/baton_harness/vendor/symphony/orchestrator.py b/src/baton_harness/vendor/symphony/orchestrator.py
+index abeeaab..de2f688 100644
+--- a/src/baton_harness/vendor/symphony/orchestrator.py
++++ b/src/baton_harness/vendor/symphony/orchestrator.py
+@@ -29,6 +29,7 @@ class Orchestrator:
+         self.state_path = state_path
+         self.workflow_path = workflow_path
+         self.state = OrchestratorState(max_concurrent=config.max_concurrent)
++        self.state.load(state_path)  # VENDOR-PATCH VP-6: transparent restore on startup
+         self.tracker = GitHubTracker(
+             labels=config.tracker_labels,
+             exclude_labels=config.tracker_exclude_labels,
+diff --git a/src/baton_harness/vendor/symphony/state.py b/src/baton_harness/vendor/symphony/state.py
+index 1bfadb4..6d438f1 100644
+--- a/src/baton_harness/vendor/symphony/state.py
++++ b/src/baton_harness/vendor/symphony/state.py
+@@ -1,11 +1,16 @@
+ """symphony/state.py — In-memory orchestrator state with JSON persistence."""
++
+ from __future__ import annotations
+ 
+ import json
++import logging  # VENDOR-PATCH VP-6: needed for load() corruption warning
+ import os
++import tempfile  # VENDOR-PATCH VP-6: needed for atomic persist() via tempfile
+ import time
+ from dataclasses import dataclass, field
+ 
++log = logging.getLogger("symphony")  # VENDOR-PATCH VP-6: module-level logger
++
+ 
+ @dataclass
+ class IssueState:
+@@ -85,6 +90,20 @@ class OrchestratorState:
+         return [r for r in self.retry_queue.values() if r.due_at <= now]
+ 
+     def persist(self, path: str) -> None:
++        """Atomically write state to *path* via a sibling tempfile + os.replace.
++
++        Writing to a temporary file first ensures that a crash or exception
++        mid-write never leaves a partial/corrupt file at *path*.  The original
++        file content is preserved on failure.
++
++        Args:
++            path: Destination file path for the serialised state JSON.
++
++        Raises:
++            OSError: If the directory cannot be created, the temp file cannot
++                be written, or ``os.replace`` fails.  Any partially-written
++                temp file is cleaned up before re-raising.
++        """  # VENDOR-PATCH VP-6: method fully replaced for atomic write
+         data = {
+             "running": [
+                 {
+@@ -113,6 +132,71 @@ class OrchestratorState:
+             "claimed": list(self.claimed),
+             "completed_count": len(self.completed),
+         }
+-        os.makedirs(os.path.dirname(path), exist_ok=True)
+-        with open(path, "w") as f:
+-            json.dump(data, f, indent=2)
++        dir_path = os.path.dirname(path)  # VENDOR-PATCH VP-6: atomic write
++        os.makedirs(dir_path, exist_ok=True)  # VENDOR-PATCH VP-6: atomic write
++        fd, tmp = tempfile.mkstemp(  # VENDOR-PATCH VP-6: atomic write
++            dir=dir_path, prefix=".state.", suffix=".tmp"
++        )
++        try:  # VENDOR-PATCH VP-6: atomic write
++            with os.fdopen(fd, "w") as f:  # VENDOR-PATCH VP-6: atomic write
++                json.dump(data, f, indent=2)  # VENDOR-PATCH VP-6: atomic write
++            os.replace(tmp, path)  # VENDOR-PATCH VP-6: atomic rename
++        except Exception:  # VENDOR-PATCH VP-6: atomic write cleanup on failure
++            try:  # VENDOR-PATCH VP-6: atomic write cleanup on failure
++                os.unlink(tmp)  # VENDOR-PATCH VP-6: atomic write cleanup
++            except OSError:  # VENDOR-PATCH VP-6: atomic write cleanup
++                pass  # VENDOR-PATCH VP-6: atomic write cleanup
++            raise  # VENDOR-PATCH VP-6: atomic write cleanup on failure
++
++    def load(self, path: str) -> None:
++        """Restore running, retry_queue, and claimed from a persisted state file.
++
++        Missing file is a no-op (first-ever startup).  Malformed JSON logs a
++        WARNING and leaves state empty (safe fresh-start rather than crash).
++        ``last_event_at`` is always ``None`` after load because the field is
++        not included in the persisted JSON format.
++
++        Args:
++            path: Path to a ``state.json`` previously written by
++                :meth:`persist`.
++        """  # VENDOR-PATCH VP-6: new method — load state from disk
++        try:  # VENDOR-PATCH VP-6: load()
++            with open(path, encoding="utf-8") as f:  # VENDOR-PATCH VP-6
++                data = json.load(f)  # VENDOR-PATCH VP-6: load()
++        except FileNotFoundError:  # VENDOR-PATCH VP-6: missing file → no-op
++            return  # VENDOR-PATCH VP-6: missing file → no-op
++        except (json.JSONDecodeError, OSError) as exc:  # VENDOR-PATCH VP-6
++            log.warning(  # VENDOR-PATCH VP-6: corruption fallback
++                "state.json is malformed or unreadable — starting fresh: %s",
++                exc,
++            )
++            return  # VENDOR-PATCH VP-6: corruption fallback — state stays empty
++
++        for entry in data.get("running", []):  # VENDOR-PATCH VP-6: load()
++            issue_st = IssueState(  # VENDOR-PATCH VP-6: rebuild IssueState
++                issue_number=entry["issue_number"],
++                identifier=entry["identifier"],
++                title=entry["title"],
++                state=entry["state"],
++                turn=entry["turn"],
++                max_turns=entry["max_turns"],
++                started_at=entry["started_at"],
++                last_event=entry.get("last_event"),
++                # last_event_at intentionally omitted from persist() output;
++                # defaults to None per IssueState field default.  # VP-6
++                error=entry.get("error"),
++            )
++            self.running[issue_st.issue_number] = issue_st  # VENDOR-PATCH VP-6
++
++        for entry in data.get("retrying", []):  # VENDOR-PATCH VP-6: load()
++            retry = RetryEntry(  # VENDOR-PATCH VP-6: rebuild RetryEntry
++                issue_number=entry["issue_number"],
++                identifier=entry["identifier"],
++                attempt=entry["attempt"],
++                due_at=entry["due_at"],
++                error=entry.get("error"),
++            )
++            self.retry_queue[retry.issue_number] = retry  # VENDOR-PATCH VP-6
++
++        for num in data.get("claimed", []):  # VENDOR-PATCH VP-6: load claimed
++            self.claimed.add(int(num))  # VENDOR-PATCH VP-6: load claimed
