@@ -47,12 +47,14 @@ import signal
 import subprocess
 import sys
 import threading
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from baton_harness.chain import branches
 from baton_harness.chain import recovery as _recovery_mod
+from baton_harness.chain.alert_post import post_slack_alert
 from baton_harness.chain.app_auth import (
     InstallationTokenSource,
     gh_env,
@@ -78,6 +80,10 @@ from baton_harness.chain.reconcile import (
 from baton_harness.chain.recovery import RecoveryResult, scan_orphan_worktrees
 from baton_harness.chain.redispatch import RedispatchTally
 from baton_harness.chain.registry import RepoConfig
+from baton_harness.chain.ruleset_status import (
+    RulesetStatus,
+    ruleset_is_provisioned,
+)
 from baton_harness.chain.runlog import RunLog
 from baton_harness.chain.scheduler import IssueScheduler
 from baton_harness.vendor.symphony.config import WorkflowConfig
@@ -93,6 +99,236 @@ _log = logging.getLogger(__name__)
 #: Currently contains only ``LABEL_BLOCKED`` (``"blocked"``); adding an
 #: entry here automatically applies to all three gates.
 _DISPATCH_EXCLUDE_LABELS: frozenset[str] = frozenset({LABEL_BLOCKED})
+
+
+def _should_launch_worker(
+    issue_number: int,
+    owner: str,
+    repo: str,
+    *,
+    app_id: str,
+    runner: Callable[[list[str]], subprocess.CompletedProcess[str]],
+    obs: ObsConfig,
+) -> bool:
+    """Per-launch branch-protection preflight gate.
+
+    Calls ``ruleset_is_provisioned`` and returns ``True`` only when both
+    rulesets are present and content-equal to the checked-in configs
+    (``RulesetStatus.MATCH``).  On any non-MATCH result the worker launch
+    is refused (returns ``False``) and a Slack alert is sent to
+    ``obs.heartbeat_ping_url`` if configured.
+
+    Failure-isolation: if ``post_slack_alert`` raises despite its
+    no-raise contract, the exception is caught and logged; the refusal
+    still fires.
+
+    Args:
+        issue_number: Issue number about to be dispatched (for log context).
+        owner: Repository owner (org or user login).
+        repo: Repository name.
+        app_id: Numeric GitHub App ID (string form) for placeholder
+            substitution in the feature ruleset.
+        runner: gh runner callable for the ruleset inspector.
+        obs: Observability config; ``obs.heartbeat_ping_url`` is used as
+            the Slack webhook target.
+
+    Returns:
+        ``True`` when the preflight passes (MATCH); ``False`` otherwise.
+    """
+    status = ruleset_is_provisioned(owner, repo, app_id=app_id, runner=runner)
+
+    if status is RulesetStatus.MATCH:
+        return True
+
+    # Build the alert message (spec: include refusal phrase + Failed checks).
+    if status is RulesetStatus.DRIFT:
+        checks_detail = (
+            "harness-main-no-merge, harness-feature-daemon-only "
+            "(content drift detected)"
+        )
+    elif status is RulesetStatus.ABSENT:
+        checks_detail = (
+            "harness-main-no-merge, harness-feature-daemon-only "
+            "(one or both rulesets absent)"
+        )
+    else:
+        checks_detail = f"ruleset check returned {status.name}"
+
+    message = (
+        "baton-harness refusing to launch worker — "
+        "main branch protection missing/misconfigured. "
+        "Will NOT run in dangerous mode. "
+        f"Failed checks: {checks_detail}."
+    )
+
+    _log.warning(
+        "daemon: preflight refused issue #%d — %s (%s)",
+        issue_number,
+        status.name,
+        checks_detail,
+    )
+
+    if obs.heartbeat_ping_url is None:
+        _log.warning(
+            "daemon: no heartbeat_ping_url configured; "
+            "Slack preflight alert not sent for issue #%d",
+            issue_number,
+        )
+    else:
+        try:
+            post_slack_alert(obs.heartbeat_ping_url, message)
+        except Exception:  # noqa: BLE001
+            _log.warning(
+                "daemon: post_slack_alert raised despite no-raise "
+                "contract (issue #%d); swallowing",
+                issue_number,
+            )
+
+    return False
+
+
+def _build_preflight_runner(
+    installation_token: InstallationTokenSource,
+) -> Callable[[list[str]], subprocess.CompletedProcess[str]]:
+    """Build a gh runner with the App's installation token in env.
+
+    Uses ``chain.app_auth.gh_env(installation_token)`` to construct the
+    env dict; passes ``env=...`` to ``subprocess.run`` so ``gh``
+    authenticates as the harness App per-call.  This matches the pattern
+    used by ``gh_deps``, ``escalation``, ``merge``, and ``recovery``
+    elsewhere in ``chain/``.
+
+    Without this, a bare ``subprocess.run(["gh", ...])`` passes no env
+    override, so ruleset ``gh api`` calls authenticate via ambient
+    credentials.  In deployments without an ambient ``GH_TOKEN``, every
+    launch is refused with ``RulesetStatus.ERROR``.
+
+    Args:
+        installation_token: GitHub App installation access token
+            (``ghs_`` prefix, or a refreshable token-source object) to
+            inject as ``GH_TOKEN`` / ``GITHUB_TOKEN`` in the subprocess
+            environment via ``gh_env``.
+
+    Returns:
+        A callable that accepts a list of gh args and returns a
+        ``CompletedProcess[str]`` with ``env`` set to the resolved App
+        token environment.
+    """
+    _env = gh_env(installation_token)
+
+    def _runner(
+        args: list[str],
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["gh", *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=_env,
+        )
+
+    return _runner
+
+
+def _resolve_app_id() -> str | None:
+    """Resolve the GitHub App ID from the environment.
+
+    Reads ``BH_GITHUB_APP_ID`` from the environment.  Returns ``None``
+    (fail-closed) if the variable is absent or empty, logging a critical
+    message so operators are informed.
+
+    Returns:
+        The App ID string if available; ``None`` otherwise.
+    """
+    try:
+        app_id = os.environ["BH_GITHUB_APP_ID"]
+    except KeyError:
+        _log.critical(
+            "daemon: BH_GITHUB_APP_ID is not set; "
+            "refusing to launch worker (fail-closed)"
+        )
+        return None
+    if not app_id:
+        _log.critical(
+            "daemon: BH_GITHUB_APP_ID is empty; "
+            "refusing to launch worker (fail-closed)"
+        )
+        return None
+    return app_id
+
+
+async def _launch_one_issue(
+    orch: Orchestrator,
+    issue_obj: object,
+    owner: str,
+    repo: str,
+    app_id: str,
+    installation_token: InstallationTokenSource,
+    obs: ObsConfig,
+) -> str | None:
+    """Preflight + launch helper extracted from the daemon's launch loop.
+
+    Builds a token-authenticated gh runner via
+    ``_build_preflight_runner(installation_token)`` so that ruleset ``gh
+    api`` calls authenticate as the harness App rather than relying on
+    ambient credentials (P1 fix).
+
+    On preflight refusal, restores the ``agent-ready`` label so the issue
+    remains visible to future poll ticks and posts a blocking comment via
+    ``alert(severity="critical")`` (P2a fix).
+
+    Returns the worker result string ("pr_created" / "no_pr" / etc.) on
+    success; returns ``None`` when preflight refuses (parked).
+
+    Args:
+        orch: The Orchestrator instance to dispatch the worker through.
+        issue_obj: Issue object with a ``.number`` attribute.
+        owner: Repository owner (org or user login).
+        repo: Repository name.
+        app_id: Numeric GitHub App ID (string form) for ruleset checks.
+        installation_token: GitHub App installation access token
+            (``ghs_`` prefix).  Used to build the preflight runner so
+            ruleset checks authenticate as the App, not ambient env.
+        obs: Observability config for preflight alert routing.
+
+    Returns:
+        The worker result string on success, or ``None`` when preflight
+        refuses the launch.
+    """
+    issue_number: int = issue_obj.number  # type: ignore[attr-defined]
+    preflight_runner = _build_preflight_runner(installation_token)
+    preflight = _should_launch_worker(
+        issue_number,
+        owner,
+        repo,
+        app_id=app_id,
+        runner=preflight_runner,
+        obs=obs,
+    )
+    if not preflight:
+        # P2a: restore agent-ready so the issue stays visible to future
+        # poll ticks (protection may be restored later).
+        _label_edit(
+            owner,
+            repo,
+            issue_number,
+            add=["agent-ready"],
+            remove=["agent-in-progress"],
+            installation_token=installation_token,
+        )
+        # Post a blocking comment so operators know why the worker was
+        # refused.
+        alert(
+            owner,
+            repo,
+            issue_number,
+            "preflight refused — branch protection missing or "
+            "misconfigured; worker not launched",
+            severity="critical",
+            installation_token=installation_token,
+        )
+        return None
+    return await orch._run_worker(issue_obj)  # type: ignore[arg-type]
 
 
 def reconstruct(
@@ -739,6 +975,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
     runlog: RunLog | None = None,
     tally: RedispatchTally | None = None,
     liveness_state: LivenessState | None = None,
+    obs: ObsConfig | None = None,
     installation_token: InstallationTokenSource = "",
 ) -> None:
     """Run one work unit (one DAG) to completion.
@@ -769,6 +1006,10 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
             heartbeat monitor.  When provided, this function calls
             ``mark_in_progress`` before dispatching a worker and
             ``clear`` on every terminal branch (C-I4).
+        obs: Optional observability config.  Threaded to
+            ``_launch_one_issue`` for branch-protection preflight
+            alerting.  When ``None``, preflight refuses to launch
+            (fail-closed — ``app_id`` cannot be resolved).
         installation_token: Optional GitHub App installation access token
             (``ghs_`` prefix).  When non-empty, all ``gh`` subprocess
             calls use a per-call env copy with ``GH_TOKEN`` overridden —
@@ -1277,8 +1518,39 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 )
             except Exception:  # noqa: BLE001
                 pass
+        # Branch-protection preflight: resolve app_id and obs before launch.
+        # Both are required; either missing → fail-closed (park + continue).
+        _app_id = _resolve_app_id()
+        if _app_id is None or obs is None:
+            _log.critical(
+                "daemon: preflight cannot run for #%d — "
+                "app_id=%r, obs=%s; refusing to launch (fail-closed)",
+                n,
+                _app_id,
+                "set" if obs is not None else "None",
+            )
+            _label_edit(
+                owner,
+                repo,
+                n,
+                remove=["agent-in-progress"],
+                installation_token=installation_token,
+            )
+            if liveness_state is not None:
+                liveness_state.clear()
+            sched.mark_parked(n)
+            parked_reasons[n] = "preflight refused"
+            continue
         try:
-            worker_result = await orch._run_worker(issue_obj)
+            worker_result = await _launch_one_issue(
+                orch,
+                issue_obj,
+                owner,
+                repo,
+                _app_id,
+                installation_token,
+                obs,
+            )
         except Exception as exc:
             _log.error("daemon: _run_worker raised for #%d: %s", n, exc)
             _label_edit(
@@ -1302,6 +1574,19 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 runlog=runlog,
                 installation_token=installation_token,
             )
+            continue
+
+        # Preflight refused: _launch_one_issue returns None when
+        # _should_launch_worker denies launch.  Park + continue.
+        if worker_result is None:
+            _log.warning("daemon: preflight refused issue #%d; parking", n)
+            # Labels (restore agent-ready, remove agent-in-progress) are
+            # handled inside _launch_one_issue's refusal branch — outer
+            # loop only needs to park the scheduler state.
+            if liveness_state is not None:
+                liveness_state.clear()
+            sched.mark_parked(n)
+            parked_reasons[n] = "preflight refused"
             continue
 
         # Emit outcome event (best-effort; never raises into the loop).
@@ -2249,6 +2534,7 @@ async def _poll_and_run(
                 runlog=runlog,
                 tally=tally,
                 liveness_state=liveness_state,
+                obs=obs,
                 installation_token=installation_token,
             )
     else:
@@ -2381,6 +2667,7 @@ async def _poll_and_run(
             runlog=runlog,
             tally=tally,
             liveness_state=liveness_state,
+            obs=obs,
             installation_token=installation_token,
         )
 

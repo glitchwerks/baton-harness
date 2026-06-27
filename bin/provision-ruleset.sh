@@ -216,7 +216,7 @@ for entry in entries:
 #   - id, source, source_type, _links, node_id, *_at, current_user_can_bypass
 #     (server-managed fields present in GET responses but absent in PUT/POST)
 # ---------------------------------------------------------------------------
-_COMPARE_KEYS='["name","target","enforcement","bypass_actors","conditions","rules"]'
+_COMPARE_KEYS="$(cat "${HARNESS_DIR}/config/ruleset.compare-keys.json")"
 
 # ---------------------------------------------------------------------------
 # Apply one ruleset: list+filter, GET-by-id, compare, PUT/POST.
