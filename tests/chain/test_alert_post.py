@@ -21,6 +21,18 @@ Contract being tested:
 All HTTP calls are intercepted by patching ``urllib.request.urlopen``
 (or the module-level binding the implementation uses).  No live network
 is touched.
+
+P2b (codex-review PR #167, cef91ce5aa): on any delivery failure the full
+webhook URL must NOT appear in log records.  Slack incoming webhook URLs
+contain a bearer-secret token segment (the third path component after
+``/services/T.../B.../``).  The current implementation at alert_post.py
+line 59-62 logs the full URL via ``_log.warning("... %s ...", url, ...)``,
+which leaks the token into any log aggregator.
+
+Fix: log only the host (``hooks.slack.com``) or a redacted path prefix,
+not the full URL.  The three P2b tests cover all three failure modes
+(URLError, non-2xx status, generic exception) and assert that the secret
+token segment ``SECRETTOKEN`` does NOT appear in any caplog record.
 """
 
 from __future__ import annotations
@@ -300,3 +312,129 @@ def test_post_slack_alert_logs_warning_on_failure(
         "A delivery failure must emit a WARNING-level log; "
         f"records seen: {[r.message for r in caplog.records]!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# P2b — webhook URL secret token must NOT appear in log output on failure
+# ---------------------------------------------------------------------------
+
+# Slack incoming webhook URL format:
+#   https://hooks.slack.com/services/T<WORKSPACE>/<BOTID>/<SECRETTOKEN>
+# The third path segment is a bearer-style secret.  The current
+# implementation logs the full URL on failure, leaking the token.
+#
+# These three tests use a URL with a distinctive token segment
+# "SECRETTOKEN" and assert it is absent from every log record after
+# each failure mode.
+
+_SECRET_WEBHOOK = (
+    "https://hooks.slack.com/services/TWORKSPACE/BBOTID/SECRETTOKEN"
+)
+
+
+def test_url_secret_token_not_logged_on_url_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """URLError failure must not log the webhook URL token segment.
+
+    The full URL contains a bearer-secret in its path.  On a URLError the
+    current implementation logs the URL via ``_log.warning(..., url, ...)``,
+    leaking the token.  The fix must log only the host or a redacted path,
+    never the raw URL.
+
+    Pins: ``"SECRETTOKEN" not in record.getMessage()`` for all caplog
+    records after a URLError delivery failure.
+
+    Args:
+        caplog: Pytest log-capture fixture.
+    """
+    from baton_harness.chain.alert_post import post_slack_alert
+
+    with (
+        patch(
+            "urllib.request.urlopen",
+            side_effect=urllib.error.URLError("connection refused"),
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
+        result = post_slack_alert(_SECRET_WEBHOOK, _MESSAGE)
+
+    assert result is False, "URLError must yield False"
+    for record in caplog.records:
+        assert "SECRETTOKEN" not in record.getMessage(), (
+            "The webhook URL token segment 'SECRETTOKEN' must NOT appear in "
+            f"log output on URLError failure.  "
+            f"Offending record: {record.getMessage()!r}.  "
+            "Log only the host (e.g. 'hooks.slack.com') or a redacted path."
+        )
+
+
+def test_url_secret_token_not_logged_on_non_2xx_response(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Non-2xx response failure must not log the webhook URL token segment.
+
+    On a non-2xx HTTP response (e.g. 400, 500) the implementation logs a
+    warning.  That warning must not include the full URL with the secret
+    token path segment.
+
+    Pins: ``"SECRETTOKEN" not in record.getMessage()`` for all caplog
+    records after a non-2xx response.
+
+    Args:
+        caplog: Pytest log-capture fixture.
+    """
+    from baton_harness.chain.alert_post import post_slack_alert
+
+    with (
+        patch(
+            "urllib.request.urlopen",
+            return_value=_mock_response(400),
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
+        result = post_slack_alert(_SECRET_WEBHOOK, _MESSAGE)
+
+    assert result is False, "Non-2xx must yield False"
+    for record in caplog.records:
+        assert "SECRETTOKEN" not in record.getMessage(), (
+            "The webhook URL token segment 'SECRETTOKEN' must NOT appear in "
+            f"log output on non-2xx failure.  "
+            f"Offending record: {record.getMessage()!r}.  "
+            "Log only the host or a redacted path, not the full URL."
+        )
+
+
+def test_url_secret_token_not_logged_on_generic_exception(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Generic exception failure must not log the webhook URL token segment.
+
+    On any unexpected exception from urlopen the implementation logs a
+    warning.  That warning must not include the full URL.
+
+    Pins: ``"SECRETTOKEN" not in record.getMessage()`` for all caplog
+    records after a generic-exception delivery failure.
+
+    Args:
+        caplog: Pytest log-capture fixture.
+    """
+    from baton_harness.chain.alert_post import post_slack_alert
+
+    with (
+        patch(
+            "urllib.request.urlopen",
+            side_effect=RuntimeError("unexpected network error"),
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
+        result = post_slack_alert(_SECRET_WEBHOOK, _MESSAGE)
+
+    assert result is False, "Generic exception must yield False"
+    for record in caplog.records:
+        assert "SECRETTOKEN" not in record.getMessage(), (
+            "The webhook URL token segment 'SECRETTOKEN' must NOT appear in "
+            f"log output on generic-exception failure.  "
+            f"Offending record: {record.getMessage()!r}.  "
+            "Log only the host or a redacted path, not the full URL."
+        )

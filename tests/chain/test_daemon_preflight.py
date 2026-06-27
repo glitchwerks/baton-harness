@@ -42,6 +42,21 @@ Coverage:
 - Alert POST failure does NOT crash launch decision loop.
 - No ``BH_HEARTBEAT_PING_URL`` configured (obs.heartbeat_ping_url is None)
   → returns False on DRIFT but no POST attempted; a warning is logged.
+
+Additional coverage added for codex-review issues (PR #167, cef91ce5aa):
+
+P1 — _build_preflight_runner seam: when _launch_one_issue is called with
+     an installation_token, the runner it builds via _build_preflight_runner
+     passes env=gh_env(installation_token) to subprocess.run so that
+     ruleset gh api calls authenticate as the App, not ambient credentials.
+
+P2a — issue visibility on preflight refusal: when preflight returns False,
+     the issue's agent-ready label must be visible again after
+     _launch_one_issue returns (either never removed, or restored) AND a
+     blocking comment with "preflight refused" and the RulesetStatus reason
+     must be posted to the issue.  agent-in-progress must NOT be left set.
+
+See also test_alert_post.py for P2b (webhook URL secret not logged).
 """
 
 from __future__ import annotations
@@ -64,6 +79,7 @@ _OWNER = "glitchwerks"
 _REPO = "baton-harness"
 _ISSUE = 42
 _APP_ID = "111"
+_TOKEN = "ghs_TESTTOKEN"
 _WEBHOOK = "https://hooks.slack.com/services/T00/B00/secret"
 
 
@@ -449,7 +465,8 @@ def test_daemon_launch_loop_calls_should_launch_worker_before_run_worker(
 ) -> None:
     """Launch loop consults _should_launch_worker before _run_worker.
 
-    Code-writer must extract a module-level async helper with the signature::
+    Code-writer must extract a module-level async helper with the updated
+    signature (extended by P1 — installation_token parameter)::
 
         async def _launch_one_issue(
             orch: Orchestrator,
@@ -457,22 +474,29 @@ def test_daemon_launch_loop_calls_should_launch_worker_before_run_worker(
             owner: str,
             repo: str,
             app_id: str,
+            installation_token: str,
             runner: Callable[[list[str]], subprocess.CompletedProcess[str]],
             obs: ObsConfig,
         ) -> str | None
 
+    **Signature change (P1):** ``installation_token`` is now threaded
+    through so the helper can call ``_build_preflight_runner(token)``
+    instead of using the ambient ``_default_gh_runner``.
+
     The helper's contract:
 
-    1. ``preflight = _should_launch_worker(issue_number, owner, repo,
+    1. ``runner = _build_preflight_runner(installation_token)``
+    2. ``preflight = _should_launch_worker(issue_number, owner, repo,
        app_id=app_id, runner=runner, obs=obs)``
-    2. If not preflight: skip ``_run_worker``; return ``None``.
-    3. Otherwise: ``return await orch._run_worker(issue_obj)``
+    3. If not preflight: skip ``_run_worker``; return ``None``.
+    4. Otherwise: ``return await orch._run_worker(issue_obj)``
 
     The existing dispatch loop near L1373 of daemon.py calls
     ``_launch_one_issue`` in place of the bare ``await
     orch._run_worker(issue_obj)``.  ``_run_work_unit`` and its callers
     must thread ``app_id`` (from ``RepoConfig.app_id`` or
-    ``config.app_id``) and ``obs`` down to ``_launch_one_issue``.
+    ``config.app_id``), ``installation_token``, and ``obs`` down to
+    ``_launch_one_issue``.
 
     This test patches both ``_should_launch_worker`` and
     ``Orchestrator._run_worker`` at module scope, then drives
@@ -521,6 +545,7 @@ def test_daemon_launch_loop_calls_should_launch_worker_before_run_worker(
                 _OWNER,
                 _REPO,
                 _APP_ID,
+                _TOKEN,
                 _fake_runner,
                 obs,
             )
@@ -571,7 +596,8 @@ def test_daemon_launch_loop_skips_run_worker_when_preflight_refuses(
 
     See the seam contract in
     ``test_daemon_launch_loop_calls_should_launch_worker_before_run_worker``
-    for the full helper signature and threading requirements.
+    for the full helper signature (including the ``installation_token``
+    parameter added by P1) and threading requirements.
 
     Args:
         tmp_path: Pytest tmp_path fixture.
@@ -607,6 +633,7 @@ def test_daemon_launch_loop_skips_run_worker_when_preflight_refuses(
                 _OWNER,
                 _REPO,
                 _APP_ID,
+                _TOKEN,
                 _fake_runner,
                 obs,
             )
@@ -619,4 +646,400 @@ def test_daemon_launch_loop_skips_run_worker_when_preflight_refuses(
     assert result is None, (
         "_launch_one_issue must return None when preflight refuses; "
         f"got {result!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# P1 — _build_preflight_runner seam uses installation token in subprocess env
+# ---------------------------------------------------------------------------
+
+
+def test_build_preflight_runner_injects_gh_token_into_subprocess_env(
+    tmp_path: Path,
+) -> None:
+    """_build_preflight_runner(token) produces a runner that passes token env.
+
+    Code-writer must add a module-level factory at ``chain/daemon.py``::
+
+        def _build_preflight_runner(
+            installation_token: str,
+        ) -> Callable[[list[str]], subprocess.CompletedProcess[str]]:
+            ...
+
+    The returned callable, when invoked with a list of args, must call
+    ``subprocess.run`` with ``env=`` containing at least
+    ``GH_TOKEN=installation_token``.  This is obtained via
+    ``chain.app_auth.gh_env(installation_token)``.
+
+    Without this fix, the bare ``_default_gh_runner`` passes no env
+    override, so ruleset ``gh api`` calls authenticate as nobody / the
+    wrong user in deployments without an ambient GH_TOKEN, and every
+    worker launch is refused with ``ERROR``.
+
+    Test mechanism: patch ``chain.daemon.subprocess.run`` and assert that
+    the ``env`` kwarg passed to it contains ``GH_TOKEN=_TOKEN``.  The
+    runner factory is driven directly (not through _launch_one_issue) so
+    the seam is pinned independently.
+
+    Args:
+        tmp_path: Pytest tmp_path fixture (unused; kept for fixture arity
+            consistency across this module).
+    """
+    import subprocess as _subprocess
+
+    import baton_harness.chain.daemon as daemon_mod
+
+    captured_env: list[dict[str, str] | None] = []
+
+    def _spy_run(
+        args: list[str],
+        **kwargs: Any,  # noqa: ANN401
+    ) -> _subprocess.CompletedProcess[str]:
+        captured_env.append(kwargs.get("env"))
+        return _subprocess.CompletedProcess(
+            args=args, returncode=0, stdout="", stderr=""
+        )
+
+    # _build_preflight_runner must exist at module scope in daemon.py.
+    runner_factory = getattr(
+        daemon_mod,
+        "_build_preflight_runner",
+        None,
+    )
+    assert runner_factory is not None, (
+        "_build_preflight_runner must be defined at module scope in "
+        "chain/daemon.py (P1 seam)"
+    )
+
+    runner = runner_factory(_TOKEN)
+
+    with patch(
+        "baton_harness.chain.daemon.subprocess.run", side_effect=_spy_run
+    ):
+        runner(["gh", "api", "repos/o/r/rulesets"])
+
+    assert captured_env, "subprocess.run must be called by the runner"
+    env_used = captured_env[0]
+    assert env_used is not None, (
+        "runner must pass env= to subprocess.run (not None); "
+        "without an env override, ambient GH_TOKEN is used instead of the "
+        "App installation token"
+    )
+    assert env_used.get("GH_TOKEN") == _TOKEN, (
+        f"env['GH_TOKEN'] must equal the installation token {_TOKEN!r}; "
+        f"got {env_used.get('GH_TOKEN')!r}.  "
+        "Use chain.app_auth.gh_env(installation_token) to build the env."
+    )
+
+
+def test_launch_one_issue_uses_build_preflight_runner_not_default_runner(
+    tmp_path: Path,
+) -> None:
+    """_launch_one_issue builds its runner via _build_preflight_runner(token).
+
+    When _launch_one_issue is called with an installation_token, it must
+    call _build_preflight_runner(installation_token) to obtain the runner
+    it passes to _should_launch_worker — NOT the bare _default_gh_runner.
+
+    This pins the call-site wiring: even if _build_preflight_runner exists,
+    the fix is only effective if _launch_one_issue actually calls it.
+
+    Mechanism: patch _build_preflight_runner to return a sentinel callable
+    and assert that _should_launch_worker is called with that sentinel as
+    its runner kwarg.
+
+    Args:
+        tmp_path: Pytest tmp_path fixture.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    import baton_harness.chain.daemon as daemon_mod
+
+    obs = _make_obs(tmp_path)
+
+    mock_orch = MagicMock()
+    mock_orch._run_worker = AsyncMock(return_value="pr_created")
+
+    mock_issue = MagicMock()
+    mock_issue.number = _ISSUE
+
+    sentinel_runner = MagicMock(name="sentinel_runner")
+    captured_runner: list[Any] = []
+
+    def _capture_preflight(
+        issue_number: int,
+        owner: str,
+        repo: str,
+        *,
+        app_id: str,
+        runner: Any,  # noqa: ANN401
+        obs: Any,  # noqa: ANN401
+    ) -> bool:
+        captured_runner.append(runner)
+        return True  # allow launch so _run_worker is reachable
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_build_preflight_runner",
+            return_value=sentinel_runner,
+        ) as mock_factory,
+        patch.object(
+            daemon_mod,
+            "_should_launch_worker",
+            side_effect=_capture_preflight,
+        ),
+        patch.object(
+            mock_orch,
+            "_run_worker",
+            new=mock_orch._run_worker,
+        ),
+    ):
+        asyncio.run(
+            daemon_mod._launch_one_issue(  # type: ignore[attr-defined]
+                mock_orch,
+                mock_issue,
+                _OWNER,
+                _REPO,
+                _APP_ID,
+                _TOKEN,
+                _fake_runner,
+                obs,
+            )
+        )
+
+    # _build_preflight_runner must have been called with the token.
+    mock_factory.assert_called_once_with(_TOKEN)
+
+    # _should_launch_worker must have received the sentinel runner.
+    assert captured_runner, "_should_launch_worker was not called"
+    assert captured_runner[0] is sentinel_runner, (
+        "_launch_one_issue must pass the runner from "
+        "_build_preflight_runner(_TOKEN) to _should_launch_worker, "
+        f"not _default_gh_runner; got {captured_runner[0]!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# P2a — issue visibility restored on preflight refusal
+# ---------------------------------------------------------------------------
+
+
+def test_preflight_refusal_restores_agent_ready_label(
+    tmp_path: Path,
+) -> None:
+    """agent-ready must be visible after preflight refuses the launch.
+
+    When _should_launch_worker returns False (DRIFT / ABSENT / ERROR), the
+    issue must still carry ``agent-ready`` so future polls can pick it up
+    (the protection might be restored later).
+
+    Two acceptable implementations:
+    1. Run preflight BEFORE the agent-ready → agent-in-progress transition
+       (preferred — label is never removed).
+    2. Run preflight after the transition and then restore agent-ready on
+       refusal.
+
+    This test drives ``_launch_one_issue`` and patches the label-edit
+    primitive (``baton_harness.chain.daemon._label_edit``) to record calls.
+    It then asserts that no net removal of agent-ready occurs: either
+    agent-ready is never touched, OR a subsequent add=["agent-ready"] call
+    is made before the function returns.
+
+    NOTE: ``_launch_one_issue`` owns only the preflight + dispatch step.
+    The label-transition and park logic live in the surrounding
+    ``_run_work_unit`` loop.  If the code-writer chooses option 1 (run
+    preflight first), ``_launch_one_issue`` may return None without ever
+    touching labels — and the loop must not remove agent-ready before it
+    consults preflight.  This test pins the seam on ``_launch_one_issue``
+    itself; a separate integration-level test may be needed for the full
+    loop path.  Code-writer may satisfy this assertion by having
+    ``_launch_one_issue`` call ``_label_edit(add=['agent-ready'])`` on
+    None return (option 2), or by never removing it in the first place
+    (option 1 — in that case this test passes trivially).
+
+    Args:
+        tmp_path: Pytest tmp_path fixture.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    import baton_harness.chain.daemon as daemon_mod
+
+    obs = _make_obs(tmp_path)
+
+    mock_orch = MagicMock()
+    mock_orch._run_worker = AsyncMock(return_value="pr_created")
+
+    mock_issue = MagicMock()
+    mock_issue.number = _ISSUE
+
+    label_edit_calls: list[dict[str, Any]] = []
+
+    def _record_label_edit(
+        owner: str,
+        repo: str,
+        number: int,
+        *,
+        add: list[str] | None = None,
+        remove: list[str] | None = None,
+        **kwargs: Any,  # noqa: ANN401
+    ) -> None:
+        label_edit_calls.append(
+            {"add": list(add or []), "remove": list(remove or [])}
+        )
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_should_launch_worker",
+            return_value=False,
+        ),
+        patch.object(
+            daemon_mod,
+            "_label_edit",
+            side_effect=_record_label_edit,
+        ),
+        patch.object(
+            mock_orch,
+            "_run_worker",
+            new=mock_orch._run_worker,
+        ),
+    ):
+        result = asyncio.run(
+            daemon_mod._launch_one_issue(  # type: ignore[attr-defined]
+                mock_orch,
+                mock_issue,
+                _OWNER,
+                _REPO,
+                _APP_ID,
+                _TOKEN,
+                _fake_runner,
+                obs,
+            )
+        )
+
+    assert result is None, "Preflight refusal must return None"
+
+    # Compute net label state for agent-ready.
+    net_removed = sum(
+        1 for c in label_edit_calls if "agent-ready" in c["remove"]
+    )
+    net_added = sum(1 for c in label_edit_calls if "agent-ready" in c["add"])
+    # Either agent-ready was never touched (net_removed == 0), OR it was
+    # removed and then restored (net_added >= net_removed).
+    assert net_removed == 0 or net_added >= net_removed, (
+        "agent-ready must not be net-removed on preflight refusal; "
+        f"label_edit calls: {label_edit_calls!r}.  "
+        "Restore it with add=['agent-ready'] or run preflight before the "
+        "label transition."
+    )
+
+    # agent-in-progress must NOT be left set.
+    net_ip_removed = sum(
+        1 for c in label_edit_calls if "agent-in-progress" in c["remove"]
+    )
+    net_ip_added = sum(
+        1 for c in label_edit_calls if "agent-in-progress" in c["add"]
+    )
+    # If agent-in-progress was ever added, it must also be removed.
+    assert net_ip_added == 0 or net_ip_removed >= net_ip_added, (
+        "agent-in-progress must be cleared on preflight refusal; "
+        f"label_edit calls: {label_edit_calls!r}"
+    )
+
+
+def test_preflight_refusal_posts_blocking_comment_with_reason(
+    tmp_path: Path,
+) -> None:
+    """A blocking comment is posted to the issue on preflight refusal.
+
+    When _should_launch_worker returns False, _launch_one_issue must post
+    a comment to the GitHub issue containing:
+    - The phrase ``"preflight refused"``
+    - The RulesetStatus reason (surfaced by _should_launch_worker's return
+      value or an out-param — code-writer's choice of mechanism).
+
+    The comment machinery is pinned by patching
+    ``baton_harness.chain.daemon.escalate`` (the existing blocking-comment
+    primitive used elsewhere in daemon.py) OR any equivalent comment-post
+    call the code-writer chooses.  The test asserts at least one call with
+    a body containing ``"preflight refused"``.
+
+    Alternative satisfaction: if the code-writer threads the RulesetStatus
+    through _should_launch_worker's return value (e.g. returns the status
+    object instead of bool, or raises a typed exception), the test accepts
+    any comment containing ``"preflight refused"``.
+
+    The daemon imports ``alert`` from ``baton_harness.chain.escalation``
+    (as ``from baton_harness.chain.escalation import alert``).  The test
+    patches ``baton_harness.chain.daemon.alert`` — the name as bound in
+    the daemon module's namespace — so any call site in _launch_one_issue
+    that uses the locally-bound ``alert(...)`` is captured.
+
+    Args:
+        tmp_path: Pytest tmp_path fixture.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    import baton_harness.chain.daemon as daemon_mod
+
+    obs = _make_obs(tmp_path)
+
+    mock_orch = MagicMock()
+    mock_orch._run_worker = AsyncMock(return_value="pr_created")
+
+    mock_issue = MagicMock()
+    mock_issue.number = _ISSUE
+
+    comment_calls: list[str] = []  # bodies of comments posted
+
+    def _record_alert(
+        owner: str,
+        repo: str,
+        issue: int,
+        summary: str,
+        **kwargs: Any,  # noqa: ANN401
+    ) -> bool:
+        comment_calls.append(summary)
+        return True
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_should_launch_worker",
+            return_value=False,
+        ),
+        patch.object(
+            daemon_mod,
+            "alert",
+            side_effect=_record_alert,
+        ),
+        patch.object(
+            mock_orch,
+            "_run_worker",
+            new=mock_orch._run_worker,
+        ),
+    ):
+        result = asyncio.run(
+            daemon_mod._launch_one_issue(  # type: ignore[attr-defined]
+                mock_orch,
+                mock_issue,
+                _OWNER,
+                _REPO,
+                _APP_ID,
+                _TOKEN,
+                _fake_runner,
+                obs,
+            )
+        )
+
+    assert result is None, "Preflight refusal must return None"
+    assert comment_calls, (
+        "A blocking comment must be posted to the issue when preflight "
+        "refuses.  Call alert(owner, repo, issue, <msg>) from "
+        "_launch_one_issue where <msg> contains 'preflight refused'."
+    )
+    assert any("preflight refused" in body for body in comment_calls), (
+        "At least one alert/comment must contain 'preflight refused'; "
+        f"got: {comment_calls!r}"
     )

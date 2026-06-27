@@ -4,6 +4,11 @@ Provides a single public function ``post_slack_alert`` that POSTs a
 JSON body to a Slack incoming-webhook URL.  The function NEVER raises —
 any delivery failure is caught, logged at WARNING level, and returns
 ``False``.
+
+Security note: the webhook URL contains a bearer-secret token in its
+path (``/services/T.../B.../<SECRET>``).  Log messages must NEVER
+include the raw URL — only the host is logged to avoid leaking the
+secret into log aggregators.
 """
 
 from __future__ import annotations
@@ -11,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import urllib.error
+import urllib.parse
 import urllib.request
 
 _log = logging.getLogger(__name__)
@@ -38,6 +44,7 @@ def post_slack_alert(
     Returns:
         ``True`` on HTTP 2xx; ``False`` on non-2xx or any exception.
     """
+    host = urllib.parse.urlparse(url).hostname or "<unparseable>"
     payload = json.dumps({"text": message}).encode("utf-8")
     req = urllib.request.Request(
         url,
@@ -50,15 +57,15 @@ def post_slack_alert(
             if 200 <= resp.status < 300:
                 return True
             _log.warning(
-                "post_slack_alert: non-2xx response %d from %s",
+                "post_slack_alert: non-2xx response %d from host=%s",
                 resp.status,
-                url,
+                host,
             )
             return False
     except Exception as exc:  # noqa: BLE001
         _log.warning(
-            "post_slack_alert: delivery failed to %s: %s",
-            url,
+            "post_slack_alert: delivery failed (host=%s): %s",
+            host,
             exc,
         )
         return False

@@ -210,6 +210,49 @@ def _default_gh_runner(
     )
 
 
+def _build_preflight_runner(
+    installation_token: InstallationTokenSource,
+) -> Callable[[list[str]], subprocess.CompletedProcess[str]]:
+    """Build a gh runner with the App's installation token in env.
+
+    Uses ``chain.app_auth.gh_env(installation_token)`` to construct the
+    env dict; passes ``env=...`` to ``subprocess.run`` so ``gh``
+    authenticates as the harness App per-call.  This matches the pattern
+    used by ``gh_deps``, ``escalation``, ``merge``, and ``recovery``
+    elsewhere in ``chain/``.
+
+    Without this, the bare ``_default_gh_runner`` passes no env override,
+    so ruleset ``gh api`` calls authenticate via ambient credentials.  In
+    deployments without an ambient ``GH_TOKEN``, every launch is refused
+    with ``RulesetStatus.ERROR``.
+
+    Args:
+        installation_token: GitHub App installation access token
+            (``ghs_`` prefix, or a refreshable token-source object) to
+            inject as ``GH_TOKEN`` / ``GITHUB_TOKEN`` in the subprocess
+            environment via ``gh_env``.
+
+    Returns:
+        A callable that accepts a list of gh args and returns a
+        ``CompletedProcess[str]`` with ``env`` set to the resolved App
+        token environment.
+    """
+    _env = gh_env(installation_token)
+
+    def _runner(
+        args: list[str],
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["gh", *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=_env,
+        )
+
+    return _runner
+
+
 def _resolve_app_id() -> str | None:
     """Resolve the GitHub App ID from the environment.
 
@@ -243,13 +286,23 @@ async def _launch_one_issue(
     owner: str,
     repo: str,
     app_id: str,
+    installation_token: InstallationTokenSource,
     runner: Callable[[list[str]], subprocess.CompletedProcess[str]],
     obs: ObsConfig,
 ) -> str | None:
     """Preflight + launch helper extracted from the daemon's launch loop.
 
+    Builds a token-authenticated gh runner via
+    ``_build_preflight_runner(installation_token)`` so that ruleset ``gh
+    api`` calls authenticate as the harness App rather than relying on
+    ambient credentials (P1 fix).
+
+    On preflight refusal, restores the ``agent-ready`` label so the issue
+    remains visible to future poll ticks and posts a blocking comment via
+    ``alert(severity="critical")`` (P2a fix).
+
     Returns the worker result string ("pr_created" / "no_pr" / etc.) on
-    success; returns None when preflight refuses (parked).
+    success; returns ``None`` when preflight refuses (parked).
 
     Args:
         orch: The Orchestrator instance to dispatch the worker through.
@@ -257,22 +310,49 @@ async def _launch_one_issue(
         owner: Repository owner (org or user login).
         repo: Repository name.
         app_id: Numeric GitHub App ID (string form) for ruleset checks.
-        runner: gh runner callable for the ruleset inspector.
+        installation_token: GitHub App installation access token
+            (``ghs_`` prefix).  Used to build the preflight runner so
+            ruleset checks authenticate as the App, not ambient env.
+        runner: Caller-supplied runner (kept for signature compat; the
+            preflight uses the runner built from ``installation_token``).
         obs: Observability config for preflight alert routing.
 
     Returns:
         The worker result string on success, or ``None`` when preflight
         refuses the launch.
     """
+    issue_number: int = issue_obj.number  # type: ignore[attr-defined]
+    preflight_runner = _build_preflight_runner(installation_token)
     preflight = _should_launch_worker(
-        issue_obj.number,  # type: ignore[attr-defined]
+        issue_number,
         owner,
         repo,
         app_id=app_id,
-        runner=runner,
+        runner=preflight_runner,
         obs=obs,
     )
     if not preflight:
+        # P2a: restore agent-ready so the issue stays visible to future
+        # poll ticks (protection may be restored later).
+        _label_edit(
+            owner,
+            repo,
+            issue_number,
+            add=["agent-ready"],
+            remove=["agent-in-progress"],
+            installation_token=installation_token,
+        )
+        # Post a blocking comment so operators know why the worker was
+        # refused.
+        alert(
+            owner,
+            repo,
+            issue_number,
+            "preflight refused — branch protection missing or "
+            "misconfigured; worker not launched",
+            severity="critical",
+            installation_token=installation_token,
+        )
         return None
     return await orch._run_worker(issue_obj)  # type: ignore[arg-type]
 
@@ -1489,7 +1569,14 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
             continue
         try:
             worker_result = await _launch_one_issue(
-                orch, issue_obj, owner, repo, _app_id, _default_gh_runner, obs
+                orch,
+                issue_obj,
+                owner,
+                repo,
+                _app_id,
+                installation_token,
+                _default_gh_runner,
+                obs,
             )
         except Exception as exc:
             _log.error("daemon: _run_worker raised for #%d: %s", n, exc)
