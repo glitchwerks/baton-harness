@@ -27,8 +27,11 @@ privilege-escalation paths.
 
 from __future__ import annotations
 
+import json
 import os
 import time
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from typing import Any
 
@@ -71,6 +74,15 @@ _REFRESH_MARGIN_SECONDS: int = 300
 
 #: GitHub API base URL.
 _GITHUB_API_BASE: str = "https://api.github.com"
+
+#: HTTP status codes that should be retried by the mint transport.
+_RETRYABLE_HTTP_STATUS_CODES: frozenset[int] = frozenset({500, 502, 503, 504})
+
+#: Max attempts for the GitHub installation-token POST.
+_HTTP_POST_MAX_ATTEMPTS: int = 3
+
+#: Socket timeout for the GitHub installation-token POST.
+_HTTP_POST_TIMEOUT_S: float = 10.0
 
 # ---------------------------------------------------------------------------
 # Type aliases
@@ -388,7 +400,7 @@ def bootstrap_secrets(
         app_id,
         private_key_pem,
         installation_id,
-        http_post=_noop_http_post,
+        http_post=_github_http_post,
         now=now,
     )
 
@@ -397,23 +409,76 @@ def bootstrap_secrets(
     return token, expires_at
 
 
-def _noop_http_post(
+def _github_http_post(
     url: str,
     headers: dict[str, str],
 ) -> dict[str, Any]:
-    """Placeholder http_post forwarded to mint_token in bootstrap_secrets.
-
-    ``bootstrap_secrets`` receives a ``mint_token`` callable that already
-    encapsulates the HTTP transport (the real implementation or a test
-    stub).  This default is never reached in production because
-    ``mint_token`` absorbs the call, but it satisfies the type signature
-    required by ``mint_installation_token``.
+    """POST to the GitHub API with retries on transient 5xx responses.
 
     Args:
-        url: The URL that would be called (unused).
-        headers: The headers that would be sent (unused).
+        url: Fully qualified GitHub API URL to POST to.
+        headers: Request headers to include, such as Authorization.
 
     Returns:
-        An empty dict (never reached in practice).
+        Parsed JSON response body as a dict.
+
+    Raises:
+        AppAuthError: If GitHub returns a non-retryable 4xx, if all retry
+            attempts for a retryable 5xx or transient OSError (e.g.
+            ``socket.timeout``, connection reset) are exhausted, or if
+            the response body is not valid JSON.
     """
-    return {}  # pragma: no cover
+    request_headers = {
+        **headers,
+        "Content-Type": "application/json",
+    }
+    payload = json.dumps({}).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=payload,
+        headers=request_headers,
+        method="POST",
+    )
+
+    for attempt in range(1, _HTTP_POST_MAX_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(
+                request,
+                timeout=_HTTP_POST_TIMEOUT_S,
+            ) as response:
+                body = response.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+            response_body = exc.read().decode("utf-8", errors="replace")
+            if (
+                status in _RETRYABLE_HTTP_STATUS_CODES
+                and attempt < _HTTP_POST_MAX_ATTEMPTS
+            ):
+                continue
+            raise AppAuthError(
+                "GitHub installation-token POST failed with "
+                f"HTTP {status}: {response_body}"
+            ) from exc
+        except OSError as exc:
+            if attempt < _HTTP_POST_MAX_ATTEMPTS:
+                continue
+            raise AppAuthError(
+                f"GitHub installation-token POST failed after "
+                f"{attempt} attempts: {exc}"
+            ) from exc
+
+        try:
+            parsed = json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise AppAuthError(
+                f"GitHub installation-token POST returned invalid JSON: {exc}"
+            ) from exc
+
+        if not isinstance(parsed, dict):
+            raise AppAuthError(
+                "GitHub installation-token POST returned a non-object JSON "
+                f"payload: {parsed!r}"
+            )
+        return parsed
+
+    raise AssertionError("_github_http_post exhausted without returning")
