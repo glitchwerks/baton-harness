@@ -6,6 +6,10 @@ This guide walks through the first live run of `bh-daemon`. The daemon has only 
 
 `bh-daemon` is an always-on poll loop that watches a GitHub repository for issues labelled `agent-ready`. It groups them into work units: a milestone becomes a single work unit whose issues are ordered by their `blocked_by` dependency edges into a DAG; an un-milestoned issue becomes its own N=1 unit. The daemon processes one work unit and one issue at a time (serial v1). For each issue it checks out a `feature/<slug>` branch, runs a Claude Code agent, waits for CI to pass on the agent's PR, then merges that PR into the feature branch with `--no-ff`. When all issues in a work unit are done it opens a single **draft** `feature/<slug> → main` PR. The daemon never merges to `main` — a human does that.
 
+### State persistence
+
+As of issue #106 (PR #166), `OrchestratorState` persists atomically to disk and reloads on startup. The state file lives at `$BH_PROJECT_ROOT/.symphony/state.json` (see §"Target-repo `.gitignore` requirement" below for why this path must be gitignored). Both `retry_queue` and running-issue state survive daemon restart or crash. A killed daemon that restarts picks up where it left off — it is **not** a clean slate. On a first smoke test this rarely matters; on subsequent runs after a forced kill, account for any state accumulated by the prior run.
+
 ---
 
 ## WARNING: safety first
@@ -27,6 +31,7 @@ Before running:
 - `claude` CLI on `PATH` and authenticated (subscription auth — run `claude` once interactively to confirm).
 - `gh` CLI authenticated (`gh auth status`).
 - `git` configured with a user name and email.
+- `bws` (Bitwarden Secrets CLI) on `PATH` — required for the App-auth bootstrap that mints the GitHub App installation token before the daemon starts. Install per the [Bitwarden Secrets Manager CLI docs](https://bitwarden.com/help/secrets-manager-cli/); verify with `bws --version`. Without it, the daemon fails immediately at startup with a subprocess error.
 - The **sandbox repo cloned locally**. The local clone path becomes `BH_PROJECT_ROOT`.
 - The harness package installed into a venv with `bh-daemon` on `PATH`:
 
@@ -96,11 +101,29 @@ export BH_PROJECT_ROOT=/path/to/local/clone   # Absolute path to local sandbox c
 | `BATON_HARNESS_DIR` | Derived from the script's own location | Harness repo root; available to hook scripts |
 | `BH_VENV` | Derived from the `bh-daemon` binary location | Hooks self-activate via `. "$BH_VENV/bin/activate"` |
 
-One optional variable:
+### App-auth bootstrap variables (required — treat as secrets)
+
+These four variables are read by `bootstrap_secrets()` in `src/baton_harness/chain/cli.py` (L51–96) before the daemon enters its poll loop. All four are required; a missing or empty value causes the daemon to print "failed to bootstrap GitHub App token" and exit 1 before any dispatch occurs. Never commit these values or paste them in chat. Store them in a root-readable-only `EnvironmentFile=` (systemd) or equivalent secrets store — not in code.
+
+| Variable | Purpose |
+|---|---|
+| `BWS_ACCESS_TOKEN` | Bitwarden machine-account access token. Popped from `os.environ` immediately after bootstrap; never re-added. Treat as secret. |
+| `BWS_APP_ID` | Numeric GitHub App ID (string form). Falls back to `BH_GITHUB_APP_ID` if unset. Source: GitHub App settings page. Treat as secret. |
+| `BWS_PEM_SECRET_ID` | Bitwarden Secrets UUID of the RSA PEM private key for the GitHub App. Treat as secret. |
+| `BWS_INSTALLATION_ID` | Numeric GitHub App installation ID (integer, as string). **Set this to the same value as `BH_GITHUB_APP_INSTALLATION_ID`** (see below). Treat as secret. |
+
+### GitHub App ID variables (required)
+
+| Variable | Purpose |
+|---|---|
+| `BH_GITHUB_APP_ID` | Numeric GitHub App ID. Read by `_resolve_app_id()` in `daemon.py` (L233–257); also validated by `bin/provision-ruleset.sh`. If absent or empty, the daemon logs CRITICAL and refuses every worker launch (fail-closed). Source: GitHub App settings page. |
+| `BH_GITHUB_APP_INSTALLATION_ID` | Numeric GitHub App installation ID. Required by `bin/provision-ruleset.sh` (validated at L61). **Set this to the same value as `BWS_INSTALLATION_ID`**: both refer to the same installation. The provisioning script validates it for presence; the runtime reads the value via `BWS_INSTALLATION_ID`. |
+
+### Optional variables
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `BH_SLACK_WEBHOOK_URL` | (unset) | If set, escalation notices are also POSTed to Slack. If unset, Slack is skipped silently and the GitHub issue comment is the only durable escalation record. |
+| `BH_HEARTBEAT_PING_URL` | (unset) | Routes both heartbeat dead-man's-switch pings AND safety-critical "refusing to launch" alerts from the per-launch preflight gate (#144). When the ruleset preflight refuses a worker launch due to `RulesetStatus.DRIFT`, `ABSENT`, or `ERROR`, a Slack alert is POSTed to this URL via `obs.heartbeat_ping_url` (`obs_config.py:L233`, `daemon.py:L171–185`). For the smoke test success path (rulesets match — `MATCH` — dispatch proceeds), the alert never fires and this variable is optional. If unset, a critical preflight refusal is logged to daemon stderr only — no Slack notification is sent. The URL contains a bearer-style token in the path; treat as secret. |
 
 Full sample export block for a sandbox:
 
@@ -108,9 +131,66 @@ Full sample export block for a sandbox:
 export BH_REPO_OWNER=alice
 export BH_REPO_NAME=sandbox-baton
 export BH_PROJECT_ROOT=/home/alice/sandbox-baton
+
+# App-auth bootstrap (required — treat as secrets):
+export BWS_ACCESS_TOKEN=<bitwarden-machine-account-token>
+export BWS_APP_ID=<github-app-numeric-id>
+export BWS_PEM_SECRET_ID=<bitwarden-secret-uuid-for-pem>
+export BWS_INSTALLATION_ID=<github-app-installation-id>
+
+# GitHub App ID (required):
+export BH_GITHUB_APP_ID=<github-app-numeric-id>          # same value as BWS_APP_ID
+export BH_GITHUB_APP_INSTALLATION_ID=<github-app-installation-id>  # same value as BWS_INSTALLATION_ID
+
 # Optional:
-# export BH_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
+# export BH_HEARTBEAT_PING_URL=https://hooks.slack.com/services/...
 ```
+
+---
+
+## Ruleset provisioning (required before first run)
+
+Before starting the daemon for the first time, provision the two branch-protection rulesets in the sandbox repo. The per-launch preflight gate (added in #144) calls `ruleset_is_provisioned()` before every worker dispatch and returns `RulesetStatus.ABSENT` on a fresh repo — causing every issue to be parked with "preflight refused — branch protection missing or misconfigured; worker not launched". The only way to create the rulesets is to run `bin/provision-ruleset.sh`.
+
+**Prerequisites for this step:** the GitHub App must be installed on the sandbox repo, `BH_REPO_OWNER`, `BH_REPO_NAME`, `BH_GITHUB_APP_ID`, and `BH_GITHUB_APP_INSTALLATION_ID` must all be exported, and `gh` must be authenticated as the harness App (or with a PAT that has `administration: write` on the repo).
+
+```bash
+bin/provision-ruleset.sh
+```
+
+The script is idempotent — safe to re-run if rulesets drift from the checked-in configs at `config/ruleset.main.json` and `config/ruleset.feature.json`. Exit codes: `0` = success (rulesets match or were corrected); `1` = drift could not be fixed; `2` = missing env vars or preflight App-ID mismatch.
+
+The script provisions two rulesets:
+- `harness-main-no-merge` — prevents direct merges to `main`, enforcing the draft-PR-only flow
+- `harness-feature-daemon-only` — restricts pushes to `feature/*` branches to the harness App only
+
+After provisioning, verify with:
+
+```bash
+gh api repos/<owner>/<repo>/rulesets --jq '.[].name'
+```
+
+You should see both ruleset names in the output.
+
+---
+
+## Required GitHub App permissions
+
+The harness GitHub App must have the following permissions on the target repository. Configure these on the GitHub App settings page before installing the App on the sandbox repo. An operator can verify the live permission set with:
+
+```bash
+gh api /repos/<owner>/<repo>/installation --jq '.permissions'
+```
+
+| Permission | Level | Why required |
+|---|---|---|
+| `contents` | `write` | Push `feature/*` and `baton/*` branches; read repo files |
+| `pull_requests` | `write` | Create draft PRs; post review comments |
+| `issues` | `write` | Label transitions (`agent-ready` / `agent-in-progress` / `blocked` / `agent-done` / `agent-merged`); post escalation comments |
+| `actions` or `checks` | `read` | Poll CI check-runs for the merge gate |
+| `administration` | `read` | #144 preflight reads rulesets via `GET /repos/.../rulesets` (`ruleset_status.py:L356–361` returns `RulesetStatus.ERROR` on non-2xx, refusing every launch) |
+| `administration` | `write` | `bin/provision-ruleset.sh` POSTs and PUTs rulesets |
+| `metadata` | `read` | Always required by GitHub for any App installation |
 
 ---
 
@@ -187,7 +267,7 @@ A `201` response confirms the link. The daemon reads this via `GET repos/{owner}
 
 ## Run it
 
-With the environment variables set and labels created:
+With the environment variables set, labels created, and rulesets provisioned:
 
 ```bash
 bin/run-daemon.sh --once
@@ -265,7 +345,7 @@ To smoke-test the **full merge path**, add a GitHub Actions workflow to the sand
 
 The deployment model mandates OAuth/subscription auth for Claude — `ANTHROPIC_API_KEY` **must not be set** in the daemon's environment (`architecture-spec.md` §2, §5). The startup reconciliation sweep (G3b, `src/baton_harness/chain/reconcile.py`) checks for this at every daemon start and exits non-zero with a critical alert if the key is present. This is the most important thing to get right on a server:
 
-- Mount the OAuth credentials volume at `/home/agent/.claude/` (or wherever the container user's home is). Do not supply an API key.
+- Mount the OAuth credentials volume at `/home/agent/.claude/` (or wherever the container user's home is). Do not supply an API key. The G3c startup gate (`reconcile.py:L176–199`) checks that `~/.claude/.credentials.json` is present and readable before the daemon enters its poll loop — an absent or unreadable credential file causes an immediate exit 1 with "OAuth credential file absent or unreadable". Mounting the OAuth volume satisfies G3c.
 - `gh` must be authenticated via `GH_TOKEN` set to a fine-grained PAT (prefix `github_pat_`). See `architecture-spec.md` §2 and the README's GitHub token setup section.
 - `git` must be configured with a user name and email in the daemon's environment.
 
@@ -273,12 +353,13 @@ Do not export `ANTHROPIC_API_KEY` — not in `.env` files, not in systemd `Envir
 
 ### First run on the server
 
-Follow the same `--once` safe-first-run approach described in the [Run it](#run-it) section above. Provision the sandbox and its labels first (see [Prerequisites](#prerequisites) and the `bin/init-sandbox.sh` automation). Then:
+Follow the same `--once` safe-first-run approach described in the [Run it](#run-it) section above. Provision the sandbox and its labels first (see [Prerequisites](#prerequisites) and the `bin/init-sandbox.sh` automation). Run `bin/provision-ruleset.sh` to provision the branch-protection rulesets (see [Ruleset provisioning](#ruleset-provisioning-required-before-first-run)). Then:
 
 ```bash
 export BH_REPO_OWNER=<owner>
 export BH_REPO_NAME=<repo>
 export BH_PROJECT_ROOT=/path/to/local/sandbox/clone
+# Plus all App-auth bootstrap and BH_GITHUB_APP_ID variables — see §"Environment variables"
 
 bin/run-daemon.sh --once
 ```
@@ -293,7 +374,7 @@ Two common supervision patterns are shown below. Both are illustrative starting 
 
 #### systemd unit (recommended)
 
-Create `/etc/systemd/system/bh-daemon.service`. The environment variables can also be placed in a separate `EnvironmentFile=` — keep the file root-readable only and make sure `ANTHROPIC_API_KEY` never appears in it.
+Create `/etc/systemd/system/bh-daemon.service`. Place credential-shaped environment variables (`BWS_ACCESS_TOKEN`, `BWS_PEM_SECRET_ID`, `BH_HEARTBEAT_PING_URL`) in a separate `EnvironmentFile=` rather than inline in the unit file — keep that file root-readable only (`chmod 600`). Make sure `ANTHROPIC_API_KEY` never appears in either the unit or the `EnvironmentFile=`.
 
 ```ini
 [Unit]
@@ -307,6 +388,10 @@ Environment=BH_REPO_OWNER=<owner>
 Environment=BH_REPO_NAME=<repo>
 Environment=BH_PROJECT_ROOT=/path/to/sandbox/clone
 Environment=GH_TOKEN=<fine-grained-pat>
+Environment=BH_GITHUB_APP_ID=<numeric-app-id>
+Environment=BH_GITHUB_APP_INSTALLATION_ID=<installation-id>
+# Secrets in a separate file (root-readable only):
+EnvironmentFile=/etc/bh-daemon/secrets.env
 ExecStart=/path/to/harness/.venv/bin/bh-daemon --workflow /path/to/harness/config/WORKFLOW.md
 Restart=on-failure
 RestartSec=15
@@ -315,6 +400,17 @@ StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
+```
+
+Where `/etc/bh-daemon/secrets.env` (mode `600`, owner `root`) contains:
+
+```
+BWS_ACCESS_TOKEN=<bitwarden-machine-account-token>
+BWS_APP_ID=<numeric-app-id>
+BWS_PEM_SECRET_ID=<bitwarden-secret-uuid-for-pem>
+BWS_INSTALLATION_ID=<installation-id>
+# Optional:
+# BH_HEARTBEAT_PING_URL=https://hooks.slack.com/services/...
 ```
 
 Key points:
@@ -339,6 +435,12 @@ export BH_REPO_OWNER=<owner>
 export BH_REPO_NAME=<repo>
 export BH_PROJECT_ROOT=/path/to/sandbox/clone
 export GH_TOKEN=<fine-grained-pat>
+export BH_GITHUB_APP_ID=<numeric-app-id>
+export BH_GITHUB_APP_INSTALLATION_ID=<installation-id>
+export BWS_ACCESS_TOKEN=<bitwarden-machine-account-token>
+export BWS_APP_ID=<numeric-app-id>
+export BWS_PEM_SECRET_ID=<bitwarden-secret-uuid-for-pem>
+export BWS_INSTALLATION_ID=<installation-id>
 
 # In a persistent tmux session:
 tmux new-session -d -s bh 'bin/run-daemon.sh >> /var/log/bh-daemon.log 2>&1'
@@ -357,16 +459,19 @@ Issue #40 (merged PR #107) added a startup reconciliation sweep to the daemon. `
 
 ### What it verifies and why it matters
 
-At every startup the daemon runs four checks (`src/baton_harness/chain/reconcile.py`):
+At every startup the daemon runs five checks (`src/baton_harness/chain/reconcile.py`):
 
 | Gate | What it checks | Fatal? |
 |---|---|---|
-| G3a | GitHub token is a valid fine-grained PAT | Yes — exits 1 |
+| G3a | GitHub token is a valid installation token | Yes — exits 1 |
 | G3b | `ANTHROPIC_API_KEY` is NOT set | Yes — exits 1 |
+| G3c | `~/.claude/.credentials.json` is present and readable | Yes — exits 1 |
 | G2 | `daemon.alive` marker absent (no ungraceful prior exit) | No — critical alert, continues |
 | G1 | No orphan `claude -p` processes from a prior crashed run | No — warn alert, continues |
 
 The script also exercises graceful SIGTERM shutdown to confirm the `daemon.alive` marker is cleared cleanly, preventing a false-positive G2 alert on the next start.
+
+G3c connects directly to the OAuth credential volume mount described in §"Credentials and auth on the server": mounting the volume at `~/.claude/` satisfies G3c; an absent mount causes exit 1 at startup before any poll occurs.
 
 ### Prerequisites
 
@@ -385,6 +490,8 @@ export BH_PROJECT_ROOT=/path/to/local/sandbox/clone
 # bh-daemon must be on PATH
 ```
 
+**`~/.claude/.credentials.json` must be present and readable.** If the OAuth credential file is absent when the script is invoked, the G3c preflight at the top of `verify-recovery.sh` (L255–277) prints `RESULT: SKIPPED` and exits 0 — all five scenarios are silently skipped rather than run. This is intentional: with G3c absent, every daemon-startup scenario would immediately exit 1 at the G3c gate, producing five misleading `[FAIL]` lines. On a CI system without the OAuth volume mounted, `RESULT: SKIPPED` is the expected output. To exercise the full scenario suite, ensure the credential file is present before running the script.
+
 **`ANTHROPIC_API_KEY` must not be set in the caller's shell.** The script needs to set it temporarily for the G3b scenario. If it is already set, the script aborts before running any scenario.
 
 Usage and options:
@@ -400,14 +507,14 @@ Each scenario listed in the order the script runs them. "Alert text" refers to t
 | Scenario | Gate exercised | Setup | Expected exit code | Expected alert text in output |
 |---|---|---|---|---|
 | G3b | `ANTHROPIC_API_KEY` set | Script sets `ANTHROPIC_API_KEY=dummy-value-for-test` inline | Non-zero (exit 1) | `ANTHROPIC_API_KEY must not be set` |
-| G3a | Bogus `GH_TOKEN` | Script replaces `GH_TOKEN` with `ghp_BOGUS_TOKEN_FOR_TESTING` (classic-PAT prefix — rejected offline by `_auth.py` before any network call) | Non-zero (exit 1) | `Startup credential check failed` |
+| G3a | Bogus `GH_TOKEN` | Script replaces `GH_TOKEN` with `ghp_BOGUS_TOKEN_FOR_TESTING`. Because no `BWS_ACCESS_TOKEN` is set in the test environment, `bootstrap_secrets()` fails first with an empty-token error, causing `validate_daemon_token` to fire via the credential-validation path. The daemon exits non-zero either way. | Non-zero (exit 1) | `Startup credential check failed` |
 | G2 | Stale `daemon.alive` marker | Script pre-creates `.baton-harness/daemon.alive` before starting daemon `--once` | 0 (non-fatal) | `Prior daemon run ended ungracefully` |
 | G1 | Orphan `claude -p` process | Script spawns `sleep 999` with argv containing `claude -p` so `pgrep -f` matches it | 0 (non-fatal) | `Orphan claude processes detected at startup` |
 | SIGTERM | Graceful shutdown | Daemon starts in continuous mode; script waits for `daemon.alive` to appear, then sends SIGTERM | 0 (SystemExit(0) from handler) | Marker absent after exit |
 
 Notes on specific scenarios:
 - **G3b is the inverted gate**: the daemon refuses startup when `ANTHROPIC_API_KEY` IS set. This is the expected, correct behavior for OAuth/subscription deployment — the key's presence signals a misconfiguration.
-- **G3a token format**: the script uses a `ghp_BOGUS_TOKEN_FOR_TESTING` value (classic PAT prefix `ghp_`) because `_auth.py` rejects classic-PAT-prefixed tokens immediately without a network call. A fine-grained PAT has prefix `github_pat_`; anything else is rejected. The inline substitution is deterministic and fast.
+- **G3a actual failure path**: the scenario supplies a `ghp_`-prefixed bogus token and no `BWS_*` vars. `bootstrap_secrets()` runs first and raises `BwsClientError("access_token is empty or None")` before any token format check. The failure propagates as "Startup credential check failed" either way. The important assertion is that the daemon exits non-zero; the exact failure point (BWS vs. token format) is an implementation detail of the test environment.
 - **G2 marker path**: `$BH_PROJECT_ROOT/.baton-harness/daemon.alive` — pre-created by the script, then re-written by the daemon on startup (non-fatal path). The marker is cleaned up by the script in an EXIT trap.
 - **G1 decoy**: the "orphan" process is `sleep 999` with its argv set to `sleep 999 claude -p`. No real Claude binary is invoked. The script reaps it immediately after the scenario.
 - **SIGTERM exit code**: Python's SIGTERM handler in `daemon.py` calls `raise SystemExit(0)`, so the daemon exits 0 — not 143 (which would indicate the process was killed externally without the handler firing).
@@ -431,6 +538,15 @@ baton-harness: RESULT: PASS
 ```
 
 A `[FAIL]` line includes the reason. `FAILED` scenarios are listed again in the summary. The script exits non-zero if any scenario fails.
+
+If the OAuth credential file is absent, you will see instead:
+
+```
+baton-harness: G3c preflight: OAuth creds absent at /home/agent/.claude/.credentials.json — skipping all daemon-startup scenarios
+baton-harness: RESULT: SKIPPED
+```
+
+This is not a failure — it is the script correctly detecting that the G3c gate would cause every scenario to fail. Mount the OAuth credential volume and re-run to exercise the full suite.
 
 ### When to run it
 
