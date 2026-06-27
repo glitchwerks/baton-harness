@@ -36,7 +36,7 @@ from typing import cast
 
 from baton_harness.chain.app_auth import (
     InstallationTokenSource,
-    resolve_installation_token,
+    gh_env,
 )
 
 # ---------------------------------------------------------------------------
@@ -60,7 +60,7 @@ def _run(
             directly to ``subprocess.run`` as ``env=``.  When ``None``,
             the subprocess inherits the current process environment.
             Callers must supply a FULL environment copy (e.g.
-            ``_gh_env(token)``); passing a partial dict causes missing
+            ``gh_env(token)``); passing a partial dict causes missing
             vars in the subprocess.
 
     Returns:
@@ -81,33 +81,6 @@ def _run(
 # ---------------------------------------------------------------------------
 
 _PAGE_SIZE = 100
-
-
-def _gh_env(
-    installation_token: InstallationTokenSource,
-) -> dict[str, str]:
-    """Return os.environ overlaid with GH_TOKEN=<installation_token>.
-
-    Follows the same env-discipline pattern as daemon.py:_gh_env —
-    builds a full copy of the current environment so the subprocess
-    inherits all PATH / HOME vars, then overrides the two canonical
-    gh token keys.  ``os.environ`` is never mutated.
-
-    Args:
-        installation_token: GitHub App installation token source.
-
-    Returns:
-        A fresh ``dict`` with all current env vars plus
-        ``GH_TOKEN`` and ``GITHUB_TOKEN`` overridden to
-        ``installation_token``.
-    """
-    import os as _os  # noqa: PLC0415
-
-    env = dict(_os.environ)
-    token = resolve_installation_token(installation_token)
-    env["GH_TOKEN"] = token
-    env["GITHUB_TOKEN"] = token
-    return env
 
 
 def _paginate(
@@ -141,7 +114,7 @@ def _paginate(
         ValueError: If any item in the response is missing the ``number``
             field.
     """
-    env = _gh_env(installation_token) if installation_token else None
+    env = gh_env(installation_token) if installation_token else None
     results: list[dict[str, object]] = []
     page = 1
     separator = "&" if "?" in base_url else "?"

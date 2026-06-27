@@ -55,7 +55,7 @@ from baton_harness.chain import branches
 from baton_harness.chain import recovery as _recovery_mod
 from baton_harness.chain.app_auth import (
     InstallationTokenSource,
-    resolve_installation_token,
+    gh_env,
 )
 from baton_harness.chain.dag import build_dag
 from baton_harness.chain.escalation import alert
@@ -151,30 +151,6 @@ _CLAUDE_ATTRIBUTION = (
 # ---------------------------------------------------------------------------
 
 
-def _gh_env(
-    installation_token: InstallationTokenSource,
-) -> dict[str, str]:
-    """Return os.environ overlaid with GH_TOKEN=<installation_token>.
-
-    Does not mutate os.environ.  Token is per-call; never persists
-    in the process environment.
-
-    Args:
-        installation_token: GitHub App installation access token
-            (``ghs_`` prefix) to inject as ``GH_TOKEN`` and
-            ``GITHUB_TOKEN`` in the subprocess environment.
-
-    Returns:
-        A shallow copy of ``os.environ`` with both ``GH_TOKEN`` and
-        ``GITHUB_TOKEN`` overridden to ``installation_token``.
-    """
-    env = dict(os.environ)
-    token = resolve_installation_token(installation_token)
-    env["GH_TOKEN"] = token
-    env["GITHUB_TOKEN"] = token
-    return env
-
-
 def _run(
     cmd: list[str],
     env: dict[str, str] | None = None,
@@ -188,7 +164,7 @@ def _run(
         cmd: Command and arguments to execute (no shell interpolation).
         env: Optional environment dict for the subprocess.  When
             ``None``, the subprocess inherits ``os.environ`` unchanged.
-            Pass ``_gh_env(installation_token)`` for daemon-side calls
+            Pass ``gh_env(installation_token)`` for daemon-side calls
             to override ``GH_TOKEN`` without mutating ``os.environ``.
 
     Returns:
@@ -261,9 +237,9 @@ def _label_edit(
         cmd += ["--add-label", lbl]
     for lbl in remove or []:
         cmd += ["--remove-label", lbl]
-    gh_env = _gh_env(installation_token) if installation_token else None
+    _gh_call_env = gh_env(installation_token) if installation_token else None
     _env_kw: dict[str, dict[str, str]] = (
-        {"env": gh_env} if gh_env is not None else {}
+        {"env": _gh_call_env} if _gh_call_env is not None else {}
     )
     proc = _run(cmd, **_env_kw)
     if proc.returncode != 0:
@@ -299,9 +275,9 @@ def _find_issue_pr(
         A ``(branch_name, head_sha)`` tuple if found, or
         ``(None, None)`` if no matching PR exists.
     """
-    gh_env = _gh_env(installation_token) if installation_token else None
+    _gh_call_env = gh_env(installation_token) if installation_token else None
     _env_kw: dict[str, dict[str, str]] = (
-        {"env": gh_env} if gh_env is not None else {}
+        {"env": _gh_call_env} if _gh_call_env is not None else {}
     )
     proc = _run(
         [
@@ -377,9 +353,9 @@ def _fetch_issue_labels(
         and must NOT attempt single-state convergence on an unknown state
         (Codex P1 #3, PR #95).
     """
-    gh_env = _gh_env(installation_token) if installation_token else None
+    _gh_call_env = gh_env(installation_token) if installation_token else None
     _env_kw: dict[str, dict[str, str]] = (
-        {"env": gh_env} if gh_env is not None else {}
+        {"env": _gh_call_env} if _gh_call_env is not None else {}
     )
     proc = _run(
         [
@@ -423,9 +399,9 @@ def _fetch_issue_obj(
     Returns:
         An ``Issue`` object or ``None`` on error.
     """
-    gh_env = _gh_env(installation_token) if installation_token else None
+    _gh_call_env = gh_env(installation_token) if installation_token else None
     _env_kw: dict[str, dict[str, str]] = (
-        {"env": gh_env} if gh_env is not None else {}
+        {"env": _gh_call_env} if _gh_call_env is not None else {}
     )
     proc = _run(
         [
@@ -492,9 +468,9 @@ def _fetch_full_milestone_members(
         A ``frozenset`` of all open issue numbers in the milestone.
         Falls back to an empty frozenset on error.
     """
-    gh_env = _gh_env(installation_token) if installation_token else None
+    _gh_call_env = gh_env(installation_token) if installation_token else None
     _env_kw: dict[str, dict[str, str]] = (
-        {"env": gh_env} if gh_env is not None else {}
+        {"env": _gh_call_env} if _gh_call_env is not None else {}
     )
     proc = _run(
         [
@@ -704,9 +680,9 @@ def _open_draft_pr(
             When non-empty, overrides ``GH_TOKEN`` in the subprocess env
             via a per-call copy — ``os.environ`` is never mutated.
     """
-    gh_env = _gh_env(installation_token) if installation_token else None
+    _gh_call_env = gh_env(installation_token) if installation_token else None
     _env_kw: dict[str, dict[str, str]] = (
-        {"env": gh_env} if gh_env is not None else {}
+        {"env": _gh_call_env} if _gh_call_env is not None else {}
     )
     proc = _run(
         [
@@ -2020,7 +1996,7 @@ async def _poll_and_run(
     # ------------------------------------------------------------------
 
     # Fetch open agent-ready issues.
-    _poll_gh_env = _gh_env(installation_token) if installation_token else None
+    _poll_gh_env = gh_env(installation_token) if installation_token else None
     _poll_env_kw: dict[str, dict[str, str]] = (
         {"env": _poll_gh_env} if _poll_gh_env is not None else {}
     )
