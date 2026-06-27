@@ -47,12 +47,14 @@ import signal
 import subprocess
 import sys
 import threading
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from baton_harness.chain import branches
 from baton_harness.chain import recovery as _recovery_mod
+from baton_harness.chain.alert_post import post_slack_alert
 from baton_harness.chain.app_auth import (
     InstallationTokenSource,
     gh_env,
@@ -78,6 +80,10 @@ from baton_harness.chain.reconcile import (
 from baton_harness.chain.recovery import RecoveryResult, scan_orphan_worktrees
 from baton_harness.chain.redispatch import RedispatchTally
 from baton_harness.chain.registry import RepoConfig
+from baton_harness.chain.ruleset_status import (
+    RulesetStatus,
+    ruleset_is_provisioned,
+)
 from baton_harness.chain.runlog import RunLog
 from baton_harness.chain.scheduler import IssueScheduler
 from baton_harness.vendor.symphony.config import WorkflowConfig
@@ -93,6 +99,92 @@ _log = logging.getLogger(__name__)
 #: Currently contains only ``LABEL_BLOCKED`` (``"blocked"``); adding an
 #: entry here automatically applies to all three gates.
 _DISPATCH_EXCLUDE_LABELS: frozenset[str] = frozenset({LABEL_BLOCKED})
+
+
+def _should_launch_worker(
+    issue_number: int,
+    owner: str,
+    repo: str,
+    *,
+    app_id: str,
+    runner: Callable[[list[str]], subprocess.CompletedProcess[str]],
+    obs: ObsConfig,
+) -> bool:
+    """Per-launch branch-protection preflight gate.
+
+    Calls ``ruleset_is_provisioned`` and returns ``True`` only when both
+    rulesets are present and content-equal to the checked-in configs
+    (``RulesetStatus.MATCH``).  On any non-MATCH result the worker launch
+    is refused (returns ``False``) and a Slack alert is sent to
+    ``obs.heartbeat_ping_url`` if configured.
+
+    Failure-isolation: if ``post_slack_alert`` raises despite its
+    no-raise contract, the exception is caught and logged; the refusal
+    still fires.
+
+    Args:
+        issue_number: Issue number about to be dispatched (for log context).
+        owner: Repository owner (org or user login).
+        repo: Repository name.
+        app_id: Numeric GitHub App ID (string form) for placeholder
+            substitution in the feature ruleset.
+        runner: gh runner callable for the ruleset inspector.
+        obs: Observability config; ``obs.heartbeat_ping_url`` is used as
+            the Slack webhook target.
+
+    Returns:
+        ``True`` when the preflight passes (MATCH); ``False`` otherwise.
+    """
+    status = ruleset_is_provisioned(owner, repo, app_id=app_id, runner=runner)
+
+    if status is RulesetStatus.MATCH:
+        return True
+
+    # Build the alert message (spec: include refusal phrase + Failed checks).
+    if status is RulesetStatus.DRIFT:
+        checks_detail = (
+            "harness-main-no-merge, harness-feature-daemon-only "
+            "(content drift detected)"
+        )
+    elif status is RulesetStatus.ABSENT:
+        checks_detail = (
+            "harness-main-no-merge, harness-feature-daemon-only "
+            "(one or both rulesets absent)"
+        )
+    else:
+        checks_detail = f"ruleset check returned {status.name}"
+
+    message = (
+        "baton-harness refusing to launch worker — "
+        "main branch protection missing/misconfigured. "
+        "Will NOT run in dangerous mode. "
+        f"Failed checks: {checks_detail}."
+    )
+
+    _log.warning(
+        "daemon: preflight refused issue #%d — %s (%s)",
+        issue_number,
+        status.name,
+        checks_detail,
+    )
+
+    if obs.heartbeat_ping_url is None:
+        _log.warning(
+            "daemon: no heartbeat_ping_url configured; "
+            "Slack preflight alert not sent for issue #%d",
+            issue_number,
+        )
+    else:
+        try:
+            post_slack_alert(obs.heartbeat_ping_url, message)
+        except Exception:  # noqa: BLE001
+            _log.warning(
+                "daemon: post_slack_alert raised despite no-raise "
+                "contract (issue #%d); swallowing",
+                issue_number,
+            )
+
+    return False
 
 
 def reconstruct(
