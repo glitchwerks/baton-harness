@@ -424,8 +424,9 @@ def _github_http_post(
 
     Raises:
         AppAuthError: If GitHub returns a non-retryable 4xx, if all retry
-            attempts for a retryable 5xx are exhausted, or if the response
-            body is not valid JSON.
+            attempts for a retryable 5xx or transient OSError (e.g.
+            ``socket.timeout``, connection reset) are exhausted, or if
+            the response body is not valid JSON.
     """
     request_headers = {
         **headers,
@@ -459,8 +460,11 @@ def _github_http_post(
                 f"HTTP {status}: {response_body}"
             ) from exc
         except OSError as exc:
+            if attempt < _HTTP_POST_MAX_ATTEMPTS:
+                continue
             raise AppAuthError(
-                f"GitHub installation-token POST failed: {exc}"
+                f"GitHub installation-token POST failed after "
+                f"{attempt} attempts: {exc}"
             ) from exc
 
         try:

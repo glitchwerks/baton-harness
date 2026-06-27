@@ -591,6 +591,65 @@ class TestGithubHttpPost:
 
         assert mock_open.call_count == 1
 
+    def test_retries_on_transient_oserror_then_succeeds(self) -> None:
+        """A transient OSError must be retried and then return parsed JSON.
+
+        ``socket.timeout`` is a subclass of ``OSError``.  The first
+        urlopen call raises it; the second succeeds.  The caller must
+        receive the parsed response dict and urlopen must be called
+        exactly twice.
+        """
+        import baton_harness.chain.app_auth as app_auth
+
+        response = MagicMock()
+        response.read.return_value = json.dumps(
+            {
+                "token": _FAKE_TOKEN,
+                "expires_at": _FAKE_EXPIRES_AT,
+            }
+        ).encode("utf-8")
+        response.__enter__.return_value = response
+        response.__exit__.return_value = None
+
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=[
+                TimeoutError("timed out"),
+                response,
+            ],
+        ) as mock_open:
+            result = app_auth._github_http_post(
+                "https://api.github.com/test",
+                {"Authorization": "Bearer fake"},
+            )
+
+        assert result["token"] == _FAKE_TOKEN
+        assert mock_open.call_count == 2
+
+    def test_raises_app_auth_error_after_oserror_retries_exhausted(
+        self,
+    ) -> None:
+        """Persistent OSError across all attempts must raise ``AppAuthError``.
+
+        After ``_HTTP_POST_MAX_ATTEMPTS`` failed attempts, the function
+        must raise ``AppAuthError`` (not the raw ``OSError``), urlopen
+        must be called exactly ``_HTTP_POST_MAX_ATTEMPTS`` times, and
+        the error message must reference the underlying timeout.
+        """
+        import baton_harness.chain.app_auth as app_auth
+
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=TimeoutError("timed out"),
+        ) as mock_open:
+            with pytest.raises(AppAuthError, match="timed out"):
+                app_auth._github_http_post(
+                    "https://api.github.com/test",
+                    {"Authorization": "Bearer fake"},
+                )
+
+        assert mock_open.call_count == app_auth._HTTP_POST_MAX_ATTEMPTS
+
 
 class TestBootstrapSecretsEnvDisciplineInvariants:
     """Bootstrap invariants beyond the real-mint transport path."""
