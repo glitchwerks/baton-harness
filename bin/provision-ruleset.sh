@@ -103,6 +103,72 @@ if [[ "${_live_app_id}" != "${BH_GITHUB_APP_ID}" ]]; then
     exit 2
 fi
 echo "provision-ruleset: preflight OK — App ID ${BH_GITHUB_APP_ID} confirmed via GET /app"
+
+# ---------------------------------------------------------------------------
+# Preflight: validate the admin-role assumption before writing rulesets.
+# 1. The repo must currently report at least one admin collaborator.
+# 2. Default actor_id=5 is accepted only with that GitHub-backed admin signal.
+# 3. Non-default overrides must be validated against the org custom roles API.
+# ---------------------------------------------------------------------------
+_admin_collaborators_json="$(
+    gh api "repos/${REPO_SLUG}/collaborators?permission=admin"
+)"
+_admin_count="$(
+    printf '%s' "${_admin_collaborators_json}" \
+        | "${_PYTHON}" -c '
+import json, sys
+data = json.loads(sys.stdin.read())
+print(sum(
+    1 for entry in data
+    if entry.get("role_name") == "admin"
+    or bool((entry.get("permissions") or {}).get("admin"))
+))
+' 2>/dev/null || true
+)"
+if [[ -z "${_admin_count}" || "${_admin_count}" == "0" ]]; then
+    echo "provision-ruleset: PREFLIGHT FAILURE — repo reports no admin collaborators." >&2
+    echo "  GET /repos/${REPO_SLUG}/collaborators?permission=admin returned no admin identities." >&2
+    echo "  Refusing to write rulesets until the admin bypass assumption is validated." >&2
+    exit 2
+fi
+
+if [[ "${ADMIN_ROLE_ID}" != "5" ]]; then
+    _custom_roles_err="$(mktemp)"
+    if _custom_roles_json="$(
+        gh api "orgs/${BH_REPO_OWNER}/custom-repository-roles" 2>"${_custom_roles_err}"
+    )"; then
+        _custom_role_match="$(
+            printf '%s' "${_custom_roles_json}" \
+                | "${_PYTHON}" -c '
+import json, sys
+target = int(sys.argv[1])
+for entry in json.loads(sys.stdin.read()):
+    if entry.get("id") == target and entry.get("base_role") == "admin":
+        print("match")
+        break
+' "${ADMIN_ROLE_ID}" 2>/dev/null || true
+        )"
+        rm -f "${_custom_roles_err}"
+        if [[ "${_custom_role_match}" != "match" ]]; then
+            echo "provision-ruleset: PREFLIGHT FAILURE — BH_ADMIN_ROLE_ID=${ADMIN_ROLE_ID}" >&2
+            echo "  GitHub custom repository roles did not report an admin-based role with that id." >&2
+            echo "  Override the id to a validated admin role or omit BH_ADMIN_ROLE_ID to use the default 5." >&2
+            exit 2
+        fi
+        echo "provision-ruleset: preflight OK — custom admin RepositoryRole actor_id=${ADMIN_ROLE_ID} validated via org custom roles API"
+    else
+        _custom_roles_stderr="$(cat "${_custom_roles_err}")"
+        rm -f "${_custom_roles_err}"
+        echo "provision-ruleset: PREFLIGHT FAILURE — BH_ADMIN_ROLE_ID=${ADMIN_ROLE_ID} is a non-default override." >&2
+        echo "  GitHub did not expose a custom-role validation API for ${BH_REPO_OWNER}." >&2
+        echo "  stderr: ${_custom_roles_stderr}" >&2
+        echo "  Refusing to write rulesets because the override cannot be validated." >&2
+        exit 2
+    fi
+else
+    echo "provision-ruleset: preflight OK — repo reports ${_admin_count} admin collaborator(s); using default RepositoryRole actor_id=5"
+fi
+
 echo "provision-ruleset: using admin RepositoryRole actor_id=${ADMIN_ROLE_ID}"
 
 # ---------------------------------------------------------------------------

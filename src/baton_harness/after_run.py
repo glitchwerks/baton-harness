@@ -112,6 +112,11 @@ _SENTINEL_DIR = ".bh-state"
 _SENTINEL_NAME = "worker-tried-merge"
 
 
+def _require_repo_identity() -> tuple[str, str]:
+    """Return repo owner/name from env, raising if either is absent."""
+    return os.environ["BH_REPO_OWNER"], os.environ["BH_REPO_NAME"]
+
+
 # ---------------------------------------------------------------------------
 # Outcome state machine
 # ---------------------------------------------------------------------------
@@ -461,9 +466,10 @@ def _reconcile_labels(issue: int, outcome: RunOutcome) -> int:
             "emitting critical escalation, then applying blocked label.",
         )
         try:
+            owner, repo = _require_repo_identity()
             alert(
-                os.environ.get("BH_REPO_OWNER", ""),
-                os.environ.get("BH_REPO_NAME", ""),
+                owner,
+                repo,
                 issue,
                 "worker attempted to merge a PR"
                 " — see .bh-state/worker-tried-merge sentinel",

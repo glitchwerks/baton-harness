@@ -799,3 +799,125 @@ class TestCliGap1DuplicateReconcileAndTokenThreading:
             "got installation_token="
             f"{run_daemon_kwargs.get('installation_token')!r}"
         )
+
+
+class TestForcePrNotMergeStartupSelfTest:
+    """Startup self-test wiring for the force-pr-not-merge tripwire."""
+
+    def test_main_runs_tripwire_self_test_before_bootstrap(
+        self,
+    ) -> None:
+        """main() runs the hook self-test after chdir and before bootstrap."""
+        project_root = Path("/fake/project/root")
+        call_order: list[str] = []
+
+        fake_repo_cfg = MagicMock()
+        fake_repo_cfg.project_root = project_root
+
+        def fake_self_test() -> None:
+            call_order.append("self-test")
+
+        def fake_bootstrap(**kwargs: object) -> str:
+            call_order.append("bootstrap")
+            return "ghs_TESTTOKEN_sentinel"
+
+        async def fake_run_daemon(*args: object, **kwargs: object) -> None:
+            call_order.append("run-daemon")
+
+        with (
+            patch(
+                "baton_harness.chain.cli.load_workflow",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "baton_harness.chain.cli.load_registry",
+                return_value=[fake_repo_cfg],
+            ),
+            patch(
+                "baton_harness.chain.cli.os.chdir",
+                side_effect=lambda p: call_order.append("chdir"),
+            ),
+            patch(
+                "baton_harness.chain.cli.os.path.isdir",
+                return_value=True,
+            ),
+            patch(
+                "baton_harness.chain.cli._assert_force_pr_not_merge_tripwire",
+                side_effect=fake_self_test,
+            ),
+            patch(
+                "baton_harness.chain.cli.bootstrap_secrets",
+                side_effect=fake_bootstrap,
+            ),
+            patch("baton_harness.chain.cli.validate_daemon_token"),
+            patch(
+                "baton_harness.chain.cli.run_daemon",
+                side_effect=fake_run_daemon,
+            ),
+        ):
+            result = _run_main("--once")
+
+        assert result == 0
+        assert call_order.index("chdir") < call_order.index("self-test"), (
+            f"chdir must happen before the hook self-test; got {call_order!r}"
+        )
+        assert call_order.index("self-test") < call_order.index("bootstrap"), (
+            "force-pr-not-merge self-test must fail fast before token "
+            f"bootstrap; got {call_order!r}"
+        )
+
+    def test_main_exits_when_tripwire_self_test_fails(self) -> None:
+        """A failing hook self-test stops startup before bootstrap/run."""
+        project_root = Path("/fake/project/root")
+        bootstrap_called = False
+        run_daemon_called = False
+
+        fake_repo_cfg = MagicMock()
+        fake_repo_cfg.project_root = project_root
+
+        def fake_bootstrap(**kwargs: object) -> str:
+            nonlocal bootstrap_called
+            bootstrap_called = True
+            return "ghs_TESTTOKEN_sentinel"
+
+        async def fake_run_daemon(*args: object, **kwargs: object) -> None:
+            nonlocal run_daemon_called
+            run_daemon_called = True
+
+        with (
+            patch(
+                "baton_harness.chain.cli.load_workflow",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "baton_harness.chain.cli.load_registry",
+                return_value=[fake_repo_cfg],
+            ),
+            patch("baton_harness.chain.cli.os.chdir"),
+            patch(
+                "baton_harness.chain.cli.os.path.isdir",
+                return_value=True,
+            ),
+            patch(
+                "baton_harness.chain.cli._assert_force_pr_not_merge_tripwire",
+                side_effect=RuntimeError("hook parser drifted"),
+            ),
+            patch(
+                "baton_harness.chain.cli.bootstrap_secrets",
+                side_effect=fake_bootstrap,
+            ),
+            patch("baton_harness.chain.cli.validate_daemon_token"),
+            patch(
+                "baton_harness.chain.cli.run_daemon",
+                side_effect=fake_run_daemon,
+            ),
+        ):
+            result = _run_main("--once")
+
+        assert result == 1
+        assert not bootstrap_called, (
+            "bootstrap must not run after a failing startup self-test"
+        )
+        assert not run_daemon_called, (
+            "run_daemon must not run after a failing startup self-test"
+        )

@@ -14,11 +14,13 @@ from __future__ import annotations
 
 import io
 import json
+import re
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 import pytest
 
+from baton_harness.hooks import force_pr_not_merge
 from baton_harness.hooks.force_pr_not_merge import main as hook_main
 
 
@@ -331,3 +333,24 @@ def test_whitespace_form_still_blocked_after_p2b_fix(
     )
     sentinel = in_tmp_cwd / ".bh-state" / "worker-tried-merge"
     assert sentinel.exists(), "sentinel must exist for whitespace-form block"
+
+
+@pytest.mark.parametrize("pattern", ["_RE_PUT_METHOD", "_RE_CURL_PUT"])
+def test_put_method_patterns_do_not_carry_dead_start_anchor(
+    pattern: str,
+) -> None:
+    r"""Regex tripwire patterns must not carry an inert ``^`` alternation.
+
+    Issue #159 flagged the old ``(?:^|\\s)`` branch as dead without
+    ``re.MULTILINE``. Keep the pattern honest by asserting either a true
+    multiline anchor or, as implemented here, no ``^`` branch at all.
+    """
+    compiled = getattr(force_pr_not_merge, pattern)
+    assert "^" not in compiled.pattern, (
+        f"{pattern} should not contain a dead start-anchor branch: "
+        f"{compiled.pattern!r}"
+    )
+    assert not (compiled.flags & re.MULTILINE), (
+        f"{pattern} unexpectedly relies on re.MULTILINE: "
+        f"flags={compiled.flags!r}"
+    )

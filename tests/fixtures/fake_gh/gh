@@ -3,6 +3,10 @@
 #
 # Simulates the GitHub Rulesets REST API endpoints used by the script:
 #   GET /app                                          (preflight)
+#   GET /repos/<owner>/<repo>/collaborators?permission=admin
+#                                                    (admin-role preflight)
+#   GET /orgs/<owner>/custom-repository-roles        (admin-role override
+#                                                    preflight)
 #   GET /repos/<owner>/<repo>/rulesets                (LIST)
 #   GET /repos/<owner>/<repo>/rulesets/<integer-id>   (BY-ID)
 #   POST /repos/<owner>/<repo>/rulesets               (create)
@@ -10,6 +14,9 @@
 #
 # Canned responses live in $BH_FAKE_GH_CANNED_DIR:
 #   app_id.txt          — integer written as the "id" field for GET /app
+#   collaborators_admin.body
+#                      — body for GET /collaborators?permission=admin
+#   custom_roles.body   — optional body for GET /orgs/.../custom-repository-roles
 #   list.body           — page 1 body for the LIST endpoint
 #   list_page2.body     — optional page 2 body; when present, emitted as a
 #                         second page under --paginate --slurp
@@ -41,7 +48,7 @@ done
 _url=""
 for a in "${_args[@]}"; do
     case "${a}" in
-        repos/* | /repos/* | /app | app)
+        repos/* | /repos/* | orgs/* | /orgs/* | /app | app)
             _url="${a#/}"
             break
             ;;
@@ -55,6 +62,10 @@ _ruleset_name=""
 
 if [[ "${_url}" == "app" ]]; then
     _endpoint="get_app"
+elif [[ "${_url}" =~ ^orgs/[^/]+/custom-repository-roles$ ]]; then
+    _endpoint="get_custom_roles"
+elif [[ "${_url}" =~ ^repos/[^/]+/[^/]+/collaborators\?permission=admin$ ]]; then
+    _endpoint="get_admin_collaborators"
 elif [[ "${_url}" =~ ^repos/[^/]+/[^/]+/rulesets/([0-9]+)$ ]]; then
     _ruleset_id="${BASH_REMATCH[1]}"
     if [[ "${_method}" == "PUT" ]]; then
@@ -99,6 +110,18 @@ _log "${_record}"
 case "${_endpoint}" in
     get_app)
         printf '{"id":%s}\n' "$(cat "${BH_FAKE_GH_CANNED_DIR}/app_id.txt")"
+        exit 0
+        ;;
+    get_custom_roles)
+        if [[ -f "${BH_FAKE_GH_CANNED_DIR}/custom_roles.body" ]]; then
+            cat "${BH_FAKE_GH_CANNED_DIR}/custom_roles.body"
+            exit 0
+        fi
+        printf '{"message":"Feature not available for the fake organization.","status":"404"}' >&2
+        exit 1
+        ;;
+    get_admin_collaborators)
+        cat "${BH_FAKE_GH_CANNED_DIR}/collaborators_admin.body"
         exit 0
         ;;
     get_list)

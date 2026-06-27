@@ -417,8 +417,11 @@ This creates two rulesets:
 The script is idempotent — safe to re-run. It uses the GitHub Rulesets REST API's
 list-then-by-id endpoint shape (per the [API contract](https://docs.github.com/en/rest/repos/rules?apiVersion=2022-11-28)
 — `GET /rulesets/{ruleset_id}` requires a numeric id) and runs a preflight cross-check
-that `BH_GITHUB_APP_ID` matches `GET /app`. See issue #157 and the merge PR for the
-design.
+that `BH_GITHUB_APP_ID` matches `GET /app`. It also validates the admin bypass
+assumption before writing rulesets: the repo must report at least one admin
+collaborator via `GET /repos/<owner>/<repo>/collaborators?permission=admin`, and any
+non-default `BH_ADMIN_ROLE_ID` override must be confirmed through the org custom
+repository-roles API. See issue #157 and the merge PR for the design.
 
 ## CLAUDE.md for the pilot project
 
