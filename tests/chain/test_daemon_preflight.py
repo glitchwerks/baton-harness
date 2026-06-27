@@ -46,6 +46,7 @@ Coverage:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any
@@ -115,9 +116,8 @@ def test_should_launch_worker_returns_true_on_match(
     Args:
         tmp_path: Pytest tmp_path fixture.
     """
-    from baton_harness.chain.ruleset_status import RulesetStatus
-
     import baton_harness.chain.daemon as daemon_mod
+    from baton_harness.chain.ruleset_status import RulesetStatus
 
     obs = _make_obs(tmp_path)
     post_calls: list[tuple[str, str]] = []
@@ -169,9 +169,8 @@ def test_should_launch_worker_refuses_and_alerts_on_drift(
     Args:
         tmp_path: Pytest tmp_path fixture.
     """
-    from baton_harness.chain.ruleset_status import RulesetStatus
-
     import baton_harness.chain.daemon as daemon_mod
+    from baton_harness.chain.ruleset_status import RulesetStatus
 
     obs = _make_obs(tmp_path)
     post_calls: list[tuple[str, str]] = []
@@ -230,9 +229,8 @@ def test_should_launch_worker_refuses_and_alerts_on_absent(
     Args:
         tmp_path: Pytest tmp_path fixture.
     """
-    from baton_harness.chain.ruleset_status import RulesetStatus
-
     import baton_harness.chain.daemon as daemon_mod
+    from baton_harness.chain.ruleset_status import RulesetStatus
 
     obs = _make_obs(tmp_path)
     post_calls: list[tuple[str, str]] = []
@@ -289,9 +287,8 @@ def test_should_launch_worker_refuses_and_alerts_on_error_fail_closed(
     Args:
         tmp_path: Pytest tmp_path fixture.
     """
-    from baton_harness.chain.ruleset_status import RulesetStatus
-
     import baton_harness.chain.daemon as daemon_mod
+    from baton_harness.chain.ruleset_status import RulesetStatus
 
     obs = _make_obs(tmp_path)
     post_calls: list[tuple[str, str]] = []
@@ -347,9 +344,8 @@ def test_alert_post_failure_does_not_crash_launch_decision(
     Args:
         tmp_path: Pytest tmp_path fixture.
     """
-    from baton_harness.chain.ruleset_status import RulesetStatus
-
     import baton_harness.chain.daemon as daemon_mod
+    from baton_harness.chain.ruleset_status import RulesetStatus
 
     obs = _make_obs(tmp_path)
 
@@ -398,9 +394,8 @@ def test_no_ping_url_configured_skips_post_but_still_refuses(
         tmp_path: Pytest tmp_path fixture.
         caplog: Pytest log-capture fixture.
     """
-    from baton_harness.chain.ruleset_status import RulesetStatus
-
     import baton_harness.chain.daemon as daemon_mod
+    from baton_harness.chain.ruleset_status import RulesetStatus
 
     obs = _make_obs(tmp_path, ping_url=None)  # no webhook configured
     post_calls: list[Any] = []
@@ -441,4 +436,187 @@ def test_no_ping_url_configured_skips_post_but_still_refuses(
         "A WARNING must be logged when a preflight alert cannot be sent "
         "because no heartbeat_ping_url is configured; "
         f"records: {[r.message for r in caplog.records]!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 7 — launch loop calls _should_launch_worker BEFORE _run_worker
+# ---------------------------------------------------------------------------
+
+
+def test_daemon_launch_loop_calls_should_launch_worker_before_run_worker(
+    tmp_path: Path,
+) -> None:
+    """Launch loop consults _should_launch_worker before _run_worker.
+
+    Code-writer must extract a module-level async helper with the signature::
+
+        async def _launch_one_issue(
+            orch: Orchestrator,
+            issue_obj: object,
+            owner: str,
+            repo: str,
+            app_id: str,
+            runner: Callable[[list[str]], subprocess.CompletedProcess[str]],
+            obs: ObsConfig,
+        ) -> str | None
+
+    The helper's contract:
+
+    1. ``preflight = _should_launch_worker(issue_number, owner, repo,
+       app_id=app_id, runner=runner, obs=obs)``
+    2. If not preflight: skip ``_run_worker``; return ``None``.
+    3. Otherwise: ``return await orch._run_worker(issue_obj)``
+
+    The existing dispatch loop near L1373 of daemon.py calls
+    ``_launch_one_issue`` in place of the bare ``await
+    orch._run_worker(issue_obj)``.  ``_run_work_unit`` and its callers
+    must thread ``app_id`` (from ``RepoConfig.app_id`` or
+    ``config.app_id``) and ``obs`` down to ``_launch_one_issue``.
+
+    This test patches both ``_should_launch_worker`` and
+    ``Orchestrator._run_worker`` at module scope, then drives
+    ``_launch_one_issue`` directly via ``asyncio.run()``.  The test
+    asserts:
+
+    - ``_should_launch_worker`` was called with positional args
+      ``(issue_number, owner, repo)`` and keyword args
+      ``app_id=_APP_ID``.
+    - ``_run_worker`` was called exactly once (after the preflight).
+    - Return value threads through from ``_run_worker``.
+
+    Args:
+        tmp_path: Pytest tmp_path fixture.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    import baton_harness.chain.daemon as daemon_mod
+
+    obs = _make_obs(tmp_path)
+
+    # Build a minimal mock Orchestrator with an async _run_worker.
+    mock_orch = MagicMock()
+    mock_orch._run_worker = AsyncMock(return_value="pr_created")
+
+    # issue_obj only needs to carry .number for the preflight call.
+    mock_issue = MagicMock()
+    mock_issue.number = _ISSUE
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_should_launch_worker",
+            return_value=True,
+        ) as mock_preflight,
+        patch.object(
+            mock_orch,
+            "_run_worker",
+            new=mock_orch._run_worker,
+        ),
+    ):
+        result = asyncio.run(
+            daemon_mod._launch_one_issue(  # type: ignore[attr-defined]
+                mock_orch,
+                mock_issue,
+                _OWNER,
+                _REPO,
+                _APP_ID,
+                _fake_runner,
+                obs,
+            )
+        )
+
+    # Preflight must have been called with the right positional args.
+    mock_preflight.assert_called_once()
+    preflight_args, preflight_kwargs = mock_preflight.call_args
+    assert preflight_args == (_ISSUE, _OWNER, _REPO), (
+        f"_should_launch_worker must receive (issue_number, owner, repo); "
+        f"got positional args {preflight_args!r}"
+    )
+    assert preflight_kwargs.get("app_id") == _APP_ID, (
+        f"_should_launch_worker must receive app_id={_APP_ID!r}; "
+        f"got {preflight_kwargs!r}"
+    )
+
+    # _run_worker must have been called once (launch allowed).
+    mock_orch._run_worker.assert_called_once_with(mock_issue)
+
+    # Return value threads through from _run_worker.
+    assert result == "pr_created", (
+        f"_launch_one_issue must return the _run_worker result; got {result!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 8 — launch loop skips _run_worker when preflight refuses
+# ---------------------------------------------------------------------------
+
+
+def test_daemon_launch_loop_skips_run_worker_when_preflight_refuses(
+    tmp_path: Path,
+) -> None:
+    """Launch loop skips _run_worker and returns None when preflight refuses.
+
+    When ``_should_launch_worker`` returns ``False``, ``_launch_one_issue``
+    must:
+
+    - NOT call ``orch._run_worker``.
+    - Return ``None`` (signals refused/parked to the calling loop).
+    - Not raise — control must return cleanly to the caller.
+
+    The calling loop in ``_run_work_unit`` is responsible for parking the
+    issue (``sched.mark_parked(n)`` + ``parked_reasons[n] = "preflight
+    refused"``) and continuing to the next issue.  ``_launch_one_issue``
+    itself only returns ``None``; it does not touch ``sched``.
+
+    See the seam contract in
+    ``test_daemon_launch_loop_calls_should_launch_worker_before_run_worker``
+    for the full helper signature and threading requirements.
+
+    Args:
+        tmp_path: Pytest tmp_path fixture.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    import baton_harness.chain.daemon as daemon_mod
+
+    obs = _make_obs(tmp_path)
+
+    mock_orch = MagicMock()
+    mock_orch._run_worker = AsyncMock(return_value="pr_created")
+
+    mock_issue = MagicMock()
+    mock_issue.number = _ISSUE
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_should_launch_worker",
+            return_value=False,
+        ),
+        patch.object(
+            mock_orch,
+            "_run_worker",
+            new=mock_orch._run_worker,
+        ),
+    ):
+        result = asyncio.run(
+            daemon_mod._launch_one_issue(  # type: ignore[attr-defined]
+                mock_orch,
+                mock_issue,
+                _OWNER,
+                _REPO,
+                _APP_ID,
+                _fake_runner,
+                obs,
+            )
+        )
+
+    # _run_worker must NOT have been called.
+    mock_orch._run_worker.assert_not_called()
+
+    # _launch_one_issue must return None (refused / skip signal to caller).
+    assert result is None, (
+        "_launch_one_issue must return None when preflight refuses; "
+        f"got {result!r}"
     )
