@@ -546,7 +546,6 @@ def test_daemon_launch_loop_calls_should_launch_worker_before_run_worker(
                 _REPO,
                 _APP_ID,
                 _TOKEN,
-                _fake_runner,
                 obs,
             )
         )
@@ -634,7 +633,6 @@ def test_daemon_launch_loop_skips_run_worker_when_preflight_refuses(
                 _REPO,
                 _APP_ID,
                 _TOKEN,
-                _fake_runner,
                 obs,
             )
         )
@@ -803,7 +801,6 @@ def test_launch_one_issue_uses_build_preflight_runner_not_default_runner(
                 _REPO,
                 _APP_ID,
                 _TOKEN,
-                _fake_runner,
                 obs,
             )
         )
@@ -913,7 +910,6 @@ def test_preflight_refusal_restores_agent_ready_label(
                 _REPO,
                 _APP_ID,
                 _TOKEN,
-                _fake_runner,
                 obs,
             )
         )
@@ -1028,7 +1024,6 @@ def test_preflight_refusal_posts_blocking_comment_with_reason(
                 _REPO,
                 _APP_ID,
                 _TOKEN,
-                _fake_runner,
                 obs,
             )
         )
