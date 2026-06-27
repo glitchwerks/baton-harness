@@ -23,6 +23,10 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Literal
 
+from baton_harness.chain.app_auth import (
+    InstallationTokenSource,
+    gh_env,
+)
 from baton_harness.chain.runlog import RunLog
 
 _log = logging.getLogger(__name__)
@@ -33,27 +37,6 @@ _CRITICAL_PREFIX = "🚨 CRITICAL: "
 # ---------------------------------------------------------------------------
 # Subprocess helper (the sole gh I/O seam; patch this in tests)
 # ---------------------------------------------------------------------------
-
-
-def _gh_env(installation_token: str) -> dict[str, str]:
-    """Return os.environ overlaid with GH_TOKEN=<installation_token>.
-
-    Does not mutate os.environ.  Token is per-call; never persists
-    in the process environment.
-
-    Args:
-        installation_token: GitHub App installation access token
-            (``ghs_`` prefix) to inject as ``GH_TOKEN`` and
-            ``GITHUB_TOKEN`` in the subprocess environment.
-
-    Returns:
-        A shallow copy of ``os.environ`` with both ``GH_TOKEN`` and
-        ``GITHUB_TOKEN`` overridden to ``installation_token``.
-    """
-    env = dict(os.environ)
-    env["GH_TOKEN"] = installation_token
-    env["GITHUB_TOKEN"] = installation_token
-    return env
 
 
 def _run(
@@ -69,7 +52,7 @@ def _run(
         cmd: Command and arguments to execute (no shell interpolation).
         env: Optional environment dict for the subprocess.  When
             ``None``, the subprocess inherits ``os.environ`` unchanged.
-            Pass ``_gh_env(installation_token)`` for daemon-side calls
+            Pass ``gh_env(installation_token)`` for daemon-side calls
             to override ``GH_TOKEN`` without mutating ``os.environ``.
 
     Returns:
@@ -97,7 +80,7 @@ def escalate(
     summary: str,
     *,
     kind: str = "block",
-    installation_token: str = "",
+    installation_token: InstallationTokenSource = "",
 ) -> bool:
     """Post a stall summary as a GitHub comment and optionally to Slack.
 
@@ -153,7 +136,7 @@ def escalate(
         skipped (no valid issue target).  Slack success or failure has no
         bearing on the return value.
     """
-    gh_call_env = _gh_env(installation_token) if installation_token else None
+    gh_call_env = gh_env(installation_token) if installation_token else None
 
     # ------------------------------------------------------------------
     # 1. GitHub comment — durable record; MUST be attempted first.
@@ -239,7 +222,7 @@ def alert(
     severity: Literal["info", "warn", "critical"],
     runlog: RunLog | None = None,
     kind: str = "block",
-    installation_token: str = "",
+    installation_token: InstallationTokenSource = "",
 ) -> bool:
     """Post an alert through the severity-routing layer.
 

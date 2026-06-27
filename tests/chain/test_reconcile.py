@@ -1171,6 +1171,55 @@ class TestReconcileStartupAcceptsInstallationToken:
             "instead — the ambient GH_TOKEN=garbage must be ignored"
         )
 
+    def test_reconcile_startup_accepts_refreshable_provider(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """reconcile_startup must validate a resolved token from a provider."""
+        reconcile = _import_reconcile()
+
+        monkeypatch.setenv("GH_TOKEN", "garbage_not_a_real_token")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        obs = _make_obs(tmp_path)
+        repo_cfgs = [_make_repo_cfg(tmp_path)]
+        received_tokens: list[str] = []
+
+        class FakeProvider:
+            """Minimal token provider used to model refreshable auth."""
+
+            def get_token(self) -> str:
+                return "ghs_PROVIDER_TOKEN"
+
+        def _capture_validate(token: str) -> None:
+            received_tokens.append(token)
+
+        with (
+            patch(
+                "baton_harness.chain.reconcile.validate_daemon_token",
+                side_effect=_capture_validate,
+            ),
+            patch("baton_harness.chain.reconcile.alert", return_value=True),
+            patch(
+                "baton_harness.chain.reconcile._list_claude_procs",
+                return_value=[],
+            ),
+        ):
+            asyncio.run(
+                reconcile.reconcile_startup(
+                    repo_cfgs,
+                    obs,
+                    runlog=None,
+                    installation_token=FakeProvider(),
+                )
+            )
+
+        assert received_tokens == ["ghs_PROVIDER_TOKEN"], (
+            "reconcile_startup must resolve the threaded provider and "
+            f"validate its token; got {received_tokens!r}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Gap 3 — reconcile_startup alert() calls must thread installation_token

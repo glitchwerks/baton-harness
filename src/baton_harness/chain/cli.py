@@ -30,9 +30,9 @@ from pathlib import Path
 from baton_harness._auth import TokenValidationError, validate_daemon_token
 from baton_harness.chain.app_auth import (
     AppAuthError,
-)
-from baton_harness.chain.app_auth import (
-    bootstrap_secrets as _bootstrap_secrets_impl,
+    InstallationTokenSource,
+    build_installation_token_provider,
+    resolve_installation_token,
 )
 from baton_harness.chain.daemon import run_daemon
 from baton_harness.chain.registry import load_registry
@@ -53,12 +53,12 @@ def bootstrap_secrets(
     app_id: str = "",
     app_private_key_bws_id: str = "",
     installation_id: int = 0,
-) -> str:
-    """Fetch App private key from BWS and mint an installation token.
+) -> InstallationTokenSource:
+    """Fetch App private key from BWS and build a refreshable token source.
 
-    Thin wrapper around ``app_auth.bootstrap_secrets`` that reads env
-    vars, calls the real implementation, and returns only the token
-    string (discarding ``expires_at``).  ``BWS_ACCESS_TOKEN`` is popped
+    Thin wrapper around ``app_auth.build_installation_token_provider`` that
+    reads env vars, calls the real implementation, and returns a provider
+    object for long-running daemon use. ``BWS_ACCESS_TOKEN`` is popped
     from ``os.environ`` by the inner call as its first operation.
 
     This function exists as a named symbol in ``cli`` so tests can patch
@@ -74,14 +74,13 @@ def bootstrap_secrets(
             ``BWS_INSTALLATION_ID`` env var.
 
     Returns:
-        The minted installation access token (``ghs_`` prefix).
+        A refreshable installation-token source for daemon-side gh calls.
 
     Raises:
         AppAuthError: Propagated from ``app_auth.bootstrap_secrets`` on
             Bitwarden or GitHub API failure.
     """
     from baton_harness.chain import bws_client
-    from baton_harness.chain.app_auth import mint_installation_token
 
     _app_id = app_id or os.environ.get("BWS_APP_ID", "")
     _pem_id = app_private_key_bws_id or os.environ.get("BWS_PEM_SECRET_ID", "")
@@ -89,14 +88,12 @@ def bootstrap_secrets(
         os.environ.get("BWS_INSTALLATION_ID", "0")
     )
 
-    token, _expires_at = _bootstrap_secrets_impl(
-        _app_id,
-        _pem_id,
-        _install_id,
+    return build_installation_token_provider(
+        app_id=_app_id,
+        app_private_key_bws_id=_pem_id,
+        installation_id=_install_id,
         fetch_secret=bws_client.fetch_secret,
-        mint_token=mint_installation_token,
     )
-    return token
 
 
 def _default_workflow_path() -> Path:
@@ -285,7 +282,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Validate the minted token before entering the event loop.
     try:
-        validate_daemon_token(installation_token)
+        validate_daemon_token(resolve_installation_token(installation_token))
     except TokenValidationError as exc:
         print(
             f"bh-daemon: error: invalid installation token from bootstrap:"

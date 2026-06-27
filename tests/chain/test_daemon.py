@@ -9248,6 +9248,63 @@ class TestDaemonGhCallsUseInstallationToken:
                 f"subprocess env, got {env.get('GH_TOKEN')!r}"
             )
 
+    def test_label_edit_resolves_fresh_token_per_call_from_provider(
+        self,
+    ) -> None:
+        """_label_edit must resolve a fresh token from a provider each call."""
+        env_dicts_seen: list[dict[str, str] | None] = []
+
+        class FakeProvider:
+            """Minimal token provider used to model refreshable auth."""
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def get_token(self) -> str:
+                self.calls += 1
+                return f"ghs_REFRESHED_{self.calls}"
+
+        provider = FakeProvider()
+
+        def recording_run(
+            cmd: list[str] | str,
+            *args: object,
+            **kwargs: object,
+        ) -> subprocess.CompletedProcess[str]:
+            env_dicts_seen.append(kwargs.get("env"))
+            return subprocess.CompletedProcess(
+                args=cmd if isinstance(cmd, list) else [str(cmd)],
+                returncode=0,
+                stdout="",
+                stderr="",
+            )
+
+        with patch.object(subprocess, "run", side_effect=recording_run):
+            daemon_mod._label_edit(
+                _OWNER,
+                _REPO_NAME,
+                42,
+                add=["agent-in-progress"],
+                installation_token=provider,
+            )
+            daemon_mod._label_edit(
+                _OWNER,
+                _REPO_NAME,
+                42,
+                remove=["agent-in-progress"],
+                installation_token=provider,
+            )
+
+        assert [
+            env["GH_TOKEN"] for env in env_dicts_seen if env is not None
+        ] == [
+            "ghs_REFRESHED_1",
+            "ghs_REFRESHED_2",
+        ], (
+            "_label_edit must resolve a fresh token for each gh subprocess "
+            f"call; saw {env_dicts_seen!r}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Gap 1C — run_daemon threads installation_token into reconcile_startup

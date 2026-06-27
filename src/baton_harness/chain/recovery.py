@@ -38,13 +38,16 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import subprocess
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+from baton_harness.chain.app_auth import (
+    InstallationTokenSource,
+    gh_env,
+)
 from baton_harness.chain.escalation import alert
 
 if TYPE_CHECKING:
@@ -60,28 +63,6 @@ _PROVENANCE_PREFIX = "Baton-Harness-Merge: issue-"
 # ---------------------------------------------------------------------------
 
 
-def _gh_env(installation_token: str) -> dict[str, str]:
-    """Return os.environ overlaid with GH_TOKEN=<installation_token>.
-
-    Does not mutate os.environ.  Token is per-call; never persists
-    in the process environment.  Follows the same env-discipline pattern
-    as merge.py and gh_deps.py.
-
-    Args:
-        installation_token: GitHub App installation access token
-            (``ghs_`` prefix) to inject as ``GH_TOKEN`` and
-            ``GITHUB_TOKEN`` in the subprocess environment.
-
-    Returns:
-        A shallow copy of ``os.environ`` with both ``GH_TOKEN`` and
-        ``GITHUB_TOKEN`` overridden to ``installation_token``.
-    """
-    env = dict(os.environ)
-    env["GH_TOKEN"] = installation_token
-    env["GITHUB_TOKEN"] = installation_token
-    return env
-
-
 def _run(
     cmd: list[str],
     env: dict[str, str] | None = None,
@@ -95,7 +76,7 @@ def _run(
         cmd: Command and arguments to execute (no shell interpolation).
         env: Optional environment dict for the subprocess.  When
             ``None``, the subprocess inherits ``os.environ`` unchanged.
-            Pass ``_gh_env(installation_token)`` for daemon-side calls
+            Pass ``gh_env(installation_token)`` for daemon-side calls
             to override ``GH_TOKEN`` without mutating ``os.environ``.
 
     Returns:
@@ -219,7 +200,7 @@ def _fetch_labels(
     repo: str,
     issue: int,
     *,
-    installation_token: str = "",
+    installation_token: InstallationTokenSource = "",
 ) -> set[str]:
     """Fetch the current labels for an issue (lowercase).
 
@@ -239,7 +220,7 @@ def _fetch_labels(
         A set of lowercase label name strings.  Returns an empty set on
         error (best-effort; a failed label fetch is not fatal for recovery).
     """
-    env = _gh_env(installation_token) if installation_token else None
+    env = gh_env(installation_token) if installation_token else None
     proc = _run(
         [
             "gh",
@@ -273,7 +254,7 @@ def _fetch_open_prs(
     owner: str,
     repo: str,
     *,
-    installation_token: str = "",
+    installation_token: InstallationTokenSource = "",
 ) -> list[str]:
     """Fetch the head-ref names of all open PRs.
 
@@ -292,7 +273,7 @@ def _fetch_open_prs(
         A list of head-ref names for open PRs.  Returns an empty list on
         error (best-effort).
     """
-    env = _gh_env(installation_token) if installation_token else None
+    env = gh_env(installation_token) if installation_token else None
     proc = _run(
         [
             "gh",
@@ -355,7 +336,7 @@ def reconstruct(
     feature_branch: str,
     membership: frozenset[int],
     *,
-    installation_token: str = "",
+    installation_token: InstallationTokenSource = "",
 ) -> RecoveryResult:
     """Reconstruct the scheduler state for a work unit's membership.
 

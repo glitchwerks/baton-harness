@@ -657,6 +657,77 @@ class TestDaemonStartupAuthWiring:
                 f"Installation token found in os.environ[{key!r}]"
             )
 
+    def test_main_accepts_refreshable_provider_from_bootstrap(
+        self,
+    ) -> None:
+        """main() validates one token but passes provider to run_daemon."""
+        project_root = Path("/fake/project/root")
+        validated_with: list[str] = []
+        run_daemon_kwargs: dict[str, object] = {}
+
+        class FakeProvider:
+            """Minimal token provider used to model refreshable auth."""
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def get_token(self) -> str:
+                self.calls += 1
+                return f"ghs_PROVIDER_TOKEN_{self.calls}"
+
+        provider = FakeProvider()
+
+        def fake_bootstrap(**kwargs: object) -> FakeProvider:
+            return provider
+
+        def fake_validate(token: str) -> None:
+            validated_with.append(token)
+
+        async def fake_run_daemon(*args: object, **kwargs: object) -> None:
+            run_daemon_kwargs.update(kwargs)
+
+        fake_repo_cfg = MagicMock()
+        fake_repo_cfg.project_root = project_root
+
+        with (
+            patch(
+                "baton_harness.chain.cli.load_workflow",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "baton_harness.chain.cli.load_registry",
+                return_value=[fake_repo_cfg],
+            ),
+            patch(
+                "baton_harness.chain.cli.run_daemon",
+                side_effect=fake_run_daemon,
+            ),
+            patch("baton_harness.chain.cli.os.chdir"),
+            patch(
+                "baton_harness.chain.cli.os.path.isdir",
+                return_value=True,
+            ),
+            patch(
+                "baton_harness.chain.cli.bootstrap_secrets",
+                side_effect=fake_bootstrap,
+            ),
+            patch(
+                "baton_harness.chain.cli.validate_daemon_token",
+                side_effect=fake_validate,
+            ),
+        ):
+            result = _run_main("--once")
+
+        assert result == 0, f"Expected exit 0, got {result}"
+        assert validated_with == ["ghs_PROVIDER_TOKEN_1"], (
+            "main() must validate the resolved provider token before daemon "
+            f"startup; got {validated_with!r}"
+        )
+        assert run_daemon_kwargs.get("installation_token") is provider, (
+            "run_daemon must receive the provider object so downstream gh "
+            "calls can refresh tokens per call"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Gap 1 — duplicate reconcile_startup + token threading (codex 3347f83 P2)

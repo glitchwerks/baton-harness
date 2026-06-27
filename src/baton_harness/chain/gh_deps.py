@@ -34,6 +34,11 @@ import json
 import subprocess
 from typing import cast
 
+from baton_harness.chain.app_auth import (
+    InstallationTokenSource,
+    gh_env,
+)
+
 # ---------------------------------------------------------------------------
 # Subprocess helper (the sole I/O seam; patch this in tests)
 # ---------------------------------------------------------------------------
@@ -55,7 +60,7 @@ def _run(
             directly to ``subprocess.run`` as ``env=``.  When ``None``,
             the subprocess inherits the current process environment.
             Callers must supply a FULL environment copy (e.g.
-            ``_gh_env(token)``); passing a partial dict causes missing
+            ``gh_env(token)``); passing a partial dict causes missing
             vars in the subprocess.
 
     Returns:
@@ -78,35 +83,10 @@ def _run(
 _PAGE_SIZE = 100
 
 
-def _gh_env(installation_token: str) -> dict[str, str]:
-    """Return os.environ overlaid with GH_TOKEN=<installation_token>.
-
-    Follows the same env-discipline pattern as daemon.py:_gh_env —
-    builds a full copy of the current environment so the subprocess
-    inherits all PATH / HOME vars, then overrides the two canonical
-    gh token keys.  ``os.environ`` is never mutated.
-
-    Args:
-        installation_token: GitHub App installation access token
-            (``ghs_`` prefix).
-
-    Returns:
-        A fresh ``dict`` with all current env vars plus
-        ``GH_TOKEN`` and ``GITHUB_TOKEN`` overridden to
-        ``installation_token``.
-    """
-    import os as _os  # noqa: PLC0415
-
-    env = dict(_os.environ)
-    env["GH_TOKEN"] = installation_token
-    env["GITHUB_TOKEN"] = installation_token
-    return env
-
-
 def _paginate(
     base_url: str,
     *,
-    installation_token: str = "",
+    installation_token: InstallationTokenSource = "",
 ) -> list[dict[str, object]]:
     """Fetch all pages from a paginated ``gh api`` endpoint.
 
@@ -134,7 +114,7 @@ def _paginate(
         ValueError: If any item in the response is missing the ``number``
             field.
     """
-    env = _gh_env(installation_token) if installation_token else None
+    env = gh_env(installation_token) if installation_token else None
     results: list[dict[str, object]] = []
     page = 1
     separator = "&" if "?" in base_url else "?"
@@ -180,7 +160,7 @@ def fetch_blocked_by(
     repo: str,
     issue: int,
     *,
-    installation_token: str = "",
+    installation_token: InstallationTokenSource = "",
 ) -> list[int]:
     """Fetch the issue numbers that block ``issue`` (its prerequisites).
 

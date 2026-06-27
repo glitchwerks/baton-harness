@@ -35,6 +35,10 @@ from baton_harness._auth import (
     validate_daemon_token,
     validate_github_token,  # noqa: F401 — kept for test patch target
 )
+from baton_harness.chain.app_auth import (
+    InstallationTokenSource,
+    resolve_installation_token,
+)
 from baton_harness.chain.escalation import alert
 
 if TYPE_CHECKING:
@@ -83,7 +87,7 @@ async def reconcile_startup(
     obs: ObsConfig | None,
     runlog: RunLog | None,
     *,
-    installation_token: str = "",
+    installation_token: InstallationTokenSource = "",
 ) -> None:
     """Run the startup reconciliation sweep.
 
@@ -128,7 +132,7 @@ async def reconcile_startup(
     # threaded (legacy / test path).
     # ------------------------------------------------------------------
     if installation_token:
-        token = installation_token
+        token = resolve_installation_token(installation_token)
     else:
         token = os.environ.get("GH_TOKEN", "") or os.environ.get(
             "GITHUB_TOKEN", ""

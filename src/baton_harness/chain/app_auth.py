@@ -33,7 +33,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 import jwt
 
@@ -96,6 +96,17 @@ MintTokenFn = Callable[
     [str, str, int],
     tuple[str, str],
 ]
+
+
+@runtime_checkable
+class InstallationTokenSourceProtocol(Protocol):
+    """Protocol for objects that can resolve a current installation token."""
+
+    def get_token(self) -> str:
+        """Return the current installation token string."""
+
+
+InstallationTokenSource = str | InstallationTokenSourceProtocol
 
 
 # ---------------------------------------------------------------------------
@@ -407,6 +418,99 @@ def bootstrap_secrets(
     # Invariant: never write the installation token into os.environ.
     # The caller receives it as a return value and stores it outside env.
     return token, expires_at
+
+
+def build_installation_token_provider(
+    app_id: str,
+    app_private_key_bws_id: str,
+    installation_id: int,
+    *,
+    fetch_secret: Callable[..., str],
+) -> InstallationTokenProvider:
+    """Fetch the App private key and return a refreshable token provider.
+
+    Mirrors the env-discipline behavior of ``bootstrap_secrets`` while
+    returning an ``InstallationTokenProvider`` that can mint fresh tokens
+    on demand for long-running daemon work.
+
+    Args:
+        app_id: GitHub App numeric ID.
+        app_private_key_bws_id: Bitwarden secret ID for the RSA PEM key.
+        installation_id: GitHub App installation ID.
+        fetch_secret: Callable used to retrieve the private key PEM.
+
+    Returns:
+        A configured ``InstallationTokenProvider`` that mints via the real
+        GitHub HTTP transport and keeps the private key outside ``os.environ``.
+    """
+    bws_token = os.environ.pop("BWS_ACCESS_TOKEN", None) or ""
+    private_key_pem = fetch_secret(
+        app_private_key_bws_id,
+        access_token=bws_token,
+    )
+    return InstallationTokenProvider(
+        app_id=app_id,
+        private_key_pem=private_key_pem,
+        installation_id=installation_id,
+        http_post=_github_http_post,
+    )
+
+
+def resolve_installation_token(
+    installation_token: InstallationTokenSource,
+) -> str:
+    """Resolve a token source to the current installation-token string.
+
+    Args:
+        installation_token: Either a literal token string or a refreshable
+            provider object exposing ``get_token()``.
+
+    Returns:
+        The current GitHub App installation token string.
+    """
+    if isinstance(installation_token, str):
+        return installation_token
+    return installation_token.get_token()
+
+
+def gh_env(installation_token: InstallationTokenSource) -> dict[str, str]:
+    """Return ``os.environ`` overlaid with the resolved installation token.
+
+    Builds a full shallow copy of the current process environment and
+    injects the resolved GitHub App installation token into both canonical
+    ``gh``-CLI credential keys (``GH_TOKEN`` and ``GITHUB_TOKEN``).
+
+    Env-discipline invariants:
+        * ``os.environ`` is **never mutated** — the overlay is a fresh
+          ``dict`` per call.
+        * The token is resolved at call time and does not persist in the
+          returned dict beyond the immediate subprocess invocation; callers
+          should discard the dict after use.
+        * Both ``GH_TOKEN`` and ``GITHUB_TOKEN`` are always set so that
+          both the ``gh`` CLI and git-credential helpers pick up the token
+          regardless of which key they consult.
+
+    This is the shared implementation for all chain modules.  It replaces
+    the five previously identical per-module ``_gh_env`` helpers in
+    ``daemon``, ``escalation``, ``gh_deps``, ``merge``, and ``recovery``
+    (PR #163 reviewer W1).
+
+    Args:
+        installation_token: A literal token string (``ghs_…``) or a
+            refreshable ``InstallationTokenSourceProtocol`` object whose
+            ``get_token()`` method returns the current token.  Resolved
+            via :func:`resolve_installation_token`.
+
+    Returns:
+        A new ``dict[str, str]`` containing all key-value pairs from
+        ``os.environ`` at the time of the call, with ``GH_TOKEN`` and
+        ``GITHUB_TOKEN`` overridden to the resolved installation token.
+    """
+    env = dict(os.environ)
+    token = resolve_installation_token(installation_token)
+    env["GH_TOKEN"] = token
+    env["GITHUB_TOKEN"] = token
+    return env
 
 
 def _github_http_post(
