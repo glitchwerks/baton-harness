@@ -187,29 +187,6 @@ def _should_launch_worker(
     return False
 
 
-def _default_gh_runner(
-    args: list[str],
-) -> subprocess.CompletedProcess[str]:
-    """Default gh-runner for branch-protection preflight checks.
-
-    Thin wrapper around ``subprocess.run`` that invokes ``gh`` with the
-    given args.  Mirrors the pattern in ``ruleset_status._default_runner``
-    so tests can patch this symbol directly.
-
-    Args:
-        args: Arguments to pass to ``gh`` (NOT including ``gh`` itself).
-
-    Returns:
-        CompletedProcess with captured stdout/stderr, UTF-8 decoded.
-    """
-    return subprocess.run(
-        ["gh", *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
-
-
 def _build_preflight_runner(
     installation_token: InstallationTokenSource,
 ) -> Callable[[list[str]], subprocess.CompletedProcess[str]]:
@@ -221,10 +198,10 @@ def _build_preflight_runner(
     used by ``gh_deps``, ``escalation``, ``merge``, and ``recovery``
     elsewhere in ``chain/``.
 
-    Without this, the bare ``_default_gh_runner`` passes no env override,
-    so ruleset ``gh api`` calls authenticate via ambient credentials.  In
-    deployments without an ambient ``GH_TOKEN``, every launch is refused
-    with ``RulesetStatus.ERROR``.
+    Without this, a bare ``subprocess.run(["gh", ...])`` passes no env
+    override, so ruleset ``gh api`` calls authenticate via ambient
+    credentials.  In deployments without an ambient ``GH_TOKEN``, every
+    launch is refused with ``RulesetStatus.ERROR``.
 
     Args:
         installation_token: GitHub App installation access token
@@ -287,7 +264,6 @@ async def _launch_one_issue(
     repo: str,
     app_id: str,
     installation_token: InstallationTokenSource,
-    runner: Callable[[list[str]], subprocess.CompletedProcess[str]],
     obs: ObsConfig,
 ) -> str | None:
     """Preflight + launch helper extracted from the daemon's launch loop.
@@ -313,8 +289,6 @@ async def _launch_one_issue(
         installation_token: GitHub App installation access token
             (``ghs_`` prefix).  Used to build the preflight runner so
             ruleset checks authenticate as the App, not ambient env.
-        runner: Caller-supplied runner (kept for signature compat; the
-            preflight uses the runner built from ``installation_token``).
         obs: Observability config for preflight alert routing.
 
     Returns:
@@ -1575,7 +1549,6 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 repo,
                 _app_id,
                 installation_token,
-                _default_gh_runner,
                 obs,
             )
         except Exception as exc:
@@ -1607,13 +1580,9 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
         # _should_launch_worker denies launch.  Park + continue.
         if worker_result is None:
             _log.warning("daemon: preflight refused issue #%d; parking", n)
-            _label_edit(
-                owner,
-                repo,
-                n,
-                remove=["agent-in-progress"],
-                installation_token=installation_token,
-            )
+            # Labels (restore agent-ready, remove agent-in-progress) are
+            # handled inside _launch_one_issue's refusal branch — outer
+            # loop only needs to park the scheduler state.
             if liveness_state is not None:
                 liveness_state.clear()
             sched.mark_parked(n)
