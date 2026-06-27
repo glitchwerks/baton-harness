@@ -87,7 +87,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import subprocess
 import time
 from enum import Enum, auto
@@ -95,7 +94,7 @@ from pathlib import Path
 
 from baton_harness.chain.app_auth import (
     InstallationTokenSource,
-    resolve_installation_token,
+    gh_env,
 )
 
 _log = logging.getLogger(__name__)
@@ -176,30 +175,6 @@ class CiAuthError(RuntimeError):
 # ---------------------------------------------------------------------------
 
 
-def _gh_env(
-    installation_token: InstallationTokenSource,
-) -> dict[str, str]:
-    """Return os.environ overlaid with GH_TOKEN=<installation_token>.
-
-    Does not mutate os.environ.  Token is per-call; never persists
-    in the process environment.
-
-    Args:
-        installation_token: GitHub App installation token source to resolve
-            and inject as ``GH_TOKEN`` and ``GITHUB_TOKEN`` in the
-            subprocess environment.
-
-    Returns:
-        A shallow copy of ``os.environ`` with both ``GH_TOKEN`` and
-        ``GITHUB_TOKEN`` overridden to ``installation_token``.
-    """
-    env = dict(os.environ)
-    token = resolve_installation_token(installation_token)
-    env["GH_TOKEN"] = token
-    env["GITHUB_TOKEN"] = token
-    return env
-
-
 def _run(
     cmd: list[str],
     env: dict[str, str] | None = None,
@@ -213,7 +188,7 @@ def _run(
         cmd: Command and arguments to execute (no shell interpolation).
         env: Optional environment dict for the subprocess.  When
             ``None``, the subprocess inherits ``os.environ`` unchanged.
-            Pass ``_gh_env(installation_token)`` for daemon-side calls
+            Pass ``gh_env(installation_token)`` for daemon-side calls
             to override ``GH_TOKEN`` without mutating ``os.environ``.
 
     Returns:
@@ -295,7 +270,7 @@ def _query_action_jobs(
         ValueError: If the response JSON cannot be parsed or lacks the
             expected keys.
     """
-    gh_call_env = _gh_env(installation_token) if installation_token else None
+    gh_call_env = gh_env(installation_token) if installation_token else None
     _env_kw: dict[str, dict[str, str]] = (
         {"env": gh_call_env} if gh_call_env is not None else {}
     )
@@ -686,7 +661,7 @@ def _persist_ci_green(
         ``False`` if either write failed (a WARNING is logged in that case).
     """
     persisted = True
-    gh_call_env = _gh_env(installation_token) if installation_token else None
+    gh_call_env = gh_env(installation_token) if installation_token else None
     _env_kw: dict[str, dict[str, str]] = (
         {"env": gh_call_env} if gh_call_env is not None else {}
     )

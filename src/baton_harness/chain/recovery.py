@@ -38,7 +38,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import subprocess
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -47,7 +46,7 @@ from typing import TYPE_CHECKING, Literal
 
 from baton_harness.chain.app_auth import (
     InstallationTokenSource,
-    resolve_installation_token,
+    gh_env,
 )
 from baton_harness.chain.escalation import alert
 
@@ -64,31 +63,6 @@ _PROVENANCE_PREFIX = "Baton-Harness-Merge: issue-"
 # ---------------------------------------------------------------------------
 
 
-def _gh_env(
-    installation_token: InstallationTokenSource,
-) -> dict[str, str]:
-    """Return os.environ overlaid with GH_TOKEN=<installation_token>.
-
-    Does not mutate os.environ.  Token is per-call; never persists
-    in the process environment.  Follows the same env-discipline pattern
-    as merge.py and gh_deps.py.
-
-    Args:
-        installation_token: GitHub App installation token source to resolve
-            and inject as ``GH_TOKEN`` and ``GITHUB_TOKEN`` in the
-            subprocess environment.
-
-    Returns:
-        A shallow copy of ``os.environ`` with both ``GH_TOKEN`` and
-        ``GITHUB_TOKEN`` overridden to ``installation_token``.
-    """
-    env = dict(os.environ)
-    token = resolve_installation_token(installation_token)
-    env["GH_TOKEN"] = token
-    env["GITHUB_TOKEN"] = token
-    return env
-
-
 def _run(
     cmd: list[str],
     env: dict[str, str] | None = None,
@@ -102,7 +76,7 @@ def _run(
         cmd: Command and arguments to execute (no shell interpolation).
         env: Optional environment dict for the subprocess.  When
             ``None``, the subprocess inherits ``os.environ`` unchanged.
-            Pass ``_gh_env(installation_token)`` for daemon-side calls
+            Pass ``gh_env(installation_token)`` for daemon-side calls
             to override ``GH_TOKEN`` without mutating ``os.environ``.
 
     Returns:
@@ -246,7 +220,7 @@ def _fetch_labels(
         A set of lowercase label name strings.  Returns an empty set on
         error (best-effort; a failed label fetch is not fatal for recovery).
     """
-    env = _gh_env(installation_token) if installation_token else None
+    env = gh_env(installation_token) if installation_token else None
     proc = _run(
         [
             "gh",
@@ -299,7 +273,7 @@ def _fetch_open_prs(
         A list of head-ref names for open PRs.  Returns an empty list on
         error (best-effort).
     """
-    env = _gh_env(installation_token) if installation_token else None
+    env = gh_env(installation_token) if installation_token else None
     proc = _run(
         [
             "gh",

@@ -473,6 +473,46 @@ def resolve_installation_token(
     return installation_token.get_token()
 
 
+def gh_env(installation_token: InstallationTokenSource) -> dict[str, str]:
+    """Return ``os.environ`` overlaid with the resolved installation token.
+
+    Builds a full shallow copy of the current process environment and
+    injects the resolved GitHub App installation token into both canonical
+    ``gh``-CLI credential keys (``GH_TOKEN`` and ``GITHUB_TOKEN``).
+
+    Env-discipline invariants:
+        * ``os.environ`` is **never mutated** — the overlay is a fresh
+          ``dict`` per call.
+        * The token is resolved at call time and does not persist in the
+          returned dict beyond the immediate subprocess invocation; callers
+          should discard the dict after use.
+        * Both ``GH_TOKEN`` and ``GITHUB_TOKEN`` are always set so that
+          both the ``gh`` CLI and git-credential helpers pick up the token
+          regardless of which key they consult.
+
+    This is the shared implementation for all chain modules.  It replaces
+    the five previously identical per-module ``_gh_env`` helpers in
+    ``daemon``, ``escalation``, ``gh_deps``, ``merge``, and ``recovery``
+    (PR #163 reviewer W1).
+
+    Args:
+        installation_token: A literal token string (``ghs_…``) or a
+            refreshable ``InstallationTokenSourceProtocol`` object whose
+            ``get_token()`` method returns the current token.  Resolved
+            via :func:`resolve_installation_token`.
+
+    Returns:
+        A new ``dict[str, str]`` containing all key-value pairs from
+        ``os.environ`` at the time of the call, with ``GH_TOKEN`` and
+        ``GITHUB_TOKEN`` overridden to the resolved installation token.
+    """
+    env = dict(os.environ)
+    token = resolve_installation_token(installation_token)
+    env["GH_TOKEN"] = token
+    env["GITHUB_TOKEN"] = token
+    return env
+
+
 def _github_http_post(
     url: str,
     headers: dict[str, str],
