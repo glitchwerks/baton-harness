@@ -74,11 +74,31 @@ BATON_HARNESS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 export BATON_HARNESS_DIR
 
 # ---------------------------------------------------------------------------
+# Source committed deployment constants (per-fork values)
+# ---------------------------------------------------------------------------
+
+DEPLOYMENT_ENV="${BATON_HARNESS_DIR}/config/deployment.env"
+if [[ -f "${DEPLOYMENT_ENV}" ]]; then
+    # shellcheck disable=SC1090
+    source "${DEPLOYMENT_ENV}"
+fi
+
+# ---------------------------------------------------------------------------
+# Source per-host config (written by bin/setup-env.sh)
+# ---------------------------------------------------------------------------
+
+HOST_ENV="${XDG_CONFIG_HOME:-${HOME}/.config}/baton-harness/host.env"
+if [[ -f "${HOST_ENV}" ]]; then
+    # shellcheck disable=SC1090
+    source "${HOST_ENV}"
+fi
+
+# ---------------------------------------------------------------------------
 # Validate required environment variables
 # ---------------------------------------------------------------------------
 
 _missing_env=()
-for _var in BH_REPO_OWNER BH_REPO_NAME BH_PROJECT_ROOT; do
+for _var in BH_REPO_OWNER BH_REPO_NAME BH_PROJECT_ROOT BH_GITHUB_APP_ID BH_GITHUB_APP_INSTALLATION_ID; do
     if [[ -z "${!_var:-}" ]]; then
         _missing_env+=("${_var}")
     fi
@@ -90,10 +110,10 @@ if [[ ${#_missing_env[@]} -gt 0 ]]; then
         echo "  missing: ${_var}" >&2
     done
     echo >&2
-    echo "Set them before running bin/run-daemon.sh:" >&2
-    echo "  export BH_REPO_OWNER=<owner>" >&2
-    echo "  export BH_REPO_NAME=<repo>" >&2
-    echo "  export BH_PROJECT_ROOT=/path/to/local/clone" >&2
+    echo "Set them via one of:" >&2
+    echo "  - Edit config/deployment.env (for BH_REPO_OWNER, BH_REPO_NAME, BH_GITHUB_APP_*)" >&2
+    echo "  - Run bin/setup-env.sh (for BH_PROJECT_ROOT — written to ~/.config/baton-harness/host.env)" >&2
+    echo "  - Or export them in your shell as a last-resort override" >&2
     exit 1
 fi
 
