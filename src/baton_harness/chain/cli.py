@@ -268,6 +268,23 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
+    # Read and validate sandbox config (populates os.environ with
+    # BH_REPO_OWNER, BH_REPO_NAME, BWS_APP_ID, BWS_INSTALLATION_ID, etc.)
+    from baton_harness.chain import sandbox_config as _sandbox_cfg
+
+    _config_path = os.path.join(
+        os.environ.get("BH_PROJECT_ROOT", ""), ".bh", "config.env"
+    )
+    if os.path.isfile(_config_path):
+        try:
+            _sandbox_cfg.read_and_validate(_config_path)
+        except _sandbox_cfg.SandboxConfigError as exc:
+            print(
+                f"bh-daemon: error: sandbox config invalid: {exc.message}",
+                file=sys.stderr,
+            )
+            return 1
+
     # Load registry.
     try:
         registry = load_registry()

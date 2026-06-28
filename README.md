@@ -32,12 +32,12 @@ recorded as patches in `patches/`.
 
 ## Integration model [implemented]
 
-The daemon runs against a target GitHub repository, driven entirely by environment
-variables. The `baton start -w` external-process model from the spike is retired.
+The daemon runs against a target GitHub repository. Repo identity and App IDs live in
+`${BH_PROJECT_ROOT}/.bh/config.env` (committed in the sandbox repo); the shell only
+needs `BH_PROJECT_ROOT`. The `baton start -w` external-process model from the spike is
+retired.
 
 ```bash
-export BH_REPO_OWNER=<owner>
-export BH_REPO_NAME=<repo>
 export BH_PROJECT_ROOT=/path/to/local/clone
 
 bin/run-daemon.sh --once   # one poll-dispatch tick, then exit
@@ -281,8 +281,6 @@ accepts `GITHUB_TOKEN` as a fallback, consistent with standard CI conventions):
 
 ```bash
 export GH_TOKEN=github_pat_<your-token>
-export BH_REPO_OWNER=<owner>
-export BH_REPO_NAME=<repo>
 export BH_PROJECT_ROOT=/path/to/local/clone
 bin/run-daemon.sh
 ```
@@ -322,19 +320,17 @@ issues, runs Claude Code agents against them in dependency order, CI-gates each 
 PR, and opens a draft `feature/<slug> → main` PR when a work unit completes. It never
 merges to `main`.
 
-**Required environment variables:**
+**Required shell variable:**
 
 | Variable | Description |
 |---|---|
-| `BH_REPO_OWNER` | GitHub org or user login owning the target repo |
-| `BH_REPO_NAME` | Target repository name (no owner prefix) |
 | `BH_PROJECT_ROOT` | Absolute path to the local clone of the target repo |
+
+Repo identity (`BH_REPO_OWNER`, `BH_REPO_NAME`), GitHub App IDs, and vault secret IDs are read from `${BH_PROJECT_ROOT}/.bh/config.env` at startup — the operator does not export them by hand. `bin/init-sandbox.sh` writes that file interactively at provision time.
 
 **Quickstart (one tick, then exit):**
 
 ```bash
-export BH_REPO_OWNER=<owner>
-export BH_REPO_NAME=<repo>
 export BH_PROJECT_ROOT=/path/to/local/clone
 
 bin/run-daemon.sh --once
@@ -379,9 +375,13 @@ bh-daemon           # continuous
 | `BH_WORKTREE_GC` | `detect` | Worktree orphan-GC mode. `detect` logs orphaned worktrees without removing them (safe default). `reclaim` additionally removes confirmed orphans. Unrecognised value logs a WARNING and falls back to `detect`. |
 
 `bin/init-sandbox.sh` provisions a throwaway sandbox repo for a first smoke test — it
-creates the required labels, a trivial trigger issue, a `hello-feature` DAG milestone, and
-the stub CI workflow in one step (pass `--help` for the safety warning and required env
-vars).
+creates the required labels, a trivial trigger issue, a `hello-feature` DAG milestone, the
+stub CI workflow, and `${BH_PROJECT_ROOT}/.bh/config.env` in one step (pass `--help` for
+the safety warning and required env vars).
+
+`bin/run-daemon.sh` now requires only `BH_PROJECT_ROOT` in the shell. Repo identity,
+GitHub App IDs, and vault secret IDs are read at daemon startup from
+`${BH_PROJECT_ROOT}/.bh/config.env`.
 
 For the full first-run walkthrough — sandbox setup, trigger-issue creation, DAG dependency
 wiring, CI-gate behaviour, and expected log output — see
