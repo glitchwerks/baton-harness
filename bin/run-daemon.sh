@@ -13,10 +13,11 @@
 #                     in the harness root.
 #   --poll-interval N Override the outer-loop poll interval in seconds.
 #
-# Required environment variables:
-#   BH_REPO_OWNER      GitHub repository owner (org or user login).
-#   BH_REPO_NAME       GitHub repository name (without owner prefix).
+# Required environment variable:
 #   BH_PROJECT_ROOT    Absolute path to the local clone of the managed repo.
+#
+# Sandbox repo identity and GitHub App settings are read by bh-daemon from
+# ${BH_PROJECT_ROOT}/.bh/config.env at startup.
 #
 # Exported environment:
 #   BATON_HARNESS_DIR  Absolute path to this harness repo root.
@@ -37,10 +38,12 @@ Arguments:
   --workflow PATH     Path to WORKFLOW.md (default: config/WORKFLOW.md)
   --poll-interval N   Override outer-loop poll interval in seconds
 
-Required environment variables:
-  BH_REPO_OWNER      GitHub repository owner (org or user login)
-  BH_REPO_NAME       GitHub repository name
+Required environment variable:
   BH_PROJECT_ROOT    Absolute path to the local clone of the managed repo
+
+Sandbox config:
+  bh-daemon reads ${BH_PROJECT_ROOT}/.bh/config.env at startup for
+  BH_REPO_OWNER, BH_REPO_NAME, BH_GITHUB_APP_ID, and related BWS_* IDs.
 
 Exported to hooks:
   BATON_HARNESS_DIR  Absolute path to this harness repo root
@@ -74,16 +77,6 @@ BATON_HARNESS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 export BATON_HARNESS_DIR
 
 # ---------------------------------------------------------------------------
-# Source committed deployment constants (per-fork values)
-# ---------------------------------------------------------------------------
-
-DEPLOYMENT_ENV="${BATON_HARNESS_DIR}/config/deployment.env"
-if [[ -f "${DEPLOYMENT_ENV}" ]]; then
-    # shellcheck disable=SC1090
-    source "${DEPLOYMENT_ENV}"
-fi
-
-# ---------------------------------------------------------------------------
 # Source per-host config (written by bin/setup-env.sh)
 # ---------------------------------------------------------------------------
 
@@ -98,7 +91,7 @@ fi
 # ---------------------------------------------------------------------------
 
 _missing_env=()
-for _var in BH_REPO_OWNER BH_REPO_NAME BH_PROJECT_ROOT BH_GITHUB_APP_ID BH_GITHUB_APP_INSTALLATION_ID; do
+for _var in BH_PROJECT_ROOT; do
     if [[ -z "${!_var:-}" ]]; then
         _missing_env+=("${_var}")
     fi
@@ -110,10 +103,9 @@ if [[ ${#_missing_env[@]} -gt 0 ]]; then
         echo "  missing: ${_var}" >&2
     done
     echo >&2
-    echo "Set them via one of:" >&2
-    echo "  - Edit config/deployment.env (for BH_REPO_OWNER, BH_REPO_NAME, BH_GITHUB_APP_*)" >&2
-    echo "  - Run bin/setup-env.sh (for BH_PROJECT_ROOT — written to ~/.config/baton-harness/host.env)" >&2
-    echo "  - Or export them in your shell as a last-resort override" >&2
+    echo "Set it via one of:" >&2
+    echo "  - Run bin/setup-env.sh (writes BH_PROJECT_ROOT to ~/.config/baton-harness/host.env)" >&2
+    echo "  - Or export BH_PROJECT_ROOT in your shell as a last-resort override" >&2
     exit 1
 fi
 
@@ -158,6 +150,25 @@ else
         echo "       Create config/WORKFLOW.md in the harness repo." >&2
         exit 1
     fi
+fi
+
+# ---------------------------------------------------------------------------
+# Extract repo slug from .bh/config.env for shell-side preflights
+# ---------------------------------------------------------------------------
+
+_CONFIG_ENV="${BH_PROJECT_ROOT}/.bh/config.env"
+if [[ ! -f "${_CONFIG_ENV}" ]]; then
+    echo "error: sandbox config not found: ${_CONFIG_ENV}" >&2
+    echo "  Run bin/init-sandbox.sh in the sandbox, or add .bh/config.env by hand (see docs/smoke-test-daemon.md)." >&2
+    exit 1
+fi
+BH_REPO_OWNER="$(grep -E '^BH_REPO_OWNER=' "${_CONFIG_ENV}" | head -1 | cut -d= -f2- | tr -d "\"' ")"
+BH_REPO_NAME="$(grep -E '^BH_REPO_NAME=' "${_CONFIG_ENV}" | head -1 | cut -d= -f2- | tr -d "\"' ")"
+
+if [[ -z "${BH_REPO_OWNER}" || -z "${BH_REPO_NAME}" ]]; then
+    echo "error: BH_REPO_OWNER or BH_REPO_NAME missing from ${_CONFIG_ENV}" >&2
+    echo "  Check that both keys are set in ${_CONFIG_ENV}." >&2
+    exit 1
 fi
 
 # ---------------------------------------------------------------------------
