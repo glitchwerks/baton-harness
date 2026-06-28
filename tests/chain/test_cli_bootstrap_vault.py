@@ -18,7 +18,8 @@ Coverage (issue #171):
 - A BwsClientError from the heartbeat URL vault fetch propagates
   (fail-closed).
 - Vault fetches for GH_TOKEN and BH_HEARTBEAT_PING_URL happen BEFORE
-  BWS_ACCESS_TOKEN is popped, enforcing the ordering constraint.
+  build_installation_token_provider() is called (which pops
+  BWS_ACCESS_TOKEN), enforcing the ordering constraint.
 - The returned InstallationTokenSource repr does not contain secret values
   fetched from the vault.
 
@@ -585,27 +586,33 @@ class TestVaultErrorFailClosed:
 # V6. Ordering: vault fetches happen before BWS_ACCESS_TOKEN is popped
 # ---------------------------------------------------------------------------
 
+_BUILD_PROVIDER_SENTINEL = "__BUILD_PROVIDER__"
+
 
 class TestVaultFetchOrdering:
     """New vault fetches must occur before BWS_ACCESS_TOKEN is consumed."""
 
-    def test_vault_fetches_happen_before_pem_fetch(
+    def test_vault_fetches_happen_before_build_installation_token_provider(
         self,
         base_env: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """GH_TOKEN and heartbeat fetch_secret calls precede PEM fetch call.
+        """GH_TOKEN and heartbeat fetch_secret calls precede provider build.
 
-        Records the order of all fetch_secret secret_id arguments.
-        The GH_TOKEN and heartbeat secret IDs must appear in the call
-        sequence BEFORE the PEM secret ID.
+        Records the order of all fetch_secret secret_id arguments, then
+        appends a sentinel when build_installation_token_provider() is
+        called.  The GH_TOKEN and heartbeat secret IDs must appear in
+        the call sequence BEFORE the sentinel.
 
         Rationale: build_installation_token_provider() pops
         BWS_ACCESS_TOKEN as its very first operation.  Any vault call
         that happens after it would receive an empty access_token and
         fail with BwsClientError("access_token is empty") in production.
-        This ordering invariant is the structural guarantee that the new
-        fetches can always reach the vault.
+        Asserting relative to the provider-build call — not relative to
+        the PEM fetch that happens *inside* the provider — measures the
+        actual protected boundary directly, without requiring
+        bootstrap_secrets() to call fetch_secret for the PEM a second
+        time just to make the invariant observable.
         """
         monkeypatch.setenv("BWS_GH_TOKEN_SECRET_ID", _GH_TOKEN_SECRET_ID)
         monkeypatch.setenv(
@@ -625,21 +632,39 @@ class TestVaultFetchOrdering:
                 return _FAKE_GH_TOKEN
             if secret_id == _HEARTBEAT_SECRET_ID:
                 return _FAKE_HEARTBEAT_URL
+            # The PEM secret ID is tolerated here so that this stub does not
+            # break if bootstrap_secrets() currently fetches the PEM before
+            # delegating to build_installation_token_provider().  The
+            # ordering assertion below measures relative to the provider-
+            # build sentinel, not the PEM position, so the PEM fetch is
+            # irrelevant to the invariant under test.
             if secret_id == _PEM_SECRET_ID:
                 return _FAKE_PEM
             raise BwsClientError(f"unexpected secret_id: {secret_id!r}")
 
         provider = _make_provider_patch()
 
+        def sentinel_provider_builder(
+            *args: object, **kwargs: object
+        ) -> MagicMock:
+            call_order.append(_BUILD_PROVIDER_SENTINEL)
+            return provider
+
+        # Patch the name as bound in cli's namespace, not in app_auth.
+        # cli.py does `from baton_harness.chain.app_auth import
+        # build_installation_token_provider`, so patching the app_auth
+        # module's attribute only intercepts the call when cli is first
+        # imported (Python caches the binding at import time).  Patching
+        # cli.build_installation_token_provider is the stable target that
+        # works whether cli is already imported or not.
         with (
             patch(
                 "baton_harness.chain.bws_client.fetch_secret",
                 side_effect=recording_stub,
             ),
             patch(
-                "baton_harness.chain.app_auth"
-                ".build_installation_token_provider",
-                return_value=provider,
+                "baton_harness.chain.cli.build_installation_token_provider",
+                side_effect=sentinel_provider_builder,
             ),
         ):
             from baton_harness.chain.cli import bootstrap_secrets
@@ -652,18 +677,23 @@ class TestVaultFetchOrdering:
         assert _HEARTBEAT_SECRET_ID in call_order, (
             "fetch_secret was never called for heartbeat secret ID"
         )
+        assert _BUILD_PROVIDER_SENTINEL in call_order, (
+            "build_installation_token_provider was never called"
+        )
 
-        pem_index = call_order.index(_PEM_SECRET_ID)
+        provider_index = call_order.index(_BUILD_PROVIDER_SENTINEL)
         gh_index = call_order.index(_GH_TOKEN_SECRET_ID)
         hb_index = call_order.index(_HEARTBEAT_SECRET_ID)
 
-        assert gh_index < pem_index, (
-            f"GH_TOKEN fetch (position {gh_index}) must precede PEM fetch "
-            f"(position {pem_index}); got order {call_order!r}"
+        assert gh_index < provider_index, (
+            f"GH_TOKEN fetch (position {gh_index}) must precede "
+            f"build_installation_token_provider call "
+            f"(position {provider_index}); got order {call_order!r}"
         )
-        assert hb_index < pem_index, (
-            f"Heartbeat fetch (position {hb_index}) must precede PEM fetch "
-            f"(position {pem_index}); got order {call_order!r}"
+        assert hb_index < provider_index, (
+            f"Heartbeat fetch (position {hb_index}) must precede "
+            f"build_installation_token_provider call "
+            f"(position {provider_index}); got order {call_order!r}"
         )
 
 

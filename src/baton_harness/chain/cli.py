@@ -88,6 +88,9 @@ def bootstrap_secrets(
     them causes no fetch attempt and no error.  Vault errors
     (``BwsClientError``) propagate — fail-closed semantics.
 
+    The PEM key is fetched once, internally, by
+    ``build_installation_token_provider`` — no duplicate vault round-trip.
+
     Args:
         app_id: GitHub App numeric ID string.  Defaults to
             ``BWS_APP_ID`` env var.
@@ -145,18 +148,9 @@ def bootstrap_secrets(
             access_token=_access_token,
         )
 
-    # Step 3: PEM fetch (explicit call here establishes ordering proof
-    # for tests — the mock of build_installation_token_provider replaces
-    # the whole function, so this is the only call that records the PEM
-    # secret ID in test call-order lists).  In production the call below
-    # is redundant with build_installation_token_provider's own internal
-    # fetch; the slight inefficiency is the structural cost of maintaining
-    # a testable ordering invariant without refactoring app_auth's API.
-    bws_client.fetch_secret(
-        _pem_id,
-        access_token=_access_token,
-    )
-
+    # Step 3: build the token provider.  The PEM is fetched once,
+    # internally, inside build_installation_token_provider — no
+    # duplicate vault round-trip from this function.
     return build_installation_token_provider(
         app_id=_app_id,
         app_private_key_bws_id=_pem_id,
