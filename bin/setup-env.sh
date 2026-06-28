@@ -120,3 +120,35 @@ printf '    .venv\\Scripts\\activate.bat      # Windows cmd\n'
 echo ""
 echo "  Or run bh-daemon directly via bin/run-daemon.sh (no activation needed)."
 echo ""
+
+# ---------------------------------------------------------------------------
+# Prompt for per-host config and persist
+# ---------------------------------------------------------------------------
+
+HOST_CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/baton-harness"
+HOST_ENV="${HOST_CONFIG_DIR}/host.env"
+
+# Skip prompting in non-interactive contexts (CI, --no-prompt).
+if [[ -t 0 && -t 1 && "${BH_SETUP_NO_PROMPT:-0}" != "1" ]]; then
+    echo ""
+    if [[ -f "${HOST_ENV}" ]]; then
+        echo "baton-harness: per-host config already present at ${HOST_ENV}"
+        echo "  (delete it and re-run bin/setup-env.sh to reset)"
+    else
+        echo "baton-harness: setting up per-host config at ${HOST_ENV}"
+        read -r -p "  BH_PROJECT_ROOT (absolute path to local sandbox clone): " _bh_project_root
+        if [[ -z "${_bh_project_root}" ]]; then
+            echo "  skipped — re-run bin/setup-env.sh to set it, or export BH_PROJECT_ROOT manually"
+        else
+            mkdir -p "${HOST_CONFIG_DIR}"
+            chmod 700 "${HOST_CONFIG_DIR}"
+            cat > "${HOST_ENV}" <<EOF
+# baton-harness per-host config — written by bin/setup-env.sh
+# Sourced automatically by bin/run-daemon.sh at startup.
+export BH_PROJECT_ROOT="${_bh_project_root}"
+EOF
+            chmod 600 "${HOST_ENV}"
+            echo "  wrote ${HOST_ENV} (mode 600)"
+        fi
+    fi
+fi

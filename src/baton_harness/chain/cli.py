@@ -65,6 +65,32 @@ def bootstrap_secrets(
     ``baton_harness.chain.cli.bootstrap_secrets`` without touching the
     implementation module.
 
+    **Ordering invariant:** all vault fetches in this function MUST happen
+    BEFORE ``build_installation_token_provider`` is called.
+    ``build_installation_token_provider`` pops ``BWS_ACCESS_TOKEN`` from
+    ``os.environ`` as its very first operation, so any ``fetch_secret``
+    call that occurs after it would receive an empty access token and fail
+    with ``BwsClientError("access_token is empty")`` in production.
+
+    **New env vars (issue #171):**
+
+    - ``BWS_GH_TOKEN_SECRET_ID``: optional Bitwarden Secrets ID for a
+      GitHub fine-grained PAT.  When set and ``GH_TOKEN`` is absent from
+      the environment, fetches the PAT and writes it to
+      ``os.environ["GH_TOKEN"]``.  If ``GH_TOKEN`` is already set,
+      the vault is not called (operator override wins).
+    - ``BWS_HEARTBEAT_PING_URL_SECRET_ID``: optional Bitwarden Secrets ID
+      for a heartbeat webhook URL.  When set and ``BH_HEARTBEAT_PING_URL``
+      is absent, fetches the URL and writes it to
+      ``os.environ["BH_HEARTBEAT_PING_URL"]``.  Same skip logic applies.
+
+    Both new env vars are optional for backward compatibility: omitting
+    them causes no fetch attempt and no error.  Vault errors
+    (``BwsClientError``) propagate — fail-closed semantics.
+
+    The PEM key is fetched once, internally, by
+    ``build_installation_token_provider`` — no duplicate vault round-trip.
+
     Args:
         app_id: GitHub App numeric ID string.  Defaults to
             ``BWS_APP_ID`` env var.
@@ -77,8 +103,11 @@ def bootstrap_secrets(
         A refreshable installation-token source for daemon-side gh calls.
 
     Raises:
-        AppAuthError: Propagated from ``app_auth.bootstrap_secrets`` on
-            Bitwarden or GitHub API failure.
+        AppAuthError: Propagated from ``build_installation_token_provider``
+            on Bitwarden or GitHub API failure during PEM/token bootstrap.
+        BwsClientError: Propagated from ``bws_client.fetch_secret`` when
+            a vault fetch for ``GH_TOKEN`` or ``BH_HEARTBEAT_PING_URL``
+            fails (fail-closed — never swallowed).
     """
     from baton_harness.chain import bws_client
 
@@ -88,6 +117,40 @@ def bootstrap_secrets(
         os.environ.get("BWS_INSTALLATION_ID", "0")
     )
 
+    # ------------------------------------------------------------------
+    # All vault fetches — MUST happen BEFORE
+    # build_installation_token_provider() is called (see ordering
+    # invariant in the docstring above).
+    #
+    # We read BWS_ACCESS_TOKEN here but do NOT pop it yet; the pop
+    # is delegated to build_installation_token_provider() so that
+    # function's env-discipline invariant is preserved.  The access
+    # token is only read (not consumed) at this stage.
+    # ------------------------------------------------------------------
+
+    _access_token = os.environ.get("BWS_ACCESS_TOKEN", "")
+
+    # Step 1: optional GH_TOKEN vault fetch (skip if already set).
+    _gh_token_secret_id = os.environ.get("BWS_GH_TOKEN_SECRET_ID", "")
+    if _gh_token_secret_id and "GH_TOKEN" not in os.environ:
+        os.environ["GH_TOKEN"] = bws_client.fetch_secret(
+            _gh_token_secret_id,
+            access_token=_access_token,
+        )
+
+    # Step 2: optional BH_HEARTBEAT_PING_URL vault fetch (skip if set).
+    _heartbeat_secret_id = os.environ.get(
+        "BWS_HEARTBEAT_PING_URL_SECRET_ID", ""
+    )
+    if _heartbeat_secret_id and "BH_HEARTBEAT_PING_URL" not in os.environ:
+        os.environ["BH_HEARTBEAT_PING_URL"] = bws_client.fetch_secret(
+            _heartbeat_secret_id,
+            access_token=_access_token,
+        )
+
+    # Step 3: build the token provider.  The PEM is fetched once,
+    # internally, inside build_installation_token_provider — no
+    # duplicate vault round-trip from this function.
     return build_installation_token_provider(
         app_id=_app_id,
         app_private_key_bws_id=_pem_id,

@@ -26,7 +26,7 @@ Before running:
 
 ## Prerequisites
 
-> **Fast path:** `bin/setup-env.sh` automates the venv creation and package install steps below (run it from the harness repo root; pass `--help` for details). `bin/init-sandbox.sh` automates the sandbox label creation, trigger-issue creation, `hello-feature` DAG, and stub CI workflow — set `BH_REPO_OWNER`, `BH_REPO_NAME`, and `BH_PROJECT_ROOT` first, then run it (pass `--help` for its safety warning and full option list). The manual steps below remain as the explainer and for partial or custom setups.
+> **Fast path:** `bin/setup-env.sh` automates the venv creation, package install, and per-host config steps below (run it from the harness repo root; pass `--help` for details). When prompted, supply the absolute path to your local sandbox clone — the script writes it to `~/.config/baton-harness/host.env` (mode 600) so `bin/run-daemon.sh` picks it up automatically on every subsequent launch. Re-running the script when `host.env` already exists reports "delete it and re-run to reset" rather than re-prompting. Pass `BH_SETUP_NO_PROMPT=1` to skip the prompt in non-interactive contexts such as CI. Before running `bin/setup-env.sh`, edit `config/deployment.env` once with your sandbox repo identity and App IDs — that is the "edit once per fork" location for all per-deployment constants. `bin/init-sandbox.sh` automates the sandbox label creation, trigger-issue creation, `hello-feature` DAG, and stub CI workflow — run it after `bin/setup-env.sh` (pass `--help` for its safety warning and full option list). The manual steps below remain as the explainer and for partial or custom setups.
 
 - `claude` CLI on `PATH` and authenticated (subscription auth — run `claude` once interactively to confirm).
 - `gh` CLI authenticated (`gh auth status`).
@@ -86,64 +86,84 @@ If you are using `bin/init-sandbox.sh` to provision a throwaway sandbox, this is
 
 ## Environment variables
 
-Set these in your shell before running the launcher:
+The daemon's environment is assembled from three sources in order, with explicit shell exports as an escape hatch for any layer. This section describes each source and what it supplies.
 
-```bash
-export BH_REPO_OWNER=<owner>          # GitHub org or user login
-export BH_REPO_NAME=<repo>            # Repository name (no owner prefix)
-export BH_PROJECT_ROOT=/path/to/local/clone   # Absolute path to local sandbox clone
-```
+### Repo-committed constants — edit `config/deployment.env` once per fork
 
-`bin/run-daemon.sh` derives and exports two more automatically:
+`config/deployment.env` is checked into the harness repo and sourced by `bin/run-daemon.sh` at startup before any validation runs. Edit it once when you fork or clone the harness for a new deployment; after that, operators need not export these values by hand.
+
+| Variable | Purpose |
+|---|---|
+| `BH_REPO_OWNER` | GitHub org or user login for the target (managed) repo |
+| `BH_REPO_NAME` | Repository name, without owner prefix |
+| `BH_GITHUB_APP_ID` | Numeric GitHub App ID; also validated by `bin/provision-ruleset.sh` and read by `_resolve_app_id()` in `daemon.py` (fail-closed if absent) |
+| `BH_GITHUB_APP_INSTALLATION_ID` | Numeric GitHub App installation ID; required by `bin/provision-ruleset.sh` |
+| `BWS_APP_ID` | Structurally mirrors `${BH_GITHUB_APP_ID}` — kept derived in `config/deployment.env` so the two cannot drift. Do not set it independently. |
+| `BWS_INSTALLATION_ID` | Structurally mirrors `${BH_GITHUB_APP_INSTALLATION_ID}` — same derivation rule. Do not set it independently. |
+| `BWS_PEM_SECRET_ID` | Bitwarden Secrets UUID of the RSA PEM private key for the GitHub App (required) |
+| `BWS_GH_TOKEN_SECRET_ID` | Bitwarden Secrets UUID for a GitHub fine-grained PAT. When set and `GH_TOKEN` is absent, `bootstrap_secrets()` fetches the PAT at startup. Leave empty to supply `GH_TOKEN` directly (backward-compat). |
+| `BWS_HEARTBEAT_PING_URL_SECRET_ID` | Bitwarden Secrets UUID for the Slack webhook URL. When set and `BH_HEARTBEAT_PING_URL` is absent, the URL is vault-fetched at startup. Leave empty to supply the URL directly or to omit it. |
+
+Placeholder values (empty strings) cause `bin/run-daemon.sh` to exit immediately with a "missing required env vars — edit config/deployment.env" error. This is intentional: an unfilled placeholder is a structurally invalid deployment.
+
+### Per-host config — set by `bin/setup-env.sh`
+
+`bin/setup-env.sh` prompts for `BH_PROJECT_ROOT` (the absolute path to the local clone of the managed repo) and writes it to `~/.config/baton-harness/host.env` (mode 600, directory mode 700). `bin/run-daemon.sh` sources this file at startup after `config/deployment.env`. The XDG base directory convention is honoured: the file path follows `${XDG_CONFIG_HOME:-${HOME}/.config}/baton-harness/host.env`.
+
+| Variable | How it is set | Purpose |
+|---|---|---|
+| `BH_PROJECT_ROOT` | Written by `bin/setup-env.sh` to `host.env` | Absolute path to the local clone of the managed (sandbox) repo |
+
+To reset the per-host config, delete `~/.config/baton-harness/host.env` and re-run `bin/setup-env.sh`. In non-interactive contexts (CI, cron), pass `BH_SETUP_NO_PROMPT=1` to skip the prompt entirely; the operator is then responsible for supplying `BH_PROJECT_ROOT` via another source.
+
+### Operator-supplied secret — the one thing you set on each host
+
+`BWS_ACCESS_TOKEN` is the Bitwarden machine-account access token. It is the only value that must reach the daemon from outside the repo. Provide it in a root-readable-only file (mode 600) and never commit it.
+
+`bootstrap_secrets()` pops this token from `os.environ` as its first operation after vault-fetching any optional secrets (`GH_TOKEN`, `BH_HEARTBEAT_PING_URL`). After that point the token is gone from the process environment — it is never re-added.
+
+**Vault-fetched at startup (no operator action required when the `BWS_*_SECRET_ID` is declared in `config/deployment.env`):**
+
+- `GH_TOKEN` — the GitHub fine-grained PAT used by `gh` CLI calls. If `BWS_GH_TOKEN_SECRET_ID` is set in `config/deployment.env` and `GH_TOKEN` is not already in the environment, `bootstrap_secrets()` fetches it from the vault and writes it to `os.environ`. If `GH_TOKEN` is already set (shell export, CI env), the vault is not called — operator override wins.
+- `BH_HEARTBEAT_PING_URL` — the Slack webhook URL for dead-man's-switch pings and per-launch preflight alerts (#144). Same skip logic: vault-fetch only when `BWS_HEARTBEAT_PING_URL_SECRET_ID` is declared and the URL is not already in the environment. If neither source supplies the URL, no alerts are sent — preflight refusals log to daemon stderr only.
+
+Vault errors propagate as `BwsClientError` — fail-closed, never swallowed.
+
+**Ordering invariant:** all vault fetches happen before `build_installation_token_provider()` is called. That function pops `BWS_ACCESS_TOKEN` from `os.environ` as its first operation, so any fetch attempted after it would receive an empty token and fail.
+
+### Auto-derived (do not set)
+
+`bin/run-daemon.sh` derives and exports these two variables automatically:
 
 | Variable | How it is set | Purpose |
 |---|---|---|
 | `BATON_HARNESS_DIR` | Derived from the script's own location | Harness repo root; available to hook scripts |
 | `BH_VENV` | Derived from the `bh-daemon` binary location | Hooks self-activate via `. "$BH_VENV/bin/activate"` |
 
-### App-auth bootstrap variables (required — treat as secrets)
+### Backward-compat — operator override
 
-These four variables are read by `bootstrap_secrets()` in `src/baton_harness/chain/cli.py` (L51–96) before the daemon enters its poll loop. All four are required; a missing or empty value causes the daemon to print "failed to bootstrap GitHub App token" and exit 1 before any dispatch occurs. Never commit these values or paste them in chat. Store them in a root-readable-only `EnvironmentFile=` (systemd) or equivalent secrets store — not in code.
+Any variable can be exported in the shell before invoking `bin/run-daemon.sh`; explicit env values win over `config/deployment.env`, `host.env`, and vault-fetch, in that order. This is the escape hatch for one-off testing or CI environments where the standard sourcing chain is unavailable.
 
-| Variable | Purpose |
-|---|---|
-| `BWS_ACCESS_TOKEN` | Bitwarden machine-account access token. Popped from `os.environ` immediately after bootstrap; never re-added. Treat as secret. |
-| `BWS_APP_ID` | Numeric GitHub App ID (string form). Falls back to `BH_GITHUB_APP_ID` if unset. Source: GitHub App settings page. Treat as secret. |
-| `BWS_PEM_SECRET_ID` | Bitwarden Secrets UUID of the RSA PEM private key for the GitHub App. Treat as secret. |
-| `BWS_INSTALLATION_ID` | Numeric GitHub App installation ID (integer, as string). **Set this to the same value as `BH_GITHUB_APP_INSTALLATION_ID`** (see below). Treat as secret. |
+### Fresh host bringup — the four-step sequence
 
-### GitHub App ID variables (required)
-
-| Variable | Purpose |
-|---|---|
-| `BH_GITHUB_APP_ID` | Numeric GitHub App ID. Read by `_resolve_app_id()` in `daemon.py` (L233–257); also validated by `bin/provision-ruleset.sh`. If absent or empty, the daemon logs CRITICAL and refuses every worker launch (fail-closed). Source: GitHub App settings page. |
-| `BH_GITHUB_APP_INSTALLATION_ID` | Numeric GitHub App installation ID. Required by `bin/provision-ruleset.sh` (validated at L61). **Set this to the same value as `BWS_INSTALLATION_ID`**: both refer to the same installation. The provisioning script validates it for presence; the runtime reads the value via `BWS_INSTALLATION_ID`. |
-
-### Optional variables
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `BH_HEARTBEAT_PING_URL` | (unset) | Routes both heartbeat dead-man's-switch pings AND safety-critical "refusing to launch" alerts from the per-launch preflight gate (#144). When the ruleset preflight refuses a worker launch due to `RulesetStatus.DRIFT`, `ABSENT`, or `ERROR`, a Slack alert is POSTed to this URL via `obs.heartbeat_ping_url` (`obs_config.py:L233`, `daemon.py:L171–185`). For the smoke test success path (rulesets match — `MATCH` — dispatch proceeds), the alert never fires and this variable is optional. If unset, a critical preflight refusal is logged to daemon stderr only — no Slack notification is sent. The URL contains a bearer-style token in the path; treat as secret. |
-
-Full sample export block for a sandbox:
+Down from the 12-line export block in the previous bringup model:
 
 ```bash
-export BH_REPO_OWNER=alice
-export BH_REPO_NAME=sandbox-baton
-export BH_PROJECT_ROOT=/home/alice/sandbox-baton
+# 1. Clone the harness repo, then edit config/deployment.env once with
+#    your sandbox identity and App IDs.
+$EDITOR config/deployment.env
 
-# App-auth bootstrap (required — treat as secrets):
-export BWS_ACCESS_TOKEN=<bitwarden-machine-account-token>
-export BWS_APP_ID=<github-app-numeric-id>
-export BWS_PEM_SECRET_ID=<bitwarden-secret-uuid-for-pem>
-export BWS_INSTALLATION_ID=<github-app-installation-id>
+# 2. Run the setup script — creates the venv, installs the package,
+#    and prompts for BH_PROJECT_ROOT (writes ~/.config/baton-harness/host.env).
+bin/setup-env.sh
 
-# GitHub App ID (required):
-export BH_GITHUB_APP_ID=<github-app-numeric-id>          # same value as BWS_APP_ID
-export BH_GITHUB_APP_INSTALLATION_ID=<github-app-installation-id>  # same value as BWS_INSTALLATION_ID
+# 3. Drop the single bootstrap secret in a root-readable-only file.
+echo "BWS_ACCESS_TOKEN=<token>" | sudo tee /etc/bh-daemon/secrets.env
+sudo chmod 600 /etc/bh-daemon/secrets.env
 
-# Optional:
-# export BH_HEARTBEAT_PING_URL=https://hooks.slack.com/services/...
+# 4. Run one poll tick to confirm everything starts cleanly.
+BWS_ACCESS_TOKEN="$(sudo cat /etc/bh-daemon/secrets.env | grep BWS_ACCESS_TOKEN | cut -d= -f2-)" \
+  bin/run-daemon.sh --once
 ```
 
 ---
@@ -152,7 +172,7 @@ export BH_GITHUB_APP_INSTALLATION_ID=<github-app-installation-id>  # same value 
 
 Before starting the daemon for the first time, provision the two branch-protection rulesets in the sandbox repo. The per-launch preflight gate (added in #144) calls `ruleset_is_provisioned()` before every worker dispatch and returns `RulesetStatus.ABSENT` on a fresh repo — causing every issue to be parked with "preflight refused — branch protection missing or misconfigured; worker not launched". The only way to create the rulesets is to run `bin/provision-ruleset.sh`.
 
-**Prerequisites for this step:** the GitHub App must be installed on the sandbox repo, `BH_REPO_OWNER`, `BH_REPO_NAME`, `BH_GITHUB_APP_ID`, and `BH_GITHUB_APP_INSTALLATION_ID` must all be exported, and `gh` must be authenticated as the harness App (or with a PAT that has `administration: write` on the repo).
+**Prerequisites for this step:** the GitHub App must be installed on the sandbox repo, `BH_REPO_OWNER`, `BH_REPO_NAME`, `BH_GITHUB_APP_ID`, and `BH_GITHUB_APP_INSTALLATION_ID` must be set in `config/deployment.env` (or exported in the caller's shell), and `gh` must be authenticated as the harness App (or with a PAT that has `administration: write` on the repo).
 
 ```bash
 bin/provision-ruleset.sh
@@ -346,7 +366,7 @@ To smoke-test the **full merge path**, add a GitHub Actions workflow to the sand
 The deployment model mandates OAuth/subscription auth for Claude — `ANTHROPIC_API_KEY` **must not be set** in the daemon's environment (`architecture-spec.md` §2, §5). The startup reconciliation sweep (G3b, `src/baton_harness/chain/reconcile.py`) checks for this at every daemon start and exits non-zero with a critical alert if the key is present. This is the most important thing to get right on a server:
 
 - Mount the OAuth credentials volume at `/home/agent/.claude/` (or wherever the container user's home is). Do not supply an API key. The G3c startup gate (`reconcile.py:L176–199`) checks that `~/.claude/.credentials.json` is present and readable before the daemon enters its poll loop — an absent or unreadable credential file causes an immediate exit 1 with "OAuth credential file absent or unreadable". Mounting the OAuth volume satisfies G3c.
-- `gh` must be authenticated via `GH_TOKEN` set to a fine-grained PAT (prefix `github_pat_`). See `architecture-spec.md` §2 and the README's GitHub token setup section.
+- `gh` must have a valid GitHub fine-grained PAT available as `GH_TOKEN`. With `BWS_GH_TOKEN_SECRET_ID` declared in `config/deployment.env`, `bootstrap_secrets()` vault-fetches the PAT automatically at startup — the operator does not need to paste it into the systemd `EnvironmentFile=`. If you prefer to supply `GH_TOKEN` directly (for example in CI or during initial setup), export it in the shell or the `EnvironmentFile=` before invoking `bin/run-daemon.sh`; an explicit value always wins over the vault fetch.
 - `git` must be configured with a user name and email in the daemon's environment.
 
 Do not export `ANTHROPIC_API_KEY` — not in `.env` files, not in systemd `EnvironmentFile=`, not in the Docker entrypoint. Its presence at daemon startup is treated as a misconfiguration and causes an immediate hard abort.
@@ -356,10 +376,11 @@ Do not export `ANTHROPIC_API_KEY` — not in `.env` files, not in systemd `Envir
 Follow the same `--once` safe-first-run approach described in the [Run it](#run-it) section above. Provision the sandbox and its labels first (see [Prerequisites](#prerequisites) and the `bin/init-sandbox.sh` automation). Run `bin/provision-ruleset.sh` to provision the branch-protection rulesets (see [Ruleset provisioning](#ruleset-provisioning-required-before-first-run)). Then:
 
 ```bash
-export BH_REPO_OWNER=<owner>
-export BH_REPO_NAME=<repo>
-export BH_PROJECT_ROOT=/path/to/local/sandbox/clone
-# Plus all App-auth bootstrap and BH_GITHUB_APP_ID variables — see §"Environment variables"
+# config/deployment.env already carries BH_REPO_OWNER, BH_REPO_NAME,
+# BH_GITHUB_APP_*, BWS_PEM_SECRET_ID, and optionally BWS_GH_TOKEN_SECRET_ID.
+# bin/setup-env.sh wrote BH_PROJECT_ROOT to ~/.config/baton-harness/host.env.
+# Supply only the bootstrap secret:
+export BWS_ACCESS_TOKEN=<bitwarden-machine-account-token>
 
 bin/run-daemon.sh --once
 ```
@@ -374,7 +395,7 @@ Two common supervision patterns are shown below. Both are illustrative starting 
 
 #### systemd unit (recommended)
 
-Create `/etc/systemd/system/bh-daemon.service`. Place credential-shaped environment variables (`BWS_ACCESS_TOKEN`, `BWS_PEM_SECRET_ID`, `BH_HEARTBEAT_PING_URL`) in a separate `EnvironmentFile=` rather than inline in the unit file — keep that file root-readable only (`chmod 600`). Make sure `ANTHROPIC_API_KEY` never appears in either the unit or the `EnvironmentFile=`.
+Create `/etc/systemd/system/bh-daemon.service`. `config/deployment.env` (sourced by `bin/run-daemon.sh`) supplies all per-deployment constants. `~/.config/baton-harness/host.env` supplies `BH_PROJECT_ROOT`. The `EnvironmentFile=` therefore needs only `BWS_ACCESS_TOKEN` — the single bootstrap secret. Keep that file root-readable only (`chmod 600`). Make sure `ANTHROPIC_API_KEY` never appears in either the unit or the `EnvironmentFile=`.
 
 ```ini
 [Unit]
@@ -384,13 +405,14 @@ After=network.target
 [Service]
 Type=simple
 User=agent
-Environment=BH_REPO_OWNER=<owner>
-Environment=BH_REPO_NAME=<repo>
-Environment=BH_PROJECT_ROOT=/path/to/sandbox/clone
-Environment=GH_TOKEN=<fine-grained-pat>
-Environment=BH_GITHUB_APP_ID=<numeric-app-id>
-Environment=BH_GITHUB_APP_INSTALLATION_ID=<installation-id>
-# Secrets in a separate file (root-readable only):
+# BH_PROJECT_ROOT is written to ~/.config/baton-harness/host.env by
+# bin/setup-env.sh and sourced automatically by bin/run-daemon.sh.
+# For systemd-managed deploys where bin/setup-env.sh is not run
+# interactively, you may supply it as an inline Environment= instead:
+# Environment=BH_PROJECT_ROOT=/path/to/sandbox/clone
+#
+# All other required vars (BH_REPO_OWNER, BH_REPO_NAME, BH_GITHUB_APP_*)
+# come from config/deployment.env in the harness repo.
 EnvironmentFile=/etc/bh-daemon/secrets.env
 ExecStart=/path/to/harness/.venv/bin/bh-daemon --workflow /path/to/harness/config/WORKFLOW.md
 Restart=on-failure
@@ -406,12 +428,9 @@ Where `/etc/bh-daemon/secrets.env` (mode `600`, owner `root`) contains:
 
 ```
 BWS_ACCESS_TOKEN=<bitwarden-machine-account-token>
-BWS_APP_ID=<numeric-app-id>
-BWS_PEM_SECRET_ID=<bitwarden-secret-uuid-for-pem>
-BWS_INSTALLATION_ID=<installation-id>
-# Optional:
-# BH_HEARTBEAT_PING_URL=https://hooks.slack.com/services/...
 ```
+
+`GH_TOKEN` and `BH_HEARTBEAT_PING_URL` are vault-fetched at startup when their `BWS_*_SECRET_ID` values are declared in `config/deployment.env`. If you need to override either for a specific deploy (for example to use a different PAT in staging), add the override to `secrets.env` — an explicit env value wins over the vault fetch.
 
 Key points:
 - `Restart=on-failure` re-launches the daemon after an unexpected crash (SIGKILL, OOM). G2 at startup will detect and alert on the ungraceful exit.
@@ -428,19 +447,10 @@ journalctl -u bh-daemon -f   # stream logs
 
 #### tmux / nohup (lightweight alternative)
 
-For a non-systemd environment or a quick deploy:
+For a non-systemd environment or a quick deploy, only the bootstrap secret needs to be exported — all other required vars come from `config/deployment.env` and `~/.config/baton-harness/host.env`:
 
 ```bash
-export BH_REPO_OWNER=<owner>
-export BH_REPO_NAME=<repo>
-export BH_PROJECT_ROOT=/path/to/sandbox/clone
-export GH_TOKEN=<fine-grained-pat>
-export BH_GITHUB_APP_ID=<numeric-app-id>
-export BH_GITHUB_APP_INSTALLATION_ID=<installation-id>
 export BWS_ACCESS_TOKEN=<bitwarden-machine-account-token>
-export BWS_APP_ID=<numeric-app-id>
-export BWS_PEM_SECRET_ID=<bitwarden-secret-uuid-for-pem>
-export BWS_INSTALLATION_ID=<installation-id>
 
 # In a persistent tmux session:
 tmux new-session -d -s bh 'bin/run-daemon.sh >> /var/log/bh-daemon.log 2>&1'
@@ -448,6 +458,8 @@ tmux new-session -d -s bh 'bin/run-daemon.sh >> /var/log/bh-daemon.log 2>&1'
 # Or with nohup:
 nohup bin/run-daemon.sh >> /var/log/bh-daemon.log 2>&1 &
 ```
+
+If `bin/setup-env.sh` was not run on this host (and therefore `host.env` does not exist), add `BH_PROJECT_ROOT` as a shell export before the launcher call. All other per-deployment vars are in `config/deployment.env`.
 
 Send SIGTERM to stop cleanly: `kill -TERM <pid>`.
 
@@ -481,14 +493,11 @@ G3c connects directly to the OAuth credential volume mount described in §"Crede
 
 **Environment requirements:**
 
-```bash
-export BH_REPO_OWNER=<owner>
-export BH_REPO_NAME=<repo>
-export BH_PROJECT_ROOT=/path/to/local/sandbox/clone
-# GH_TOKEN or GITHUB_TOKEN must be set (fine-grained PAT; structural check only)
-# ANTHROPIC_API_KEY must NOT be set (the script sets and unsets it for G3b; aborts if already present)
-# bh-daemon must be on PATH
-```
+`BH_REPO_OWNER`, `BH_REPO_NAME`, and `BH_PROJECT_ROOT` must be available — either via `config/deployment.env` + `~/.config/baton-harness/host.env` (sourced automatically by the script through `bin/run-daemon.sh`), or exported in the caller's shell. Additionally:
+
+- `GH_TOKEN` or `GITHUB_TOKEN` must be set (fine-grained PAT; structural check only). With `BWS_GH_TOKEN_SECRET_ID` declared in `config/deployment.env` and `BWS_ACCESS_TOKEN` in the environment, the token is vault-fetched automatically. Otherwise export it directly.
+- `ANTHROPIC_API_KEY` must NOT be set (the script sets and unsets it temporarily for the G3b scenario; it aborts if the key is already present in the caller's shell).
+- `bh-daemon` must be on `PATH`.
 
 **`~/.claude/.credentials.json` must be present and readable.** If the OAuth credential file is absent when the script is invoked, the G3c preflight at the top of `verify-recovery.sh` (L255–277) prints `RESULT: SKIPPED` and exits 0 — all five scenarios are silently skipped rather than run. This is intentional: with G3c absent, every daemon-startup scenario would immediately exit 1 at the G3c gate, producing five misleading `[FAIL]` lines. On a CI system without the OAuth volume mounted, `RESULT: SKIPPED` is the expected output. To exercise the full scenario suite, ensure the credential file is present before running the script.
 
