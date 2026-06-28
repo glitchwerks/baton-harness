@@ -118,6 +118,8 @@ BWS_HEARTBEAT_PING_URL_SECRET_ID=<uuid>  # optional
 
 `BWS_APP_ID` and `BWS_INSTALLATION_ID` are **derived** by the parser from `BH_GITHUB_APP_ID` and `BH_GITHUB_APP_INSTALLATION_ID` — do not set them. Missing or malformed values produce per-key errors with line numbers and cause an immediate exit.
 
+> **Note — missing file is silently skipped by the daemon binary:** `bh-daemon` guards its `.bh/config.env` parse with an `os.path.isfile` check (`cli.py`); if the file is absent the daemon skips validation and starts with whatever is already in the environment. `bin/run-daemon.sh` is the component that hard-checks the file exists before launching — so operators who write a custom systemd `ExecStart=` that bypasses the launcher should ensure `.bh/config.env` is present, or the daemon will start without sandbox config validation.
+
 ### Per-host config — set by `bin/setup-env.sh`
 
 `bin/setup-env.sh` prompts for `BH_PROJECT_ROOT` (the absolute path to the local clone of the managed repo) and writes it to `~/.config/baton-harness/host.env` (mode 600, directory mode 700). `bin/run-daemon.sh` sources this file at startup. The XDG base directory convention is honoured: the file path follows `${XDG_CONFIG_HOME:-${HOME}/.config}/baton-harness/host.env`.
@@ -159,13 +161,21 @@ Any variable can be exported in the shell before invoking `bin/run-daemon.sh`; e
 ### Fresh host bringup — the four-step sequence
 
 ```bash
-# 1. Provision the sandbox repo. bin/init-sandbox.sh prompts for the 7 identity
-#    values and writes them to ${BH_PROJECT_ROOT}/.bh/config.env.
-bin/init-sandbox.sh
-
-# 2. Run the setup script — creates the venv, installs the package,
+# 1. Run the setup script — creates the venv, installs the package,
 #    and prompts for BH_PROJECT_ROOT (writes ~/.config/baton-harness/host.env).
 bin/setup-env.sh
+
+# 2. Provision the sandbox repo. bin/init-sandbox.sh reads BH_REPO_OWNER,
+#    BH_REPO_NAME, and BH_PROJECT_ROOT from the environment — it does NOT
+#    prompt for them. Export all three before running the script.
+#    It then prompts interactively for the 5 App/vault identity values
+#    (BH_GITHUB_APP_ID, BH_GITHUB_APP_INSTALLATION_ID, BWS_PEM_SECRET_ID,
+#    BWS_GH_TOKEN_SECRET_ID, BWS_HEARTBEAT_PING_URL_SECRET_ID) and writes
+#    them to ${BH_PROJECT_ROOT}/.bh/config.env.
+export BH_REPO_OWNER=<owner>
+export BH_REPO_NAME=<repo>
+export BH_PROJECT_ROOT=<abs-path-to-local-sandbox-clone>
+bin/init-sandbox.sh
 
 # 3. Drop the single bootstrap secret in a root-readable-only file.
 echo "BWS_ACCESS_TOKEN=<token>" | sudo tee /etc/bh-daemon/secrets.env
