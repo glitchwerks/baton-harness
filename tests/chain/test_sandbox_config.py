@@ -34,6 +34,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+
 from baton_harness.chain.sandbox_config import (
     SandboxConfig,
     SandboxConfigError,
