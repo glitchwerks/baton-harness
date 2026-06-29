@@ -59,8 +59,11 @@ baton-harness/
 ├── pyproject.toml               # package metadata, dev dependencies, ruff/mypy config
 ├── bin/
 │   ├── run-daemon.sh            # launcher: validates env vars + labels, starts bh-daemon
-│   ├── setup-env.sh             # idempotent dev-env bootstrap: uv venv + editable install
-│   └── init-sandbox.sh          # provision a throwaway sandbox repo for a first smoke test
+│   ├── setup-env.sh             # idempotent dev-env bootstrap: uv venv + editable install + bws check
+│   ├── init-sandbox.sh          # provision a throwaway sandbox repo for a first smoke test
+│   ├── provision-ruleset.sh     # create/repair the two branch-protection rulesets (required before first run)
+│   ├── verify-recovery.sh       # exercise the five startup-reconciliation gates against a live sandbox
+│   └── probe-merge-denial.sh    # assert all merge-bypass vectors are denied against a live sandbox PR
 ├── patches/                     # vendor patches (diff format, # VENDOR-PATCH markers)
 │   ├── VP-1-run-hook-env.diff   # thread env= through run_hook (before_run base-ref fix)
 │   ├── VP-2-exclude-labels-recheck.diff  # mid-turn blocked check — makes block terminal
@@ -114,6 +117,7 @@ baton-harness/
 
 - Python 3.10+
 - [uv](https://docs.astral.sh/uv/) (recommended) or pip
+- `git` (required by `bin/init-sandbox.sh` for sandbox repo operations)
 
 ### Setup
 
@@ -162,6 +166,7 @@ The three lifecycle hooks and the daemon are installed as console scripts by `py
 | `bh-before-run` | `baton_harness.before_run:main` | `src/baton_harness/before_run.py` |
 | `bh-after-run` | `baton_harness.after_run:main` | `src/baton_harness/after_run.py` |
 | `bh-daemon` | `baton_harness.chain.cli:main` | `src/baton_harness/chain/cli.py` |
+| `bh-force-pr-not-merge` | `baton_harness.hooks.force_pr_not_merge:main` | `src/baton_harness/hooks/force_pr_not_merge.py` |
 
 After `uv pip install -e ".[dev]"`, these commands are on `PATH` inside the venv.
 WORKFLOW.md hook lines wire them as:
@@ -181,9 +186,42 @@ of: `<prefix>-<issue>`, `<prefix>-<issue>-<slug>`, or bare `<issue>`.
 
 ## Prerequisites (runtime)
 
-- `claude` CLI on `PATH` and authenticated (subscription auth)
+- `claude` CLI on `PATH` and authenticated (subscription auth — run `claude` once interactively
+  to confirm; the worker processes use OAuth, not an API key)
 - `gh` CLI authenticated (`gh auth status`)
 - `git` configured with user name and email
+- **`bws` (Bitwarden Secrets CLI)** on `PATH` — required for vault-fetching the GitHub App PEM
+  key and optional secrets at daemon startup. `bin/setup-env.sh` checks for `bws` and, when
+  running interactively on Linux/macOS, offers to auto-install v2.1.0 to `~/.local/bin`. In
+  non-interactive or CI contexts (`BH_SETUP_NO_PROMPT=1`) it exits 1 with a link to the
+  [manual install page](https://bitwarden.com/help/secrets-manager-cli/). Verify with
+  `bws --version`. Without it the daemon fails immediately at startup.
+- **`BWS_ACCESS_TOKEN`** — the single operator-supplied bootstrap secret (Bitwarden machine-
+  account access token). Provide it in a root-readable-only file and never commit it. The
+  canonical server path is `/etc/bh-daemon/secrets.env` (mode `600`); see
+  [docs/smoke-test-daemon.md](docs/smoke-test-daemon.md) for the systemd `EnvironmentFile=`
+  pattern. Placeholder only — never write the real token here:
+  ```
+  BWS_ACCESS_TOKEN=<bitwarden-machine-account-token>
+  ```
+- **GitHub App** — must be created, installed on the target repo, and have the required
+  permissions configured **before** first run. `bin/run-daemon.sh` reads the App IDs from
+  `${BH_PROJECT_ROOT}/.bh/config.env`; `bin/provision-ruleset.sh` uses them to create the
+  branch-protection rulesets. See the permission table in
+  [docs/smoke-test-daemon.md §"Required GitHub App permissions"](docs/smoke-test-daemon.md)
+  for the full list.
+- **`~/.claude/.credentials.json` present and readable** — the OAuth credential file that
+  worker processes use for subscription auth. The G3c startup gate (`reconcile.py`) checks
+  for this at every daemon start and exits non-zero with "OAuth credential file absent or
+  unreadable" if it is missing. On a server this file must be an explicit credential-volume
+  mount.
+- **`ANTHROPIC_API_KEY` must NOT be set** — the deployment model is OAuth/subscription auth
+  only. The G3b startup gate checks for this at every daemon start and exits non-zero with a
+  critical alert if the key is present. Do not set this variable in shell profiles, `.env`
+  files, systemd `EnvironmentFile=`, or Docker entrypoints. (The reconciliation-sweep prose
+  in the [Usage](#usage) section also notes this; it bears repeating here.)
+- **OS:** Linux/macOS, bash. The server deployment scripts (`bin/verify-recovery.sh` in
+  particular) are Linux-only.
 - `config/WORKFLOW.md` present in this repo (already committed — see `config/`)
 - The target project repo cloned locally (`BH_PROJECT_ROOT`)
 - The target project repo must have all five harness state labels (see
@@ -213,18 +251,11 @@ is an operator action.
 | `agent-merged` | Per-issue branch merged into the feature branch by the daemon (CI-gated) |
 | `blocked` | Agent needs human input; sub-tree is parked |
 
-To create all five labels in the target repo:
-
-```bash
-gh label create "agent-ready"        -R <owner>/<repo> --color 0075ca
-gh label create "agent-done"         -R <owner>/<repo> --color 0e8a16
-gh label create "blocked"            -R <owner>/<repo> --color e4e669
-gh label create "agent-in-progress"  -R <owner>/<repo> --color d93f0b
-gh label create "agent-merged"       -R <owner>/<repo> --color 5319e7
-```
-
-The exact `gh label create` commands are also printed by `bin/run-daemon.sh` when it
-detects a missing label.
+To create all five labels, see the exact `gh label create` commands in
+[docs/smoke-test-daemon.md §"Required labels"](docs/smoke-test-daemon.md) (kept in sync
+with the runbook; duplicating them here risks drift). The commands are also printed by
+`bin/run-daemon.sh` when it detects a missing label. `bin/init-sandbox.sh` creates all
+five automatically when provisioning a throwaway sandbox.
 
 ## GitHub token: least-privilege setup
 
@@ -276,8 +307,13 @@ Additional settings:
 - **Explicitly not granted:** Workflows, Administration, Secrets, Checks (App-only
   — cannot be granted to a fine-grained PAT), any org-level scope.
 
-Export the token as `GH_TOKEN` before running the harness (the gate also
-accepts `GITHUB_TOKEN` as a fallback, consistent with standard CI conventions):
+**Primary deployment path — vault fetch:** set `BWS_GH_TOKEN_SECRET_ID` in
+`${BH_PROJECT_ROOT}/.bh/config.env`. `bootstrap_secrets()` vault-fetches the PAT at
+startup and writes it to `GH_TOKEN` automatically — no operator export required.
+
+**Override / fallback** — export the token directly when bypassing the vault (e.g. initial
+setup, CI, one-off runs). The gate also accepts `GITHUB_TOKEN` consistent with standard CI
+conventions. An explicit env value always wins over the vault fetch:
 
 ```bash
 export GH_TOKEN=github_pat_<your-token>
@@ -310,6 +346,20 @@ produce useless or misleading output.
 daemon. The `TokenValidationError` message will indicate a
 transient/network condition so it is distinguishable from a genuine bad-token
 failure.
+
+## Safety and guardrails
+
+`bh-daemon` spawns real `claude -p --dangerously-skip-permissions` processes that write
+code, commit, push branches, and open GitHub PRs autonomously. Before running:
+
+- **Use a throwaway sandbox repo** — never a real project. See [Prerequisites (runtime)](#prerequisites-runtime).
+- **Always start with `--once`** for a first run — one poll-dispatch tick, then exit.
+- **Draft PRs only** — the daemon opens `feature/<slug> → main` draft PRs and never merges
+  to `main`. A human reviews and merges.
+- **`ANTHROPIC_API_KEY` must not be set** — OAuth/subscription auth only; the key's presence
+  triggers an immediate abort at startup.
+- See [docs/smoke-test-daemon.md §"WARNING: safety first"](docs/smoke-test-daemon.md) for
+  the full pre-run checklist.
 
 ## Usage
 
@@ -387,9 +437,49 @@ For the full first-run walkthrough — sandbox setup, trigger-issue creation, DA
 wiring, CI-gate behaviour, and expected log output — see
 [docs/smoke-test-daemon.md](docs/smoke-test-daemon.md).
 
-### GitHub repository ruleset (sandbox setup — issue #157)
+### First run — quick start
 
-After running `bin/init-sandbox.sh`, provision the merge-boundary rulesets:
+The four-step bringup sequence from [docs/smoke-test-daemon.md §"Fresh host bringup"](docs/smoke-test-daemon.md):
+
+```bash
+# Step 1 — create the venv, install the package, and record BH_PROJECT_ROOT.
+#   Checks for bws; offers to auto-install on Linux/macOS when interactive.
+#   Writes BH_PROJECT_ROOT to ~/.config/baton-harness/host.env (mode 600).
+bin/setup-env.sh
+
+# Step 2 — provision the throwaway sandbox repo.
+#   Reads BH_REPO_OWNER, BH_REPO_NAME, BH_PROJECT_ROOT from the environment.
+#   Prompts interactively for the 5 App/vault identity values and writes
+#   ${BH_PROJECT_ROOT}/.bh/config.env.
+export BH_REPO_OWNER=<owner>
+export BH_REPO_NAME=<repo>
+export BH_PROJECT_ROOT=<abs-path-to-local-sandbox-clone>
+bin/init-sandbox.sh
+
+# Step 3 — provision branch-protection rulesets (required before first run).
+#   Reads App IDs from ${BH_PROJECT_ROOT}/.bh/config.env.
+bin/provision-ruleset.sh
+
+# Step 4 — drop the bootstrap secret and run one tick.
+echo "BWS_ACCESS_TOKEN=<token>" | sudo tee /etc/bh-daemon/secrets.env
+sudo chmod 600 /etc/bh-daemon/secrets.env
+BWS_ACCESS_TOKEN="$(sudo grep BWS_ACCESS_TOKEN /etc/bh-daemon/secrets.env | cut -d= -f2-)" \
+  bin/run-daemon.sh --once
+```
+
+The runbook at [docs/smoke-test-daemon.md](docs/smoke-test-daemon.md) has the full
+walkthrough — expected log output, CI-gate subtleties, DAG dependency wiring, cleanup, and
+server deployment patterns. Read it before running.
+
+### GitHub repository ruleset (required before first run — issue #157)
+
+**Provision the merge-boundary rulesets before starting the daemon for the first time.**
+The per-launch preflight gate checks `ruleset_is_provisioned()` before every worker
+dispatch and parks every issue with "preflight refused — branch protection missing or
+misconfigured" when rulesets are absent. The only way to create them is to run
+`bin/provision-ruleset.sh`.
+
+Run after `bin/init-sandbox.sh` (the App IDs it wrote to `.bh/config.env` are read here):
 
 ```bash
 # Required: BOTH App identifiers (they are different integers).
