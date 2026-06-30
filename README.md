@@ -186,9 +186,20 @@ of: `<prefix>-<issue>`, `<prefix>-<issue>-<slug>`, or bare `<issue>`.
 
 ## Prerequisites (runtime)
 
-- `claude` CLI on `PATH` and authenticated (subscription auth — run `claude` once interactively
-  to confirm; the worker processes use OAuth, not an API key)
-- `gh` CLI authenticated (`gh auth status`)
+- **`claude` CLI** on `PATH` and authenticated (subscription auth — run `claude` once
+  interactively to confirm; the worker processes use OAuth, not an API key).
+  `bin/setup-env.sh` checks for `claude` and, when running interactively on Linux/macOS,
+  offers to auto-install via the official native installer (`curl -fsSL
+  https://claude.ai/install.sh | sh`). In non-interactive or CI contexts
+  (`BH_SETUP_NO_PROMPT=1`) it exits 1 with a link to the
+  [setup docs](https://docs.claude.com/en/docs/claude-code/setup).
+  Auth is operator-supplied (run `claude` once interactively after install).
+- **`gh` CLI** authenticated (`gh auth status`). `bin/setup-env.sh` checks for `gh` and,
+  when running interactively on Linux/macOS, offers to auto-install v2.62.0 to
+  `~/.local/bin` (pinned binary with checksum verification, mirroring the bws routine). In
+  non-interactive or CI contexts (`BH_SETUP_NO_PROMPT=1`) it exits 1 with a link to the
+  [install page](https://github.com/cli/cli#installation). Auth is operator-supplied
+  (`gh auth login` after install).
 - `git` configured with user name and email
 - **`bws` (Bitwarden Secrets CLI)** on `PATH` — required for vault-fetching the GitHub App PEM
   key and optional secrets at daemon startup. `bin/setup-env.sh` checks for `bws` and, when
