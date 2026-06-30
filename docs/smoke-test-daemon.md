@@ -28,10 +28,10 @@ Before running:
 
 > **Fast path:** `bin/setup-env.sh` automates the venv creation, package install, and per-host config steps below (run it from the harness repo root; pass `--help` for details). When prompted, supply the absolute path to your local sandbox clone — the script writes it to `~/.config/baton-harness/host.env` (mode 600) so `bin/run-daemon.sh` picks it up automatically on every subsequent launch. Re-running the script when `host.env` already exists reports "delete it and re-run to reset" rather than re-prompting. Pass `BH_SETUP_NO_PROMPT=1` to skip the prompt in non-interactive contexts such as CI. `bin/init-sandbox.sh` automates the sandbox label creation, trigger-issue creation, `hello-feature` DAG, stub CI workflow, and `.bh/config.env` creation — run it after `bin/setup-env.sh` (pass `--help` for its safety warning and full option list). The manual steps below remain as the explainer and for partial or custom setups.
 
-- `claude` CLI on `PATH` and authenticated (subscription auth — run `claude` once interactively to confirm).
-- `gh` CLI authenticated (`gh auth status`).
+- `claude` CLI on `PATH` and authenticated (subscription auth — run `claude` once interactively to confirm). `bin/setup-env.sh` offers to auto-install via the official native installer when running interactively; auth is operator-supplied after install.
+- `gh` CLI authenticated (`gh auth status`). `bin/setup-env.sh` offers to auto-install v2.62.0 (pinned, checksum-verified) when running interactively; `gh auth login` is operator-supplied after install.
 - `git` configured with a user name and email.
-- `bws` (Bitwarden Secrets CLI) on `PATH` — required for the App-auth bootstrap that mints the GitHub App installation token before the daemon starts. Install per the [Bitwarden Secrets Manager CLI docs](https://bitwarden.com/help/secrets-manager-cli/); verify with `bws --version`. Without it, the daemon fails immediately at startup with a subprocess error.
+- `bws` (Bitwarden Secrets CLI) on `PATH` — required for the App-auth bootstrap that mints the GitHub App installation token before the daemon starts. `bin/setup-env.sh` offers to auto-install v2.1.0 when running interactively. Install per the [Bitwarden Secrets Manager CLI docs](https://bitwarden.com/help/secrets-manager-cli/); verify with `bws --version`. Without it, the daemon fails immediately at startup with a subprocess error.
 - The **sandbox repo cloned locally**. The local clone path becomes `BH_PROJECT_ROOT`.
 - The harness package installed into a venv with `bh-daemon` on `PATH`:
 

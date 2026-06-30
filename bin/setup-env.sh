@@ -15,6 +15,9 @@ set -euo pipefail
 # Pinned Bitwarden Secrets CLI version — bump here to upgrade.
 BWS_INSTALL_VERSION="2.1.0"
 
+# Pinned GitHub CLI version — bump here to upgrade.
+GH_INSTALL_VERSION="2.62.0"
+
 # ---------------------------------------------------------------------------
 # Help / usage
 # ---------------------------------------------------------------------------
@@ -30,19 +33,30 @@ Steps performed:
   1. Checks that uv is on PATH
   2. Checks that bws (Bitwarden Secrets CLI) is on PATH; offers to install
      v2.1.0 to ~/.local/bin when running in an interactive terminal
-  3. Creates .venv (skipped if already present — idempotent)
-  4. Installs the package with dev extras: uv pip install -e ".[dev]"
-  5. Verifies bh-daemon is accessible inside the venv
-  6. Prints the activation hint
+  3. Checks that gh (GitHub CLI) is on PATH; offers to install v2.62.0
+     to ~/.local/bin when running in an interactive terminal
+  4. Checks that claude (Claude Code CLI) is on PATH; offers to install
+     via the official native installer when running in an interactive terminal
+  5. Creates .venv (skipped if already present — idempotent)
+  6. Installs the package with dev extras: uv pip install -e ".[dev]"
+  7. Verifies bh-daemon is accessible inside the venv
+  8. Prints the activation hint
 
 Safe to re-run: venv creation is skipped when .venv already exists.
 No environment variables are required for basic setup.
 
-bws auto-install behaviour:
+bws/gh/claude auto-install behaviour (all three follow the same rules):
   - Interactive terminal (default): prompts before downloading.
   - BH_SETUP_NO_PROMPT=1 or non-TTY (e.g. CI): skips prompt and exits 1
     with a link to the manual install page.  No silent network calls.
-  - Manual install: https://bitwarden.com/help/secrets-manager-cli/
+  - Manual install pages:
+      bws:    https://bitwarden.com/help/secrets-manager-cli/
+      gh:     https://github.com/cli/cli#installation
+      claude: https://docs.claude.com/en/docs/claude-code/setup
+
+Note: after installing gh or claude, you must authenticate them separately:
+  - gh:     gh auth login
+  - claude: run claude once interactively
 EOF
 }
 
@@ -193,6 +207,200 @@ elif [[ -t 0 && -t 1 && "${BH_SETUP_NO_PROMPT:-0}" != "1" ]]; then
 else
     echo "baton-harness: error: bws not found on PATH" >&2
     echo "  Install bws manually: ${_bws_manual_url}" >&2
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Preflight: gh (GitHub CLI) must be on PATH
+# ---------------------------------------------------------------------------
+
+_gh_manual_url="https://github.com/cli/cli#installation"
+
+_install_gh() {
+    # Preflight: required tools
+    local _missing_tools=()
+    command -v curl      &>/dev/null || _missing_tools+=("curl")
+    command -v tar       &>/dev/null || _missing_tools+=("tar")
+    local _os
+    _os="$(uname -s)"
+    if [[ "${_os}" == "Linux" ]]; then
+        command -v sha256sum &>/dev/null || _missing_tools+=("sha256sum")
+    else
+        command -v shasum &>/dev/null || _missing_tools+=("shasum")
+    fi
+    if [[ "${#_missing_tools[@]}" -gt 0 ]]; then
+        echo "baton-harness: error: gh install requires: ${_missing_tools[*]}" >&2
+        echo "  Install the missing tool(s) and re-run this script." >&2
+        exit 1
+    fi
+
+    # OS + arch detection
+    local _arch
+    _arch="$(uname -m)"
+    local _asset_stem
+    case "${_os}" in
+        Linux)
+            case "${_arch}" in
+                x86_64)
+                    _asset_stem="linux_amd64" ;;
+                aarch64|arm64)
+                    _asset_stem="linux_arm64" ;;
+                *)
+                    echo "baton-harness: error: unsupported Linux architecture: ${_arch}" >&2
+                    echo "  Install gh manually: ${_gh_manual_url}" >&2
+                    exit 1 ;;
+            esac
+            ;;
+        Darwin)
+            case "${_arch}" in
+                arm64)
+                    _asset_stem="macOS_arm64" ;;
+                *)
+                    _asset_stem="macOS_amd64" ;;
+            esac
+            ;;
+        *)
+            echo "baton-harness: error: gh auto-install supported only on Linux/macOS" >&2
+            echo "  Install gh manually: ${_gh_manual_url}" >&2
+            exit 1 ;;
+    esac
+
+    local _ver="${GH_INSTALL_VERSION}"
+    local _asset_name="gh_${_ver}_${_asset_stem}.tar.gz"
+    local _base_url="https://github.com/cli/cli/releases/download/v${_ver}"
+    local _tar_url="${_base_url}/${_asset_name}"
+    local _checksum_url="${_base_url}/gh_${_ver}_checksums.txt"
+
+    # Create tempdir; trap ensures cleanup on success and failure.
+    local _tmpdir
+    _tmpdir="$(mktemp -d)"
+    GH_TMPDIR="${_tmpdir}"
+    trap 'rm -rf "${GH_TMPDIR:-/dev/null}"' EXIT
+
+    local _tar_path="${_tmpdir}/${_asset_name}"
+    local _checksum_path="${_tmpdir}/gh_${_ver}_checksums.txt"
+
+    echo "baton-harness: downloading gh v${_ver} ..."
+    curl -fSL --proto '=https' --tlsv1.2 -o "${_tar_path}" "${_tar_url}"
+    curl -fSL --proto '=https' --tlsv1.2 -o "${_checksum_path}" "${_checksum_url}"
+
+    echo "baton-harness: verifying checksum ..."
+    local _checksum_line
+    _checksum_line="$(grep -F "${_asset_name}" "${_checksum_path}" || true)"
+    if [[ -z "${_checksum_line}" ]]; then
+        echo "baton-harness: error: checksum entry for ${_asset_name} not found in checksums file" >&2
+        exit 1
+    fi
+    if [[ "${_os}" == "Linux" ]]; then
+        printf '%s' "${_checksum_line}" | sha256sum -c - >/dev/null
+    else
+        printf '%s' "${_checksum_line}" | shasum -a 256 -c - >/dev/null
+    fi
+
+    echo "baton-harness: installing gh to ~/.local/bin ..."
+    tar -xzf "${_tar_path}" -C "${_tmpdir}"
+    # The tarball extracts to gh_<ver>_<plat>/bin/gh — locate the binary.
+    local _gh_binary
+    _gh_binary="${_tmpdir}/gh_${_ver}_${_asset_stem}/bin/gh"
+    if [[ ! -f "${_gh_binary}" ]]; then
+        echo "baton-harness: error: expected binary not found at ${_gh_binary}" >&2
+        exit 1
+    fi
+    mkdir -p "${HOME}/.local/bin"
+    mv "${_gh_binary}" "${HOME}/.local/bin/gh"
+    chmod +x "${HOME}/.local/bin/gh"
+
+    # Clear bash's command-name cache before PATH check.
+    hash -r 2>/dev/null || true
+    if ! command -v gh &>/dev/null; then
+        echo "baton-harness: ~/.local/bin/gh installed, but ~/.local/bin is not on your PATH." >&2
+        echo "  Add to your shell rc:" >&2
+        echo "    export PATH=\"\$HOME/.local/bin:\$PATH\"" >&2
+        echo "  Then re-run bin/setup-env.sh." >&2
+        exit 1
+    fi
+
+    # Final sanity check.
+    local _gh_ver
+    _gh_ver="$(gh --version 2>&1 | head -1)" || {
+        echo "baton-harness: error: gh installed but 'gh --version' failed" >&2
+        exit 1
+    }
+    echo "baton-harness: gh installed successfully (${_gh_ver})"
+}
+
+if command -v gh &>/dev/null; then
+    echo "baton-harness: gh already on PATH ($(gh --version 2>&1 | head -1))"
+elif [[ -t 0 && -t 1 && "${BH_SETUP_NO_PROMPT:-0}" != "1" ]]; then
+    echo ""
+    read -r -p "baton-harness: gh not found. Install GitHub CLI v${GH_INSTALL_VERSION} to ~/.local/bin? [Y/n] " _gh_reply || _gh_reply="n"
+    case "${_gh_reply}" in
+        [Yy]|"")
+            _install_gh ;;
+        *)
+            echo "baton-harness: gh install declined." >&2
+            echo "  Install gh manually: ${_gh_manual_url}" >&2
+            exit 1 ;;
+    esac
+else
+    echo "baton-harness: error: gh not found on PATH" >&2
+    echo "  Install gh manually: ${_gh_manual_url}" >&2
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Preflight: claude (Claude Code CLI) must be on PATH
+# ---------------------------------------------------------------------------
+
+_claude_manual_url="https://docs.claude.com/en/docs/claude-code/setup"
+
+_install_claude() {
+    # Preflight: required tools
+    if ! command -v curl &>/dev/null; then
+        echo "baton-harness: error: claude install requires: curl" >&2
+        echo "  Install curl and re-run this script." >&2
+        exit 1
+    fi
+
+    echo "baton-harness: installing claude via official installer ..."
+    curl -fsSL https://claude.ai/install.sh | sh
+
+    # Clear bash's command-name cache before PATH check.
+    hash -r 2>/dev/null || true
+    if ! command -v claude &>/dev/null; then
+        echo "baton-harness: claude installer ran, but claude is not on your PATH." >&2
+        echo "  The installer typically places claude in ~/.local/bin or ~/.claude/local." >&2
+        echo "  Add the appropriate directory to your PATH:" >&2
+        echo "    export PATH=\"\$HOME/.local/bin:\$HOME/.claude/local:\$PATH\"" >&2
+        echo "  Then re-run bin/setup-env.sh." >&2
+        exit 1
+    fi
+
+    # Final sanity check.
+    local _claude_ver
+    _claude_ver="$(claude --version 2>&1)" || {
+        echo "baton-harness: error: claude installed but 'claude --version' failed" >&2
+        exit 1
+    }
+    echo "baton-harness: claude installed successfully (${_claude_ver})"
+}
+
+if command -v claude &>/dev/null; then
+    echo "baton-harness: claude already on PATH ($(claude --version 2>&1))"
+elif [[ -t 0 && -t 1 && "${BH_SETUP_NO_PROMPT:-0}" != "1" ]]; then
+    echo ""
+    read -r -p "baton-harness: claude not found. Install Claude Code CLI via official installer? [Y/n] " _claude_reply || _claude_reply="n"
+    case "${_claude_reply}" in
+        [Yy]|"")
+            _install_claude ;;
+        *)
+            echo "baton-harness: claude install declined." >&2
+            echo "  Install claude manually: ${_claude_manual_url}" >&2
+            exit 1 ;;
+    esac
+else
+    echo "baton-harness: error: claude not found on PATH" >&2
+    echo "  Install claude manually: ${_claude_manual_url}" >&2
     exit 1
 fi
 
