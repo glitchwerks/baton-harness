@@ -365,7 +365,7 @@ _install_claude() {
     fi
 
     echo "baton-harness: installing claude via official installer ..."
-    curl -fsSL https://claude.ai/install.sh | sh
+    curl -fsSL https://claude.ai/install.sh | bash
 
     # Clear bash's command-name cache before PATH check.
     hash -r 2>/dev/null || true
