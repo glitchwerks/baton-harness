@@ -130,6 +130,16 @@ fail() {
 }
 
 # ---------------------------------------------------------------------------
+# Source per-host config (written by bin/setup-env.sh)
+# ---------------------------------------------------------------------------
+
+HOST_ENV="${XDG_CONFIG_HOME:-${HOME}/.config}/baton-harness/host.env"
+if [[ -f "${HOST_ENV}" ]]; then
+    # shellcheck disable=SC1090
+    source "${HOST_ENV}"
+fi
+
+# ---------------------------------------------------------------------------
 # Validate required environment variables
 # ---------------------------------------------------------------------------
 
