@@ -160,10 +160,11 @@ _install_bws() {
         echo "baton-harness: error: checksum entry for ${_asset_name} not found in checksums file" >&2
         exit 1
     fi
+    local _checksum_verify_line="${_checksum_line%"${_asset_name}"}${_zip_path}"
     if [[ "${_os}" == "Linux" ]]; then
-        printf '%s' "${_checksum_line}" | sha256sum -c - >/dev/null
+        printf '%s' "${_checksum_verify_line}" | sha256sum -c - >/dev/null
     else
-        printf '%s' "${_checksum_line}" | shasum -a 256 -c - >/dev/null
+        printf '%s' "${_checksum_verify_line}" | shasum -a 256 -c - >/dev/null
     fi
 
     echo "baton-harness: installing bws to ~/.local/bin ..."
@@ -291,10 +292,11 @@ _install_gh() {
         echo "baton-harness: error: checksum entry for ${_asset_name} not found in checksums file" >&2
         exit 1
     fi
+    local _checksum_verify_line="${_checksum_line%"${_asset_name}"}${_tar_path}"
     if [[ "${_os}" == "Linux" ]]; then
-        printf '%s' "${_checksum_line}" | sha256sum -c - >/dev/null
+        printf '%s' "${_checksum_verify_line}" | sha256sum -c - >/dev/null
     else
-        printf '%s' "${_checksum_line}" | shasum -a 256 -c - >/dev/null
+        printf '%s' "${_checksum_verify_line}" | shasum -a 256 -c - >/dev/null
     fi
 
     echo "baton-harness: installing gh to ~/.local/bin ..."
