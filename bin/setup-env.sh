@@ -41,9 +41,13 @@ Steps performed:
   6. Installs the package with dev extras: uv pip install -e ".[dev]"
   7. Verifies bh-daemon is accessible inside the venv
   8. Prints the activation hint
+  9. Checks whether BWS_ACCESS_TOKEN is present for bh-daemon runtime and
+     prints a non-fatal notice if it is missing
 
 Safe to re-run: venv creation is skipped when .venv already exists.
-No environment variables are required for basic setup.
+No environment variables are required for this dev-setup script to run.
+BWS_ACCESS_TOKEN is required later by bh-daemon at runtime, but not by this
+script; setup-env.sh only checks whether it is present and never persists it.
 
 bws/gh/claude auto-install behaviour (all three follow the same rules):
   - Interactive terminal (default): prompts before downloading.
@@ -498,4 +502,14 @@ EOF
             echo "  wrote ${HOST_ENV} (mode 600)"
         fi
     fi
+fi
+
+# ---------------------------------------------------------------------------
+# Runtime preflight notice: BWS_ACCESS_TOKEN
+# ---------------------------------------------------------------------------
+
+if [[ -n "${BWS_ACCESS_TOKEN:-}" ]]; then
+    echo "baton-harness: BWS_ACCESS_TOKEN already set in environment"
+else
+    echo "baton-harness: warning: BWS_ACCESS_TOKEN not set — required by bh-daemon at runtime to authenticate to bws. Drop it at /etc/bh-daemon/secrets.env (mode 600); see README Prerequisites (runtime). Not needed for this dev-setup step." >&2
 fi
