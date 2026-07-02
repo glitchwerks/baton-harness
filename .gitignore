@@ -28,3 +28,6 @@ __pycache__/
 
 # SDD ledger + scratch (per-worktree, not shared)
 .superpowers/
+
+# Claude Code local runtime state (agent-memory, worktrees) — not source
+.claude/
