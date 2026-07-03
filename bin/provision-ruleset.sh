@@ -48,6 +48,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HARNESS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # ---------------------------------------------------------------------------
+# Source shared env-config loader (host.env -> BH_PROJECT_ROOT;
+# .bh/config.env -> BH_REPO_OWNER/BH_REPO_NAME/BH_GITHUB_APP_ID/etc;
+# operator env wins). Lets the four required vars below resolve from
+# .bh/config.env instead of requiring manual export every time.
+# ---------------------------------------------------------------------------
+_BH_LOAD_CONFIG="${SCRIPT_DIR}/lib/load-config.sh"
+if [[ -f "${_BH_LOAD_CONFIG}" ]]; then
+    # shellcheck disable=SC1091
+    source "${_BH_LOAD_CONFIG}"
+fi
+unset _BH_LOAD_CONFIG
+
+# ---------------------------------------------------------------------------
 # Python resolver — mirrors after_create.py:L99-L106.
 # ---------------------------------------------------------------------------
 _PYTHON="${HARNESS_DIR}/.venv/Scripts/python.exe"

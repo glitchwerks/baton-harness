@@ -37,6 +37,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HARNESS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # ---------------------------------------------------------------------------
+# Source shared env-config loader (host.env -> BH_PROJECT_ROOT;
+# .bh/config.env -> BH_REPO_OWNER/BH_REPO_NAME/BH_GITHUB_APP_ID/etc;
+# operator env wins). Same pattern as provision-ruleset.sh; a no-op here
+# unless BH_PROJECT_ROOT ends up known, since this probe's own required
+# vars (BH_PROBE_*) are not part of .bh/config.env's schema.
+# ---------------------------------------------------------------------------
+_BH_LOAD_CONFIG="${SCRIPT_DIR}/lib/load-config.sh"
+if [[ -f "${_BH_LOAD_CONFIG}" ]]; then
+    # shellcheck disable=SC1091
+    source "${_BH_LOAD_CONFIG}"
+fi
+unset _BH_LOAD_CONFIG
+
+# ---------------------------------------------------------------------------
 # Python resolver — same pattern as provision-ruleset.sh.
 # ---------------------------------------------------------------------------
 _PYTHON="${HARNESS_DIR}/.venv/Scripts/python.exe"
