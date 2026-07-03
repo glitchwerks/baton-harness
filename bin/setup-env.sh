@@ -511,5 +511,5 @@ fi
 if [[ -n "${BWS_ACCESS_TOKEN:-}" ]]; then
     echo "baton-harness: BWS_ACCESS_TOKEN already set in environment"
 else
-    echo "baton-harness: warning: BWS_ACCESS_TOKEN not set — required by bh-daemon at runtime to authenticate to bws. For manual bin/run-daemon.sh runs, export it in your shell or add it to ~/.config/baton-harness/host.env; for the systemd service, drop it at /etc/bh-daemon/secrets.env (mode 600, via EnvironmentFile). See README Prerequisites (runtime). Not needed for this dev-setup step." >&2
+    echo "baton-harness: warning: BWS_ACCESS_TOKEN not set — required by bh-daemon at runtime to authenticate to bws. For manual bin/run-daemon.sh runs, export it in your shell; for the systemd service, drop it at /etc/bh-daemon/secrets.env (mode 600, via EnvironmentFile). Do not store it in ~/.config/baton-harness/host.env. See README Prerequisites (runtime). Not needed for this dev-setup step." >&2
 fi
