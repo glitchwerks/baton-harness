@@ -14,6 +14,39 @@
 #
 # Canned responses live in $BH_FAKE_GH_CANNED_DIR:
 #   app_id.txt          — integer written as the "id" field for GET /app
+#   app_unauthenticated — optional marker file (any content). When present,
+#                         GET /app simulates the real API's behaviour for a
+#                         PAT-authenticated caller: it is App-JWT-only, so a
+#                         PAT gets a 401 and gh exits non-zero. Used to test
+#                         issue #199 (soften the App-ID preflight for PAT auth).
+#   app_no_id            — optional marker file (any content). When present,
+#                         GET /app exits 0 (success) but returns a body with
+#                         no "id" field (e.g. an authenticated caller whose
+#                         token/response shape omits it). Used to test issue
+#                         #199's no-.id gap (CodeRabbit follow-up): a
+#                         successful-but-idless response must be treated the
+#                         same as non-App auth, not as a mismatch.
+#   app_transient_error — optional marker file (any content). When present,
+#                         GET /app exits non-zero with a NON-401 stderr (e.g.
+#                         "HTTP 503: Service unavailable"), simulating a
+#                         transient/infra failure rather than a confirmed
+#                         PAT-auth 401. Used to test the adversarial-review
+#                         follow-up to issue #199 (PR #201): only a confirmed
+#                         401 may soften into skip+proceed — any other
+#                         non-zero exit from GET /app must hard-fail so an
+#                         unconfirmed App ID is never silently written past.
+#   app_stray_401        — optional marker file (any content). When present,
+#                         GET /app exits non-zero with a stderr that contains
+#                         the bare substring "401" (e.g. inside a correlation
+#                         id) but NOT the substring "HTTP 401". Simulates an
+#                         unrelated non-auth failure whose stderr happens to
+#                         carry the digits "401" for an incidental reason
+#                         (request id, byte count, etc). Used to test a
+#                         CodeRabbit follow-up on PR #201: a bare `*"401"*`
+#                         match in the preflight would false-trigger the
+#                         soften-and-proceed path on this stderr; the
+#                         preflight must require the specific "HTTP 401"
+#                         substring to soften, and hard-fail here instead.
 #   collaborators_admin.body
 #                      — body for GET /collaborators?permission=admin
 #   custom_roles.body   — optional body for GET /orgs/.../custom-repository-roles
@@ -109,6 +142,33 @@ _log "${_record}"
 # Serve canned responses.
 case "${_endpoint}" in
     get_app)
+        if [[ -f "${BH_FAKE_GH_CANNED_DIR}/app_unauthenticated" ]]; then
+            # Simulate the real GET /app 401 a PAT-authenticated gh gets,
+            # since that endpoint is App-JWT-only.
+            printf 'gh: HTTP 401: Bad credentials (https://api.github.com/app)\n' >&2
+            exit 1
+        fi
+        if [[ -f "${BH_FAKE_GH_CANNED_DIR}/app_transient_error" ]]; then
+            # Simulate a non-auth GET /app failure (e.g. a 503 or network
+            # blip) — NOT a 401 — so the script must distinguish this from
+            # a confirmed PAT-auth failure and hard-fail rather than skip.
+            printf 'gh: HTTP 503: Service unavailable (https://api.github.com/app)\n' >&2
+            exit 1
+        fi
+        if [[ -f "${BH_FAKE_GH_CANNED_DIR}/app_stray_401" ]]; then
+            # Simulate a non-auth GET /app failure whose stderr happens to
+            # contain the bare substring "401" (e.g. inside a correlation
+            # id) but NOT "HTTP 401". A preflight that matches on a bare
+            # `*"401"*` substring would wrongly treat this as a confirmed
+            # auth failure and soften+proceed; it must hard-fail instead.
+            printf 'gh: could not resolve host api.github.com (correlation-id req-401aa)\n' >&2
+            exit 1
+        fi
+        if [[ -f "${BH_FAKE_GH_CANNED_DIR}/app_no_id" ]]; then
+            # Simulate a successful GET /app whose body has no "id" field.
+            printf '{}\n'
+            exit 0
+        fi
         printf '{"id":%s}\n' "$(cat "${BH_FAKE_GH_CANNED_DIR}/app_id.txt")"
         exit 0
         ;;
