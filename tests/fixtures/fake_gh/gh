@@ -14,6 +14,11 @@
 #
 # Canned responses live in $BH_FAKE_GH_CANNED_DIR:
 #   app_id.txt          — integer written as the "id" field for GET /app
+#   app_unauthenticated — optional marker file (any content). When present,
+#                         GET /app simulates the real API's behaviour for a
+#                         PAT-authenticated caller: it is App-JWT-only, so a
+#                         PAT gets a 401 and gh exits non-zero. Used to test
+#                         issue #199 (soften the App-ID preflight for PAT auth).
 #   collaborators_admin.body
 #                      — body for GET /collaborators?permission=admin
 #   custom_roles.body   — optional body for GET /orgs/.../custom-repository-roles
@@ -109,6 +114,12 @@ _log "${_record}"
 # Serve canned responses.
 case "${_endpoint}" in
     get_app)
+        if [[ -f "${BH_FAKE_GH_CANNED_DIR}/app_unauthenticated" ]]; then
+            # Simulate the real GET /app 401 a PAT-authenticated gh gets,
+            # since that endpoint is App-JWT-only.
+            printf 'gh: HTTP 401: Bad credentials (https://api.github.com/app)\n' >&2
+            exit 1
+        fi
         printf '{"id":%s}\n' "$(cat "${BH_FAKE_GH_CANNED_DIR}/app_id.txt")"
         exit 0
         ;;

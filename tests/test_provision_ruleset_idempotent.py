@@ -27,6 +27,19 @@ Six cases:
    BH_GITHUB_APP_ID=222) -> exit 2, no writes.
 6. Admin-bypass actor_id logging: script logs the resolved actor_id
    before any writes so an operator can verify before enforcement.
+
+Issue #199 — soften the App-ID preflight for PAT auth:
+
+  GET /app is App-JWT-only. A PAT-authenticated gh gets a 401/non-zero
+  exit rather than a body to compare .id against. Three more cases
+  (below the six above) cover the softened contract:
+
+7. Non-App auth (gh api app exits non-zero) -> preflight must NOT
+   exit 2; it must warn on stderr that the App-ID/Installation-ID
+   cross-check is being skipped, then proceed to the write phase.
+8. App-authed but mismatched .id -> still hard-fails (regression
+   guard; the soften must not weaken this).
+9. App-authed with matching .id -> still proceeds (regression guard).
 """
 
 from __future__ import annotations
@@ -65,7 +78,9 @@ def _invoke(
     admin_role_id: str = "5",
     admin_collaborators_body: str | None = None,
     custom_roles_body: str | None = None,
-) -> tuple[int, str, Path]:
+    app_authenticated: bool = True,
+    return_stderr: bool = False,
+) -> tuple[int, str, Path] | tuple[int, str, str, Path]:
     """Run the provisioning script with the fake gh on PATH.
 
     Args:
@@ -74,7 +89,8 @@ def _invoke(
             read by the fake gh shim.
         app_id: Value of BH_GITHUB_APP_ID passed to the script.
         preflight_app_id: The id the fake /app endpoint returns
-            (may differ from app_id to trigger B3 mismatch).
+            (may differ from app_id to trigger B3 mismatch). Ignored
+            when app_authenticated is False.
         admin_role_id: Value of BH_ADMIN_ROLE_ID passed to the
             script; defaults to the spec default of "5".
         admin_collaborators_body: Optional canned JSON body for
@@ -83,15 +99,30 @@ def _invoke(
         custom_roles_body: Optional canned JSON body for
             GET /orgs/.../custom-repository-roles. When absent, the
             fake gh returns a 404-style "feature not available" error.
+        app_authenticated: When False, the fake gh simulates a PAT
+            caller hitting the App-JWT-only GET /app endpoint: gh
+            exits non-zero with a 401-style stderr message instead of
+            returning an id (issue #199).
+        return_stderr: When True, return a four-tuple that also
+            includes the combined stderr, for tests that assert on
+            preflight warning text.
 
     Returns:
-        A three-tuple of (returncode, combined_stdout, gh_call_log_path).
+        A three-tuple of (returncode, combined_stdout, gh_call_log_path)
+        by default, or a four-tuple that inserts stderr before the log
+        path when return_stderr is True.
     """
     log_path = tmp_path / "gh_calls.jsonl"
     # The shim reads app_id.txt to build its /app response.
     (canned_state_dir / "app_id.txt").write_text(
         preflight_app_id, encoding="utf-8"
     )
+    if not app_authenticated:
+        # Presence of this marker tells the shim to simulate a 401 on
+        # GET /app, as a real PAT-authenticated gh would get.
+        (canned_state_dir / "app_unauthenticated").write_text(
+            "1", encoding="utf-8"
+        )
     (canned_state_dir / "collaborators_admin.body").write_text(
         admin_collaborators_body
         if admin_collaborators_body is not None
@@ -146,6 +177,8 @@ def _invoke(
             f"{proc.stderr}"
             f"---"
         )
+    if return_stderr:
+        return proc.returncode, proc.stdout, proc.stderr, log_path
     return proc.returncode, proc.stdout, log_path
 
 
@@ -658,6 +691,162 @@ def test_pagination_absent_on_all_pages_triggers_post(
         f"expected 2 POSTs when absent on all pages; got {writes}"
     )
     assert all(c["method"] == "POST" for c in writes)
+    assert {c["ruleset_name"] for c in writes} == {
+        "harness-main-no-merge",
+        "harness-feature-daemon-only",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Issue #199: soften the App-ID preflight under PAT auth
+# ---------------------------------------------------------------------------
+#
+# GET /app is App-JWT-only. When gh is authenticated with a PAT (the
+# documented "administration:write" path), that endpoint 401s and gh
+# exits non-zero — it never returns a body to compare .id against.
+# Case 7 asserts the preflight must soften to a skip-with-warning in
+# that situation rather than hard-failing. Cases 8-9 are regression
+# guards proving the soften does not weaken the App-authed paths.
+
+
+def test_non_app_auth_skips_appid_check_and_proceeds_to_writes(
+    tmp_path: Path,
+) -> None:
+    """Case 7: gh api app exits non-zero (PAT auth) -> warn+skip, proceed.
+
+    Simulates a PAT-authenticated gh hitting the App-JWT-only GET /app
+    endpoint: the fake gh exits non-zero with a 401-style stderr message
+    instead of returning an id. The script must NOT treat this as a
+    preflight failure (must not exit 2, must not abort before writing).
+    Instead it must:
+      (a) print a warning to stderr explaining the App-ID vs
+          Installation-ID cross-check is being skipped because gh is
+          not App-authenticated, and
+      (b) proceed past the preflight into the ruleset-write phase, as
+          proven by the empty-state LIST triggering the normal 2-POST
+          create path (same observable write shape as case 1).
+    """
+    canned = tmp_path / "canned"
+    canned.mkdir()
+    # Empty LIST -> if the script reaches the write phase, it creates
+    # both rulesets. Zero writes would mean the script aborted early.
+    (canned / "list.body").write_text("[]", encoding="utf-8")
+
+    rc, stdout, stderr, log = _invoke(
+        tmp_path, canned, app_authenticated=False, return_stderr=True
+    )
+
+    assert rc == 0, (
+        f"non-App auth must not hard-fail the preflight (soften per "
+        f"#199); got rc={rc}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    )
+
+    # (a) A warning explaining the cross-check was skipped must be on
+    # stderr. Wording is the implementation's choice; the warning must
+    # at minimum name the check being skipped (App ID) and say it was
+    # skipped, without claiming success ("preflight OK") or emitting
+    # the hard-fail banner used for a genuine mismatch (case 8).
+    stderr_lower = stderr.lower()
+    assert "skip" in stderr_lower, (
+        f"expected a 'skip' warning on stderr when gh is not "
+        f"App-authenticated; stderr was:\n{stderr}"
+    )
+    assert "app" in stderr_lower and "id" in stderr_lower, (
+        f"expected the skip warning to reference the App-ID check; "
+        f"stderr was:\n{stderr}"
+    )
+    assert "preflight failure" not in stderr_lower, (
+        f"non-App auth must not be reported as a preflight failure; "
+        f"stderr was:\n{stderr}"
+    )
+
+    # (b) Execution proceeded past the preflight to the write phase.
+    writes = _writes(_calls(log))
+    assert len(writes) == 2, (
+        f"expected the script to proceed to create both rulesets after "
+        f"skipping the App-ID check, got writes={writes}"
+    )
+    assert {c["ruleset_name"] for c in writes} == {
+        "harness-main-no-merge",
+        "harness-feature-daemon-only",
+    }
+
+    # (d) Secret hygiene: no token/JWT-shaped material in any observed
+    # output. Nothing in this test setup carries a real credential, so
+    # this is a standing regression guard against accidentally echoing
+    # auth material when reporting the skip.
+    combined = stdout + stderr
+    for leaked_marker in ("Bearer ", "ghp_", "gho_", "github_pat_"):
+        assert leaked_marker not in combined, (
+            f"possible credential material leaked in output: "
+            f"{leaked_marker!r} found"
+        )
+
+
+def test_app_authed_mismatched_id_still_hard_fails(tmp_path: Path) -> None:
+    """Case 8 (regression guard): App-authed + mismatched .id -> exit 2.
+
+    When gh IS App-authenticated (GET /app succeeds) but the returned
+    .id does not match BH_GITHUB_APP_ID, the preflight must still hard
+    -fail exactly as before #199 — the soften only applies to the
+    non-App-authenticated case (case 7), never to a confirmed mismatch.
+    """
+    canned = tmp_path / "canned"
+    canned.mkdir()
+    (canned / "list.body").write_text("[]", encoding="utf-8")
+
+    rc, stdout, stderr, log = _invoke(
+        tmp_path,
+        canned,
+        app_id="222",
+        preflight_app_id="111",
+        app_authenticated=True,
+        return_stderr=True,
+    )
+
+    assert rc == 2, (
+        f"App-authed mismatch must still hard-fail with exit 2 "
+        f"(preserved by #199); got rc={rc}\nstderr:\n{stderr}"
+    )
+    assert "PREFLIGHT FAILURE" in stderr, (
+        f"expected the existing hard-fail banner to be preserved; "
+        f"stderr was:\n{stderr}"
+    )
+    assert _writes(_calls(log)) == [], (
+        "script must write zero ruleset mutations on a confirmed "
+        "App-ID mismatch"
+    )
+
+
+def test_app_authed_matching_id_still_proceeds(tmp_path: Path) -> None:
+    """Case 9 (regression guard): App-authed + matching .id -> proceeds.
+
+    When gh IS App-authenticated and the returned .id matches
+    BH_GITHUB_APP_ID, the preflight must pass exactly as before #199,
+    proceeding into the normal write phase.
+    """
+    canned = tmp_path / "canned"
+    canned.mkdir()
+    (canned / "list.body").write_text("[]", encoding="utf-8")
+
+    rc, stdout, stderr, log = _invoke(
+        tmp_path,
+        canned,
+        app_id="111",
+        preflight_app_id="111",
+        app_authenticated=True,
+        return_stderr=True,
+    )
+
+    assert rc == 0, (
+        f"App-authed matching id must proceed as before #199; "
+        f"got rc={rc}\nstderr:\n{stderr}"
+    )
+    writes = _writes(_calls(log))
+    assert len(writes) == 2, (
+        f"expected the normal 2-POST create path after a matching "
+        f"App-ID preflight, got writes={writes}"
+    )
     assert {c["ruleset_name"] for c in writes} == {
         "harness-main-no-merge",
         "harness-feature-daemon-only",
