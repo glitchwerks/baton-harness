@@ -130,14 +130,16 @@ fail() {
 }
 
 # ---------------------------------------------------------------------------
-# Source per-host config (written by bin/setup-env.sh)
+# Source shared env-config loader (host.env -> BH_PROJECT_ROOT;
+# .bh/config.env -> BH_REPO_OWNER/BH_REPO_NAME/etc; operator env wins)
 # ---------------------------------------------------------------------------
 
-HOST_ENV="${XDG_CONFIG_HOME:-${HOME}/.config}/baton-harness/host.env"
-if [[ -f "${HOST_ENV}" ]]; then
-    # shellcheck disable=SC1090
-    source "${HOST_ENV}"
+_BH_LOAD_CONFIG="$(dirname "${BASH_SOURCE[0]}")/lib/load-config.sh"
+if [[ -f "${_BH_LOAD_CONFIG}" ]]; then
+    # shellcheck disable=SC1091
+    source "${_BH_LOAD_CONFIG}"
 fi
+unset _BH_LOAD_CONFIG
 
 # ---------------------------------------------------------------------------
 # Validate required environment variables
