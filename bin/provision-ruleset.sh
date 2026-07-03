@@ -101,8 +101,12 @@ unset PYTHONHOME PYTHONPATH 2>/dev/null || true
 # Parse the JSON response with Python so this works with both real gh
 # (which honours --jq) and the fake shim (which ignores --jq flags).
 # ---------------------------------------------------------------------------
+_warn_skip_appid_check() {
+    echo "provision-ruleset: WARNING — gh is not App-authenticated or GET /app returned no App ID; skipping the App ID cross-check via GET /app. Ensure the ambient token has administration: write for the subsequent ruleset writes." >&2
+}
+
 if ! _app_response="$(gh api app 2>/dev/null)"; then
-    echo "provision-ruleset: WARNING — gh is not App-authenticated; skipping the App ID cross-check via GET /app" >&2
+    _warn_skip_appid_check
 else
     _live_app_id="$(
         printf '%s' "${_app_response}" \
@@ -110,14 +114,17 @@ else
                 'import json,sys; print(json.loads(sys.stdin.read())["id"])' \
             2>/dev/null || true
     )"
-    if [[ "${_live_app_id}" != "${BH_GITHUB_APP_ID}" ]]; then
+    if [[ -z "${_live_app_id}" ]]; then
+        _warn_skip_appid_check
+    elif [[ "${_live_app_id}" != "${BH_GITHUB_APP_ID}" ]]; then
         echo "provision-ruleset: PREFLIGHT FAILURE — BH_GITHUB_APP_ID=${BH_GITHUB_APP_ID}" >&2
         echo "  but GET /app .id returned ${_live_app_id}." >&2
         echo "  BH_GITHUB_APP_ID must be the App ID from https://github.com/settings/apps/<slug>," >&2
         echo "  NOT the Installation ID. Aborting before writing ruleset." >&2
         exit 2
+    else
+        echo "provision-ruleset: preflight OK — App ID ${BH_GITHUB_APP_ID} confirmed via GET /app"
     fi
-    echo "provision-ruleset: preflight OK — App ID ${BH_GITHUB_APP_ID} confirmed via GET /app"
 fi
 
 # ---------------------------------------------------------------------------
