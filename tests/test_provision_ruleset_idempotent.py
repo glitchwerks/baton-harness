@@ -36,7 +36,12 @@ Issue #199 — soften the App-ID preflight for PAT auth:
 
 7. Non-App auth (gh api app exits non-zero) -> preflight must NOT
    exit 2; it must warn on stderr that the App-ID/Installation-ID
-   cross-check is being skipped, then proceed to the write phase.
+   cross-check is being skipped (naming the "administration: write"
+   PAT permission the skip relies on), then proceed to the write
+   phase.
+7b. (CodeRabbit follow-up) gh api app exits 0 but the body has no
+    .id -> must be treated identically to case 7 (warn + skip +
+    proceed), not as a mismatch.
 8. App-authed but mismatched .id -> still hard-fails (regression
    guard; the soften must not weaken this).
 9. App-authed with matching .id -> still proceeds (regression guard).
@@ -79,6 +84,7 @@ def _invoke(
     admin_collaborators_body: str | None = None,
     custom_roles_body: str | None = None,
     app_authenticated: bool = True,
+    app_response_has_id: bool = True,
     return_stderr: bool = False,
 ) -> tuple[int, str, Path] | tuple[int, str, str, Path]:
     """Run the provisioning script with the fake gh on PATH.
@@ -90,7 +96,8 @@ def _invoke(
         app_id: Value of BH_GITHUB_APP_ID passed to the script.
         preflight_app_id: The id the fake /app endpoint returns
             (may differ from app_id to trigger B3 mismatch). Ignored
-            when app_authenticated is False.
+            when app_authenticated is False or app_response_has_id
+            is False.
         admin_role_id: Value of BH_ADMIN_ROLE_ID passed to the
             script; defaults to the spec default of "5".
         admin_collaborators_body: Optional canned JSON body for
@@ -103,6 +110,12 @@ def _invoke(
             caller hitting the App-JWT-only GET /app endpoint: gh
             exits non-zero with a 401-style stderr message instead of
             returning an id (issue #199).
+        app_response_has_id: When False, the fake gh returns a
+            successful (exit 0) GET /app response whose body has no
+            "id" field — e.g. {} — rather than omitting the call
+            entirely (issue #199 no-.id gap). Ignored when
+            app_authenticated is False (that case already omits any
+            id).
         return_stderr: When True, return a four-tuple that also
             includes the combined stderr, for tests that assert on
             preflight warning text.
@@ -123,6 +136,10 @@ def _invoke(
         (canned_state_dir / "app_unauthenticated").write_text(
             "1", encoding="utf-8"
         )
+    elif not app_response_has_id:
+        # Presence of this marker tells the shim to return a successful
+        # GET /app whose body has no "id" field.
+        (canned_state_dir / "app_no_id").write_text("1", encoding="utf-8")
     (canned_state_dir / "collaborators_admin.body").write_text(
         admin_collaborators_body
         if admin_collaborators_body is not None
@@ -721,7 +738,10 @@ def test_non_app_auth_skips_appid_check_and_proceeds_to_writes(
     Instead it must:
       (a) print a warning to stderr explaining the App-ID vs
           Installation-ID cross-check is being skipped because gh is
-          not App-authenticated, and
+          not App-authenticated, naming the `administration: write`
+          PAT permission the documented path relies on instead
+          (CodeRabbit follow-up: an operator reading the warning must
+          be told which permission makes the skip safe), and
       (b) proceed past the preflight into the ruleset-write phase, as
           proven by the empty-state LIST triggering the normal 2-POST
           create path (same observable write shape as case 1).
@@ -759,6 +779,15 @@ def test_non_app_auth_skips_appid_check_and_proceeds_to_writes(
         f"non-App auth must not be reported as a preflight failure; "
         f"stderr was:\n{stderr}"
     )
+    # CodeRabbit follow-up (#199): the skip warning must hint at the
+    # PAT permission that makes skipping the cross-check safe, so an
+    # operator reading it knows what to grant instead of guessing.
+    assert "administration: write" in stderr_lower or (
+        "administration" in stderr_lower and "write" in stderr_lower
+    ), (
+        f"expected the skip warning to mention the 'administration: "
+        f"write' PAT permission; stderr was:\n{stderr}"
+    )
 
     # (b) Execution proceeded past the preflight to the write phase.
     writes = _writes(_calls(log))
@@ -781,6 +810,68 @@ def test_non_app_auth_skips_appid_check_and_proceeds_to_writes(
             f"possible credential material leaked in output: "
             f"{leaked_marker!r} found"
         )
+
+
+def test_app_authed_empty_or_missing_id_skips_and_proceeds(
+    tmp_path: Path,
+) -> None:
+    """Case 7b (CodeRabbit follow-up): GET /app succeeds with no .id.
+
+    gh api app can exit 0 (success) yet return a body with no "id"
+    field. Today the script extracts an empty _live_app_id from such a
+    body and compares it against BH_GITHUB_APP_ID; since "" never
+    equals a numeric app id, this is indistinguishable from a genuine
+    mismatch and hard-fails with PREFLIGHT FAILURE (exit 2).
+
+    A missing .id is not evidence of a *wrong* app id — it is the same
+    "we cannot confirm the App identity" situation as non-App auth
+    (case 7), and must be handled identically: warn + skip the
+    cross-check + proceed to the write phase. Treating it as a hard
+    mismatch would false-positive-block any caller whose /app response
+    shape omits the field, which is exactly the class of gap #199 set
+    out to soften.
+    """
+    canned = tmp_path / "canned"
+    canned.mkdir()
+    (canned / "list.body").write_text("[]", encoding="utf-8")
+
+    rc, stdout, stderr, log = _invoke(
+        tmp_path,
+        canned,
+        app_response_has_id=False,
+        return_stderr=True,
+    )
+
+    assert rc == 0, (
+        f"a successful GET /app with no .id must not hard-fail the "
+        f"preflight (treat like non-App auth, #199); got rc={rc}\n"
+        f"stdout:\n{stdout}\nstderr:\n{stderr}"
+    )
+
+    stderr_lower = stderr.lower()
+    assert "skip" in stderr_lower, (
+        f"expected a 'skip' warning on stderr when GET /app returns no "
+        f".id; stderr was:\n{stderr}"
+    )
+    assert "app" in stderr_lower and "id" in stderr_lower, (
+        f"expected the skip warning to reference the App-ID check; "
+        f"stderr was:\n{stderr}"
+    )
+    assert "preflight failure" not in stderr_lower, (
+        f"a no-.id success response must not be reported as a "
+        f"preflight failure; stderr was:\n{stderr}"
+    )
+
+    writes = _writes(_calls(log))
+    assert len(writes) == 2, (
+        f"expected the script to proceed to create both rulesets after "
+        f"skipping the App-ID check on a no-.id response, got "
+        f"writes={writes}"
+    )
+    assert {c["ruleset_name"] for c in writes} == {
+        "harness-main-no-merge",
+        "harness-feature-daemon-only",
+    }
 
 
 def test_app_authed_mismatched_id_still_hard_fails(tmp_path: Path) -> None:
