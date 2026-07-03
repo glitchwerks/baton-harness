@@ -26,6 +26,15 @@
 #                         #199's no-.id gap (CodeRabbit follow-up): a
 #                         successful-but-idless response must be treated the
 #                         same as non-App auth, not as a mismatch.
+#   app_transient_error — optional marker file (any content). When present,
+#                         GET /app exits non-zero with a NON-401 stderr (e.g.
+#                         "HTTP 503: Service unavailable"), simulating a
+#                         transient/infra failure rather than a confirmed
+#                         PAT-auth 401. Used to test the adversarial-review
+#                         follow-up to issue #199 (PR #201): only a confirmed
+#                         401 may soften into skip+proceed — any other
+#                         non-zero exit from GET /app must hard-fail so an
+#                         unconfirmed App ID is never silently written past.
 #   collaborators_admin.body
 #                      — body for GET /collaborators?permission=admin
 #   custom_roles.body   — optional body for GET /orgs/.../custom-repository-roles
@@ -125,6 +134,13 @@ case "${_endpoint}" in
             # Simulate the real GET /app 401 a PAT-authenticated gh gets,
             # since that endpoint is App-JWT-only.
             printf 'gh: HTTP 401: Bad credentials (https://api.github.com/app)\n' >&2
+            exit 1
+        fi
+        if [[ -f "${BH_FAKE_GH_CANNED_DIR}/app_transient_error" ]]; then
+            # Simulate a non-auth GET /app failure (e.g. a 503 or network
+            # blip) — NOT a 401 — so the script must distinguish this from
+            # a confirmed PAT-auth failure and hard-fail rather than skip.
+            printf 'gh: HTTP 503: Service unavailable (https://api.github.com/app)\n' >&2
             exit 1
         fi
         if [[ -f "${BH_FAKE_GH_CANNED_DIR}/app_no_id" ]]; then

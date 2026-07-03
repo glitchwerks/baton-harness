@@ -105,9 +105,29 @@ _warn_skip_appid_check() {
     echo "provision-ruleset: WARNING — gh is not App-authenticated or GET /app returned no App ID; skipping the App ID cross-check via GET /app. Ensure the ambient token has administration: write for the subsequent ruleset writes." >&2
 }
 
-if ! _app_response="$(gh api app 2>/dev/null)"; then
-    _warn_skip_appid_check
+_app_stderr_file="$(mktemp)"
+if ! _app_response="$(gh api app 2>"${_app_stderr_file}")"; then
+    _app_stderr="$(cat "${_app_stderr_file}" 2>/dev/null || true)"
+    rm -f "${_app_stderr_file}"
+    if [[ "${_app_stderr}" == *"401"* ]]; then
+        # Accepted residual risk for issue #199:
+        # On the PAT path, this GET /app App-ID cross-check is skipped, so a
+        # mistaken BH_GITHUB_APP_ID (for example, an Installation ID pasted by
+        # accident) is not caught here and would flow into
+        # bypass_actors[].actor_id in the later ruleset writes.
+        # This trade-off is accepted to support PAT auth for issue #199.
+        # Durable fix: self-contained in-script App-JWT auth so GET /app can
+        # run under any caller, tracked in issue #200.
+        _warn_skip_appid_check
+    else
+        echo "provision-ruleset: PREFLIGHT FAILURE — GET /app failed for a non-auth reason; cannot confirm BH_GITHUB_APP_ID." >&2
+        if [[ -n "${_app_stderr}" ]]; then
+            echo "  ${_app_stderr}" >&2
+        fi
+        exit 1
+    fi
 else
+    rm -f "${_app_stderr_file}"
     _live_app_id="$(
         printf '%s' "${_app_response}" \
             | "${_PYTHON}" -c \

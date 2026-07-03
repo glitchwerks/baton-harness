@@ -45,6 +45,19 @@ Issue #199 — soften the App-ID preflight for PAT auth:
 8. App-authed but mismatched .id -> still hard-fails (regression
    guard; the soften must not weaken this).
 9. App-authed with matching .id -> still proceeds (regression guard).
+
+Adversarial review of PR #201 flagged the case-7 soften as too broad:
+ANY non-zero exit of `gh api app` (a genuine 401, but also a transient
+network error, a 5xx, a rate-limit) was being collapsed into the same
+warn+skip+proceed path. A transient error on a genuinely App-authed
+run would then silently proceed to write rulesets with an unconfirmed
+App ID. Case 10 (below) is the new red test for the narrower contract:
+only a *confirmed* 401 auth failure may soften; any other non-zero
+exit from `gh api app` must hard-fail before any ruleset write.
+
+10. Non-auth gh api app failure (e.g. HTTP 503) -> must hard-fail
+    (non-zero exit, distinct from the exit-2 mismatch code, zero
+    writes), NOT skip-and-proceed like case 7.
 """
 
 from __future__ import annotations
@@ -85,6 +98,7 @@ def _invoke(
     custom_roles_body: str | None = None,
     app_authenticated: bool = True,
     app_response_has_id: bool = True,
+    app_transient_error: bool = False,
     return_stderr: bool = False,
 ) -> tuple[int, str, Path] | tuple[int, str, str, Path]:
     """Run the provisioning script with the fake gh on PATH.
@@ -116,6 +130,14 @@ def _invoke(
             entirely (issue #199 no-.id gap). Ignored when
             app_authenticated is False (that case already omits any
             id).
+        app_transient_error: When True, the fake gh simulates a
+            non-auth failure on GET /app (e.g. HTTP 503) — gh exits
+            non-zero with a stderr that does NOT indicate 401. Used
+            to test the adversarial-review follow-up to #199: only a
+            confirmed 401 may soften into skip+proceed; any other
+            failure must hard-fail. Mutually exclusive with
+            app_authenticated=False and app_response_has_id=False;
+            when True, this marker takes precedence in the shim.
         return_stderr: When True, return a four-tuple that also
             includes the combined stderr, for tests that assert on
             preflight warning text.
@@ -130,7 +152,14 @@ def _invoke(
     (canned_state_dir / "app_id.txt").write_text(
         preflight_app_id, encoding="utf-8"
     )
-    if not app_authenticated:
+    if app_transient_error:
+        # Presence of this marker tells the shim to simulate a non-401
+        # failure (e.g. HTTP 503) on GET /app — a genuine transient/infra
+        # error, distinct from a confirmed PAT-auth 401.
+        (canned_state_dir / "app_transient_error").write_text(
+            "1", encoding="utf-8"
+        )
+    elif not app_authenticated:
         # Presence of this marker tells the shim to simulate a 401 on
         # GET /app, as a real PAT-authenticated gh would get.
         (canned_state_dir / "app_unauthenticated").write_text(
@@ -942,3 +971,79 @@ def test_app_authed_matching_id_still_proceeds(tmp_path: Path) -> None:
         "harness-main-no-merge",
         "harness-feature-daemon-only",
     }
+
+
+# ---------------------------------------------------------------------------
+# Adversarial-review follow-up to #199 (PR #201): only a confirmed 401
+# may soften into skip+proceed; any other GET /app failure must hard-fail.
+# ---------------------------------------------------------------------------
+
+
+def test_non_auth_gh_api_app_failure_hard_fails(tmp_path: Path) -> None:
+    """Case 10: gh api app fails non-401 -> hard-fail, zero writes.
+
+    The pre-fix behaviour (issue #199) collapsed ANY non-zero exit of
+    `gh api app` — a genuine 401, but also a transient network error,
+    a 5xx, or a rate-limit — into the same warn+skip+proceed path. A
+    transient error on a genuinely App-authenticated run would then
+    silently proceed to write rulesets with an *unconfirmed* App ID,
+    defeating the preflight's protective purpose.
+
+    This test simulates a non-auth GET /app failure (HTTP 503) via the
+    `app_transient_error` shim marker. Unlike case 7 (confirmed 401,
+    which softens), this must:
+      - exit non-zero,
+      - use a distinct code from the exit-2 App-ID-mismatch path (this
+        suite asserts exit 1 — the implementer must match this code),
+      - write ZERO ruleset mutations (no POST/PUT in the call log),
+      - report on stderr that GET /app failed for a non-auth reason
+        (i.e. must NOT emit the case-7/7b "skip" warning, and must
+        surface the underlying failure, e.g. "503").
+    """
+    canned = tmp_path / "canned"
+    canned.mkdir()
+    # Empty LIST -> if the script incorrectly soften-and-proceeds (the
+    # pre-fix bug), it would create both rulesets here.
+    (canned / "list.body").write_text("[]", encoding="utf-8")
+
+    rc, stdout, stderr, log = _invoke(
+        tmp_path, canned, app_transient_error=True, return_stderr=True
+    )
+
+    assert rc != 0, (
+        f"a non-auth GET /app failure must hard-fail, not exit 0; "
+        f"stdout:\n{stdout}\nstderr:\n{stderr}"
+    )
+    assert rc != 2, (
+        f"a non-auth GET /app failure must use a code distinct from "
+        f"the exit-2 App-ID-mismatch path (confusing the two failure "
+        f"modes was the adversarial-review finding); got rc={rc}"
+    )
+    assert rc == 1, (
+        f"expected exit 1 for a non-auth GET /app failure (the code "
+        f"this test suite standardizes on); got rc={rc}\n"
+        f"stdout:\n{stdout}\nstderr:\n{stderr}"
+    )
+
+    assert _writes(_calls(log)) == [], (
+        "a non-auth GET /app failure must write zero ruleset "
+        "mutations — an unconfirmed App ID must never reach the "
+        "write phase"
+    )
+
+    stderr_lower = stderr.lower()
+    assert "app" in stderr_lower, (
+        f"expected stderr to reference the failed GET /app call; "
+        f"stderr was:\n{stderr}"
+    )
+    assert "503" in stderr or "service unavailable" in stderr_lower, (
+        f"expected stderr to surface the underlying non-auth failure "
+        f"(HTTP 503); stderr was:\n{stderr}"
+    )
+    # Must NOT be reported via the case-7/7b skip-and-proceed wording —
+    # this is the exact confusion the adversarial review flagged.
+    assert "skip" not in stderr_lower, (
+        f"a non-auth failure must not be reported as a skip (that "
+        f"wording is reserved for a confirmed 401 per case 7); "
+        f"stderr was:\n{stderr}"
+    )
