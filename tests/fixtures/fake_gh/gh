@@ -35,6 +35,18 @@
 #                         401 may soften into skip+proceed — any other
 #                         non-zero exit from GET /app must hard-fail so an
 #                         unconfirmed App ID is never silently written past.
+#   app_stray_401        — optional marker file (any content). When present,
+#                         GET /app exits non-zero with a stderr that contains
+#                         the bare substring "401" (e.g. inside a correlation
+#                         id) but NOT the substring "HTTP 401". Simulates an
+#                         unrelated non-auth failure whose stderr happens to
+#                         carry the digits "401" for an incidental reason
+#                         (request id, byte count, etc). Used to test a
+#                         CodeRabbit follow-up on PR #201: a bare `*"401"*`
+#                         match in the preflight would false-trigger the
+#                         soften-and-proceed path on this stderr; the
+#                         preflight must require the specific "HTTP 401"
+#                         substring to soften, and hard-fail here instead.
 #   collaborators_admin.body
 #                      — body for GET /collaborators?permission=admin
 #   custom_roles.body   — optional body for GET /orgs/.../custom-repository-roles
@@ -141,6 +153,15 @@ case "${_endpoint}" in
             # blip) — NOT a 401 — so the script must distinguish this from
             # a confirmed PAT-auth failure and hard-fail rather than skip.
             printf 'gh: HTTP 503: Service unavailable (https://api.github.com/app)\n' >&2
+            exit 1
+        fi
+        if [[ -f "${BH_FAKE_GH_CANNED_DIR}/app_stray_401" ]]; then
+            # Simulate a non-auth GET /app failure whose stderr happens to
+            # contain the bare substring "401" (e.g. inside a correlation
+            # id) but NOT "HTTP 401". A preflight that matches on a bare
+            # `*"401"*` substring would wrongly treat this as a confirmed
+            # auth failure and soften+proceed; it must hard-fail instead.
+            printf 'gh: could not resolve host api.github.com (correlation-id req-401aa)\n' >&2
             exit 1
         fi
         if [[ -f "${BH_FAKE_GH_CANNED_DIR}/app_no_id" ]]; then

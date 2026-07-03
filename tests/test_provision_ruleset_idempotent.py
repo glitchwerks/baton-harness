@@ -58,6 +58,21 @@ exit from `gh api app` must hard-fail before any ruleset write.
 10. Non-auth gh api app failure (e.g. HTTP 503) -> must hard-fail
     (non-zero exit, distinct from the exit-2 mismatch code, zero
     writes), NOT skip-and-proceed like case 7.
+
+CodeRabbit review of PR #201 (commit 6e9287a) flagged the case-10 fix
+as still too broad: it discriminates "confirmed 401" from other
+failures by testing whether gh's stderr contains the bare substring
+`401` — so a stray `401` anywhere in stderr (a request id, a
+correlation token, a byte count) that has nothing to do with an auth
+failure would false-trigger the soften-and-proceed path and silently
+bypass App-ID validation. Case 11 (below) is the new red test for the
+narrower contract: only a stderr containing `HTTP 401` specifically
+may soften; a bare `401` substring elsewhere in stderr must hard-fail.
+
+11. Stray "401" substring in non-auth gh api app stderr (e.g. inside a
+    correlation id, no "HTTP 401" present) -> must hard-fail exactly
+    like case 10 (exit 1, zero writes), NOT skip-and-proceed like
+    case 7.
 """
 
 from __future__ import annotations
@@ -99,6 +114,7 @@ def _invoke(
     app_authenticated: bool = True,
     app_response_has_id: bool = True,
     app_transient_error: bool = False,
+    app_stray_401: bool = False,
     return_stderr: bool = False,
 ) -> tuple[int, str, Path] | tuple[int, str, str, Path]:
     """Run the provisioning script with the fake gh on PATH.
@@ -138,6 +154,15 @@ def _invoke(
             failure must hard-fail. Mutually exclusive with
             app_authenticated=False and app_response_has_id=False;
             when True, this marker takes precedence in the shim.
+        app_stray_401: When True, the fake gh simulates a non-auth
+            GET /app failure whose stderr contains the bare substring
+            "401" (e.g. inside a correlation id) but NOT "HTTP 401".
+            Used to test a CodeRabbit follow-up on PR #201: a bare
+            `*"401"*` stderr match must not be treated as a confirmed
+            auth failure. Mutually exclusive with app_transient_error,
+            app_authenticated=False, and app_response_has_id=False;
+            when True and app_transient_error is False, this marker
+            takes precedence in the shim.
         return_stderr: When True, return a four-tuple that also
             includes the combined stderr, for tests that assert on
             preflight warning text.
@@ -159,6 +184,11 @@ def _invoke(
         (canned_state_dir / "app_transient_error").write_text(
             "1", encoding="utf-8"
         )
+    elif app_stray_401:
+        # Presence of this marker tells the shim to simulate a non-auth
+        # failure on GET /app whose stderr merely contains the substring
+        # "401" incidentally (not "HTTP 401") — must not soften.
+        (canned_state_dir / "app_stray_401").write_text("1", encoding="utf-8")
     elif not app_authenticated:
         # Presence of this marker tells the shim to simulate a 401 on
         # GET /app, as a real PAT-authenticated gh would get.
@@ -834,7 +864,15 @@ def test_non_app_auth_skips_appid_check_and_proceeds_to_writes(
     # this is a standing regression guard against accidentally echoing
     # auth material when reporting the skip.
     combined = stdout + stderr
-    for leaked_marker in ("Bearer ", "ghp_", "gho_", "github_pat_"):
+    for leaked_marker in (
+        "Bearer ",
+        "ghp_",
+        "gho_",
+        "github_pat_",
+        "ghs_",
+        "ghu_",
+        "ghr_",
+    ):
         assert leaked_marker not in combined, (
             f"possible credential material leaked in output: "
             f"{leaked_marker!r} found"
@@ -1046,4 +1084,71 @@ def test_non_auth_gh_api_app_failure_hard_fails(tmp_path: Path) -> None:
         f"a non-auth failure must not be reported as a skip (that "
         f"wording is reserved for a confirmed 401 per case 7); "
         f"stderr was:\n{stderr}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# CodeRabbit follow-up on PR #201 (commit 6e9287a): the case-10 fix must
+# require "HTTP 401" specifically, not a bare "401" substring anywhere in
+# stderr.
+# ---------------------------------------------------------------------------
+
+
+def test_stray_401_in_stderr_still_hard_fails(tmp_path: Path) -> None:
+    """Case 11: a bare "401" substring in non-auth stderr must hard-fail.
+
+    The case-10 fix (commit 6e9287a) discriminates "confirmed 401 auth
+    failure" from any other `gh api app` failure by testing whether
+    gh's stderr contains the substring `401`. That match is too broad:
+    a stderr that merely happens to contain the digits "401" for an
+    unrelated reason (here, inside a correlation id:
+    "req-401aa") is NOT a confirmed 401 auth failure, and must not be
+    softened into the case-7 skip+proceed path. Only a stderr
+    containing the specific substring "HTTP 401" (as the real GitHub
+    CLI emits for an actual 401 response, and as the existing
+    `app_unauthenticated` marker's "gh: HTTP 401: Bad credentials"
+    reproduces) may soften.
+
+    This must hard-fail exactly like case 10: non-zero exit (this
+    suite standardizes on exit 1, matching
+    ``test_non_auth_gh_api_app_failure_hard_fails``), zero ruleset
+    writes, and stderr must NOT carry the case-7 "skip" wording.
+    """
+    canned = tmp_path / "canned"
+    canned.mkdir()
+    # Empty LIST -> if the script incorrectly soften-and-proceeds (the
+    # bare-"401"-match bug), it would create both rulesets here.
+    (canned / "list.body").write_text("[]", encoding="utf-8")
+
+    rc, stdout, stderr, log = _invoke(
+        tmp_path, canned, app_stray_401=True, return_stderr=True
+    )
+
+    assert rc != 0, (
+        f"a stray '401' substring in non-auth stderr must hard-fail, "
+        f"not exit 0; stdout:\n{stdout}\nstderr:\n{stderr}"
+    )
+    assert rc != 2, (
+        f"a stray '401' substring in non-auth stderr must use a code "
+        f"distinct from the exit-2 App-ID-mismatch path; got rc={rc}"
+    )
+    assert rc == 1, (
+        f"expected exit 1 for a non-auth GET /app failure whose stderr "
+        f"merely contains a stray '401' substring (matching the case-10 "
+        f"convention); got rc={rc}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    )
+
+    assert _writes(_calls(log)) == [], (
+        "a stray '401' substring in non-auth stderr must write zero "
+        "ruleset mutations — it is not a confirmed auth failure and "
+        "must not soften into skip+proceed"
+    )
+
+    stderr_lower = stderr.lower()
+    # Must NOT be reported via the case-7/7b skip-and-proceed wording —
+    # this is exactly the false-trigger CodeRabbit flagged.
+    assert "skip" not in stderr_lower, (
+        f"a stray '401' substring must not be reported as a skip (that "
+        f"wording is reserved for a confirmed 'HTTP 401' failure per "
+        f"case 7); stderr was:\n{stderr}"
     )

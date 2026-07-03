@@ -109,7 +109,7 @@ _app_stderr_file="$(mktemp)"
 if ! _app_response="$(gh api app 2>"${_app_stderr_file}")"; then
     _app_stderr="$(cat "${_app_stderr_file}" 2>/dev/null || true)"
     rm -f "${_app_stderr_file}"
-    if [[ "${_app_stderr}" == *"401"* ]]; then
+    if [[ "${_app_stderr}" == *"HTTP 401"* ]]; then
         # Accepted residual risk for issue #199:
         # On the PAT path, this GET /app App-ID cross-check is skipped, so a
         # mistaken BH_GITHUB_APP_ID (for example, an Installation ID pasted by
