@@ -51,11 +51,20 @@
 #                      — body for GET /collaborators?permission=admin
 #   custom_roles.body   — optional body for GET /orgs/.../custom-repository-roles
 #   list.body           — page 1 body for the LIST endpoint
-#   list_page2.body     — optional page 2 body; when present, emitted as a
-#                         second page under --paginate --slurp
+#   list_page2.body     — optional page 2 body; when present, the shim
+#                         concatenates it onto page 1 as a single FLAT
+#                         array under --paginate (real `gh api --paginate`
+#                         behaviour on an array endpoint — NOT the
+#                         list-of-lists shape `--slurp` would produce;
+#                         `--slurp` is a jq flag, not a `gh api` flag, and
+#                         real `gh` rejects it — see the --slurp handling
+#                         below)
 #   byid_<id>.body      — body for GET /rulesets/<id>
 #
-# Every call is appended as a JSON line to $BH_FAKE_GH_LOG.
+# Every call is appended as a JSON line to $BH_FAKE_GH_LOG. Write calls
+# (POST/PUT) additionally carry the raw request body (JSON-escaped) under
+# the "body" field, so tests can assert on payload contents (e.g. that no
+# "_comment" pseudo-comment key reaches the simulated API).
 
 set -euo pipefail
 
@@ -63,8 +72,22 @@ _log() {
     printf '%s\n' "$1" >> "${BH_FAKE_GH_LOG}"
 }
 
+_strip_outer_brackets() {
+    # Read a canned JSON-array file and return its inner content with the
+    # leading "[" / trailing "]" (and surrounding whitespace) removed, so
+    # callers can re-join several pages into one flat array. An empty-array
+    # file ("[]") yields an empty string.
+    local content
+    content="$(cat "$1")"
+    content="${content#"${content%%[![:space:]]*}"}"   # trim leading ws
+    content="${content%"${content##*[![:space:]]}"}"   # trim trailing ws
+    content="${content#\[}"
+    content="${content%\]}"
+    printf '%s' "${content}"
+}
+
 # Default to GET; override on --method / -X.
-# Track --paginate and --slurp flags (used by _lookup_id in provision-ruleset.sh).
+# Track --paginate (used by _lookup_id in provision-ruleset.sh).
 _method="GET"
 _paginate=0
 _slurp=0
@@ -76,6 +99,15 @@ for i in "${!_args[@]}"; do
         --slurp)       _slurp=1 ;;
     esac
 done
+
+# --slurp is a jq flag, NOT a `gh api` flag. Real `gh` rejects it outright
+# before making any request. Model that exactly so a caller that still
+# passes --slurp (the pre-fix bug) fails the same way it would against the
+# real API, instead of the shim silently emulating slurp-style output.
+if [[ "${_slurp}" -eq 1 ]]; then
+    printf 'gh: unknown flag: --slurp\n' >&2
+    exit 1
+fi
 
 # Find the URL path (first arg matching a known prefix).
 _url=""
@@ -128,15 +160,21 @@ fi
 # Append structured call record to the log as a JSONL line.
 # Pure bash printf — no python3 dependency.
 _json_escape() {
-    # Escape backslashes, double-quotes, tabs, and carriage-returns for JSON.
-    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g; s/\r/\\r/g'
+    # Escape backslashes, double-quotes, tabs, and carriage-returns for JSON,
+    # then collapse any embedded real newlines (write bodies are often
+    # pretty-printed JSON, i.e. multi-line) into a literal "\n" so the
+    # result is safe to embed as a single-line JSONL string value.
+    printf '%s' "$1" \
+        | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g; s/\r/\\r/g' \
+        | sed ':a;N;$!ba;s/\n/\\n/g'
 }
-_record="$(printf '{"method":"%s","url":"%s","endpoint":"%s","ruleset_id":"%s","ruleset_name":"%s"}' \
+_record="$(printf '{"method":"%s","url":"%s","endpoint":"%s","ruleset_id":"%s","ruleset_name":"%s","body":"%s"}' \
     "$(_json_escape "${_method}")" \
     "$(_json_escape "${_url}")" \
     "$(_json_escape "${_endpoint}")" \
     "$(_json_escape "${_ruleset_id}")" \
-    "$(_json_escape "${_ruleset_name}")")"
+    "$(_json_escape "${_ruleset_name}")" \
+    "$(_json_escape "${_body:-}")")"
 _log "${_record}"
 
 # Serve canned responses.
@@ -185,22 +223,28 @@ case "${_endpoint}" in
         exit 0
         ;;
     get_list)
-        # When --paginate --slurp is used, gh wraps each page's JSON array
-        # into an outer array: [[page1-entry, ...], [page2-entry, ...]].
-        # If list_page2.body exists in the canned dir, the shim emits a
-        # two-page slurped response so tests can exercise pagination.
-        if [[ "${_slurp}" -eq 1 ]]; then
+        # Real `gh api --paginate` on an array endpoint concatenates every
+        # page into ONE FLAT array — it does not nest pages inside an outer
+        # array. Strip each page's outer brackets and join the inner
+        # entries with a comma so the emitted shape matches that flat
+        # concatenation, not a list-of-lists.
+        if [[ "${_paginate}" -eq 1 ]]; then
+            _page1_inner="$(_strip_outer_brackets \
+                "${BH_FAKE_GH_CANNED_DIR}/list.body")"
+            _page2_inner=""
             if [[ -f "${BH_FAKE_GH_CANNED_DIR}/list_page2.body" ]]; then
-                printf '['
-                cat "${BH_FAKE_GH_CANNED_DIR}/list.body"
-                printf ','
-                cat "${BH_FAKE_GH_CANNED_DIR}/list_page2.body"
-                printf ']\n'
-            else
-                printf '['
-                cat "${BH_FAKE_GH_CANNED_DIR}/list.body"
-                printf ']\n'
+                _page2_inner="$(_strip_outer_brackets \
+                    "${BH_FAKE_GH_CANNED_DIR}/list_page2.body")"
             fi
+            _joined=""
+            if [[ -n "${_page1_inner}" && -n "${_page2_inner}" ]]; then
+                _joined="${_page1_inner},${_page2_inner}"
+            elif [[ -n "${_page1_inner}" ]]; then
+                _joined="${_page1_inner}"
+            elif [[ -n "${_page2_inner}" ]]; then
+                _joined="${_page2_inner}"
+            fi
+            printf '[%s]\n' "${_joined}"
         else
             cat "${BH_FAKE_GH_CANNED_DIR}/list.body"
         fi

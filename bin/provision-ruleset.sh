@@ -215,36 +215,80 @@ fi
 echo "provision-ruleset: using admin RepositoryRole actor_id=${ADMIN_ROLE_ID}"
 
 # ---------------------------------------------------------------------------
-# Render each config (substitute placeholders into valid JSON integers).
-# The placeholder values appear as JSON strings: "\"__BH_GITHUB_APP_ID__\""
-# and must become bare JSON integers after substitution so json.loads
-# parses them as int, matching the GitHub API response format.
+# Strip all "_comment" pseudo-comment keys from a JSON document, at any
+# depth. config/ruleset.*.json carries these as in-repo documentation, but
+# the real GitHub Rulesets API never emits them in GET responses and 422s
+# on a POST/PUT that includes one (issue #202, Bug 2). Reads JSON on
+# stdin, writes the stripped JSON on stdout.
+# ---------------------------------------------------------------------------
+_strip_comments() {
+    "${_PYTHON}" -c '
+import json, sys
+
+
+def _strip(obj):
+    if isinstance(obj, dict):
+        return {k: _strip(v) for k, v in obj.items() if k != "_comment"}
+    if isinstance(obj, list):
+        return [_strip(item) for item in obj]
+    return obj
+
+
+print(json.dumps(_strip(json.loads(sys.stdin.read()))))
+'
+}
+
+# ---------------------------------------------------------------------------
+# Render each config (substitute placeholders into valid JSON integers,
+# then strip "_comment" keys). The placeholder values appear as JSON
+# strings: "\"__BH_GITHUB_APP_ID__\"" and must become bare JSON integers
+# after substitution so json.loads parses them as int, matching the
+# GitHub API response format.
+#
+# The "_comment" strip happens here — once — so the SAME comment-free
+# ``desired`` string feeds both the drift comparison and the POST/PUT
+# write payload (see _apply_ruleset below). Stripping only at write time
+# would leave "_comment" in the value used for comparison, which would
+# never match a comment-free live GET body and cause a perpetual PUT
+# (issue #202, Bug 2).
 # ---------------------------------------------------------------------------
 _render_config() {
     local src="$1"
     sed \
         -e "s|\"__BH_GITHUB_APP_ID__\"|${BH_GITHUB_APP_ID}|g" \
         -e "s|\"__BH_ADMIN_ROLE_ID__\"|${ADMIN_ROLE_ID}|g" \
-        "${src}"
+        "${src}" | _strip_comments
 }
 
 # ---------------------------------------------------------------------------
 # List + filter helper: discover numeric id for a ruleset name.
 # Returns the first matching id via Python json.load, or empty string.
+#
+# On a genuine LIST-call failure (network error, auth error, etc.) this
+# returns non-zero and prints nothing on stdout, so the caller can tell
+# "lookup failed" apart from "ruleset legitimately absent" and must NOT
+# fall through to a spurious create (issue #202, Bug 1 robustness note).
 # ---------------------------------------------------------------------------
 _lookup_id() {
     local target_name="$1"
     local list_json
-    # --paginate follows Link: rel="next" headers to fetch all pages.
-    # --slurp wraps the per-page JSON arrays into an outer array:
-    # [[page1-entry, ...], [page2-entry, ...], ...].
-    # The Python snippet below flattens one level before searching.
-    list_json="$(gh api --paginate --slurp "repos/${REPO_SLUG}/rulesets")"
+    local list_err
+    list_err="$(mktemp)"
+    # --paginate follows Link: rel="next" headers to fetch all pages. Real
+    # `gh api --paginate` on an array endpoint concatenates every page into
+    # ONE FLAT array — NOT a list-of-lists. (--slurp is a jq flag, not a
+    # `gh api` flag; real gh rejects it outright, so it must not be passed
+    # here — issue #202, Bug 1.)
+    if ! list_json="$(gh api --paginate "repos/${REPO_SLUG}/rulesets" 2>"${list_err}")"; then
+        echo "provision-ruleset: FAILURE — GET /repos/${REPO_SLUG}/rulesets (LIST) failed; refusing to treat this as absent:" >&2
+        cat "${list_err}" >&2
+        rm -f "${list_err}"
+        return 1
+    fi
+    rm -f "${list_err}"
     "${_PYTHON}" -c "
 import json, sys
-pages = json.loads(sys.argv[1])
-# --slurp produces a list-of-lists; flatten one level.
-entries = [e for page in pages for e in page]
+entries = json.loads(sys.argv[1])
 for entry in entries:
     if entry.get('name') == sys.argv[2]:
         print(entry['id'])
@@ -271,7 +315,10 @@ _apply_ruleset() {
     desired="$(_render_config "${desired_path}")"
 
     local existing_id
-    existing_id="$(_lookup_id "${name}")"
+    if ! existing_id="$(_lookup_id "${name}")"; then
+        echo "provision-ruleset: FAILURE — could not determine current state for '${name}'; aborting rather than risk a spurious create." >&2
+        exit 1
+    fi
 
     if [[ -z "${existing_id}" ]]; then
         echo "provision-ruleset: ${name} absent — POST-ing"

@@ -73,6 +73,25 @@ may soften; a bare `401` substring elsewhere in stderr must hard-fail.
     correlation id, no "HTTP 401" present) -> must hard-fail exactly
     like case 10 (exit 1, zero writes), NOT skip-and-proceed like
     case 7.
+
+Issue #202 — the fake gh shim diverged from real gh in two ways that let
+this suite pass against a script that fails in production:
+
+  Bug 1: ``_lookup_id`` calls ``gh api --paginate --slurp``. ``--slurp``
+  is a jq flag, not a ``gh api`` flag — real gh rejects it with
+  "unknown flag: --slurp" and exits non-zero. The shim used to emulate
+  --slurp by wrapping pages in an outer array; it now rejects --slurp
+  exactly like real gh, and models real ``gh api --paginate`` as a FLAT
+  concatenation of pages (see the pagination tests below).
+
+  Bug 2: the canonical ``config/ruleset.*.json`` files carry "_comment"
+  pseudo-comment keys (top-level and nested). Real GitHub GET responses
+  never contain "_comment" — so canned by-id bodies built from the raw
+  config must have "_comment" stripped to accurately simulate a live
+  ruleset, and the write payload must never contain "_comment" (the
+  GitHub Rulesets API rejects it with HTTP 422 for at least one nesting
+  position). See ``_strip_comments`` / ``_contains_comment_key`` below
+  and the tests in the "Issue #202" section at the end of this file.
 """
 
 from __future__ import annotations
@@ -294,6 +313,53 @@ def _writes(calls: list[dict]) -> list[dict]:  # type: ignore[type-arg]
     return [c for c in calls if c["method"] in ("POST", "PUT")]
 
 
+def _strip_comments(obj: object) -> object:
+    """Recursively remove "_comment" keys from a JSON-decoded structure.
+
+    The real GitHub Rulesets API never emits a "_comment" pseudo-comment
+    field in its responses, but ``config/ruleset.*.json`` carries one for
+    human documentation (top-level and, in ``ruleset.main.json``, nested
+    inside a rule's ``parameters``). Canned by-id bodies built from those
+    config files must have every "_comment" key stripped so they
+    accurately simulate a live GET response.
+
+    Args:
+        obj: A JSON-decoded value — dict, list, or scalar.
+
+    Returns:
+        A new structure with any "_comment" key removed at every depth.
+        Scalars are returned unchanged.
+    """
+    if isinstance(obj, dict):
+        return {
+            key: _strip_comments(value)
+            for key, value in obj.items()
+            if key != "_comment"
+        }
+    if isinstance(obj, list):
+        return [_strip_comments(item) for item in obj]
+    return obj
+
+
+def _contains_comment_key(obj: object) -> bool:
+    """Check whether a JSON-decoded structure has a "_comment" key.
+
+    Args:
+        obj: A JSON-decoded value — dict, list, or scalar.
+
+    Returns:
+        True if a "_comment" key is present in ``obj`` at any depth
+        (top-level or nested in a dict/list), False otherwise.
+    """
+    if isinstance(obj, dict):
+        if "_comment" in obj:
+            return True
+        return any(_contains_comment_key(value) for value in obj.values())
+    if isinstance(obj, list):
+        return any(_contains_comment_key(item) for item in obj)
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Case 1: empty state
 # ---------------------------------------------------------------------------
@@ -338,12 +404,15 @@ def test_identical_state_is_noop(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     # BY-ID bodies are the canonical configs with placeholders resolved.
+    # "_comment" is stripped because a real GET response never carries it
+    # (issue #202) — leaving it in would make this canned "live" body
+    # differ from the comment-free desired config and spuriously drift.
     main_body = json.loads(
         (HARNESS / "config" / "ruleset.main.json").read_text(encoding="utf-8")
     )
     main_body["bypass_actors"][0]["actor_id"] = 5  # BH_ADMIN_ROLE_ID
     (canned / "byid_11.body").write_text(
-        json.dumps(main_body), encoding="utf-8"
+        json.dumps(_strip_comments(main_body)), encoding="utf-8"
     )
 
     feature_body = json.loads(
@@ -353,7 +422,7 @@ def test_identical_state_is_noop(tmp_path: Path) -> None:
     )
     feature_body["bypass_actors"][0]["actor_id"] = 111  # BH_GITHUB_APP_ID
     (canned / "byid_22.body").write_text(
-        json.dumps(feature_body), encoding="utf-8"
+        json.dumps(_strip_comments(feature_body)), encoding="utf-8"
     )
 
     rc, _stdout, log = _invoke(tmp_path, canned)
@@ -382,13 +451,14 @@ def test_drift_in_feature_triggers_single_put(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    # Main ruleset is canonical — no drift.
+    # Main ruleset is canonical — no drift. "_comment" stripped: a real GET
+    # response never carries it (issue #202).
     main_body = json.loads(
         (HARNESS / "config" / "ruleset.main.json").read_text(encoding="utf-8")
     )
     main_body["bypass_actors"][0]["actor_id"] = 5
     (canned / "byid_11.body").write_text(
-        json.dumps(main_body), encoding="utf-8"
+        json.dumps(_strip_comments(main_body)), encoding="utf-8"
     )
     # Feature ruleset has been mutated (bypass cleared — workers could merge).
     feature_drifted = json.loads(
@@ -398,7 +468,7 @@ def test_drift_in_feature_triggers_single_put(tmp_path: Path) -> None:
     )
     feature_drifted["bypass_actors"] = []
     (canned / "byid_22.body").write_text(
-        json.dumps(feature_drifted), encoding="utf-8"
+        json.dumps(_strip_comments(feature_drifted)), encoding="utf-8"
     )
 
     rc, _stdout, log = _invoke(tmp_path, canned)
@@ -437,12 +507,13 @@ def test_preexisting_with_stale_id_uses_list_filter_path(
         ),
         encoding="utf-8",
     )
+    # "_comment" stripped: a real GET response never carries it (#202).
     main_body = json.loads(
         (HARNESS / "config" / "ruleset.main.json").read_text(encoding="utf-8")
     )
     main_body["bypass_actors"][0]["actor_id"] = 5
     (canned / "byid_99.body").write_text(
-        json.dumps(main_body), encoding="utf-8"
+        json.dumps(_strip_comments(main_body)), encoding="utf-8"
     )
     feature_body = json.loads(
         (HARNESS / "config" / "ruleset.feature.json").read_text(
@@ -451,7 +522,7 @@ def test_preexisting_with_stale_id_uses_list_filter_path(
     )
     feature_body["bypass_actors"][0]["actor_id"] = 111
     (canned / "byid_77.body").write_text(
-        json.dumps(feature_body), encoding="utf-8"
+        json.dumps(_strip_comments(feature_body)), encoding="utf-8"
     )
 
     rc, _stdout, log = _invoke(tmp_path, canned)
@@ -638,8 +709,9 @@ def test_pagination_ruleset_on_page1_found_and_noop(
 ) -> None:
     """P2-A page 1: both rulesets on page 1 are found; zero writes.
 
-    Regression-protection: verifies the --paginate --slurp path does NOT
-    break existing single-page behaviour (the common case).
+    Regression-protection: verifies the flat, no-slurp --paginate path
+    (issue #202) does NOT break existing single-page behaviour (the
+    common case).
     """
     canned = tmp_path / "canned"
     canned.mkdir()
@@ -653,12 +725,13 @@ def test_pagination_ruleset_on_page1_found_and_noop(
         ),
         encoding="utf-8",
     )
+    # "_comment" stripped: a real GET response never carries it (#202).
     main_body = json.loads(
         (HARNESS / "config" / "ruleset.main.json").read_text(encoding="utf-8")
     )
     main_body["bypass_actors"][0]["actor_id"] = 5
     (canned / "byid_11.body").write_text(
-        json.dumps(main_body), encoding="utf-8"
+        json.dumps(_strip_comments(main_body)), encoding="utf-8"
     )
     feature_body = json.loads(
         (HARNESS / "config" / "ruleset.feature.json").read_text(
@@ -667,7 +740,7 @@ def test_pagination_ruleset_on_page1_found_and_noop(
     )
     feature_body["bypass_actors"][0]["actor_id"] = 111
     (canned / "byid_22.body").write_text(
-        json.dumps(feature_body), encoding="utf-8"
+        json.dumps(_strip_comments(feature_body)), encoding="utf-8"
     )
 
     rc, _stdout, log = _invoke(tmp_path, canned)
@@ -686,8 +759,9 @@ def test_pagination_ruleset_on_page2_found_and_noop(
     Before the P2-A fix, _lookup_id fetched only one page so a ruleset
     that happened to land on page 2+ was treated as absent — causing a
     duplicate POST instead of the correct no-op or PUT.  After the fix
-    (--paginate --slurp), the shim emits a two-page slurped response and
-    the script must discover both rulesets and write nothing.
+    (issue #202: plain ``--paginate``, no ``--slurp``), the shim emits a
+    flat two-page response and the script must discover both rulesets
+    and write nothing.
     """
     canned = tmp_path / "canned"
     canned.mkdir()
@@ -703,12 +777,13 @@ def test_pagination_ruleset_on_page2_found_and_noop(
         ),
         encoding="utf-8",
     )
+    # "_comment" stripped: a real GET response never carries it (#202).
     main_body = json.loads(
         (HARNESS / "config" / "ruleset.main.json").read_text(encoding="utf-8")
     )
     main_body["bypass_actors"][0]["actor_id"] = 5
     (canned / "byid_55.body").write_text(
-        json.dumps(main_body), encoding="utf-8"
+        json.dumps(_strip_comments(main_body)), encoding="utf-8"
     )
     feature_body = json.loads(
         (HARNESS / "config" / "ruleset.feature.json").read_text(
@@ -717,7 +792,7 @@ def test_pagination_ruleset_on_page2_found_and_noop(
     )
     feature_body["bypass_actors"][0]["actor_id"] = 111
     (canned / "byid_66.body").write_text(
-        json.dumps(feature_body), encoding="utf-8"
+        json.dumps(_strip_comments(feature_body)), encoding="utf-8"
     )
 
     rc, _stdout, log = _invoke(tmp_path, canned)
@@ -1151,4 +1226,115 @@ def test_stray_401_in_stderr_still_hard_fails(tmp_path: Path) -> None:
         f"a stray '401' substring must not be reported as a skip (that "
         f"wording is reserved for a confirmed 'HTTP 401' failure per "
         f"case 7); stderr was:\n{stderr}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Issue #202: the write payload must never carry the "_comment"
+# pseudo-comment key the real GitHub Rulesets API rejects (HTTP 422).
+# ---------------------------------------------------------------------------
+
+
+def test_empty_state_post_payload_has_no_comment_key(tmp_path: Path) -> None:
+    """No "_comment" key at any depth in a POST-create payload.
+
+    ``config/ruleset.main.json`` carries a "_comment" key both at the
+    top level and nested inside ``rules[].parameters`` for the
+    ``pull_request`` rule; ``config/ruleset.feature.json`` carries one
+    at the top level. The real GitHub Rulesets API has never accepted
+    either — GET responses never contain it, and a POST/PUT that
+    includes the nested one 422s with "Invalid rule 'pull_request':
+    Unexpected parameter '_comment'".
+
+    This test drives the empty-state POST-create path (LIST returns
+    []) and inspects the *actual bytes sent on the wire* — the fake
+    gh shim's new "body" call-log field — rather than the source
+    config file, so it fails for the right reason if the script ever
+    forwards the config verbatim instead of stripping the comment
+    key(s) before serializing the request body.
+    """
+    canned = tmp_path / "canned"
+    canned.mkdir()
+    (canned / "list.body").write_text("[]", encoding="utf-8")
+
+    rc, _stdout, log = _invoke(tmp_path, canned)
+
+    assert rc == 0, f"script exited {rc}"
+    writes = _writes(_calls(log))
+    assert len(writes) == 2, f"expected 2 POSTs, got {writes}"
+    for write in writes:
+        payload = json.loads(write["body"])
+        assert not _contains_comment_key(payload), (
+            f"POST body for ruleset {write['ruleset_name']!r} contains a "
+            f'"_comment" key at some depth — the real API 422s on this: '
+            f"{write['body']}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Issue #202: the "_comment" strip must be applied symmetrically to the
+# comparison (desired vs live) and to the write payload, or a live
+# ruleset that is genuinely identical to the desired config would be
+# misdetected as drifted on every run (perpetual-drift trap).
+# ---------------------------------------------------------------------------
+
+
+def test_no_perpetual_drift_when_live_body_is_comment_free(
+    tmp_path: Path,
+) -> None:
+    """A comment-free live body matching the comment-free desired -> no-op.
+
+    Simulates the ONLY realistic post-#202-fix live state: GET responses
+    from the real API never carry "_comment" (Bug 2's premise). If the
+    script strips "_comment" from ``desired`` before comparing to the
+    (already comment-free) live body, this is a genuine no-op — zero
+    writes. If the strip is only applied on one side of the comparison
+    (e.g. only when building the write payload, not the diff), the
+    comment-free live body would never match the still-commented
+    ``desired`` and the script would PUT on every single run even
+    though nothing has actually changed — the perpetual-drift trap.
+    """
+    canned = tmp_path / "canned"
+    canned.mkdir()
+    (canned / "list.body").write_text(
+        json.dumps(
+            [
+                {"id": 11, "name": "harness-main-no-merge"},
+                {"id": 22, "name": "harness-feature-daemon-only"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    main_body = _strip_comments(
+        json.loads(
+            (HARNESS / "config" / "ruleset.main.json").read_text(
+                encoding="utf-8"
+            )
+        )
+    )
+    main_body["bypass_actors"][0]["actor_id"] = 5
+    (canned / "byid_11.body").write_text(
+        json.dumps(main_body), encoding="utf-8"
+    )
+    feature_body = _strip_comments(
+        json.loads(
+            (HARNESS / "config" / "ruleset.feature.json").read_text(
+                encoding="utf-8"
+            )
+        )
+    )
+    feature_body["bypass_actors"][0]["actor_id"] = 111
+    (canned / "byid_22.body").write_text(
+        json.dumps(feature_body), encoding="utf-8"
+    )
+
+    rc, _stdout, log = _invoke(tmp_path, canned)
+
+    assert rc == 0, f"script exited {rc}"
+    assert _writes(_calls(log)) == [], (
+        "a live ruleset that is comment-free and otherwise identical to "
+        "the (comment-stripped) desired config must be a no-op — a "
+        "non-empty write list here means the strip is not applied "
+        "symmetrically to the comparison and the write payload "
+        "(perpetual-drift trap)"
     )
