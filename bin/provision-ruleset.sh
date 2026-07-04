@@ -268,6 +268,12 @@ _render_config() {
 # returns non-zero and prints nothing on stdout, so the caller can tell
 # "lookup failed" apart from "ruleset legitimately absent" and must NOT
 # fall through to a spurious create (issue #202, Bug 1 robustness note).
+#
+# The same applies when the LIST call itself succeeds (HTTP 200) but
+# returns a body that is not valid JSON: the Python parse step's
+# non-zero exit propagates out of this function (no error masking),
+# so the caller still sees "lookup failed" rather than misreading a
+# parse failure as "ruleset absent" (issue #202/#203 follow-up).
 # ---------------------------------------------------------------------------
 _lookup_id() {
     local target_name="$1"
@@ -293,7 +299,7 @@ for entry in entries:
     if entry.get('name') == sys.argv[2]:
         print(entry['id'])
         sys.exit(0)
-" "${list_json}" "${target_name}" 2>/dev/null || true
+" "${list_json}" "${target_name}"
 }
 
 # ---------------------------------------------------------------------------

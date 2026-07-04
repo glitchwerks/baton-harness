@@ -59,6 +59,18 @@
 #                         `--slurp` is a jq flag, not a `gh api` flag, and
 #                         real `gh` rejects it — see the --slurp handling
 #                         below)
+#   list_malformed       — optional marker file (any content). When
+#                         present, the LIST endpoint exits 0 (HTTP 200)
+#                         but emits a non-JSON body instead of list.body
+#                         / list_page2.body, simulating a real API
+#                         hiccup (truncated response, HTML error page
+#                         served with a 200 status, etc). Used to test
+#                         issue #202's follow-up: the script's Python
+#                         json.loads parse step must fail closed on a
+#                         malformed body, not swallow the parse error
+#                         via `|| true` and silently treat the ruleset
+#                         as absent (which would issue a spurious
+#                         POST-create).
 #   byid_<id>.body      — body for GET /rulesets/<id>
 #
 # Every call is appended as a JSON line to $BH_FAKE_GH_LOG. Write calls
@@ -223,6 +235,16 @@ case "${_endpoint}" in
         exit 0
         ;;
     get_list)
+        if [[ -f "${BH_FAKE_GH_CANNED_DIR}/list_malformed" ]]; then
+            # Simulate a real GitHub API hiccup: HTTP 200 (gh exits 0, no
+            # stderr) but a body that is NOT valid JSON — e.g. a truncated
+            # response or an HTML error page served with a 200 status.
+            # Used for issue #202's follow-up: the script's Python parse
+            # step must fail closed on this, not swallow the parse error
+            # via `|| true` and silently treat the ruleset as absent.
+            printf 'not-valid-json{{{\n'
+            exit 0
+        fi
         # Real `gh api --paginate` on an array endpoint concatenates every
         # page into ONE FLAT array — it does not nest pages inside an outer
         # array. Strip each page's outer brackets and join the inner

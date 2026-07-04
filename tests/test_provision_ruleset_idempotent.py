@@ -92,6 +92,16 @@ this suite pass against a script that fails in production:
   GitHub Rulesets API rejects it with HTTP 422 for at least one nesting
   position). See ``_strip_comments`` / ``_contains_comment_key`` below
   and the tests in the "Issue #202" section at the end of this file.
+
+Issue #202 follow-up (PR #203): PR #203 reworked ``_lookup_id`` to fail
+closed on a LIST-call *failure* (non-zero gh exit), but the trailing
+Python parse step still ends with ``2>/dev/null || true``. If the LIST
+endpoint returns HTTP 200 with a malformed (non-JSON) body,
+``json.loads`` raises, the swallowed non-zero exit makes ``_lookup_id``
+return an empty string indistinguishable from "ruleset genuinely
+absent", and the caller issues a spurious POST-create. See
+``test_lookup_id_fails_closed_on_malformed_list_body`` and the
+``list_malformed`` fake-gh marker.
 """
 
 from __future__ import annotations
@@ -1337,4 +1347,51 @@ def test_no_perpetual_drift_when_live_body_is_comment_free(
         "non-empty write list here means the strip is not applied "
         "symmetrically to the comparison and the write payload "
         "(perpetual-drift trap)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Issue #202 follow-up: _lookup_id must fail closed on a malformed LIST body,
+# not swallow the Python json.loads parse error via `|| true`.
+# ---------------------------------------------------------------------------
+
+
+def test_lookup_id_fails_closed_on_malformed_list_body(
+    tmp_path: Path,
+) -> None:
+    """LIST returns HTTP 200 with a non-JSON body -> script must fail closed.
+
+    ``_lookup_id`` pipes the LIST response through a Python one-liner
+    that calls ``json.loads`` and prints a matching ruleset id. The
+    invocation ends with ``2>/dev/null || true``, so when the LIST
+    endpoint returns HTTP 200 (gh exits 0, no stderr) but a body that
+    is not valid JSON, ``json.loads`` raises, the resulting non-zero
+    Python exit is swallowed by ``|| true``, and ``_lookup_id`` returns
+    an empty string exactly as it would for a genuinely absent
+    ruleset. The caller (``_apply_ruleset``) then can't distinguish
+    "ruleset absent" from "LIST response unparseable" and issues a
+    spurious POST-create against a repo whose actual ruleset state is
+    unknown.
+
+    A malformed LIST body must instead be treated as a hard failure:
+    the script must exit non-zero and must not perform any POST/PUT
+    ruleset write.
+    """
+    canned = tmp_path / "canned"
+    canned.mkdir()
+    # No usable list.body — the LIST endpoint serves a non-JSON body via
+    # the "list_malformed" marker instead (see fake_gh doc comment).
+    (canned / "list_malformed").write_text("1", encoding="utf-8")
+
+    rc, stdout, log = _invoke(tmp_path, canned)
+
+    assert rc != 0, (
+        f"a malformed (non-JSON) LIST body must fail the script closed, "
+        f"not exit 0; stdout:\n{stdout}"
+    )
+    assert _writes(_calls(log)) == [], (
+        "a malformed LIST body must never reach the write phase — the "
+        "script cannot know whether the target rulesets already exist, "
+        "so issuing a POST-create here would be a spurious write against "
+        "unknown repo state"
     )
