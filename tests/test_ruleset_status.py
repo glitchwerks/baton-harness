@@ -46,6 +46,11 @@ Coverage:
   rule-parameter defaults and an omitted ``update``-rule ``parameters``
   block — must be judged MATCH, not DRIFT, against the rendered desired
   config for both the main and feature rulesets.
+- Regression (CodeRabbit finding on PR #205): ``_rules_equal`` must
+  treat duplicate rule types as a multiset, not collapse them into a
+  single dict key by ``type``. DRIFT when a duplicated rule type is
+  missing one occurrence on the current side; MATCH when both sides
+  carry the same multiset of occurrences regardless of array order.
 """
 
 from __future__ import annotations
@@ -1162,4 +1167,103 @@ def test_provisioned_despite_github_server_defaults_feature() -> None:
         "Real GitHub GET body for the feature ruleset (server defaults + "
         f"omitted update-rule parameters) must be MATCH, not DRIFT; "
         f"got {result!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test J1 — regression (CodeRabbit, PR #205): duplicate rule types must be
+# compared as a multiset, not collapsed to one dict key per type.
+# ---------------------------------------------------------------------------
+
+
+def test_rules_equal_drift_when_current_missing_duplicate_rule_type() -> None:
+    """DRIFT when current drops one of two same-typed desired rules.
+
+    GitHub allows repeating the same rule ``type`` more than once in a
+    single ruleset (e.g. two ``commit_message_pattern`` restrictions
+    with different ``parameters``). ``_rules_equal`` builds
+    ``{rule["type"]: rule}`` dicts keyed by type, which collapses
+    duplicates to their *last* occurrence in each list — so a desired
+    side carrying two ``commit_message_pattern`` rules and a current
+    side carrying only the *last* of those two both reduce to the same
+    single key/value pair (``"commit_message_pattern"`` -> the "BH-"
+    rule) and compare equal, even though the first restriction
+    ("JIRA-") is entirely missing from current.
+
+    A correct comparator counts occurrences per rule type (a multiset
+    compare): two desired vs. one current for the same type is DRIFT,
+    not MATCH, because a genuine restriction went missing.
+    """
+    from baton_harness.chain.ruleset_status import _rules_equal
+
+    desired_rules: list[object] = [
+        {
+            "type": "commit_message_pattern",
+            "parameters": {
+                "operator": "starts_with",
+                "pattern": "JIRA-",
+            },
+        },
+        {
+            "type": "commit_message_pattern",
+            "parameters": {
+                "operator": "starts_with",
+                "pattern": "BH-",
+            },
+        },
+    ]
+    # Current carries only the SECOND (last) of desired's two duplicate
+    # occurrences. The buggy dict-by-type collapse keeps the last entry
+    # from each list, so desired collapses to "BH-" and current also
+    # collapses to "BH-" — a false MATCH — even though the "JIRA-"
+    # restriction is missing entirely from current.
+    current_rules: list[object] = [
+        {
+            "type": "commit_message_pattern",
+            "parameters": {
+                "operator": "starts_with",
+                "pattern": "BH-",
+            },
+        },
+    ]
+
+    assert _rules_equal(desired_rules, current_rules) is False, (
+        "current is missing one of two desired 'commit_message_pattern' "
+        "occurrences — this must report DRIFT, not MATCH"
+    )
+
+
+def test_rules_equal_match_duplicate_type_order_independent() -> None:
+    """MATCH when both sides carry the same multiset of a duplicated type.
+
+    Guards against over-tightening the multiset fix: when desired and
+    current both carry two ``commit_message_pattern`` rules with the
+    same two ``parameters`` payloads — even in a different array
+    order — the comparison must still report MATCH. The multiset
+    compare must not depend on array position.
+    """
+    from baton_harness.chain.ruleset_status import _rules_equal
+
+    jira_rule = {
+        "type": "commit_message_pattern",
+        "parameters": {
+            "operator": "starts_with",
+            "pattern": "JIRA-",
+        },
+    }
+    bh_rule = {
+        "type": "commit_message_pattern",
+        "parameters": {
+            "operator": "starts_with",
+            "pattern": "BH-",
+        },
+    }
+
+    desired_rules: list[object] = [jira_rule, bh_rule]
+    # Same two occurrences, reversed order, to prove order-independence.
+    current_rules: list[object] = [bh_rule, jira_rule]
+
+    assert _rules_equal(desired_rules, current_rules) is True, (
+        "same multiset of two 'commit_message_pattern' occurrences "
+        "(order-independent) must report MATCH, not DRIFT"
     )

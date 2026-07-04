@@ -384,45 +384,66 @@ def _rules_equal(
     desired_rules: list[object],
     current_rules: list[object],
 ) -> bool:
-    """Compare two ``rules`` arrays by rule ``type``, tolerating defaults.
+    """Compare two ``rules`` arrays as a multiset, tolerating defaults.
 
-    Rules are matched by their ``type`` field rather than array position
-    or an opaque list ``==``.  The two sides must carry exactly the same
-    set of rule types — a rule type present on one side and absent from
-    the other is genuine drift (a missing or an unexpectedly-added
-    control), never tolerated.  Within each matched pair, ``parameters``
-    are compared via ``_rule_params_equal``.
+    GitHub permits repeating the same rule ``type`` more than once in a
+    single ruleset (e.g. two ``commit_message_pattern`` restrictions
+    with different ``parameters``), so rules are grouped by ``type``
+    and compared as a **multiset**: both sides must carry the same
+    *count* of each rule type — a type missing on one side, present
+    only on the other, or occurring a different number of times, is
+    genuine drift (a missing or an unexpectedly-added control), never
+    tolerated. Within a type, each desired occurrence is matched
+    against a distinct, as-yet-unmatched current occurrence whose
+    ``parameters`` agree per ``_rule_params_equal`` (order-independent
+    greedy matching); a desired occurrence that finds no unmatched
+    current match is drift.
 
     Args:
         desired_rules: The rendered desired config's ``rules`` list.
         current_rules: The live ruleset's ``rules`` list.
 
     Returns:
-        True when both sides have the same set of rule types and every
-        matched pair's parameters agree (per ``_rule_params_equal``);
-        False otherwise.
+        True when both sides carry the same multiset of rule types and
+        every desired occurrence is matched by a distinct current
+        occurrence (per ``_rule_params_equal``); False otherwise.
     """
-    desired_by_type = {
-        cast(str, rule["type"]): rule
-        for rule in cast("list[dict[str, object]]", desired_rules)
-    }
-    current_by_type = {
-        cast(str, rule["type"]): rule
-        for rule in cast("list[dict[str, object]]", current_rules)
-    }
+    desired_by_type: dict[str, list[dict[str, object]]] = {}
+    for rule in cast("list[dict[str, object]]", desired_rules):
+        desired_by_type.setdefault(cast(str, rule["type"]), []).append(rule)
+
+    current_by_type: dict[str, list[dict[str, object]]] = {}
+    for rule in cast("list[dict[str, object]]", current_rules):
+        current_by_type.setdefault(cast(str, rule["type"]), []).append(rule)
+
     if desired_by_type.keys() != current_by_type.keys():
         return False
 
-    for rule_type, desired_rule in desired_by_type.items():
-        current_rule = current_by_type[rule_type]
-        desired_params = cast(
-            "dict[str, object]", desired_rule.get("parameters", {})
-        )
-        current_params = cast(
-            "dict[str, object] | None", current_rule.get("parameters")
-        )
-        if not _rule_params_equal(rule_type, desired_params, current_params):
+    for rule_type, desired_occurrences in desired_by_type.items():
+        current_occurrences = list(current_by_type[rule_type])
+        if len(desired_occurrences) != len(current_occurrences):
             return False
+
+        for desired_rule in desired_occurrences:
+            desired_params = cast(
+                "dict[str, object]", desired_rule.get("parameters", {})
+            )
+            match_index = None
+            for index, current_rule in enumerate(current_occurrences):
+                current_params = cast(
+                    "dict[str, object] | None",
+                    current_rule.get("parameters"),
+                )
+                if _rule_params_equal(
+                    rule_type, desired_params, current_params
+                ):
+                    match_index = index
+                    break
+            if match_index is None:
+                return False
+            # Consume this current occurrence so it cannot be reused to
+            # satisfy a different desired occurrence of the same type.
+            current_occurrences.pop(match_index)
     return True
 
 
