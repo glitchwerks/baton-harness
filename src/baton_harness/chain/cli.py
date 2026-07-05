@@ -368,7 +368,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         validate_gh_token(
             os.environ.get("GH_TOKEN", ""),
-            secret_id_configured=bool(os.environ.get("BWS_GH_TOKEN_SECRET_ID")),
+            secret_id_configured=bool(
+                os.environ.get("BWS_GH_TOKEN_SECRET_ID")
+            ),
         )
     except TokenValidationError as exc:
         print(
