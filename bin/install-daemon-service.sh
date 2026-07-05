@@ -252,6 +252,32 @@ if [[ ! -f "${BH_PROJECT_ROOT}/.bh/config.env" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Validate: systemd unit values must not contain whitespace. A space in any
+# of these breaks the unquoted interpolation in _render_unit() below. Fail
+# closed rather than adding fragile systemd-quoting rules (simplicity-first;
+# CodeRabbit finding on #209) — reject the input and tell the operator to
+# use a path without spaces.
+# ---------------------------------------------------------------------------
+
+_bh_reject_if_whitespace() {
+    local name="$1" value="$2"
+    if [[ "${value}" =~ [[:space:]] ]]; then
+        echo "baton-harness: error: ${name} contains whitespace: '${value}'" >&2
+        echo "  systemd unit values (User=, Environment=, ExecStart=) are" >&2
+        echo "  interpolated unquoted, so paths with spaces produce a malformed" >&2
+        echo "  unit file. Re-run with a ${name} that has no spaces (e.g. move" >&2
+        echo "  the checkout, or pass an override without whitespace)." >&2
+        exit 1
+    fi
+}
+
+_bh_reject_if_whitespace "HARNESS_DIR" "${HARNESS_DIR}"
+_bh_reject_if_whitespace "BH_DAEMON_BIN" "${BH_DAEMON_BIN}"
+_bh_reject_if_whitespace "WORKFLOW_FILE" "${WORKFLOW_FILE}"
+_bh_reject_if_whitespace "RUN_USER" "${RUN_USER}"
+_bh_reject_if_whitespace "BH_PROJECT_ROOT" "${BH_PROJECT_ROOT}"
+
+# ---------------------------------------------------------------------------
 # Resolve BWS_ACCESS_TOKEN (the single bootstrap secret written to
 # /etc/bh-daemon/secrets.env). Never echoed, logged, or exposed via set -x.
 # ---------------------------------------------------------------------------
@@ -276,8 +302,11 @@ fi
 # Render unit + secrets content
 # ---------------------------------------------------------------------------
 
-_render_secrets() {
-    printf 'BWS_ACCESS_TOKEN=%s\n' "${_bh_token}"
+_render_secrets_preview() {
+    # Redacted — used ONLY by the --print-unit dry-run path below. The real
+    # token is rendered directly inside write_secrets_file(), never through
+    # a shared helper, so this function must never see or print ${_bh_token}.
+    printf 'BWS_ACCESS_TOKEN=%s\n' "<redacted>"
 }
 
 _render_unit() {
@@ -328,7 +357,7 @@ if [[ "${PRINT_UNIT}" == 1 ]]; then
     echo "baton-harness: --print-unit given, rendering to stdout (no writes performed)."
     echo ""
     echo "--- /etc/bh-daemon/secrets.env ---"
-    _render_secrets
+    _render_secrets_preview
     echo "--- /etc/systemd/system/bh-daemon.service ---"
     _render_unit
     exit 0
@@ -367,8 +396,22 @@ _backup_if_exists() {
 write_secrets_file() {
     sudo mkdir -p /etc/bh-daemon
     _backup_if_exists /etc/bh-daemon/secrets.env
-    _render_secrets | sudo tee /etc/bh-daemon/secrets.env >/dev/null
-    sudo chmod 600 /etc/bh-daemon/secrets.env
+
+    # Render the real token into a local 0600 tmp file, then install(1) it
+    # into place at 0600 in one syscall — never a plain "tee then chmod",
+    # which leaves the token world-readable at default umask between the
+    # write and the chmod. The tmp file is created 600 (umask 077 in the
+    # subshell, belt-and-suspenders chmod) and always removed (EXIT trap
+    # covers early failure; explicit rm covers the success path).
+    local _bh_secrets_tmp
+    _bh_secrets_tmp="$(mktemp)"
+    trap 'rm -f "${_bh_secrets_tmp}"' EXIT
+    chmod 600 "${_bh_secrets_tmp}"
+    (umask 077; printf 'BWS_ACCESS_TOKEN=%s\n' "${_bh_token}" > "${_bh_secrets_tmp}")
+    sudo install -m 600 "${_bh_secrets_tmp}" /etc/bh-daemon/secrets.env
+    rm -f "${_bh_secrets_tmp}"
+    trap - EXIT
+
     echo "baton-harness:   wrote /etc/bh-daemon/secrets.env (mode 600)"
 }
 
