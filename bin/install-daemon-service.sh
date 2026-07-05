@@ -15,6 +15,10 @@
 #   HARNESS_DIR      Repo root of this script (git rev-parse --show-toplevel,
 #                     falls back to dirname/..). Overridable via --harness-dir.
 #   RUN_USER         ${SUDO_USER:-$(whoami)}. Overridable via --user.
+#   BWS_BIN_DIR      RUN_USER's home (via getent, falls back to /home/$RUN_USER)
+#                     + "/.local/bin" — matches where bin/setup-env.sh installs
+#                     bws. Written into the unit's Environment=PATH= so the
+#                     daemon can find bws under systemd's minimal PATH (#213).
 #   BH_PROJECT_ROOT  Resolved via bin/lib/load-config.sh (host.env / config.env).
 #                     Overridable via --project-root; prompted or fail-closed
 #                     if still unresolved.
@@ -212,6 +216,23 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Auto-detect: bws install dir for RUN_USER (#213)
+#
+# bin/setup-env.sh installs bws to "${HOME}/.local/bin" (no XDG override for
+# that path). Under systemd the unit's User= process gets a minimal PATH that
+# does not include it, so the daemon dies with "No such file or directory:
+# 'bws'". Resolve RUN_USER's home via getent (works regardless of who invokes
+# this installer, e.g. under sudo) and mirror setup-env.sh's ".local/bin"
+# suffix; fall back to /home/${RUN_USER} if getent is unavailable/unknown.
+# ---------------------------------------------------------------------------
+
+RUN_USER_HOME="$(getent passwd "${RUN_USER}" 2>/dev/null | cut -d: -f6)" || RUN_USER_HOME=""
+if [[ -z "${RUN_USER_HOME}" ]]; then
+    RUN_USER_HOME="/home/${RUN_USER}"
+fi
+BWS_BIN_DIR="${RUN_USER_HOME}/.local/bin"
+
+# ---------------------------------------------------------------------------
 # Auto-detect: BH_PROJECT_ROOT (via bin/lib/load-config.sh — host.env, then
 # .bh/config.env). An operator-set env var already wins inside that loader;
 # setting it here before sourcing has the same effect as an override.
@@ -276,6 +297,7 @@ _bh_reject_if_whitespace "BH_DAEMON_BIN" "${BH_DAEMON_BIN}"
 _bh_reject_if_whitespace "WORKFLOW_FILE" "${WORKFLOW_FILE}"
 _bh_reject_if_whitespace "RUN_USER" "${RUN_USER}"
 _bh_reject_if_whitespace "BH_PROJECT_ROOT" "${BH_PROJECT_ROOT}"
+_bh_reject_if_whitespace "BWS_BIN_DIR" "${BWS_BIN_DIR}"
 
 # ---------------------------------------------------------------------------
 # Resolve BWS_ACCESS_TOKEN (the single bootstrap secret written to
@@ -319,6 +341,7 @@ After=network.target
 Type=simple
 User=${RUN_USER}
 Environment=BH_PROJECT_ROOT=${BH_PROJECT_ROOT}
+Environment=PATH=${BWS_BIN_DIR}:/usr/local/bin:/usr/bin:/bin
 EnvironmentFile=/etc/bh-daemon/secrets.env
 ExecStart=${BH_DAEMON_BIN} --workflow ${WORKFLOW_FILE}
 Restart=on-failure
@@ -340,6 +363,7 @@ echo "  HARNESS_DIR        = ${HARNESS_DIR}"
 echo "  bh-daemon binary   = ${BH_DAEMON_BIN}"
 echo "  WORKFLOW_FILE      = ${WORKFLOW_FILE}"
 echo "  RUN_USER           = ${RUN_USER}"
+echo "  BWS_BIN_DIR        = ${BWS_BIN_DIR} (unit PATH= prefix, so bws is found)"
 echo "  BH_PROJECT_ROOT    = ${BH_PROJECT_ROOT}"
 echo "  BWS_ACCESS_TOKEN   = <resolved, not shown>"
 echo "  --no-start         = ${NO_START}"

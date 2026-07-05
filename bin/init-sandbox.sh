@@ -534,7 +534,7 @@ fi
 read -r -p "  BH_GITHUB_APP_ID (GitHub App numeric ID): " _bh_github_app_id
 read -r -p "  BH_GITHUB_APP_INSTALLATION_ID (GitHub App installation numeric ID): " _bh_github_app_installation_id
 read -r -p "  BWS_PEM_SECRET_ID (UUID of GitHub App PEM secret in BWS): " _bws_pem_secret_id
-read -r -p "  BWS_GH_TOKEN_SECRET_ID (optional; press Enter to skip): " _bws_gh_token_secret_id
+read -r -p "  BWS_GH_TOKEN_SECRET_ID (required for the standard App-token deploy — the worker PAT is vault-fetched from this ID; only skip if GH_TOKEN is supplied by other means): " _bws_gh_token_secret_id
 read -r -p "  BWS_HEARTBEAT_PING_URL_SECRET_ID (optional; press Enter to skip): " _bws_heartbeat_ping_url_secret_id
 
 mkdir -p "${BH_PROJECT_ROOT}/.bh"
@@ -547,8 +547,10 @@ BH_REPO_NAME=${BH_REPO_NAME}
 BH_GITHUB_APP_ID=${_bh_github_app_id}
 BH_GITHUB_APP_INSTALLATION_ID=${_bh_github_app_installation_id}
 BWS_PEM_SECRET_ID=${_bws_pem_secret_id}
-# Optional (leave empty to skip vault fetch):
+# Required for the standard App-token deploy (leave empty ONLY if GH_TOKEN is
+# supplied by other means, e.g. a direct export — see README "Override / fallback"):
 BWS_GH_TOKEN_SECRET_ID=${_bws_gh_token_secret_id}
+# Optional (leave empty to skip):
 BWS_HEARTBEAT_PING_URL_SECRET_ID=${_bws_heartbeat_ping_url_secret_id}
 EOF
 
