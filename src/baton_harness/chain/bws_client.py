@@ -177,4 +177,10 @@ def fetch_secret(
             f"not a string: {type(value).__name__}"
         )
 
+    if not value.strip():
+        raise BwsClientError(
+            f"fetch_secret: 'value' field for secret {secret_id!r} is "
+            f"empty or whitespace-only."
+        )
+
     return value

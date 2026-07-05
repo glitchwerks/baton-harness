@@ -327,3 +327,93 @@ class TestFetchSecretFailClosed:
                 access_token=_VALID_ACCESS_TOKEN,
                 run=int_value_run,
             )
+
+
+# ---------------------------------------------------------------------------
+# B3. Fail-closed: empty value string (#210 regression)
+# ---------------------------------------------------------------------------
+
+
+class TestFetchSecretRejectsEmptyValue:
+    """``fetch_secret`` must reject an empty or whitespace-only value.
+
+    Regression tests for #210: ``fetch_secret`` validates that the
+    ``value`` field is a ``str`` (see ``test_value_field_is_not_string_
+    raises`` above) but does not validate that it is *non-empty*. A
+    Bitwarden secret whose stored value is ``""`` (or whitespace-only)
+    currently comes back as a silently "successful" empty string
+    instead of failing closed like every other malformed-response case
+    in this module.
+    """
+
+    def test_empty_string_value_raises(self) -> None:
+        """A response ``value`` of ``""`` raises ``BwsClientError``.
+
+        The error must name the offending ``secret_id`` so operators
+        can identify which vault entry is misconfigured.
+
+        MUST FAIL today: the current implementation returns ``""``
+        without raising.
+        """
+        empty_value_json = json.dumps({"id": _SECRET_ID, "value": ""})
+
+        def empty_value_run(
+            args: list[str],
+            **_: object,
+        ) -> subprocess.CompletedProcess[str]:
+            """Return a response body whose 'value' field is ""."""
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout=empty_value_json,
+                stderr="",
+            )
+
+        with pytest.raises(BwsClientError, match=_SECRET_ID) as exc_info:
+            fetch_secret(
+                _SECRET_ID,
+                access_token=_VALID_ACCESS_TOKEN,
+                run=empty_value_run,
+            )
+
+        assert "empty" in str(exc_info.value).lower(), (
+            "Expected error message to mention the empty value, got: "
+            f"{exc_info.value}"
+        )
+
+    def test_whitespace_only_value_raises(self) -> None:
+        """A response ``value`` of ``"   "`` raises ``BwsClientError``.
+
+        Whitespace-only values are semantically empty (Bitwarden allows
+        storing them) and must be rejected the same way a truly empty
+        string is.
+
+        MUST FAIL today: the current implementation validates only that
+        ``value`` is a ``str``; a whitespace-only string passes that
+        check and is returned as-is.
+        """
+        whitespace_value_json = json.dumps({"id": _SECRET_ID, "value": "   "})
+
+        def whitespace_value_run(
+            args: list[str],
+            **_: object,
+        ) -> subprocess.CompletedProcess[str]:
+            """Return a response body whose 'value' field is whitespace."""
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout=whitespace_value_json,
+                stderr="",
+            )
+
+        with pytest.raises(BwsClientError, match=_SECRET_ID) as exc_info:
+            fetch_secret(
+                _SECRET_ID,
+                access_token=_VALID_ACCESS_TOKEN,
+                run=whitespace_value_run,
+            )
+
+        assert "empty" in str(exc_info.value).lower(), (
+            "Expected error message to mention the empty value, got: "
+            f"{exc_info.value}"
+        )

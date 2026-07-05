@@ -27,7 +27,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-from baton_harness._auth import TokenValidationError, validate_daemon_token
+from baton_harness._auth import (
+    TokenValidationError,
+    validate_daemon_token,
+    validate_gh_token,
+)
 from baton_harness.chain.app_auth import (
     AppAuthError,
     InstallationTokenSource,
@@ -75,13 +79,13 @@ def bootstrap_secrets(
     **New env vars (issue #171):**
 
     - ``BWS_GH_TOKEN_SECRET_ID``: optional Bitwarden Secrets ID for a
-      GitHub fine-grained PAT.  When set and ``GH_TOKEN`` is absent from
-      the environment, fetches the PAT and writes it to
-      ``os.environ["GH_TOKEN"]``.  If ``GH_TOKEN`` is already set,
-      the vault is not called (operator override wins).
+      GitHub fine-grained PAT.  When set and ``GH_TOKEN`` is absent or
+      empty in the environment, fetches the PAT and writes it to
+      ``os.environ["GH_TOKEN"]``.  If ``GH_TOKEN`` is already set to a
+      non-empty value, the vault is not called (operator override wins).
     - ``BWS_HEARTBEAT_PING_URL_SECRET_ID``: optional Bitwarden Secrets ID
       for a heartbeat webhook URL.  When set and ``BH_HEARTBEAT_PING_URL``
-      is absent, fetches the URL and writes it to
+      is absent or empty, fetches the URL and writes it to
       ``os.environ["BH_HEARTBEAT_PING_URL"]``.  Same skip logic applies.
 
     Both new env vars are optional for backward compatibility: omitting
@@ -132,7 +136,7 @@ def bootstrap_secrets(
 
     # Step 1: optional GH_TOKEN vault fetch (skip if already set).
     _gh_token_secret_id = os.environ.get("BWS_GH_TOKEN_SECRET_ID", "")
-    if _gh_token_secret_id and "GH_TOKEN" not in os.environ:
+    if _gh_token_secret_id and not os.environ.get("GH_TOKEN"):
         os.environ["GH_TOKEN"] = bws_client.fetch_secret(
             _gh_token_secret_id,
             access_token=_access_token,
@@ -142,7 +146,7 @@ def bootstrap_secrets(
     _heartbeat_secret_id = os.environ.get(
         "BWS_HEARTBEAT_PING_URL_SECRET_ID", ""
     )
-    if _heartbeat_secret_id and "BH_HEARTBEAT_PING_URL" not in os.environ:
+    if _heartbeat_secret_id and not os.environ.get("BH_HEARTBEAT_PING_URL"):
         os.environ["BH_HEARTBEAT_PING_URL"] = bws_client.fetch_secret(
             _heartbeat_secret_id,
             access_token=_access_token,
@@ -356,6 +360,19 @@ def main(argv: list[str] | None = None) -> int:
     except (AppAuthError, Exception) as exc:
         print(
             f"bh-daemon: error: failed to bootstrap GitHub App token: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Fail fast if a vault-configured GH_TOKEN resolved empty (issue #212).
+    try:
+        validate_gh_token(
+            os.environ.get("GH_TOKEN", ""),
+            secret_id_configured=bool(os.environ.get("BWS_GH_TOKEN_SECRET_ID")),
+        )
+    except TokenValidationError as exc:
+        print(
+            f"bh-daemon: error: GH_TOKEN failed boot-time validation: {exc}",
             file=sys.stderr,
         )
         return 1
