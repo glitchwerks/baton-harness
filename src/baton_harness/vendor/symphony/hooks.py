@@ -28,8 +28,12 @@ async def run_hook(
 
     log.info(f"hook:{name} starting in {cwd}")
     try:
+        # VENDOR-PATCH VP-7: non-login shell ("-c", not "-lc") — a login
+        # shell (-l) forces /etc/profile + ~/.bashrc to run before the hook
+        # script, which can clobber daemon-injected env vars (e.g. GH_TOKEN)
+        # ahead of the hook ever reading them (issue #215).
         proc = await asyncio.create_subprocess_exec(
-            "bash", "-lc", script,
+            "bash", "-c", script,
             cwd=cwd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
