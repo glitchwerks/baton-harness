@@ -82,6 +82,7 @@ from baton_harness.chain.redispatch import RedispatchTally
 from baton_harness.chain.registry import RepoConfig
 from baton_harness.chain.ruleset_status import (
     RulesetStatus,
+    check_ruleset_signals,
     ruleset_is_provisioned,
 )
 from baton_harness.chain.runlog import RunLog
@@ -99,6 +100,51 @@ _log = logging.getLogger(__name__)
 #: Currently contains only ``LABEL_BLOCKED`` (``"blocked"``); adding an
 #: entry here automatically applies to all three gates.
 _DISPATCH_EXCLUDE_LABELS: frozenset[str] = frozenset({LABEL_BLOCKED})
+
+
+_GENERIC_DRIFT_DETAIL = (
+    "harness-main-no-merge, harness-feature-daemon-only "
+    "(content drift detected)"
+)
+
+
+def _drift_detail_message(
+    owner: str,
+    repo: str,
+    app_id: str,
+    runner: Callable[[list[str]], subprocess.CompletedProcess[str]],
+) -> str:
+    """Best-effort per-field DRIFT detail via the #206 admin-free check.
+
+    ``ruleset_is_provisioned`` (which drives the preflight gate decision
+    itself) only returns an enum — it has no per-field detail.
+    ``check_ruleset_signals`` does carry a per-field ``detail`` message
+    (naming the ruleset, the signal, and the expected-vs-live values),
+    so this best-effort helper calls it purely to enrich the DRIFT log
+    line / Slack alert text.  It never influences the gate decision.
+
+    Deliberately swallows every exception (missing ``BH_PROJECT_ROOT``,
+    no pinned baseline, a failed gh call, etc.) and falls back to the
+    generic message — this enrichment must never turn a refusal into a
+    crash.
+
+    Args:
+        owner: Repository owner (org or user login).
+        repo: Repository name.
+        app_id: Numeric GitHub App ID (string form).
+        runner: The same gh runner used for the preflight gate call.
+
+    Returns:
+        The per-field ``detail`` string when ``check_ruleset_signals``
+        succeeds and reports one; otherwise the generic fallback message.
+    """
+    try:
+        result = check_ruleset_signals(
+            owner, repo, app_id=app_id, runner=runner
+        )
+    except Exception:  # noqa: BLE001
+        return _GENERIC_DRIFT_DETAIL
+    return result.detail or _GENERIC_DRIFT_DETAIL
 
 
 def _should_launch_worker(
@@ -142,10 +188,7 @@ def _should_launch_worker(
 
     # Build the alert message (spec: include refusal phrase + Failed checks).
     if status is RulesetStatus.DRIFT:
-        checks_detail = (
-            "harness-main-no-merge, harness-feature-daemon-only "
-            "(content drift detected)"
-        )
+        checks_detail = _drift_detail_message(owner, repo, app_id, runner)
     elif status is RulesetStatus.ABSENT:
         checks_detail = (
             "harness-main-no-merge, harness-feature-daemon-only "

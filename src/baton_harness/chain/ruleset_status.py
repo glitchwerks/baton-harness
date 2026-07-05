@@ -21,14 +21,40 @@ Charge 8 — HTTP status from stdout, not stderr:
     line is the first line of stdout (``HTTP/2.0 <STATUS> <text>``).
     Status is parsed from that line exclusively.  stderr is NEVER
     consulted for HTTP status detection.
+
+#206 — App-token-safe per-launch preflight:
+    ``ruleset_is_provisioned`` compares ``bypass_actors`` structurally,
+    but a GitHub App installation token cannot read that field (only a
+    caller with ruleset-write access can) — so calling it per-launch
+    with the App's own token silently misreports drift as MATCH or
+    ERROR.  ``check_ruleset_signals`` is the App-token-safe replacement:
+    it compares only fields the App token CAN read (the app-subset
+    structural keys in ``config/ruleset.compare-keys.app.json``, which
+    exclude ``bypass_actors``), plus two admin-free signals that speak
+    to bypass configuration without reading it directly:
+
+    1. ``current_user_can_bypass`` — GitHub computes this per-requester,
+       so the App token sees its OWN bypass verdict.  The expected
+       verdict is derived from the checked-in config's ``bypass_actors``
+       via ``_expected_bypass_verdict`` (never from ruleset name).
+    2. ``updated_at`` — pinned in ``.bh/ruleset-baseline.json`` by
+       ``bin/provision-ruleset.sh``'s baseline-capture step.  Any
+       mutation invisible to the other two signals (e.g. a third
+       bypass actor added by someone else) still bumps this timestamp.
+
+    Fails closed to ``RulesetStatus.NOT_PROVISIONED`` (distinct from
+    DRIFT) when no baseline is pinned for the repo, without making any
+    ``gh`` call at all.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 from collections.abc import Callable
+from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
 from typing import cast
@@ -51,6 +77,13 @@ _FEATURE_CFG = _HARNESS_ROOT / "config" / "ruleset.feature.json"
 #: Exposed so tests can monkeypatch to a tmp file.
 _COMPARE_KEYS_CFG: Path = (
     _HARNESS_ROOT / "config" / "ruleset.compare-keys.json"
+)
+
+#: App-token-safe compare-keys subset (#206) — excludes ``bypass_actors``,
+#: which an App installation token cannot read.  Used only by
+#: ``check_ruleset_signals``; ``ruleset_is_provisioned`` is unaffected.
+_COMPARE_KEYS_APP_CFG: Path = (
+    _HARNESS_ROOT / "config" / "ruleset.compare-keys.app.json"
 )
 
 _MAIN_NAME = "harness-main-no-merge"
@@ -77,7 +110,7 @@ class RulesetConfigError(Exception):
 
 
 class RulesetStatus(Enum):
-    """The four states the #144 preflight gate consumes.
+    """The states the #144 (and #206) preflight gates consume.
 
     Attributes:
         MATCH: Both rulesets are present and content-equal to the
@@ -85,12 +118,34 @@ class RulesetStatus(Enum):
         DRIFT: Both rulesets are present but at least one differs.
         ABSENT: One or both rulesets are missing.
         ERROR: A gh call failed with a non-404 error (network, auth, 5xx).
+        NOT_PROVISIONED: #206 addition.  ``check_ruleset_signals`` has no
+            pinned ``.bh/ruleset-baseline.json`` entry for the repo, so it
+            cannot safely assert "no drift" (fail-closed).  Distinct from
+            DRIFT — this means "never provisioned/pinned", not "drifted
+            from a known-good state".  Never returned by
+            ``ruleset_is_provisioned``.
     """
 
     MATCH = auto()
     DRIFT = auto()
     ABSENT = auto()
     ERROR = auto()
+    NOT_PROVISIONED = auto()
+
+
+@dataclass(frozen=True)
+class RulesetCheckResult:
+    """Result of ``check_ruleset_signals`` — a status plus human detail.
+
+    Attributes:
+        status: The overall ``RulesetStatus`` verdict.
+        detail: A human-readable explanation.  Populated for DRIFT (names
+            the ruleset, the signal, and the expected-vs-live values) and
+            for NOT_PROVISIONED/ABSENT/ERROR; ``None`` for MATCH.
+    """
+
+    status: RulesetStatus
+    detail: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -98,12 +153,15 @@ class RulesetStatus(Enum):
 # ---------------------------------------------------------------------------
 
 
-def _load_compare_keys() -> tuple[str, ...]:
-    """Load and validate the compare-keys list from the shared config.
+def _load_keys_from_path(cfg_path: Path) -> tuple[str, ...]:
+    """Load and validate a compare-keys JSON list from an arbitrary path.
 
-    Reads ``_COMPARE_KEYS_CFG`` (monkeypatchable in tests) at call time.
-    Validates: file exists, content is valid JSON, value is a non-empty
-    list of strings.
+    Shared by ``_load_compare_keys`` (full admin-visible key set) and
+    ``_load_app_compare_keys`` (#206 app-subset).  Validates: file
+    exists, content is valid JSON, value is a non-empty list of strings.
+
+    Args:
+        cfg_path: Path to the compare-keys JSON config file.
 
     Returns:
         A tuple of key names to compare.
@@ -112,7 +170,6 @@ def _load_compare_keys() -> tuple[str, ...]:
         RulesetConfigError: When the file is missing, non-JSON, not a
             list, or an empty list.
     """
-    cfg_path: Path = _COMPARE_KEYS_CFG
     if not cfg_path.exists():
         raise RulesetConfigError(f"compare-keys config not found: {cfg_path}")
     try:
@@ -126,6 +183,38 @@ def _load_compare_keys() -> tuple[str, ...]:
             f"compare-keys config must be a non-empty JSON list: {cfg_path}"
         )
     return tuple(str(k) for k in raw)
+
+
+def _load_compare_keys() -> tuple[str, ...]:
+    """Load and validate the compare-keys list from the shared config.
+
+    Reads ``_COMPARE_KEYS_CFG`` (monkeypatchable in tests) at call time.
+
+    Returns:
+        A tuple of key names to compare.
+
+    Raises:
+        RulesetConfigError: When the file is missing, non-JSON, not a
+            list, or an empty list.
+    """
+    return _load_keys_from_path(_COMPARE_KEYS_CFG)
+
+
+def _load_app_compare_keys() -> tuple[str, ...]:
+    """Load the App-token-safe compare-keys subset (#206).
+
+    Reads ``_COMPARE_KEYS_APP_CFG`` at call time — the app-subset config
+    deliberately excludes ``bypass_actors``, which an App installation
+    token cannot read.
+
+    Returns:
+        A tuple of key names to compare (structural signal only).
+
+    Raises:
+        RulesetConfigError: When the file is missing, non-JSON, not a
+            list, or an empty list.
+    """
+    return _load_keys_from_path(_COMPARE_KEYS_APP_CFG)
 
 
 # ---------------------------------------------------------------------------
@@ -630,3 +719,310 @@ def ruleset_is_provisioned(
     ) and _content_equal(desired_feature, current_feature, compare_keys):
         return RulesetStatus.MATCH
     return RulesetStatus.DRIFT
+
+
+# ---------------------------------------------------------------------------
+# #206 — App-token-safe per-launch preflight
+# ---------------------------------------------------------------------------
+
+
+def _expected_bypass_verdict(
+    rendered_config: dict[str, object], app_id: str
+) -> str:
+    """Derive the expected ``current_user_can_bypass`` verdict for the App.
+
+    Keyed purely by ``bypass_actors`` membership — never by ruleset name.
+    A ruleset's expected verdict is ``"always"`` when the App (matched by
+    numeric id AND an ``"Integration"`` ``actor_type``) appears in
+    ``rendered_config["bypass_actors"]``; ``"never"`` otherwise.
+
+    Args:
+        rendered_config: A rendered desired ruleset config (unfiltered —
+            still carries ``bypass_actors``).
+        app_id: Numeric GitHub App ID as a string.
+
+    Returns:
+        ``"always"`` or ``"never"``.
+    """
+    app_id_int = int(app_id)
+    bypass_actors = cast(
+        "list[dict[str, object]]", rendered_config.get("bypass_actors", [])
+    )
+    for actor in bypass_actors:
+        if (
+            actor.get("actor_type") == "Integration"
+            and actor.get("actor_id") == app_id_int
+        ):
+            return "always"
+    return "never"
+
+
+def _first_structural_diff(
+    desired: dict[str, object],
+    current: dict[str, object],
+    keys: tuple[str, ...],
+) -> str | None:
+    """Return the first app-subset compare key that differs, or ``None``.
+
+    Mirrors ``_content_equal``'s field semantics (``rules`` compared via
+    the multiset-aware ``_rules_equal``; every other key by strict
+    equality) but additionally reports WHICH key diverged, for DRIFT
+    messaging.
+
+    Args:
+        desired: The rendered desired config (unfiltered; may still carry
+            ``bypass_actors`` — irrelevant since ``keys`` excludes it).
+        current: The live ruleset body from the App-token GET.
+        keys: The app-subset compare-keys tuple (excludes bypass_actors).
+
+    Returns:
+        The name of the first key (in ``keys`` order) whose value
+        differs, or ``None`` when every key agrees.
+    """
+    desired_filtered = _filter_for_compare(desired, keys)
+    current_filtered = _filter_for_compare(current, keys)
+    for key in keys:
+        if key == "rules":
+            if not _rules_equal(
+                cast("list[object]", desired_filtered.get("rules", [])),
+                cast("list[object]", current_filtered.get("rules", [])),
+            ):
+                return key
+            continue
+        if desired_filtered.get(key) != current_filtered.get(key):
+            return key
+    return None
+
+
+def _load_baseline_entries(
+    baseline_path: Path, owner: str, repo: str
+) -> dict[str, dict[str, object]] | None:
+    """Load this repo's pinned baseline entries, or ``None`` if unavailable.
+
+    Fail-closed: a missing file, invalid JSON, absent repo key, or a
+    non-dict value all return ``None`` so the caller reports
+    ``RulesetStatus.NOT_PROVISIONED`` rather than risk comparing against
+    a partial or garbled pin.
+
+    Args:
+        baseline_path: Path to the ``ruleset-baseline.json`` file.
+        owner: Repository owner (org or user login).
+        repo: Repository name.
+
+    Returns:
+        The ``{ruleset_name: {"ruleset_id": int, "updated_at": str}}``
+        mapping pinned for ``owner/repo``, or ``None``.
+    """
+    if not baseline_path.exists():
+        return None
+    try:
+        raw = json.loads(baseline_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(raw, dict):
+        return None
+    entries = raw.get(f"{owner}/{repo}")
+    if not isinstance(entries, dict):
+        return None
+    return cast("dict[str, dict[str, object]]", entries)
+
+
+def _ruleset_signal_drift(
+    name: str,
+    live: dict[str, object],
+    desired: dict[str, object],
+    app_keys: tuple[str, ...],
+    app_id: str,
+    baseline_entry: dict[str, object],
+) -> str | None:
+    """Check one ruleset's three admin-free signals; return a DRIFT detail.
+
+    Check order: structural (app-subset keys) -> ``current_user_can_bypass``
+    crown-jewel -> ``updated_at`` version-pin.  Returns on the first
+    signal that disagrees, so a single DRIFT reason is reported per call.
+
+    Args:
+        name: The ruleset's checked-in name (for the detail message).
+        live: The live App-token GET body (``bypass_actors`` may be
+            entirely absent — the App token cannot read it).
+        desired: The rendered desired config for this ruleset (unfiltered
+            — used for the bypass-verdict derivation, which needs the
+            full ``bypass_actors`` list).
+        app_keys: The app-subset structural compare-keys tuple.
+        app_id: Numeric GitHub App ID as a string.
+        baseline_entry: This ruleset's pinned
+            ``{"ruleset_id": int, "updated_at": str}``.
+
+    Returns:
+        A human-readable DRIFT detail naming the ruleset, the signal, and
+        the expected-vs-live values, or ``None`` when all three signals
+        agree.
+    """
+    diff_key = _first_structural_diff(desired, live, app_keys)
+    if diff_key is not None:
+        desired_filtered = _filter_for_compare(desired, app_keys)
+        live_filtered = _filter_for_compare(live, app_keys)
+        return (
+            f"DRIFT ({name}): structural key {diff_key!r} differs — "
+            f"expected {desired_filtered.get(diff_key)!r}, "
+            f"live {live_filtered.get(diff_key)!r}"
+        )
+
+    expected_verdict = _expected_bypass_verdict(desired, app_id)
+    live_verdict = live.get("current_user_can_bypass")
+    if live_verdict != expected_verdict:
+        return (
+            f"DRIFT ({name}): current_user_can_bypass differs — "
+            f"expected {expected_verdict!r}, live {live_verdict!r}"
+        )
+
+    baseline_updated_at = baseline_entry.get("updated_at")
+    live_updated_at = live.get("updated_at")
+    if live_updated_at != baseline_updated_at:
+        return (
+            f"DRIFT ({name}): updated_at differs from the pinned baseline "
+            f"— expected {baseline_updated_at!r}, live {live_updated_at!r}"
+        )
+    return None
+
+
+def check_ruleset_signals(
+    owner: str,
+    repo: str,
+    *,
+    app_id: str,
+    runner: (
+        Callable[[list[str]], subprocess.CompletedProcess[str]] | None
+    ) = None,
+    baseline_path: Path | None = None,
+    admin_role_id: int = 5,
+) -> RulesetCheckResult:
+    """App-token-safe per-launch ruleset preflight (#206).
+
+    Replaces ``ruleset_is_provisioned``'s ``bypass_actors`` structural
+    compare — unreadable by a GitHub App installation token, since only a
+    ruleset-write-capable requester sees that field — with three signals
+    the App token CAN read:
+
+    1. Structural compare over ``config/ruleset.compare-keys.app.json``
+       (name/target/enforcement/conditions/rules — never bypass_actors).
+    2. ``current_user_can_bypass`` crown-jewel check: GitHub computes
+       this per-requester, so the App token sees its OWN bypass verdict.
+       The expected value comes from ``_expected_bypass_verdict``, keyed
+       by the checked-in config's ``bypass_actors`` membership.
+    3. ``updated_at`` version-pin: the live timestamp must match the
+       value pinned in the baseline file exactly.  Catches mutations
+       invisible to signals 1 and 2 — e.g. a third bypass actor added by
+       an operator or attacker that the App token cannot see directly.
+
+    Fails closed to ``RulesetStatus.NOT_PROVISIONED`` (distinct from
+    DRIFT) when no baseline is pinned for this repo — WITHOUT calling
+    ``runner`` at all, since there is nothing to compare against.
+
+    Uses the baseline's pinned ``ruleset_id`` directly for each BY-ID GET
+    (no LIST/name-discovery round-trip): the id was already resolved and
+    pinned by ``bin/provision-ruleset.sh``'s baseline-capture step.
+
+    Args:
+        owner: Repository owner (org or user login).
+        repo: Repository name.
+        app_id: Numeric GitHub App ID, used to derive the expected
+            bypass verdict and substitute the feature ruleset's
+            placeholder.  NOT the installation id.
+        runner: Optional callable that takes a list of ``gh`` args
+            (without the leading ``gh``) and returns a CompletedProcess.
+            Defaults to a thin ``subprocess.run(["gh", *args], …)``
+            wrapper.
+        baseline_path: Path to the pinned ruleset baseline JSON.
+            Defaults to ``$BH_PROJECT_ROOT/.bh/ruleset-baseline.json``.
+        admin_role_id: Numeric RepositoryRole id used only to render the
+            main ruleset's desired config for comparison (mirrors
+            ``ruleset_is_provisioned``'s default; irrelevant to the
+            bypass-verdict outcome since the admin actor is never an
+            ``"Integration"``).
+
+    Returns:
+        A ``RulesetCheckResult``: ``MATCH`` when all three signals agree
+        for both rulesets; ``DRIFT`` with a per-field ``detail`` message
+        on the first disagreement found; ``NOT_PROVISIONED`` when no
+        baseline is pinned for this repo; ``ABSENT``/``ERROR`` on a
+        ruleset-not-found or failed gh call for a pinned id.
+    """
+    if baseline_path is None:
+        baseline_path = (
+            Path(os.environ["BH_PROJECT_ROOT"])
+            / ".bh"
+            / "ruleset-baseline.json"
+        )
+
+    baseline_entries = _load_baseline_entries(baseline_path, owner, repo)
+    if baseline_entries is None:
+        return RulesetCheckResult(
+            status=RulesetStatus.NOT_PROVISIONED,
+            detail=(
+                f"no ruleset baseline pinned for {owner}/{repo} at "
+                f"{baseline_path}; run bin/provision-ruleset.sh first"
+            ),
+        )
+
+    run = runner or _default_runner
+    app_keys = _load_app_compare_keys()
+
+    desired_by_name: dict[str, dict[str, object]] = {
+        _MAIN_NAME: _render_main_config(admin_role_id),
+        _FEATURE_NAME: _render_feature_config(app_id),
+    }
+
+    for name, desired in desired_by_name.items():
+        entry = baseline_entries.get(name)
+        if not isinstance(entry, dict) or "ruleset_id" not in entry:
+            return RulesetCheckResult(
+                status=RulesetStatus.NOT_PROVISIONED,
+                detail=(
+                    f"no baseline entry for ruleset {name!r} in {owner}/{repo}"
+                ),
+            )
+        ruleset_id = entry["ruleset_id"]
+
+        proc = run(
+            [
+                "api",
+                "--include",
+                f"repos/{owner}/{repo}/rulesets/{ruleset_id}",
+            ]
+        )
+        status = _parse_http_status(proc.stdout)
+
+        if status == 404:
+            return RulesetCheckResult(
+                status=RulesetStatus.ABSENT,
+                detail=f"ruleset {name!r} (id={ruleset_id}) not found (404)",
+            )
+        if status is None or not (200 <= status < 300):
+            return RulesetCheckResult(
+                status=RulesetStatus.ERROR,
+                detail=(
+                    f"ruleset {name!r} (id={ruleset_id}) GET failed "
+                    f"(http={status})"
+                ),
+            )
+        try:
+            live: dict[str, object] = json.loads(_extract_body(proc.stdout))
+        except json.JSONDecodeError as exc:
+            return RulesetCheckResult(
+                status=RulesetStatus.ERROR,
+                detail=(
+                    f"ruleset {name!r} (id={ruleset_id}) returned "
+                    f"non-JSON body: {exc}"
+                ),
+            )
+
+        detail = _ruleset_signal_drift(
+            name, live, desired, app_keys, app_id, entry
+        )
+        if detail is not None:
+            return RulesetCheckResult(
+                status=RulesetStatus.DRIFT, detail=detail
+            )
+
+    return RulesetCheckResult(status=RulesetStatus.MATCH, detail=None)
