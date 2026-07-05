@@ -209,9 +209,10 @@ of: `<prefix>-<issue>`, `<prefix>-<issue>-<slug>`, or bare `<issue>`.
   `bws --version`. Without it the daemon fails immediately at startup.
 - **`BWS_ACCESS_TOKEN`** — the single operator-supplied bootstrap secret (Bitwarden machine-
   account access token). Provide it in a root-readable-only file and never commit it. The
-  canonical server path is `/etc/bh-daemon/secrets.env` (mode `600`); see
-  [docs/smoke-test-daemon.md](docs/smoke-test-daemon.md) for the systemd `EnvironmentFile=`
-  pattern. Placeholder only — never write the real token here:
+  canonical server path is `/etc/bh-daemon/secrets.env` (mode `600`); `bin/install-daemon-service.sh`
+  writes this file for you as part of the systemd install (see below) — see
+  [docs/smoke-test-daemon.md §"systemd unit (recommended)"](docs/smoke-test-daemon.md) for the
+  `EnvironmentFile=` pattern it produces. Placeholder only — never write the real token here:
   ```
   BWS_ACCESS_TOKEN=<bitwarden-machine-account-token>
   ```
@@ -477,6 +478,12 @@ sudo chmod 600 /etc/bh-daemon/secrets.env
 BWS_ACCESS_TOKEN="$(sudo grep BWS_ACCESS_TOKEN /etc/bh-daemon/secrets.env | cut -d= -f2-)" \
   bin/run-daemon.sh --once
 ```
+
+Step 4 above is the bounded, single-tick smoke test. For continuous operation, install the
+`bh-daemon` systemd unit with `bin/install-daemon-service.sh` instead of writing
+`secrets.env` by hand — see
+[docs/smoke-test-daemon.md §"systemd unit (recommended)"](docs/smoke-test-daemon.md) for the
+one-command invocation, flags, and the manual/reference unit it generates.
 
 The runbook at [docs/smoke-test-daemon.md](docs/smoke-test-daemon.md) has the full
 walkthrough — expected log output, CI-gate subtleties, DAG dependency wiring, cleanup, and
