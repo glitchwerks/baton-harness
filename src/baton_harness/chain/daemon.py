@@ -83,7 +83,12 @@ from baton_harness.chain.registry import RepoConfig
 from baton_harness.chain.ruleset_status import (
     RulesetStatus,
     check_ruleset_signals,
-    ruleset_is_provisioned,
+    # Not called from this module (#206 hard swap moved the gate to
+    # check_ruleset_signals in _should_launch_worker) -- stays bound at
+    # module scope so tests can patch.object(daemon,
+    # "ruleset_is_provisioned", ...) as a regression guard proving the
+    # gate never reintroduces the old call site.
+    ruleset_is_provisioned,  # noqa: F401
 )
 from baton_harness.chain.runlog import RunLog
 from baton_harness.chain.scheduler import IssueScheduler
@@ -102,49 +107,10 @@ _log = logging.getLogger(__name__)
 _DISPATCH_EXCLUDE_LABELS: frozenset[str] = frozenset({LABEL_BLOCKED})
 
 
-_GENERIC_DRIFT_DETAIL = (
+_GENERIC_CHECKS_DETAIL = (
     "harness-main-no-merge, harness-feature-daemon-only "
-    "(content drift detected)"
+    "(ruleset check returned no detail)"
 )
-
-
-def _drift_detail_message(
-    owner: str,
-    repo: str,
-    app_id: str,
-    runner: Callable[[list[str]], subprocess.CompletedProcess[str]],
-) -> str:
-    """Best-effort per-field DRIFT detail via the #206 admin-free check.
-
-    ``ruleset_is_provisioned`` (which drives the preflight gate decision
-    itself) only returns an enum — it has no per-field detail.
-    ``check_ruleset_signals`` does carry a per-field ``detail`` message
-    (naming the ruleset, the signal, and the expected-vs-live values),
-    so this best-effort helper calls it purely to enrich the DRIFT log
-    line / Slack alert text.  It never influences the gate decision.
-
-    Deliberately swallows every exception (missing ``BH_PROJECT_ROOT``,
-    no pinned baseline, a failed gh call, etc.) and falls back to the
-    generic message — this enrichment must never turn a refusal into a
-    crash.
-
-    Args:
-        owner: Repository owner (org or user login).
-        repo: Repository name.
-        app_id: Numeric GitHub App ID (string form).
-        runner: The same gh runner used for the preflight gate call.
-
-    Returns:
-        The per-field ``detail`` string when ``check_ruleset_signals``
-        succeeds and reports one; otherwise the generic fallback message.
-    """
-    try:
-        result = check_ruleset_signals(
-            owner, repo, app_id=app_id, runner=runner
-        )
-    except Exception:  # noqa: BLE001
-        return _GENERIC_DRIFT_DETAIL
-    return result.detail or _GENERIC_DRIFT_DETAIL
 
 
 def _should_launch_worker(
@@ -158,11 +124,21 @@ def _should_launch_worker(
 ) -> bool:
     """Per-launch branch-protection preflight gate.
 
-    Calls ``ruleset_is_provisioned`` and returns ``True`` only when both
-    rulesets are present and content-equal to the checked-in configs
-    (``RulesetStatus.MATCH``).  On any non-MATCH result the worker launch
-    is refused (returns ``False``) and a Slack alert is sent to
-    ``obs.heartbeat_ping_url`` if configured.
+    Calls ``check_ruleset_signals`` (#206 hard swap — the App-token-safe
+    replacement for ``ruleset_is_provisioned``, which a GitHub App
+    installation token cannot use safely because it can't read
+    ``bypass_actors``) and returns ``True`` only when the returned
+    ``RulesetCheckResult.status`` is ``RulesetStatus.MATCH``.  On any
+    non-MATCH result (``DRIFT``, ``ABSENT``, ``ERROR``, or
+    ``NOT_PROVISIONED``) the worker launch is refused (returns
+    ``False``) and a Slack alert is sent to ``obs.heartbeat_ping_url``
+    if configured.  ``NOT_PROVISIONED`` (no pinned baseline) fails
+    closed exactly like the other non-MATCH statuses — a missing
+    baseline must never be treated as safe-by-default.
+
+    The alert's failed-checks text is built directly from the single
+    ``RulesetCheckResult`` already returned by ``check_ruleset_signals``
+    — this function never calls it a second time to re-derive detail.
 
     Failure-isolation: if ``post_slack_alert`` raises despite its
     no-raise contract, the exception is caught and logged; the refusal
@@ -181,21 +157,12 @@ def _should_launch_worker(
     Returns:
         ``True`` when the preflight passes (MATCH); ``False`` otherwise.
     """
-    status = ruleset_is_provisioned(owner, repo, app_id=app_id, runner=runner)
+    result = check_ruleset_signals(owner, repo, app_id=app_id, runner=runner)
 
-    if status is RulesetStatus.MATCH:
+    if result.status is RulesetStatus.MATCH:
         return True
 
-    # Build the alert message (spec: include refusal phrase + Failed checks).
-    if status is RulesetStatus.DRIFT:
-        checks_detail = _drift_detail_message(owner, repo, app_id, runner)
-    elif status is RulesetStatus.ABSENT:
-        checks_detail = (
-            "harness-main-no-merge, harness-feature-daemon-only "
-            "(one or both rulesets absent)"
-        )
-    else:
-        checks_detail = f"ruleset check returned {status.name}"
+    checks_detail = result.detail or _GENERIC_CHECKS_DETAIL
 
     message = (
         "baton-harness refusing to launch worker — "
@@ -207,7 +174,7 @@ def _should_launch_worker(
     _log.warning(
         "daemon: preflight refused issue #%d — %s (%s)",
         issue_number,
-        status.name,
+        result.status.name,
         checks_detail,
     )
 

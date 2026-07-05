@@ -15,14 +15,23 @@ Proposed seam (code-writer adopts this name in Phase 2):
         obs: ObsConfig,
     ) -> bool
 
-``_should_launch_worker`` wraps ``ruleset_is_provisioned`` and:
-  1. Returns ``True`` only when the status is ``MATCH``.
-  2. On any non-MATCH result (``DRIFT``, ``ABSENT``, or ``ERROR``):
+#206 hard swap: ``_should_launch_worker`` calls ``check_ruleset_signals``
+(NOT ``ruleset_is_provisioned`` — that call site is being removed) and:
+  1. Returns ``True`` only when the returned ``RulesetCheckResult.status``
+     is ``RulesetStatus.MATCH``.
+  2. On any non-MATCH result (``DRIFT``, ``ABSENT``, ``ERROR``, or
+     ``NOT_PROVISIONED``):
      - Returns ``False`` (refuse to launch).
      - Calls ``post_slack_alert(obs.heartbeat_ping_url, <message>)`` when
        ``obs.heartbeat_ping_url`` is not None.
      - Does NOT crash if ``post_slack_alert`` raises (fail-closed, not
        fail-open).
+     - Builds the alert message from the SINGLE ``RulesetCheckResult``
+       already returned by ``check_ruleset_signals`` — the failed-checks
+       text is the result's ``.detail`` — never a second call to
+       ``check_ruleset_signals`` and never a call to
+       ``ruleset_is_provisioned`` (the old ``_drift_detail_message``
+       double-GET helper is deleted).
   3. When ``obs.heartbeat_ping_url`` is None, skips the POST entirely
      but still refuses to launch (returns False for non-MATCH).
 
@@ -30,15 +39,24 @@ The alert message body for Charge 5 must satisfy:
   ``"baton-harness refusing to launch worker"`` is a substring, AND
   the failed-checks description is present (e.g. ``"Failed checks:"``).
 
-All external calls (``ruleset_is_provisioned``, ``post_slack_alert``) are
+All external calls (``check_ruleset_signals``, ``post_slack_alert``) are
 mocked.  Tests work with a minimal hand-constructed ObsConfig rather than
 importing the full daemon start-up machinery.
 
 Coverage:
 - MATCH → _should_launch_worker returns True; no alert sent; no parking.
-- DRIFT → returns False; alert POSTed with 'Failed checks:' in message.
-- ABSENT → returns False; alert body mentions missing ruleset(s).
-- ERROR → returns False (fail-closed); alert mentions error path.
+- DRIFT → returns False; alert carries the result's ``.detail`` verbatim
+  (proving a single ``check_ruleset_signals`` call, not a second GET).
+- ABSENT → returns False; alert body carries the result's ``.detail``
+  (missing ruleset(s)).
+- ERROR → returns False (fail-closed); alert carries the result's
+  ``.detail`` (error path).
+- NOT_PROVISIONED → returns False (fail-closed — a missing baseline must
+  park, not launch); alert names the fix (``bin/provision-ruleset.sh``)
+  and is textually distinct from the DRIFT message.
+- Regression guard: the gate never calls ``ruleset_is_provisioned`` (it
+  stays in the module for the provisioning-side verifier, but the daemon
+  gate must not call it — catches an accidental re-introduction).
 - Alert POST failure does NOT crash launch decision loop.
 - No ``BH_HEARTBEAT_PING_URL`` configured (obs.heartbeat_ping_url is None)
   → returns False on DRIFT but no POST attempted; a warning is logged.
@@ -113,7 +131,7 @@ def _fake_runner(args: list[str]) -> Any:  # noqa: ANN401
     """Stub runner (never called in these integration seam tests)."""
     raise AssertionError(
         "_fake_runner must not be called in preflight unit tests "
-        "(ruleset_is_provisioned is mocked)"
+        "(check_ruleset_signals is mocked)"
     )
 
 
@@ -125,7 +143,7 @@ def _fake_runner(args: list[str]) -> Any:  # noqa: ANN401
 def test_should_launch_worker_returns_true_on_match(
     tmp_path: Path,
 ) -> None:
-    """_should_launch_worker returns True when ruleset_is_provisioned → MATCH.
+    """_should_launch_worker returns True when check_ruleset_signals → MATCH.
 
     No Slack alert must be sent; the launch is not refused.
 
@@ -133,7 +151,10 @@ def test_should_launch_worker_returns_true_on_match(
         tmp_path: Pytest tmp_path fixture.
     """
     import baton_harness.chain.daemon as daemon_mod
-    from baton_harness.chain.ruleset_status import RulesetStatus
+    from baton_harness.chain.ruleset_status import (
+        RulesetCheckResult,
+        RulesetStatus,
+    )
 
     obs = _make_obs(tmp_path)
     post_calls: list[tuple[str, str]] = []
@@ -145,8 +166,8 @@ def test_should_launch_worker_returns_true_on_match(
     with (
         patch.object(
             daemon_mod,
-            "ruleset_is_provisioned",
-            return_value=RulesetStatus.MATCH,
+            "check_ruleset_signals",
+            return_value=RulesetCheckResult(status=RulesetStatus.MATCH),
         ),
         patch(
             "baton_harness.chain.daemon.post_slack_alert",
@@ -169,8 +190,13 @@ def test_should_launch_worker_returns_true_on_match(
 
 
 # ---------------------------------------------------------------------------
-# Test 2 — DRIFT → refuse + alert with 'Failed checks:'
+# Test 2 — DRIFT → refuse + alert carrying the result's .detail verbatim
 # ---------------------------------------------------------------------------
+
+_DRIFT_DETAIL = (
+    "DRIFT (harness-feature-daemon-only): current_user_can_bypass differs "
+    "— expected 'always', live 'never'"
+)
 
 
 def test_should_launch_worker_refuses_and_alerts_on_drift(
@@ -181,12 +207,19 @@ def test_should_launch_worker_refuses_and_alerts_on_drift(
     The alert body must contain:
     - ``"baton-harness refusing to launch worker"``
     - ``"Failed checks:"``
+    - The exact ``.detail`` string from the ``RulesetCheckResult`` returned
+      by ``check_ruleset_signals`` — proving the gate builds the alert from
+      the single result it already has, rather than making a second
+      ``check_ruleset_signals`` call to re-derive detail text.
 
     Args:
         tmp_path: Pytest tmp_path fixture.
     """
     import baton_harness.chain.daemon as daemon_mod
-    from baton_harness.chain.ruleset_status import RulesetStatus
+    from baton_harness.chain.ruleset_status import (
+        RulesetCheckResult,
+        RulesetStatus,
+    )
 
     obs = _make_obs(tmp_path)
     post_calls: list[tuple[str, str]] = []
@@ -195,11 +228,25 @@ def test_should_launch_worker_refuses_and_alerts_on_drift(
         post_calls.append((url, message))
         return True
 
+    check_calls: list[Any] = []
+
+    def _fake_check(
+        owner: str,
+        repo: str,
+        *,
+        app_id: str,
+        runner: Any,  # noqa: ANN401
+    ) -> RulesetCheckResult:
+        check_calls.append((owner, repo, app_id))
+        return RulesetCheckResult(
+            status=RulesetStatus.DRIFT, detail=_DRIFT_DETAIL
+        )
+
     with (
         patch.object(
             daemon_mod,
-            "ruleset_is_provisioned",
-            return_value=RulesetStatus.DRIFT,
+            "check_ruleset_signals",
+            side_effect=_fake_check,
         ),
         patch(
             "baton_harness.chain.daemon.post_slack_alert",
@@ -216,6 +263,10 @@ def test_should_launch_worker_refuses_and_alerts_on_drift(
         )
 
     assert result is False, "_should_launch_worker must return False on DRIFT"
+    assert len(check_calls) == 1, (
+        "check_ruleset_signals must be called exactly ONCE per preflight "
+        f"decision (no second call to re-derive detail); got {check_calls!r}"
+    )
     assert post_calls, "A Slack alert must be posted on DRIFT"
     url_posted, message_posted = post_calls[0]
     assert url_posted == _WEBHOOK, (
@@ -228,11 +279,19 @@ def test_should_launch_worker_refuses_and_alerts_on_drift(
     assert "Failed checks:" in message_posted, (
         f"Alert body must contain 'Failed checks:'; got {message_posted!r}"
     )
+    assert _DRIFT_DETAIL in message_posted, (
+        "Alert body must carry the RulesetCheckResult.detail text verbatim "
+        f"(single-call contract); got {message_posted!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
 # Test 3 — ABSENT → refuse + alert mentioning missing ruleset(s)
 # ---------------------------------------------------------------------------
+
+_ABSENT_DETAIL = (
+    "ruleset 'harness-feature-daemon-only' (id=456) not found (404)"
+)
 
 
 def test_should_launch_worker_refuses_and_alerts_on_absent(
@@ -240,13 +299,17 @@ def test_should_launch_worker_refuses_and_alerts_on_absent(
 ) -> None:
     """_should_launch_worker returns False on ABSENT and POSTs a Slack alert.
 
-    The alert body must contain the refusal phrase and 'Failed checks:'.
+    The alert body must contain the refusal phrase, 'Failed checks:', and
+    the result's ``.detail`` naming the missing ruleset.
 
     Args:
         tmp_path: Pytest tmp_path fixture.
     """
     import baton_harness.chain.daemon as daemon_mod
-    from baton_harness.chain.ruleset_status import RulesetStatus
+    from baton_harness.chain.ruleset_status import (
+        RulesetCheckResult,
+        RulesetStatus,
+    )
 
     obs = _make_obs(tmp_path)
     post_calls: list[tuple[str, str]] = []
@@ -258,8 +321,10 @@ def test_should_launch_worker_refuses_and_alerts_on_absent(
     with (
         patch.object(
             daemon_mod,
-            "ruleset_is_provisioned",
-            return_value=RulesetStatus.ABSENT,
+            "check_ruleset_signals",
+            return_value=RulesetCheckResult(
+                status=RulesetStatus.ABSENT, detail=_ABSENT_DETAIL
+            ),
         ),
         patch(
             "baton_harness.chain.daemon.post_slack_alert",
@@ -284,11 +349,19 @@ def test_should_launch_worker_refuses_and_alerts_on_absent(
     assert "Failed checks:" in message_posted, (
         f"Alert body must mention 'Failed checks:'; got {message_posted!r}"
     )
+    assert _ABSENT_DETAIL in message_posted, (
+        "Alert body must carry the RulesetCheckResult.detail text naming "
+        f"the missing ruleset; got {message_posted!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
 # Test 4 — ERROR → refuse + alert (fail-closed)
 # ---------------------------------------------------------------------------
+
+_ERROR_DETAIL = (
+    "ruleset 'harness-main-no-merge' (id=123) GET failed (http=500)"
+)
 
 
 def test_should_launch_worker_refuses_and_alerts_on_error_fail_closed(
@@ -298,13 +371,17 @@ def test_should_launch_worker_refuses_and_alerts_on_error_fail_closed(
 
     Even when the ruleset check itself fails with an error (e.g. network
     outage), the daemon must refuse to launch rather than proceeding
-    without branch-protection.  The Slack alert must still be attempted.
+    without branch-protection.  The Slack alert must still be attempted
+    and carry the result's ``.detail``.
 
     Args:
         tmp_path: Pytest tmp_path fixture.
     """
     import baton_harness.chain.daemon as daemon_mod
-    from baton_harness.chain.ruleset_status import RulesetStatus
+    from baton_harness.chain.ruleset_status import (
+        RulesetCheckResult,
+        RulesetStatus,
+    )
 
     obs = _make_obs(tmp_path)
     post_calls: list[tuple[str, str]] = []
@@ -316,8 +393,10 @@ def test_should_launch_worker_refuses_and_alerts_on_error_fail_closed(
     with (
         patch.object(
             daemon_mod,
-            "ruleset_is_provisioned",
-            return_value=RulesetStatus.ERROR,
+            "check_ruleset_signals",
+            return_value=RulesetCheckResult(
+                status=RulesetStatus.ERROR, detail=_ERROR_DETAIL
+            ),
         ),
         patch(
             "baton_harness.chain.daemon.post_slack_alert",
@@ -341,6 +420,113 @@ def test_should_launch_worker_refuses_and_alerts_on_error_fail_closed(
     assert "baton-harness refusing to launch worker" in message_posted, (
         f"Alert body must contain the refusal phrase; got {message_posted!r}"
     )
+    assert _ERROR_DETAIL in message_posted, (
+        "Alert body must carry the RulesetCheckResult.detail text for the "
+        f"error path; got {message_posted!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 4b — NOT_PROVISIONED → refuse + alert naming the fix (fail-closed,
+# strict — a missing baseline must park, distinct from DRIFT)
+# ---------------------------------------------------------------------------
+
+_NOT_PROVISIONED_DETAIL = (
+    "no ruleset baseline pinned for glitchwerks/baton-harness at "
+    ".bh/ruleset-baseline.json; run bin/provision-ruleset.sh first"
+)
+
+
+def test_should_launch_worker_refuses_and_alerts_on_not_provisioned(
+    tmp_path: Path,
+) -> None:
+    """_should_launch_worker returns False on NOT_PROVISIONED (fail-closed).
+
+    NOT_PROVISIONED means no ruleset baseline has ever been pinned for
+    this repo — ``check_ruleset_signals`` cannot safely assert "no drift"
+    with nothing to compare against, so the gate must refuse to launch
+    (park) rather than treat an un-pinned baseline as safe-by-default.
+
+    The alert must:
+    - Contain the refusal phrase and ``"Failed checks:"``.
+    - Name the fix — carry ``"bin/provision-ruleset.sh"`` (or the result's
+      ``.detail``, which already names it) so an operator knows exactly
+      what to run.
+    - Be textually distinct from the DRIFT alert body (this is "never
+      provisioned", not "drifted from a known-good state" — the two must
+      not read the same to an operator).
+
+    Args:
+        tmp_path: Pytest tmp_path fixture.
+    """
+    import baton_harness.chain.daemon as daemon_mod
+    from baton_harness.chain.ruleset_status import (
+        RulesetCheckResult,
+        RulesetStatus,
+    )
+
+    obs = _make_obs(tmp_path)
+    post_calls: list[tuple[str, str]] = []
+
+    def _fake_post(url: str, message: str, **kwargs: Any) -> bool:  # noqa: ANN401
+        post_calls.append((url, message))
+        return True
+
+    with (
+        patch.object(
+            daemon_mod,
+            "check_ruleset_signals",
+            return_value=RulesetCheckResult(
+                status=RulesetStatus.NOT_PROVISIONED,
+                detail=_NOT_PROVISIONED_DETAIL,
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.post_slack_alert",
+            side_effect=_fake_post,
+        ),
+    ):
+        result = daemon_mod._should_launch_worker(  # type: ignore[attr-defined]
+            _ISSUE,
+            _OWNER,
+            _REPO,
+            app_id=_APP_ID,
+            runner=_fake_runner,
+            obs=obs,
+        )
+
+    assert result is False, (
+        "_should_launch_worker must return False on NOT_PROVISIONED — a "
+        "missing baseline must park the worker, never launch it "
+        "(strict fail-closed)"
+    )
+    assert post_calls, "A Slack alert must be posted on NOT_PROVISIONED"
+    _, message_posted = post_calls[0]
+    assert "baton-harness refusing to launch worker" in message_posted, (
+        f"Alert body must contain the refusal phrase; got {message_posted!r}"
+    )
+    assert "Failed checks:" in message_posted, (
+        f"Alert body must mention 'Failed checks:'; got {message_posted!r}"
+    )
+    assert "bin/provision-ruleset.sh" in message_posted, (
+        "Alert body must name the fix (bin/provision-ruleset.sh) so an "
+        f"operator knows what to run; got {message_posted!r}"
+    )
+    # Distinctness from DRIFT: the NOT_PROVISIONED message must not read
+    # as a DRIFT message. DRIFT detail text is keyed on a structural/
+    # bypass/updated_at signal comparison (see _DRIFT_DETAIL and
+    # _ruleset_signal_drift); none of that vocabulary belongs in a
+    # "never provisioned" message, and the DRIFT detail string used
+    # elsewhere in this module must not appear here.
+    assert _DRIFT_DETAIL not in message_posted, (
+        "NOT_PROVISIONED alert must not contain DRIFT detail text; got "
+        f"{message_posted!r}"
+    )
+    assert "current_user_can_bypass" not in message_posted, (
+        "NOT_PROVISIONED alert must be distinct from a DRIFT alert — it "
+        "must not carry DRIFT's signal-comparison vocabulary; got "
+        f"{message_posted!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -361,15 +547,20 @@ def test_alert_post_failure_does_not_crash_launch_decision(
         tmp_path: Pytest tmp_path fixture.
     """
     import baton_harness.chain.daemon as daemon_mod
-    from baton_harness.chain.ruleset_status import RulesetStatus
+    from baton_harness.chain.ruleset_status import (
+        RulesetCheckResult,
+        RulesetStatus,
+    )
 
     obs = _make_obs(tmp_path)
 
     with (
         patch.object(
             daemon_mod,
-            "ruleset_is_provisioned",
-            return_value=RulesetStatus.DRIFT,
+            "check_ruleset_signals",
+            return_value=RulesetCheckResult(
+                status=RulesetStatus.DRIFT, detail=_DRIFT_DETAIL
+            ),
         ),
         patch(
             "baton_harness.chain.daemon.post_slack_alert",
@@ -411,7 +602,10 @@ def test_no_ping_url_configured_skips_post_but_still_refuses(
         caplog: Pytest log-capture fixture.
     """
     import baton_harness.chain.daemon as daemon_mod
-    from baton_harness.chain.ruleset_status import RulesetStatus
+    from baton_harness.chain.ruleset_status import (
+        RulesetCheckResult,
+        RulesetStatus,
+    )
 
     obs = _make_obs(tmp_path, ping_url=None)  # no webhook configured
     post_calls: list[Any] = []
@@ -423,8 +617,10 @@ def test_no_ping_url_configured_skips_post_but_still_refuses(
     with (
         patch.object(
             daemon_mod,
-            "ruleset_is_provisioned",
-            return_value=RulesetStatus.DRIFT,
+            "check_ruleset_signals",
+            return_value=RulesetCheckResult(
+                status=RulesetStatus.DRIFT, detail=_DRIFT_DETAIL
+            ),
         ),
         patch(
             "baton_harness.chain.daemon.post_slack_alert",
@@ -453,6 +649,88 @@ def test_no_ping_url_configured_skips_post_but_still_refuses(
         "because no heartbeat_ping_url is configured; "
         f"records: {[r.message for r in caplog.records]!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Regression guard — the gate never calls ruleset_is_provisioned (#206 hard
+# swap). ``ruleset_is_provisioned`` stays in ruleset_status.py for the
+# provisioning-side verifier, but the daemon gate must exclusively consult
+# ``check_ruleset_signals``. Patching both and asserting the old symbol is
+# untouched catches an accidental re-introduction of the old call site.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "MATCH",
+        "DRIFT",
+        "ABSENT",
+        "ERROR",
+        "NOT_PROVISIONED",
+    ],
+)
+def test_should_launch_worker_never_calls_ruleset_is_provisioned(
+    tmp_path: Path,
+    status: str,
+) -> None:
+    """_should_launch_worker must not call ruleset_is_provisioned at all.
+
+    ``ruleset_is_provisioned`` is patched to raise on any call, for every
+    ``RulesetStatus`` value ``check_ruleset_signals`` can report — proving
+    the gate's decision is driven solely by ``check_ruleset_signals``
+    across the whole status space, not just for the MATCH happy path.
+
+    Args:
+        tmp_path: Pytest tmp_path fixture.
+        status: The ``RulesetStatus`` name to drive through
+            ``check_ruleset_signals`` for this parametrized run.
+    """
+    import baton_harness.chain.daemon as daemon_mod
+    from baton_harness.chain.ruleset_status import (
+        RulesetCheckResult,
+        RulesetStatus,
+    )
+
+    obs = _make_obs(tmp_path)
+
+    def _forbidden_ruleset_is_provisioned(
+        *args: Any,  # noqa: ANN401
+        **kwargs: Any,  # noqa: ANN401
+    ) -> RulesetStatus:
+        raise AssertionError(
+            "_should_launch_worker must not call ruleset_is_provisioned — "
+            "the #206 hard swap replaces it with check_ruleset_signals"
+        )
+
+    with (
+        patch.object(
+            daemon_mod,
+            "check_ruleset_signals",
+            return_value=RulesetCheckResult(
+                status=RulesetStatus[status], detail="detail text"
+            ),
+        ),
+        patch.object(
+            daemon_mod,
+            "ruleset_is_provisioned",
+            side_effect=_forbidden_ruleset_is_provisioned,
+        ) as mock_legacy,
+        patch(
+            "baton_harness.chain.daemon.post_slack_alert",
+            return_value=True,
+        ),
+    ):
+        daemon_mod._should_launch_worker(  # type: ignore[attr-defined]
+            _ISSUE,
+            _OWNER,
+            _REPO,
+            app_id=_APP_ID,
+            runner=_fake_runner,
+            obs=obs,
+        )
+
+    mock_legacy.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

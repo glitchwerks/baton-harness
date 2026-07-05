@@ -8,9 +8,12 @@ gate every worker dispatch:
   Integration tests that do not set this env var would hit fail-closed
   parking before any worker is dispatched.
 
-* Inside ``_should_launch_worker``, ``ruleset_is_provisioned`` makes live
-  ``gh api`` calls.  Integration tests that do not mock the ruleset layer
-  would hit ``ERROR`` status and park every issue.
+* Inside ``_should_launch_worker``, ``check_ruleset_signals`` (the #206
+  App-token-safe replacement for ``ruleset_is_provisioned`` — the daemon
+  gate's only caller of either symbol) makes live ``gh api`` calls.
+  Integration tests that do not mock the ruleset layer would hit
+  ``ERROR`` (or ``NOT_PROVISIONED``, absent a pinned baseline) and park
+  every issue.
 
 The two autouse fixtures below provide safe defaults so that integration-
 level daemon tests (``test_daemon.py``, etc.) remain unaffected by the
@@ -54,24 +57,33 @@ def _auto_patch_resolve_app_id() -> None:  # type: ignore[return]
 
 
 @pytest.fixture(autouse=True)
-def _auto_patch_ruleset_is_provisioned_daemon() -> None:  # type: ignore[return]
+def _auto_patch_ruleset_check_daemon() -> None:  # type: ignore[return]
     """Return MATCH for tests that do not exercise the ruleset check.
 
-    ``ruleset_is_provisioned`` (imported into ``daemon`` module scope) makes
-    live ``gh api`` calls.  Integration tests do not mock the ruleset layer;
-    without this autouse the daemon would detect ``ERROR`` and park every
-    issue before dispatching a worker.
+    ``check_ruleset_signals`` (imported into ``daemon`` module scope) is the
+    #206 hard-swap replacement for ``ruleset_is_provisioned`` at the daemon
+    gate's call site — ``ruleset_is_provisioned`` has no remaining caller in
+    ``daemon.py`` (it stays in ``ruleset_status.py`` for the provisioning-
+    side verifier only), so patching it here would no longer intercept
+    anything.  ``check_ruleset_signals`` makes live ``gh api`` calls and
+    also reads a pinned baseline file; integration tests do not mock the
+    ruleset layer or provide a baseline, so without this autouse the daemon
+    would detect ``ERROR``/``NOT_PROVISIONED`` and park every issue before
+    dispatching a worker.
 
-    Preflight tests 1–6 use their own explicit
-    ``patch.object(daemon_mod, "ruleset_is_provisioned", …)`` inside each
-    test body; those inner patches take precedence over this autouse and the
-    tests call the REAL ``_should_launch_worker`` function directly (not the
-    autouse mock), so the correct per-test status flows through.
+    Preflight tests use their own explicit
+    ``patch.object(daemon_mod, "check_ruleset_signals", …)`` inside each
+    test body; those inner patches take precedence over this autouse and
+    the tests call the REAL ``_should_launch_worker`` function directly
+    (not the autouse mock), so the correct per-test status flows through.
     """
-    from baton_harness.chain.ruleset_status import RulesetStatus
+    from baton_harness.chain.ruleset_status import (
+        RulesetCheckResult,
+        RulesetStatus,
+    )
 
     with patch(
-        "baton_harness.chain.daemon.ruleset_is_provisioned",
-        return_value=RulesetStatus.MATCH,
+        "baton_harness.chain.daemon.check_ruleset_signals",
+        return_value=RulesetCheckResult(status=RulesetStatus.MATCH),
     ):
         yield
