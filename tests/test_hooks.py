@@ -7,21 +7,19 @@ The ``-l`` (login shell) flag forces the OS account's ``/etc/profile`` +
 clobber environment variables the daemon injected (e.g. ``GH_TOKEN``) before
 the hook script ever reads them.
 
-The fix (a later phase, not covered here) drops ``-l`` so the invocation
-becomes ``"bash", "-c", script`` — a non-interactive, non-login shell. Hooks
-must never run a login shell.
+The fix (VP-7, applied in this PR) drops ``-l`` so the invocation becomes
+``"bash", "-c", script`` — a non-interactive, non-login shell. Hooks must
+never run a login shell.
 
 Coverage:
 - ``TestRunHookNoLoginShell``: the subprocess argv passed to
   ``asyncio.create_subprocess_exec`` must be exactly
   ``("bash", "-c", script)`` — ``-lc``/``-l`` must never appear. This test
-  is EXPECTED TO FAIL against the current implementation (which passes
-  ``-lc``).
+  guards against a regression back to a login shell.
 - ``TestRunHookEnvMergePreserved``: the env merge behaviour (VP-1) that
   layers caller-supplied overrides on top of ``os.environ`` must survive
-  the ``-lc`` -> ``-c`` fix. This test is EXPECTED TO PASS against the
-  current implementation and guards against a regression once the fix
-  lands.
+  the ``-lc`` -> ``-c`` fix. This test guards the VP-1 env-merge behaviour
+  against regression.
 """
 
 from __future__ import annotations
@@ -90,8 +88,8 @@ class TestRunHookNoLoginShell:
         Protects issue #215: a login shell (``-lc``/``-l``) forces
         ``/etc/profile`` + ``~/.bashrc`` to run before the hook script,
         which can clobber daemon-injected env vars (e.g. ``GH_TOKEN``)
-        ahead of the hook reading them. This test fails against the
-        current code, which passes ``"-lc"`` as the second argv element.
+        ahead of the hook reading them. This test guards against a
+        regression back to passing ``"-lc"`` as the second argv element.
         """
         captured_argv: tuple[object, ...] = ()
 
@@ -129,11 +127,11 @@ class TestRunHookNoLoginShell:
 class TestRunHookEnvMergePreserved:
     """The VP-1 env merge (os.environ + overrides) must keep working.
 
-    Guards against a regression during the issue #215 fix: dropping the
+    Guards against a regression from the issue #215 fix: dropping the
     login-shell flag must not disturb the existing env-merge behaviour
     that layers caller-supplied overrides (e.g. ``GH_TOKEN``) on top of
     the inherited ``os.environ`` (which still carries ``PATH``, etc.).
-    This test is expected to PASS on the current (pre-fix) code.
+    This test guards the VP-1 env-merge behaviour against regression.
     """
 
     def test_override_merged_with_inherited_baseline_var(
