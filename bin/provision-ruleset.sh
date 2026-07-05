@@ -398,10 +398,16 @@ _capture_baseline() {
     fi
 
     local main_body feat_body
-    main_body="$(gh api "repos/${REPO_SLUG}/rulesets/${main_id}")"
-    feat_body="$(gh api "repos/${REPO_SLUG}/rulesets/${feat_id}")"
+    if ! main_body="$(gh api "repos/${REPO_SLUG}/rulesets/${main_id}")"; then
+        echo "provision-ruleset: WARNING — could not fetch ruleset harness-main-no-merge body for baseline capture; skipping." >&2
+        return 0
+    fi
+    if ! feat_body="$(gh api "repos/${REPO_SLUG}/rulesets/${feat_id}")"; then
+        echo "provision-ruleset: WARNING — could not fetch ruleset harness-feature-daemon-only body for baseline capture; skipping." >&2
+        return 0
+    fi
 
-    "${_PYTHON}" -c '
+    if ! "${_PYTHON}" -c '
 import json, sys
 
 owner_repo, main_id, main_body, feat_id, feat_body, baseline_path = sys.argv[1:7]
@@ -426,7 +432,10 @@ baseline[owner_repo] = {
 with open(baseline_path, "w", encoding="utf-8", newline="\n") as f:
     json.dump(baseline, f, indent=2)
     f.write("\n")
-' "${REPO_SLUG}" "${main_id}" "${main_body}" "${feat_id}" "${feat_body}" "${baseline_path}"
+' "${REPO_SLUG}" "${main_id}" "${main_body}" "${feat_id}" "${feat_body}" "${baseline_path}"; then
+        echo "provision-ruleset: WARNING — failed to write ruleset baseline (parse/write error); skipping." >&2
+        return 0
+    fi
 
     echo "provision-ruleset: baseline pinned at ${baseline_path} (main id=${main_id}, feature id=${feat_id})"
 }
