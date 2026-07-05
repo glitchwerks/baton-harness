@@ -415,7 +415,33 @@ Two common supervision patterns are shown below. Both are illustrative starting 
 
 #### systemd unit (recommended)
 
-Create `/etc/systemd/system/bh-daemon.service`. `${BH_PROJECT_ROOT}/.bh/config.env` (read at daemon startup by `sandbox_config.read_and_validate`) supplies all per-deployment constants. `~/.config/baton-harness/host.env` supplies `BH_PROJECT_ROOT`. The `EnvironmentFile=` therefore needs only `BWS_ACCESS_TOKEN` — the single bootstrap secret. Keep that file root-readable only (`chmod 600`). Make sure `ANTHROPIC_API_KEY` never appears in either the unit or the `EnvironmentFile=`.
+The recommended way to install the `bh-daemon` systemd unit is `bin/install-daemon-service.sh` (#208). It auto-detects `HARNESS_DIR` (the script's own repo root), `RUN_USER` (`${SUDO_USER:-$(whoami)}`), and `BH_PROJECT_ROOT` (via `~/.config/baton-harness/host.env` / `.bh/config.env`, same resolution `bin/run-daemon.sh` uses), prints a summary, and asks a single `[y/N]` confirm before writing `/etc/bh-daemon/secrets.env` (mode `600`) and `/etc/systemd/system/bh-daemon.service`, running `daemon-reload` + `enable --now`, and printing `systemctl status` plus the last 20 journal lines:
+
+```bash
+export BWS_ACCESS_TOKEN=<bitwarden-machine-account-token>   # or let it prompt silently
+bin/install-daemon-service.sh
+```
+
+Useful flags:
+
+| Flag | Effect |
+|---|---|
+| `--print-unit` | Render the unit + `secrets.env` to stdout; no privileged writes, no `systemctl` calls — dry-run preview |
+| `--no-start` | Write the unit + `secrets.env` and run `daemon-reload` only; don't `enable`/start the service |
+| `--harness-dir PATH` | Override the auto-detected harness repo root |
+| `--project-root PATH` | Override the auto-detected `BH_PROJECT_ROOT` |
+| `--user NAME` | Override the auto-detected systemd `User=` |
+| `--help` / `-h` | Show usage |
+
+Same safety behavior as the manual path below: the script refuses to run if `ANTHROPIC_API_KEY` is set in the calling environment, and backs up an existing unit or `secrets.env` (timestamped) before overwriting either. For non-interactive installs (CI, provisioning scripts), set `BH_SETUP_NO_PROMPT=1`; the script then fails closed with a clear error if `BH_PROJECT_ROOT` or `BWS_ACCESS_TOKEN` cannot be resolved without a prompt, rather than hanging on `read`.
+
+After it finishes, the script reminds you to run `bin/provision-ruleset.sh` once against the target repo — it does **not** run provisioning itself, and without a captured `.bh/ruleset-baseline.json` the preflight gate (issue #206) parks every issue as `NOT_PROVISIONED`.
+
+##### Manual / reference
+
+`bin/install-daemon-service.sh` writes exactly the unit and secrets file shown below — use this if you want to see (or hand-edit) precisely what gets written, or are installing on a host where the script can't run.
+
+`${BH_PROJECT_ROOT}/.bh/config.env` (read at daemon startup by `sandbox_config.read_and_validate`) supplies all other per-deployment constants (`BH_REPO_OWNER`, `BH_REPO_NAME`, `BH_GITHUB_APP_*`). Because the unit's `ExecStart=` invokes the `bh-daemon` binary directly (not the `bin/run-daemon.sh` wrapper that sources `~/.config/baton-harness/host.env`), the unit carries `BH_PROJECT_ROOT` as an explicit `Environment=` line. The `EnvironmentFile=` therefore needs only `BWS_ACCESS_TOKEN` — the single bootstrap secret. Keep that file root-readable only (`chmod 600`). Make sure `ANTHROPIC_API_KEY` never appears in either the unit or the `EnvironmentFile=`.
 
 ```ini
 [Unit]
@@ -425,14 +451,7 @@ After=network.target
 [Service]
 Type=simple
 User=agent
-# BH_PROJECT_ROOT is written to ~/.config/baton-harness/host.env by
-# bin/setup-env.sh and sourced automatically by bin/run-daemon.sh.
-# For systemd-managed deploys where bin/setup-env.sh is not run
-# interactively, you may supply it as an inline Environment= instead:
-# Environment=BH_PROJECT_ROOT=/path/to/sandbox/clone
-#
-# All other required vars (BH_REPO_OWNER, BH_REPO_NAME, BH_GITHUB_APP_*)
-# are read from ${BH_PROJECT_ROOT}/.bh/config.env at daemon startup.
+Environment=BH_PROJECT_ROOT=/path/to/sandbox/clone
 EnvironmentFile=/etc/bh-daemon/secrets.env
 ExecStart=/path/to/harness/.venv/bin/bh-daemon --workflow /path/to/harness/config/WORKFLOW.md
 Restart=on-failure
@@ -457,7 +476,7 @@ Key points:
 - Do NOT add `KillSignal=SIGKILL` — the default `KillSignal=SIGTERM` lets the handler clear the `daemon.alive` marker before exit.
 - Graceful shutdown: `systemctl stop bh-daemon` sends SIGTERM; the handler fires and exits 0.
 
-Enable and start:
+Enable and start (this is what `bin/install-daemon-service.sh` does for you):
 
 ```bash
 systemctl daemon-reload
