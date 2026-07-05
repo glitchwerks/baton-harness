@@ -398,3 +398,51 @@ def validate_daemon_token(token: str) -> None:
             f"'{token[:12]}...'. "
             "Only ghs_ installation tokens are accepted by the daemon."
         )
+
+
+def validate_gh_token(token: str, *, secret_id_configured: bool) -> None:
+    """Validate that a vault-configured ``GH_TOKEN`` resolved non-empty.
+
+    Boot-time guard for issue #212: when a Bitwarden Secrets ID was
+    configured for ``GH_TOKEN`` (``BWS_GH_TOKEN_SECRET_ID`` set), the
+    vault fetch is expected to have populated ``os.environ["GH_TOKEN"]``.
+    If it ended up empty or whitespace-only anyway, that misconfiguration
+    should fail fast at startup rather than surface opaquely later inside
+    a worker subprocess.
+
+    This is a **no-op** when no secret ID was configured — an externally
+    supplied, non-vault-backed ``GH_TOKEN`` (empty or otherwise) is out of
+    scope for this specific guard and preserves pre-#212 behaviour.
+
+    Args:
+        token: The resolved ``GH_TOKEN`` value (may be empty).
+        secret_id_configured: Whether a Bitwarden Secrets ID was
+            configured for ``GH_TOKEN`` (i.e. a vault fetch was expected
+            to populate it).
+
+    Raises:
+        TokenValidationError: When ``secret_id_configured`` is ``True``
+            and ``token`` is empty or whitespace-only.
+
+    Example::
+
+        try:
+            validate_gh_token(
+                os.environ.get("GH_TOKEN", ""),
+                secret_id_configured=bool(
+                    os.environ.get("BWS_GH_TOKEN_SECRET_ID")
+                ),
+            )
+        except TokenValidationError as exc:
+            sys.exit(f"gh token gate: {exc.message}")
+    """
+    if not secret_id_configured:
+        return
+
+    if not token.strip():
+        raise TokenValidationError(
+            "validate_gh_token: GH_TOKEN is empty after vault bootstrap. "
+            "BWS_GH_TOKEN_SECRET_ID was configured but the fetched "
+            "secret resolved to an empty or whitespace-only value — "
+            "check the Bitwarden Secrets entry."
+        )

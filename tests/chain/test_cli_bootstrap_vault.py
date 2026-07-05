@@ -765,3 +765,168 @@ class TestNoSecretLeakInRepr:
         assert "hooks.slack.com" not in result_str, (
             "Slack webhook URL found in provider str — secret value may leak"
         )
+
+
+# ---------------------------------------------------------------------------
+# V8. GH_TOKEN empty-but-present guard must be truthiness-based (#211)
+# ---------------------------------------------------------------------------
+
+
+class TestGhTokenEmptyButPresentGuard:
+    """The GH_TOKEN vault-fetch guard must check truthiness, not presence.
+
+    Regression test for #211: ``cli.py``'s guard
+    (``if _gh_token_secret_id and "GH_TOKEN" not in os.environ:``) only
+    checks whether the key exists in ``os.environ``. When ``GH_TOKEN``
+    is present but set to ``""`` (e.g. a systemd unit or shell that
+    exports an empty string rather than leaving the var unset), the key
+    IS in ``os.environ``, so the vault fetch is skipped and the empty
+    value silently wins over the configured vault secret.
+    """
+
+    def test_bootstrap_fetches_gh_token_when_env_value_is_empty_string(
+        self,
+        base_env: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An empty-but-present GH_TOKEN must still trigger the vault fetch.
+
+        Sets ``GH_TOKEN=""`` and ``BWS_GH_TOKEN_SECRET_ID`` to a fake
+        secret ID, stubs ``fetch_secret`` to return a sentinel value for
+        that ID, and no-ops ``build_installation_token_provider`` so
+        ``bootstrap_secrets()`` can run without touching a real vault or
+        PEM. After ``bootstrap_secrets()`` returns, ``os.environ
+        ["GH_TOKEN"]`` must equal the fetched sentinel — i.e. the fetch
+        WAS attempted despite the pre-existing empty value.
+
+        MUST FAIL today: the current presence-only guard sees
+        ``"GH_TOKEN" in os.environ`` (even though the value is ``""``)
+        and skips the fetch entirely, leaving
+        ``os.environ["GH_TOKEN"] == ""``.
+        """
+        monkeypatch.setenv("GH_TOKEN", "")
+        monkeypatch.setenv("BWS_GH_TOKEN_SECRET_ID", _GH_TOKEN_SECRET_ID)
+
+        stub = _make_fetch_secret_stub({_GH_TOKEN_SECRET_ID: "tok-sentinel"})
+        provider = _make_provider_patch()
+
+        with (
+            patch(
+                "baton_harness.chain.bws_client.fetch_secret",
+                side_effect=stub,
+            ),
+            # Patched on cli's own bound name (not app_auth's) so this
+            # test is robust regardless of whether an earlier test in
+            # this module already imported baton_harness.chain.cli and
+            # cached the `from ... import build_installation_token_
+            # provider` binding — see the V6 ordering test's comment for
+            # why patching app_auth alone is import-order-fragile.
+            patch(
+                "baton_harness.chain.cli.build_installation_token_provider",
+                return_value=provider,
+            ),
+        ):
+            from baton_harness.chain.cli import bootstrap_secrets
+
+            bootstrap_secrets()
+
+        assert os.environ.get("GH_TOKEN") == "tok-sentinel", (
+            "Expected the vault fetch to overwrite an empty-but-present "
+            f"GH_TOKEN with the vault value; got "
+            f"{os.environ.get('GH_TOKEN')!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# V9. Boot-time validation that GH_TOKEN resolved non-empty (#212)
+# ---------------------------------------------------------------------------
+
+
+class TestValidateGhTokenBootTimeGuard:
+    """Boot-time validation that GH_TOKEN resolved to a non-empty value.
+
+    Regression tests for #212: after ``bootstrap_secrets()`` runs,
+    nothing currently asserts that ``GH_TOKEN`` ended up non-empty when
+    a vault secret ID was configured for it — the failure only surfaces
+    later, opaquely, inside a worker subprocess.
+
+    SEAM CHOICE (documented ambiguity for the router/implementer to
+    reconcile): the exact call site for this validation is the
+    implementer's choice. Per the briefing, this test targets the most
+    stable *public* contract: a standalone helper,
+    ``validate_gh_token(token: str, secret_id_configured: bool) -> None``,
+    mirroring the shape/naming of the sibling
+    ``baton_harness._auth.validate_daemon_token(token: str) -> None``
+    pattern already established in ``cli.py``'s startup path (called
+    right after ``bootstrap_secrets()`` at ~cli.py:365). Raises when a
+    vault secret ID WAS configured but the resolved token is
+    empty/whitespace; is a no-op otherwise (preserving the pre-#212
+    backward-compat path where an externally-supplied, non-vault-backed
+    empty ``GH_TOKEN`` is out of scope for this specific guard).
+
+    This test imports ``validate_gh_token`` from
+    ``baton_harness.chain.cli`` — the module that owns GH_TOKEN
+    resolution today (``bootstrap_secrets``) and the daemon startup
+    sequence that already calls the sibling ``validate_daemon_token``.
+    If the implementer instead places the helper in
+    ``baton_harness._auth`` (alongside ``validate_daemon_token`` and
+    ``TokenValidationError``), only the import path here needs to move;
+    the asserted contract (signature + raise/no-raise behavior) is
+    unchanged. Flagged for router reconciliation if the implementer
+    picks a different name or shape entirely.
+    """
+
+    def test_raises_when_secret_id_configured_but_token_empty(
+        self,
+    ) -> None:
+        """Raises a clear, GH_TOKEN-naming error when configured but empty.
+
+        MUST FAIL today: ``validate_gh_token`` does not exist yet — no
+        boot-time check of this kind is performed anywhere in the
+        codebase (issue #212). Expect an ``ImportError``/
+        ``AttributeError`` collection-time failure until the helper is
+        added, which is itself valid evidence of the missing behavior.
+        """
+        from baton_harness.chain.cli import validate_gh_token
+
+        with pytest.raises(Exception, match="GH_TOKEN"):
+            validate_gh_token("", secret_id_configured=True)
+
+    def test_raises_when_secret_id_configured_but_token_whitespace(
+        self,
+    ) -> None:
+        """Whitespace-only resolved token is treated as empty.
+
+        MUST FAIL today: ``validate_gh_token`` does not exist yet.
+        """
+        from baton_harness.chain.cli import validate_gh_token
+
+        with pytest.raises(Exception, match="GH_TOKEN"):
+            validate_gh_token("   ", secret_id_configured=True)
+
+    def test_does_not_raise_when_secret_id_not_configured(self) -> None:
+        """No-op when no vault secret ID was configured for GH_TOKEN.
+
+        Preserves the pre-#212 backward-compat path: an empty
+        ``GH_TOKEN`` is only this helper's concern when a vault fetch
+        was expected to populate it.
+
+        MUST FAIL today: ``validate_gh_token`` does not exist yet, so
+        the import itself raises.
+        """
+        from baton_harness.chain.cli import validate_gh_token
+
+        validate_gh_token("", secret_id_configured=False)
+
+    def test_does_not_raise_when_token_non_empty(self) -> None:
+        """No-op when the resolved token is non-empty.
+
+        MUST FAIL today: ``validate_gh_token`` does not exist yet, so
+        the import itself raises.
+        """
+        from baton_harness.chain.cli import validate_gh_token
+
+        validate_gh_token(
+            "github_pat_TESTVAL_ABCDEFGHIJKLMNOP",
+            secret_id_configured=True,
+        )
