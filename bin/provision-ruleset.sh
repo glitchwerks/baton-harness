@@ -360,4 +360,86 @@ sys.exit(0 if all(desired.get(k) == current.get(k) for k in keys) else 1)
 _apply_ruleset "harness-main-no-merge" "${HARNESS_DIR}/config/ruleset.main.json"
 _apply_ruleset "harness-feature-daemon-only" "${HARNESS_DIR}/config/ruleset.feature.json"
 
+# ---------------------------------------------------------------------------
+# Baseline capture (#206): pin ruleset_id + updated_at per ruleset so the
+# App-token-safe per-launch preflight (chain.ruleset_status.
+# check_ruleset_signals) can detect drift without needing bypass_actors
+# read access. Runs as the FINAL step, after any POST/PUT above, so a
+# legitimate ruleset edit made by this run is captured in the fresh pin
+# rather than immediately flagged as drift on the next preflight.
+#
+# Non-fatal by design: a missing BH_PROJECT_ROOT or an unresolvable
+# ruleset id only warns and skips the capture — provisioning itself has
+# already succeeded (or no-op'd) above, and the operator can re-run this
+# script once BH_PROJECT_ROOT is set to pin the baseline.
+# ---------------------------------------------------------------------------
+_capture_baseline() {
+    if [[ -z "${BH_PROJECT_ROOT:-}" ]]; then
+        echo "provision-ruleset: WARNING — BH_PROJECT_ROOT not set; skipping ruleset baseline capture." >&2
+        return 0
+    fi
+
+    local baseline_dir="${BH_PROJECT_ROOT}/.bh"
+    local baseline_path="${baseline_dir}/ruleset-baseline.json"
+    mkdir -p "${baseline_dir}"
+
+    local main_id feat_id
+    if ! main_id="$(_lookup_id "harness-main-no-merge")"; then
+        echo "provision-ruleset: WARNING — could not resolve harness-main-no-merge id for baseline capture; skipping." >&2
+        return 0
+    fi
+    if ! feat_id="$(_lookup_id "harness-feature-daemon-only")"; then
+        echo "provision-ruleset: WARNING — could not resolve harness-feature-daemon-only id for baseline capture; skipping." >&2
+        return 0
+    fi
+    if [[ -z "${main_id}" || -z "${feat_id}" ]]; then
+        echo "provision-ruleset: WARNING — one or both rulesets not found after provisioning; skipping baseline capture." >&2
+        return 0
+    fi
+
+    local main_body feat_body
+    if ! main_body="$(gh api "repos/${REPO_SLUG}/rulesets/${main_id}")"; then
+        echo "provision-ruleset: WARNING — could not fetch ruleset harness-main-no-merge body for baseline capture; skipping." >&2
+        return 0
+    fi
+    if ! feat_body="$(gh api "repos/${REPO_SLUG}/rulesets/${feat_id}")"; then
+        echo "provision-ruleset: WARNING — could not fetch ruleset harness-feature-daemon-only body for baseline capture; skipping." >&2
+        return 0
+    fi
+
+    if ! "${_PYTHON}" -c '
+import json, sys
+
+owner_repo, main_id, main_body, feat_id, feat_body, baseline_path = sys.argv[1:7]
+
+
+def _entry(ruleset_id, body):
+    parsed = json.loads(body)
+    return {"ruleset_id": int(ruleset_id), "updated_at": parsed["updated_at"]}
+
+
+try:
+    with open(baseline_path, encoding="utf-8") as f:
+        baseline = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    baseline = {}
+
+baseline[owner_repo] = {
+    "harness-main-no-merge": _entry(main_id, main_body),
+    "harness-feature-daemon-only": _entry(feat_id, feat_body),
+}
+
+with open(baseline_path, "w", encoding="utf-8", newline="\n") as f:
+    json.dump(baseline, f, indent=2)
+    f.write("\n")
+' "${REPO_SLUG}" "${main_id}" "${main_body}" "${feat_id}" "${feat_body}" "${baseline_path}"; then
+        echo "provision-ruleset: WARNING — failed to write ruleset baseline (parse/write error); skipping." >&2
+        return 0
+    fi
+
+    echo "provision-ruleset: baseline pinned at ${baseline_path} (main id=${main_id}, feature id=${feat_id})"
+}
+
+_capture_baseline
+
 echo "provision-ruleset: complete"

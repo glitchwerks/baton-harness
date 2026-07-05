@@ -1267,3 +1267,697 @@ def test_rules_equal_match_duplicate_type_order_independent() -> None:
         "same multiset of two 'commit_message_pattern' occurrences "
         "(order-independent) must report MATCH, not DRIFT"
     )
+
+
+# ---------------------------------------------------------------------------
+# #206 — App-token-safe preflight: three admin-free signals replace the
+# bypass_actors structural compare, which the App installation token
+# cannot read (only a ruleset-write-capable requester sees bypass_actors).
+#
+# New API surface pinned by these tests (Phase 2 must implement):
+#   - ``RulesetStatus.NOT_PROVISIONED`` — new enum member, additive.
+#   - ``RulesetCheckResult`` — frozen dataclass: ``status: RulesetStatus``,
+#     ``detail: str | None``.
+#   - ``check_ruleset_signals(owner, repo, *, app_id, runner=None,
+#     baseline_path=None) -> RulesetCheckResult`` — new top-level function.
+#     Does NOT replace or alter ``ruleset_is_provisioned`` (kept intact for
+#     the 25 tests above). ``baseline_path`` defaults to
+#     ``$BH_PROJECT_ROOT/.bh/ruleset-baseline.json`` when omitted.
+#   - ``_expected_bypass_verdict(rendered_config, app_id) -> str`` — pure
+#     helper: "always" when app_id is an Integration bypass actor in
+#     ``rendered_config["bypass_actors"]``, else "never". Keyed purely by
+#     bypass_actors membership, never by ruleset name.
+#   - ``config/ruleset.compare-keys.app.json`` — new committed config file,
+#     content ``["name","target","enforcement","conditions","rules"]``
+#     (no ``bypass_actors``).
+#
+# Baseline schema (``.bh/ruleset-baseline.json``):
+#   {"<owner>/<repo>": {"<ruleset-name>": {"ruleset_id": int,
+#                                           "updated_at": str}, ...}}
+# ---------------------------------------------------------------------------
+
+_APP_ID = "4109901"
+_BASELINE_MAIN_UPDATED_AT = "2026-07-04T10:55:29.812-04:00"
+_BASELINE_FEAT_UPDATED_AT = "2026-07-04T10:55:30.670-04:00"
+
+_COMPARE_KEYS_APP_CFG = _HARNESS / "config" / "ruleset.compare-keys.app.json"
+
+
+def _live_main_app_view(
+    *,
+    current_user_can_bypass: str = "never",
+    updated_at: str = _BASELINE_MAIN_UPDATED_AT,
+    ruleset_id: int = _MAIN_ID,
+    enforcement: str | None = None,
+) -> dict[str, Any]:
+    """Build an App-token GET body for the main ruleset.
+
+    Omits ``bypass_actors`` (the App token lacks ruleset-write access
+    to see it) but carries ``current_user_can_bypass`` and
+    ``updated_at`` — the two admin-free signals #206 introduces.
+
+    Args:
+        current_user_can_bypass: The live verdict value to embed.
+        updated_at: The live server-timestamp value to embed.
+        ruleset_id: The numeric ruleset id to embed.
+        enforcement: When given, overrides ``enforcement`` (drift case).
+
+    Returns:
+        A dict shaped like a real App-token-authenticated GET body.
+    """
+    body = _render_main()
+    body.pop("bypass_actors", None)
+    body["current_user_can_bypass"] = current_user_can_bypass
+    body["updated_at"] = updated_at
+    body["id"] = ruleset_id
+    if enforcement is not None:
+        body["enforcement"] = enforcement
+    return body
+
+
+def _live_feature_app_view(
+    *,
+    current_user_can_bypass: str = "always",
+    updated_at: str = _BASELINE_FEAT_UPDATED_AT,
+    ruleset_id: int = _FEAT_ID,
+    enforcement: str | None = None,
+) -> dict[str, Any]:
+    """Build an App-token GET body for the feature ruleset.
+
+    See ``_live_main_app_view`` for the App-token-visibility rationale.
+
+    Args:
+        current_user_can_bypass: The live verdict value to embed.
+        updated_at: The live server-timestamp value to embed.
+        ruleset_id: The numeric ruleset id to embed.
+        enforcement: When given, overrides ``enforcement`` (drift case).
+
+    Returns:
+        A dict shaped like a real App-token-authenticated GET body.
+    """
+    body = _render_feature(app_id=int(_APP_ID))
+    body.pop("bypass_actors", None)
+    body["current_user_can_bypass"] = current_user_can_bypass
+    body["updated_at"] = updated_at
+    body["id"] = ruleset_id
+    if enforcement is not None:
+        body["enforcement"] = enforcement
+    return body
+
+
+def _write_baseline(
+    path: Path,
+    owner: str,
+    repo: str,
+    *,
+    main_id: int = _MAIN_ID,
+    main_updated_at: str = _BASELINE_MAIN_UPDATED_AT,
+    feat_id: int = _FEAT_ID,
+    feat_updated_at: str = _BASELINE_FEAT_UPDATED_AT,
+) -> None:
+    """Write a ``.bh/ruleset-baseline.json``-shaped file to ``path``.
+
+    Args:
+        path: File path to write the baseline JSON to.
+        owner: Repository owner login (baseline top-level key segment).
+        repo: Repository name (baseline top-level key segment).
+        main_id: The pinned ``ruleset_id`` for the main ruleset.
+        main_updated_at: The pinned ``updated_at`` for the main ruleset.
+        feat_id: The pinned ``ruleset_id`` for the feature ruleset.
+        feat_updated_at: The pinned ``updated_at`` for the feature ruleset.
+    """
+    baseline = {
+        f"{owner}/{repo}": {
+            "harness-main-no-merge": {
+                "ruleset_id": main_id,
+                "updated_at": main_updated_at,
+            },
+            "harness-feature-daemon-only": {
+                "ruleset_id": feat_id,
+                "updated_at": feat_updated_at,
+            },
+        }
+    }
+    path.write_text(json.dumps(baseline), encoding="utf-8")
+
+
+def _unreachable_runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+    """Fail loudly if called — used to prove a fail-closed short-circuit.
+
+    Args:
+        args: The args the (unexpected) call would have carried.
+
+    Raises:
+        AssertionError: Always — this runner must never be invoked.
+    """
+    raise AssertionError(
+        f"gh runner must not be called when baseline is missing; args={args!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test P1/P2 — _expected_bypass_verdict derives from bypass_actors
+# membership only, never from ruleset name.
+# ---------------------------------------------------------------------------
+
+
+def test_expected_bypass_verdict_never_when_app_not_in_bypass_actors() -> None:
+    """Expected verdict is "never" when the App is absent from actors.
+
+    Deliberately uses a ruleset name unrelated to "main" to prove the
+    derivation is keyed by bypass_actors membership, not by name.
+    """
+    from baton_harness.chain.ruleset_status import _expected_bypass_verdict
+
+    admin_only_config: dict[str, Any] = {
+        "name": "some-other-ruleset-name",
+        "bypass_actors": [
+            {
+                "actor_id": 5,
+                "actor_type": "RepositoryRole",
+                "bypass_mode": "always",
+            }
+        ],
+    }
+    assert (
+        _expected_bypass_verdict(admin_only_config, app_id=_APP_ID) == "never"
+    )
+
+
+def test_expected_bypass_verdict_always_when_app_is_bypass_actor() -> None:
+    """Expected verdict is "always" when the App is a bypass actor.
+
+    Deliberately uses a ruleset name unrelated to "feature" to prove the
+    derivation is keyed by bypass_actors membership, not by name.
+    """
+    from baton_harness.chain.ruleset_status import _expected_bypass_verdict
+
+    app_bypass_config: dict[str, Any] = {
+        "name": "yet-another-name",
+        "bypass_actors": [
+            {
+                "actor_id": int(_APP_ID),
+                "actor_type": "Integration",
+                "bypass_mode": "always",
+            }
+        ],
+    }
+    assert (
+        _expected_bypass_verdict(app_bypass_config, app_id=_APP_ID) == "always"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test Q1 — MATCH when all three signals align
+# ---------------------------------------------------------------------------
+
+
+def test_check_ruleset_signals_match_when_all_three_signals_align(
+    tmp_path: Path,
+) -> None:
+    """MATCH when structural, bypass-verdict, and updated_at all align.
+
+    Main carries ``current_user_can_bypass="never"`` (App absent) and
+    feature carries ``"always"`` (App present) — both correct for their
+    respective checked-in configs — plus ``updated_at`` values matching
+    the pinned baseline exactly. Neither live body carries
+    ``bypass_actors`` at all (the App-token-omission case).
+    """
+    from baton_harness.chain.ruleset_status import (
+        RulesetStatus,
+        check_ruleset_signals,
+    )
+
+    baseline_path = tmp_path / "ruleset-baseline.json"
+    _write_baseline(baseline_path, "o", "r")
+
+    runner = _FakeRunner(
+        list_proc=_ok(_list_body()),
+        byid_main_proc=_ok(json.dumps(_live_main_app_view())),
+        byid_feat_proc=_ok(json.dumps(_live_feature_app_view())),
+    )
+    result = check_ruleset_signals(
+        "o", "r", app_id=_APP_ID, runner=runner, baseline_path=baseline_path
+    )
+    assert result.status is RulesetStatus.MATCH, (
+        f"expected MATCH with aligned signals; got {result!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test Q2/Q3/Q4 — current_user_can_bypass crown-jewel DRIFT detection
+# ---------------------------------------------------------------------------
+
+
+def test_check_ruleset_signals_drift_when_main_bypass_verdict_is_always(
+    tmp_path: Path,
+) -> None:
+    """DRIFT when main's live ``current_user_can_bypass`` is "always".
+
+    Main's checked-in config never lists the App as a bypass actor, so
+    the expected verdict is "never" (guardrail intact). A live value of
+    "always" means the App itself can now bypass main — a tamper signal
+    that must surface as DRIFT naming the ``current_user_can_bypass``
+    field, the main ruleset, and both the expected and live values.
+    """
+    from baton_harness.chain.ruleset_status import (
+        _MAIN_NAME,
+        RulesetStatus,
+        check_ruleset_signals,
+    )
+
+    baseline_path = tmp_path / "ruleset-baseline.json"
+    _write_baseline(baseline_path, "o", "r")
+
+    runner = _FakeRunner(
+        list_proc=_ok(_list_body()),
+        byid_main_proc=_ok(
+            json.dumps(_live_main_app_view(current_user_can_bypass="always"))
+        ),
+        byid_feat_proc=_ok(json.dumps(_live_feature_app_view())),
+    )
+    result = check_ruleset_signals(
+        "o", "r", app_id=_APP_ID, runner=runner, baseline_path=baseline_path
+    )
+    assert result.status is RulesetStatus.DRIFT
+    detail = result.detail or ""
+    assert _MAIN_NAME in detail, f"detail must name the ruleset: {detail!r}"
+    assert "current_user_can_bypass" in detail, (
+        f"detail must name the signal: {detail!r}"
+    )
+    assert "never" in detail, f"detail must carry expected value: {detail!r}"
+    assert "always" in detail, f"detail must carry live value: {detail!r}"
+
+
+def test_check_ruleset_signals_drift_when_main_bypass_verdict_is_bypass(
+    tmp_path: Path,
+) -> None:
+    """DRIFT when main's live ``current_user_can_bypass`` is any non-"never".
+
+    Guards against an implementation that only special-cases "always" —
+    any live value other than the expected "never" on main must DRIFT,
+    including a non-enum-standard corrupted value like "bypass".
+    """
+    from baton_harness.chain.ruleset_status import (
+        RulesetStatus,
+        check_ruleset_signals,
+    )
+
+    baseline_path = tmp_path / "ruleset-baseline.json"
+    _write_baseline(baseline_path, "o", "r")
+
+    runner = _FakeRunner(
+        list_proc=_ok(_list_body()),
+        byid_main_proc=_ok(
+            json.dumps(_live_main_app_view(current_user_can_bypass="bypass"))
+        ),
+        byid_feat_proc=_ok(json.dumps(_live_feature_app_view())),
+    )
+    result = check_ruleset_signals(
+        "o", "r", app_id=_APP_ID, runner=runner, baseline_path=baseline_path
+    )
+    assert result.status is RulesetStatus.DRIFT
+
+
+def test_check_ruleset_signals_drift_when_feature_bypass_verdict_is_never(
+    tmp_path: Path,
+) -> None:
+    """DRIFT when feature's live ``current_user_can_bypass`` is "never".
+
+    Feature's checked-in config always lists the App as a bypass actor,
+    so the expected verdict is "always" (App can push feature/* refs). A
+    live value of "never" means the daemon's push path would break — a
+    tamper/misconfiguration signal that must surface as DRIFT naming the
+    ``current_user_can_bypass`` field, the feature ruleset, and both
+    values.
+    """
+    from baton_harness.chain.ruleset_status import (
+        _FEATURE_NAME,
+        RulesetStatus,
+        check_ruleset_signals,
+    )
+
+    baseline_path = tmp_path / "ruleset-baseline.json"
+    _write_baseline(baseline_path, "o", "r")
+
+    runner = _FakeRunner(
+        list_proc=_ok(_list_body()),
+        byid_main_proc=_ok(json.dumps(_live_main_app_view())),
+        byid_feat_proc=_ok(
+            json.dumps(_live_feature_app_view(current_user_can_bypass="never"))
+        ),
+    )
+    result = check_ruleset_signals(
+        "o", "r", app_id=_APP_ID, runner=runner, baseline_path=baseline_path
+    )
+    assert result.status is RulesetStatus.DRIFT
+    detail = result.detail or ""
+    assert _FEATURE_NAME in detail, f"detail must name the ruleset: {detail!r}"
+    assert "current_user_can_bypass" in detail, (
+        f"detail must name the signal: {detail!r}"
+    )
+    assert "always" in detail, f"detail must carry expected value: {detail!r}"
+    assert "never" in detail, f"detail must carry live value: {detail!r}"
+
+
+# ---------------------------------------------------------------------------
+# Test R1/R2/R3 — updated_at version-pin change detection
+# ---------------------------------------------------------------------------
+
+
+def test_check_ruleset_signals_drift_when_main_updated_at_differs(
+    tmp_path: Path,
+) -> None:
+    """DRIFT when main's live ``updated_at`` differs from the baseline pin.
+
+    Everything else (structural keys, current_user_can_bypass) is
+    aligned; only the version-pin timestamp has moved, which alone must
+    be sufficient to surface DRIFT naming the ``updated_at`` field, the
+    main ruleset, and both timestamp values.
+    """
+    from baton_harness.chain.ruleset_status import (
+        _MAIN_NAME,
+        RulesetStatus,
+        check_ruleset_signals,
+    )
+
+    baseline_path = tmp_path / "ruleset-baseline.json"
+    _write_baseline(baseline_path, "o", "r")
+
+    mutated_updated_at = "2026-07-05T09:00:00.000-04:00"
+    runner = _FakeRunner(
+        list_proc=_ok(_list_body()),
+        byid_main_proc=_ok(
+            json.dumps(_live_main_app_view(updated_at=mutated_updated_at))
+        ),
+        byid_feat_proc=_ok(json.dumps(_live_feature_app_view())),
+    )
+    result = check_ruleset_signals(
+        "o", "r", app_id=_APP_ID, runner=runner, baseline_path=baseline_path
+    )
+    assert result.status is RulesetStatus.DRIFT
+    detail = result.detail or ""
+    assert _MAIN_NAME in detail, f"detail must name the ruleset: {detail!r}"
+    assert "updated_at" in detail, f"detail must name the signal: {detail!r}"
+    assert _BASELINE_MAIN_UPDATED_AT in detail, (
+        f"detail must carry the pinned baseline value: {detail!r}"
+    )
+    assert mutated_updated_at in detail, (
+        f"detail must carry the live value: {detail!r}"
+    )
+
+
+def test_check_ruleset_signals_drift_when_feature_updated_at_differs(
+    tmp_path: Path,
+) -> None:
+    """DRIFT when feature's live ``updated_at`` differs from the baseline.
+
+    Mirrors the main-side test for the feature ruleset.
+    """
+    from baton_harness.chain.ruleset_status import (
+        _FEATURE_NAME,
+        RulesetStatus,
+        check_ruleset_signals,
+    )
+
+    baseline_path = tmp_path / "ruleset-baseline.json"
+    _write_baseline(baseline_path, "o", "r")
+
+    mutated_updated_at = "2026-07-05T09:00:00.000-04:00"
+    runner = _FakeRunner(
+        list_proc=_ok(_list_body()),
+        byid_main_proc=_ok(json.dumps(_live_main_app_view())),
+        byid_feat_proc=_ok(
+            json.dumps(_live_feature_app_view(updated_at=mutated_updated_at))
+        ),
+    )
+    result = check_ruleset_signals(
+        "o", "r", app_id=_APP_ID, runner=runner, baseline_path=baseline_path
+    )
+    assert result.status is RulesetStatus.DRIFT
+    detail = result.detail or ""
+    assert _FEATURE_NAME in detail, f"detail must name the ruleset: {detail!r}"
+    assert "updated_at" in detail, f"detail must name the signal: {detail!r}"
+
+
+def test_check_ruleset_signals_drift_on_third_actor_added_via_updated_at(
+    tmp_path: Path,
+) -> None:
+    """DRIFT when a third bypass actor is added, caught only via updated_at.
+
+    Regression scenario for #206's core bug: an operator (or attacker)
+    adds a third bypass actor to the main ruleset. The App token cannot
+    read ``bypass_actors`` to see the addition directly, and
+    ``current_user_can_bypass`` for the App itself is unchanged
+    ("never" — the App still isn't listed). Every structural compare-key
+    (name/target/enforcement/conditions/rules) is also unchanged. The
+    ONLY observable signal is that GitHub bumped ``updated_at`` when the
+    ruleset was mutated — this test pins that the ``updated_at``
+    version-pin alone is sufficient to catch the mutation.
+    """
+    from baton_harness.chain.ruleset_status import (
+        RulesetStatus,
+        check_ruleset_signals,
+    )
+
+    baseline_path = tmp_path / "ruleset-baseline.json"
+    _write_baseline(baseline_path, "o", "r")
+
+    # Third-actor-added mutation: current_user_can_bypass for the App is
+    # unaffected ("never" stands — the App is not the actor that was
+    # added), bypass_actors is unreadable (App-token omission, already
+    # simulated by _live_main_app_view), but GitHub bumped updated_at.
+    mutated_updated_at = "2026-07-05T09:00:00.000-04:00"
+    runner = _FakeRunner(
+        list_proc=_ok(_list_body()),
+        byid_main_proc=_ok(
+            json.dumps(
+                _live_main_app_view(
+                    current_user_can_bypass="never",
+                    updated_at=mutated_updated_at,
+                )
+            )
+        ),
+        byid_feat_proc=_ok(json.dumps(_live_feature_app_view())),
+    )
+    result = check_ruleset_signals(
+        "o", "r", app_id=_APP_ID, runner=runner, baseline_path=baseline_path
+    )
+    assert result.status is RulesetStatus.DRIFT, (
+        "a third-actor addition invisible to bypass_actors and to "
+        f"current_user_can_bypass must still DRIFT via updated_at; "
+        f"got {result!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test S1/S2/S3 — baseline-missing fail-closed, distinct from DRIFT
+# ---------------------------------------------------------------------------
+
+
+def test_check_ruleset_signals_not_provisioned_when_baseline_missing(
+    tmp_path: Path,
+) -> None:
+    """NOT_PROVISIONED when no baseline file exists for the repo.
+
+    Fail-closed posture: absent a pinned baseline, the preflight cannot
+    safely assert "no drift" so it must not report MATCH, and must not
+    conflate this with DRIFT either — it is a distinct "not yet
+    provisioned" outcome. The gh runner must never be called: without a
+    baseline there's nothing to compare against, so the function must
+    short-circuit before making any GitHub call.
+    """
+    from baton_harness.chain.ruleset_status import (
+        RulesetStatus,
+        check_ruleset_signals,
+    )
+
+    missing_baseline = tmp_path / "does-not-exist.json"
+    result = check_ruleset_signals(
+        "o",
+        "r",
+        app_id=_APP_ID,
+        runner=_unreachable_runner,
+        baseline_path=missing_baseline,
+    )
+    assert result.status is RulesetStatus.NOT_PROVISIONED, (
+        f"missing baseline must yield NOT_PROVISIONED; got {result!r}"
+    )
+
+
+def test_check_ruleset_signals_not_provisioned_distinct_from_drift(
+    tmp_path: Path,
+) -> None:
+    """NOT_PROVISIONED is a distinct enum member from DRIFT.
+
+    Locks the enum-level distinction the router briefing requires:
+    baseline-missing must never be reported (or checked) as DRIFT.
+    """
+    from baton_harness.chain.ruleset_status import RulesetStatus
+
+    assert RulesetStatus.NOT_PROVISIONED is not RulesetStatus.DRIFT
+    assert RulesetStatus.NOT_PROVISIONED != RulesetStatus.DRIFT
+    assert RulesetStatus.NOT_PROVISIONED.value != RulesetStatus.DRIFT.value
+
+
+def test_check_ruleset_signals_not_provisioned_when_repo_key_missing(
+    tmp_path: Path,
+) -> None:
+    """NOT_PROVISIONED when the baseline file lacks this owner/repo's key.
+
+    The baseline file exists but was pinned for a different repository —
+    functionally equivalent to "not provisioned for this repo" and must
+    fail closed the same way as a wholly missing file.
+    """
+    from baton_harness.chain.ruleset_status import (
+        RulesetStatus,
+        check_ruleset_signals,
+    )
+
+    baseline_path = tmp_path / "ruleset-baseline.json"
+    _write_baseline(baseline_path, "other-owner", "other-repo")
+
+    result = check_ruleset_signals(
+        "o",
+        "r",
+        app_id=_APP_ID,
+        runner=_unreachable_runner,
+        baseline_path=baseline_path,
+    )
+    assert result.status is RulesetStatus.NOT_PROVISIONED, (
+        f"baseline present but missing this repo's key must yield "
+        f"NOT_PROVISIONED; got {result!r}"
+    )
+
+
+def test_check_ruleset_signals_baseline_path_defaults_to_env_var(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``baseline_path`` defaults from ``$BH_PROJECT_ROOT/.bh/...json``.
+
+    When the caller omits ``baseline_path`` entirely, the function must
+    resolve it from the ``BH_PROJECT_ROOT`` environment variable rather
+    than requiring every call site to compute the path itself.
+    """
+    from baton_harness.chain.ruleset_status import (
+        RulesetStatus,
+        check_ruleset_signals,
+    )
+
+    monkeypatch.setenv("BH_PROJECT_ROOT", str(tmp_path))
+    bh_dir = tmp_path / ".bh"
+    bh_dir.mkdir()
+    _write_baseline(bh_dir / "ruleset-baseline.json", "o", "r")
+
+    runner = _FakeRunner(
+        list_proc=_ok(_list_body()),
+        byid_main_proc=_ok(json.dumps(_live_main_app_view())),
+        byid_feat_proc=_ok(json.dumps(_live_feature_app_view())),
+    )
+    result = check_ruleset_signals("o", "r", app_id=_APP_ID, runner=runner)
+    assert result.status is RulesetStatus.MATCH, (
+        f"expected MATCH via env-derived default baseline path; got {result!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test T1/T2/T3 — structural compare excludes bypass_actors
+# ---------------------------------------------------------------------------
+
+
+def test_app_compare_keys_config_file_excludes_bypass_actors() -> None:
+    """``config/ruleset.compare-keys.app.json`` omits ``bypass_actors``.
+
+    Pins the exact new committed config file and its content: the
+    app-subset compare keys used for the App-token-safe structural
+    signal, deliberately excluding ``bypass_actors`` (which the App
+    token cannot read).
+    """
+    assert _COMPARE_KEYS_APP_CFG.exists(), (
+        f"expected new config file at {_COMPARE_KEYS_APP_CFG}"
+    )
+    keys = json.loads(_COMPARE_KEYS_APP_CFG.read_text(encoding="utf-8"))
+    assert keys == ["name", "target", "enforcement", "conditions", "rules"]
+    assert "bypass_actors" not in keys
+
+
+def test_check_ruleset_signals_match_when_only_bypass_actors_differs(
+    tmp_path: Path,
+) -> None:
+    """MATCH when live bodies differ from desired ONLY in bypass_actors.
+
+    Even in the (non-representative-of-production but structurally
+    valid) case where a live body still carries a ``bypass_actors``
+    field with entirely different actors than the checked-in config,
+    the app-subset structural compare must ignore it entirely — only
+    the ``current_user_can_bypass`` and ``updated_at`` signals speak to
+    bypass configuration under this scheme.
+    """
+    from baton_harness.chain.ruleset_status import (
+        RulesetStatus,
+        check_ruleset_signals,
+    )
+
+    baseline_path = tmp_path / "ruleset-baseline.json"
+    _write_baseline(baseline_path, "o", "r")
+
+    main_view = _live_main_app_view()
+    main_view["bypass_actors"] = [
+        {
+            "actor_id": 999999,
+            "actor_type": "Team",
+            "bypass_mode": "pull_request",
+        }
+    ]
+    feature_view = _live_feature_app_view()
+    feature_view["bypass_actors"] = []
+
+    runner = _FakeRunner(
+        list_proc=_ok(_list_body()),
+        byid_main_proc=_ok(json.dumps(main_view)),
+        byid_feat_proc=_ok(json.dumps(feature_view)),
+    )
+    result = check_ruleset_signals(
+        "o", "r", app_id=_APP_ID, runner=runner, baseline_path=baseline_path
+    )
+    assert result.status is RulesetStatus.MATCH, (
+        "a bypass_actors-only difference must not surface as DRIFT under "
+        f"the app-subset structural compare; got {result!r}"
+    )
+
+
+def test_check_ruleset_signals_drift_names_structural_key_that_differs(
+    tmp_path: Path,
+) -> None:
+    """DRIFT names the specific structural key that differs.
+
+    Changes the feature ruleset's ``enforcement`` from "active" to
+    "disabled" — one of the five app-subset compare keys — and asserts
+    the DRIFT detail names that key, the feature ruleset, and both
+    values.
+    """
+    from baton_harness.chain.ruleset_status import (
+        _FEATURE_NAME,
+        RulesetStatus,
+        check_ruleset_signals,
+    )
+
+    baseline_path = tmp_path / "ruleset-baseline.json"
+    _write_baseline(baseline_path, "o", "r")
+
+    runner = _FakeRunner(
+        list_proc=_ok(_list_body()),
+        byid_main_proc=_ok(json.dumps(_live_main_app_view())),
+        byid_feat_proc=_ok(
+            json.dumps(_live_feature_app_view(enforcement="disabled"))
+        ),
+    )
+    result = check_ruleset_signals(
+        "o", "r", app_id=_APP_ID, runner=runner, baseline_path=baseline_path
+    )
+    assert result.status is RulesetStatus.DRIFT
+    detail = result.detail or ""
+    assert _FEATURE_NAME in detail, f"detail must name the ruleset: {detail!r}"
+    assert "enforcement" in detail, f"detail must name the key: {detail!r}"
+    assert "active" in detail, f"detail must carry expected value: {detail!r}"
+    assert "disabled" in detail, f"detail must carry live value: {detail!r}"
