@@ -105,6 +105,22 @@ orchestration path.
   use the best-effort swallow-and-continue pattern matching VP-2/VP-3.
   Marker: `# VENDOR-PATCH VP-5: mid-loop PR-exists early-exit (#137)`.
 
+### VP-7 — `run_hook` drops the login-shell flag
+
+- **File:** `hooks.py`
+- **Patch file:** `patches/VP-7-hooks-non-login-shell.diff` (relative to repo root)
+- **Description:** `run_hook`'s subprocess spawn changes from
+  `asyncio.create_subprocess_exec("bash", "-lc", script, ...)` to
+  `asyncio.create_subprocess_exec("bash", "-c", script, ...)`. The `-l`
+  (login shell) flag forced the OS account's `/etc/profile` + `~/.bashrc`
+  chain to run before the hook script itself executed, which could clobber
+  daemon-injected environment variables (e.g. `GH_TOKEN`) ahead of the hook
+  ever reading them (issue #215). Dropping `-l` makes the invocation a
+  non-interactive, non-login shell; the VP-1 env-merge behaviour (env=
+  overrides layered onto `os.environ`) is unaffected — it is applied to the
+  `env=` kwarg regardless of the argv shell flags. Marker:
+  `# VENDOR-PATCH VP-7: non-login shell ("-c", not "-lc") ...`.
+
 ### Vendoring-mechanics patches (not VP patches; no separate diff files)
 
 These are **structural edits required for re-packaging** — they change
@@ -147,6 +163,7 @@ When re-vendoring at a new upstream SHA, apply these steps in order:
    git apply patches/VP-3-progress-callback.diff
    git apply patches/VP-4-worker-disallow-merge.diff
    git apply patches/VP-5-pr-exists-early-exit.diff
+   git apply patches/VP-7-hooks-non-login-shell.diff
    ```
 4. Re-apply the relative-import vendoring-mechanics patches manually (they
    are not in a diff file because they only depend on the module names, which
@@ -162,6 +179,7 @@ When re-vendoring at a new upstream SHA, apply these steps in order:
    - `VP-3` in `orchestrator.py`
    - `VP-4` in `worker.py`
    - `VP-5` in `orchestrator.py`
+   - `VP-7` in `hooks.py`
    - `relative import for vendoring` in `orchestrator.py`, `cli.py`,
      `prompt.py`, `worker.py`
 6. Update the **Pinned SHA** and **Vendor date** fields at the top of this
