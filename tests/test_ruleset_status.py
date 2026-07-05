@@ -42,6 +42,15 @@ Coverage:
   trigger ABSENT (stderr ignored; only stdout status line matters).
 - HTTP-status edge: stderr containing "HTTP 404" but stdout HTTP 200
   is NOT treated as 404 (no stderr consultation).
+- Regression (#204): a real GitHub GET body — carrying server-echoed
+  rule-parameter defaults and an omitted ``update``-rule ``parameters``
+  block — must be judged MATCH, not DRIFT, against the rendered desired
+  config for both the main and feature rulesets.
+- Regression (CodeRabbit finding on PR #205): ``_rules_equal`` must
+  treat duplicate rule types as a multiset, not collapse them into a
+  single dict key by ``type``. DRIFT when a duplicated rule type is
+  missing one occurrence on the current side; MATCH when both sides
+  carry the same multiset of occurrences regardless of array order.
 """
 
 from __future__ import annotations
@@ -64,6 +73,14 @@ _HARNESS = Path(__file__).resolve().parents[1]
 _MAIN_CFG = _HARNESS / "config" / "ruleset.main.json"
 _FEATURE_CFG = _HARNESS / "config" / "ruleset.feature.json"
 _COMPARE_KEYS_CFG = _HARNESS / "config" / "ruleset.compare-keys.json"
+
+# Real GitHub Rulesets GET bodies captured from cbeaulieu-gt/baton-test
+# (issue #204).  Committed fixtures so the regression is self-contained —
+# do NOT read from the gitignored .tmp/ captures at test runtime.
+_LIVE_MAIN_FIXTURE = _HARNESS / "tests" / "fixtures" / "ruleset.main.live.json"
+_LIVE_FEATURE_FIXTURE = (
+    _HARNESS / "tests" / "fixtures" / "ruleset.feature.live.json"
+)
 
 # ---------------------------------------------------------------------------
 # CompletedProcess factories
@@ -1028,4 +1045,225 @@ def test_stderr_http_404_string_ignored_when_stdout_says_200() -> None:
     assert result is RulesetStatus.MATCH, (
         "stderr containing 'HTTP 404' must not trigger ABSENT or ERROR "
         "when stdout status line says 200; got {result!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test I1 — regression #204: real live main body must be MATCH, not DRIFT
+# ---------------------------------------------------------------------------
+
+
+def test_provisioned_despite_github_server_defaults_main() -> None:
+    """MATCH (not DRIFT) for a real GitHub GET body of the main ruleset.
+
+    Regression test for #204.  The fixture at ``ruleset.main.live.json``
+    is a real ``GET /repos/.../rulesets/<id>`` body captured against
+    ``cbeaulieu-gt/baton-test``'s ``harness-main-no-merge`` ruleset,
+    which was provisioned correctly.  Two GitHub-only, functionally
+    irrelevant divergences from the rendered desired config are present:
+
+    - server-echoed defaults (``pull_request.parameters.
+      required_reviewers``, ``allowed_merge_methods``,
+      ``required_status_checks.parameters.do_not_enforce_on_create``),
+      and
+    - the ``update`` rule's ``parameters`` block entirely omitted
+      because its only parameter is already the default ``false``.
+
+    ``_filter_for_compare`` only strips top-level keys, so today the
+    whole ``rules`` array is compared by strict ``==`` and these two
+    divergences flip the result to DRIFT even though the ruleset is
+    correctly provisioned.  A fixed comparator must still return MATCH.
+    """
+    from baton_harness.chain.ruleset_status import (
+        RulesetStatus,
+        ruleset_is_provisioned,
+    )
+
+    live_main_body = _LIVE_MAIN_FIXTURE.read_text(encoding="utf-8")
+    live_main_id = json.loads(live_main_body)["id"]
+
+    list_body = json.dumps(
+        [
+            {"id": live_main_id, "name": "harness-main-no-merge"},
+            {"id": _FEAT_ID, "name": "harness-feature-daemon-only"},
+        ]
+    )
+
+    runner = _FakeRunner(
+        list_proc=_ok(list_body),
+        byid_main_proc=_ok(live_main_body),
+        byid_feat_proc=_ok(json.dumps(_render_feature())),
+        main_id=live_main_id,
+        feat_id=_FEAT_ID,
+    )
+
+    # The live fixture's bypass_actors carries actor_id=5 (RepositoryRole),
+    # matching the default admin_role_id used by _render_main() above.
+    result = ruleset_is_provisioned(
+        "cbeaulieu-gt", "baton-test", app_id="111", runner=runner
+    )
+
+    assert result is RulesetStatus.MATCH, (
+        "Real GitHub GET body for the main ruleset (server defaults + "
+        f"omitted update-rule parameters) must be MATCH, not DRIFT; "
+        f"got {result!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test I2 — regression #204: real live feature body must be MATCH, not DRIFT
+# ---------------------------------------------------------------------------
+
+
+def test_provisioned_despite_github_server_defaults_feature() -> None:
+    """MATCH (not DRIFT) for a real GitHub GET body of the feature ruleset.
+
+    Regression test for #204.  The fixture at ``ruleset.feature.live.json``
+    is a real ``GET /repos/.../rulesets/<id>`` body captured against
+    ``cbeaulieu-gt/baton-test``'s ``harness-feature-daemon-only`` ruleset,
+    which was provisioned correctly.  As with the main ruleset, the
+    ``update`` rule's ``parameters`` block is entirely omitted by GitHub
+    because its only parameter is already the default ``false`` — a
+    divergence from the rendered desired config that must not be treated
+    as drift once ``rules`` is compared structurally instead of as an
+    opaque blob.
+    """
+    from baton_harness.chain.ruleset_status import (
+        RulesetStatus,
+        ruleset_is_provisioned,
+    )
+
+    live_feature_body = _LIVE_FEATURE_FIXTURE.read_text(encoding="utf-8")
+    live_feature = json.loads(live_feature_body)
+    live_feature_id = live_feature["id"]
+    live_app_id = live_feature["bypass_actors"][0]["actor_id"]
+
+    list_body = json.dumps(
+        [
+            {"id": _MAIN_ID, "name": "harness-main-no-merge"},
+            {"id": live_feature_id, "name": "harness-feature-daemon-only"},
+        ]
+    )
+
+    runner = _FakeRunner(
+        list_proc=_ok(list_body),
+        byid_main_proc=_ok(json.dumps(_render_main())),
+        byid_feat_proc=_ok(live_feature_body),
+        main_id=_MAIN_ID,
+        feat_id=live_feature_id,
+    )
+
+    # app_id is passed as the string form of the fixture's live actor_id
+    # (an Integration/App bypass actor) so the placeholder substitution
+    # in the rendered desired config matches the live body exactly.
+    result = ruleset_is_provisioned(
+        "cbeaulieu-gt",
+        "baton-test",
+        app_id=str(live_app_id),
+        runner=runner,
+    )
+
+    assert result is RulesetStatus.MATCH, (
+        "Real GitHub GET body for the feature ruleset (server defaults + "
+        f"omitted update-rule parameters) must be MATCH, not DRIFT; "
+        f"got {result!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test J1 — regression (CodeRabbit, PR #205): duplicate rule types must be
+# compared as a multiset, not collapsed to one dict key per type.
+# ---------------------------------------------------------------------------
+
+
+def test_rules_equal_drift_when_current_missing_duplicate_rule_type() -> None:
+    """DRIFT when current drops one of two same-typed desired rules.
+
+    GitHub allows repeating the same rule ``type`` more than once in a
+    single ruleset (e.g. two ``commit_message_pattern`` restrictions
+    with different ``parameters``). ``_rules_equal`` builds
+    ``{rule["type"]: rule}`` dicts keyed by type, which collapses
+    duplicates to their *last* occurrence in each list — so a desired
+    side carrying two ``commit_message_pattern`` rules and a current
+    side carrying only the *last* of those two both reduce to the same
+    single key/value pair (``"commit_message_pattern"`` -> the "BH-"
+    rule) and compare equal, even though the first restriction
+    ("JIRA-") is entirely missing from current.
+
+    A correct comparator counts occurrences per rule type (a multiset
+    compare): two desired vs. one current for the same type is DRIFT,
+    not MATCH, because a genuine restriction went missing.
+    """
+    from baton_harness.chain.ruleset_status import _rules_equal
+
+    desired_rules: list[object] = [
+        {
+            "type": "commit_message_pattern",
+            "parameters": {
+                "operator": "starts_with",
+                "pattern": "JIRA-",
+            },
+        },
+        {
+            "type": "commit_message_pattern",
+            "parameters": {
+                "operator": "starts_with",
+                "pattern": "BH-",
+            },
+        },
+    ]
+    # Current carries only the SECOND (last) of desired's two duplicate
+    # occurrences. The buggy dict-by-type collapse keeps the last entry
+    # from each list, so desired collapses to "BH-" and current also
+    # collapses to "BH-" — a false MATCH — even though the "JIRA-"
+    # restriction is missing entirely from current.
+    current_rules: list[object] = [
+        {
+            "type": "commit_message_pattern",
+            "parameters": {
+                "operator": "starts_with",
+                "pattern": "BH-",
+            },
+        },
+    ]
+
+    assert _rules_equal(desired_rules, current_rules) is False, (
+        "current is missing one of two desired 'commit_message_pattern' "
+        "occurrences — this must report DRIFT, not MATCH"
+    )
+
+
+def test_rules_equal_match_duplicate_type_order_independent() -> None:
+    """MATCH when both sides carry the same multiset of a duplicated type.
+
+    Guards against over-tightening the multiset fix: when desired and
+    current both carry two ``commit_message_pattern`` rules with the
+    same two ``parameters`` payloads — even in a different array
+    order — the comparison must still report MATCH. The multiset
+    compare must not depend on array position.
+    """
+    from baton_harness.chain.ruleset_status import _rules_equal
+
+    jira_rule = {
+        "type": "commit_message_pattern",
+        "parameters": {
+            "operator": "starts_with",
+            "pattern": "JIRA-",
+        },
+    }
+    bh_rule = {
+        "type": "commit_message_pattern",
+        "parameters": {
+            "operator": "starts_with",
+            "pattern": "BH-",
+        },
+    }
+
+    desired_rules: list[object] = [jira_rule, bh_rule]
+    # Same two occurrences, reversed order, to prove order-independence.
+    current_rules: list[object] = [bh_rule, jira_rule]
+
+    assert _rules_equal(desired_rules, current_rules) is True, (
+        "same multiset of two 'commit_message_pattern' occurrences "
+        "(order-independent) must report MATCH, not DRIFT"
     )

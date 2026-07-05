@@ -244,24 +244,207 @@ def _render_feature_config(app_id: str) -> dict[str, object]:
 # ---------------------------------------------------------------------------
 
 
+#: Documented GitHub defaults for rule ``parameters`` sub-fields, keyed by
+#: rule ``type`` then parameter name.  GitHub's live GET echoes these back
+#: even when a write omitted them, and omits an entire ``parameters`` block
+#: when every parameter in it is already at its default (observed for the
+#: ``update`` rule's ``update_allows_fetch_and_merge``).  Used only to
+#: decide whether a *desired* value the live body doesn't mention is
+#: already satisfied by default — never to silently ignore a live value
+#: that conflicts with a desired one.
+_RULE_PARAM_DEFAULTS: dict[str, dict[str, object]] = {
+    "update": {
+        "update_allows_fetch_and_merge": False,
+    },
+    "pull_request": {
+        "required_approving_review_count": 0,
+        "dismiss_stale_reviews_on_push": False,
+        "require_code_owner_review": False,
+        "require_last_push_approval": False,
+        "required_review_thread_resolution": False,
+        "required_reviewers": [],
+        "allowed_merge_methods": ["merge", "squash", "rebase"],
+    },
+    "required_status_checks": {
+        "strict_required_status_checks_policy": False,
+        "do_not_enforce_on_create": False,
+    },
+}
+
+
+def _strip_comments(value: object) -> object:
+    """Recursively remove ``_comment`` keys from nested dicts/lists.
+
+    GitHub's live GET body never carries ``_comment`` (stripped on the
+    write side, #203), but the checked-in desired config still carries
+    it as an operator annotation — including nested inside a rule's
+    ``parameters`` block (see the ``pull_request`` rule in
+    ``config/ruleset.main.json``).  Recursing here keeps both sides
+    comparable regardless of nesting depth.
+
+    Args:
+        value: Any JSON-decoded value (dict, list, or scalar).
+
+    Returns:
+        A deep copy of ``value`` with every ``_comment`` key removed
+        from every dict at any nesting depth.
+    """
+    if isinstance(value, dict):
+        return {
+            k: _strip_comments(v) for k, v in value.items() if k != "_comment"
+        }
+    if isinstance(value, list):
+        return [_strip_comments(v) for v in value]
+    return value
+
+
 def _filter_for_compare(
     ruleset: dict[str, object],
     keys: tuple[str, ...],
 ) -> dict[str, object]:
     """Extract only the compare-key subset from a ruleset dict.
 
-    Strips ``_comment`` and any other keys not in the allowlist so that
-    server-managed fields (timestamps, ids) and operator annotations do
-    not participate in drift detection.
+    Recursively strips ``_comment`` (at any nesting depth) and any other
+    keys not in the allowlist so that server-managed fields (timestamps,
+    ids) and operator annotations do not participate in drift detection.
 
     Args:
         ruleset: A parsed ruleset dict (live API or rendered config).
         keys: The tuple of keys to include (loaded from compare-keys config).
 
     Returns:
-        A new dict containing only keys present in ``keys``.
+        A new dict containing only keys present in ``keys``, with
+        ``_comment`` recursively stripped from the retained values.
     """
-    return {k: ruleset[k] for k in keys if k in ruleset}
+    stripped = cast("dict[str, object]", _strip_comments(ruleset))
+    return {k: stripped[k] for k in keys if k in stripped}
+
+
+def _param_matches_default(rule_type: str, param: str, value: object) -> bool:
+    """Return True when ``value`` equals the documented GitHub default.
+
+    Fails safe toward drift: an unknown ``(rule_type, param)`` pair (no
+    recorded default) never counts as a match, so a genuinely unexpected
+    desired value with no corresponding live field still reports DRIFT
+    rather than being silently waved through.
+
+    Args:
+        rule_type: The rule's ``type`` field (e.g. ``"update"``).
+        param: The parameter name within the rule's ``parameters`` block.
+        value: The desired value to check against the known default.
+
+    Returns:
+        True when a documented default is known for ``(rule_type, param)``
+        and it equals ``value``; False otherwise.
+    """
+    defaults = _RULE_PARAM_DEFAULTS.get(rule_type, {})
+    return param in defaults and defaults[param] == value
+
+
+def _rule_params_equal(
+    rule_type: str,
+    desired_params: dict[str, object],
+    current_params: dict[str, object] | None,
+) -> bool:
+    """Compare one rule's ``parameters`` block, tolerating server defaults.
+
+    Every key ``desired_params`` specifies must be satisfied by
+    ``current_params``: either present with an equal value, or absent
+    because it is already at its documented GitHub default (covers
+    GitHub omitting a rule's entire ``parameters`` block, or omitting
+    individual keys within it, when they are already default-valued).
+    Keys ``current_params`` carries that ``desired_params`` does not
+    mention are ignored outright — those are server-echoed defaults
+    (e.g. ``required_reviewers``, ``allowed_merge_methods``) that the
+    desired config never asserted an opinion on, so they cannot
+    represent a divergence from what was requested.
+
+    Args:
+        rule_type: The rule's ``type`` field.
+        desired_params: ``parameters`` from the rendered desired config
+            (empty dict when the rule has no ``parameters`` key).
+        current_params: ``parameters`` from the live ruleset, or
+            ``None`` when the live rule omits the key entirely.
+
+    Returns:
+        True when every desired parameter is satisfied by ``current``
+        (directly or via a known default); False otherwise.
+    """
+    live = current_params if current_params is not None else {}
+    for key, desired_value in desired_params.items():
+        if key in live:
+            if live[key] != desired_value:
+                return False
+        elif not _param_matches_default(rule_type, key, desired_value):
+            return False
+    return True
+
+
+def _rules_equal(
+    desired_rules: list[object],
+    current_rules: list[object],
+) -> bool:
+    """Compare two ``rules`` arrays as a multiset, tolerating defaults.
+
+    GitHub permits repeating the same rule ``type`` more than once in a
+    single ruleset (e.g. two ``commit_message_pattern`` restrictions
+    with different ``parameters``), so rules are grouped by ``type``
+    and compared as a **multiset**: both sides must carry the same
+    *count* of each rule type — a type missing on one side, present
+    only on the other, or occurring a different number of times, is
+    genuine drift (a missing or an unexpectedly-added control), never
+    tolerated. Within a type, each desired occurrence is matched
+    against a distinct, as-yet-unmatched current occurrence whose
+    ``parameters`` agree per ``_rule_params_equal`` (order-independent
+    greedy matching); a desired occurrence that finds no unmatched
+    current match is drift.
+
+    Args:
+        desired_rules: The rendered desired config's ``rules`` list.
+        current_rules: The live ruleset's ``rules`` list.
+
+    Returns:
+        True when both sides carry the same multiset of rule types and
+        every desired occurrence is matched by a distinct current
+        occurrence (per ``_rule_params_equal``); False otherwise.
+    """
+    desired_by_type: dict[str, list[dict[str, object]]] = {}
+    for rule in cast("list[dict[str, object]]", desired_rules):
+        desired_by_type.setdefault(cast(str, rule["type"]), []).append(rule)
+
+    current_by_type: dict[str, list[dict[str, object]]] = {}
+    for rule in cast("list[dict[str, object]]", current_rules):
+        current_by_type.setdefault(cast(str, rule["type"]), []).append(rule)
+
+    if desired_by_type.keys() != current_by_type.keys():
+        return False
+
+    for rule_type, desired_occurrences in desired_by_type.items():
+        current_occurrences = list(current_by_type[rule_type])
+        if len(desired_occurrences) != len(current_occurrences):
+            return False
+
+        for desired_rule in desired_occurrences:
+            desired_params = cast(
+                "dict[str, object]", desired_rule.get("parameters", {})
+            )
+            match_index = None
+            for index, current_rule in enumerate(current_occurrences):
+                current_params = cast(
+                    "dict[str, object] | None",
+                    current_rule.get("parameters"),
+                )
+                if _rule_params_equal(
+                    rule_type, desired_params, current_params
+                ):
+                    match_index = index
+                    break
+            if match_index is None:
+                return False
+            # Consume this current occurrence so it cannot be reused to
+            # satisfy a different desired occurrence of the same type.
+            current_occurrences.pop(match_index)
+    return True
 
 
 def _content_equal(
@@ -272,7 +455,11 @@ def _content_equal(
     """Return True when desired and current rulesets agree on all compare keys.
 
     Both dicts are filtered through ``keys`` before comparison so
-    server-managed fields and ``_comment`` annotations are ignored.
+    server-managed fields and (recursively) ``_comment`` annotations are
+    ignored.  The ``rules`` key, when present in the compare set, is
+    compared structurally via ``_rules_equal`` instead of opaque ``==``
+    so GitHub's server-echoed rule-parameter defaults don't register as
+    drift; every other key is compared by strict equality unchanged.
 
     Args:
         desired: The locally-rendered config dict (placeholders substituted).
@@ -280,11 +467,18 @@ def _content_equal(
         keys: The set of keys to compare (loaded from compare-keys config).
 
     Returns:
-        True when all keys in ``keys`` have equal values in both dicts.
+        True when all keys in ``keys`` are satisfied in both dicts.
     """
-    return _filter_for_compare(desired, keys) == _filter_for_compare(
-        current, keys
-    )
+    desired_filtered = _filter_for_compare(desired, keys)
+    current_filtered = _filter_for_compare(current, keys)
+
+    if "rules" in desired_filtered or "rules" in current_filtered:
+        desired_rules = cast("list[object]", desired_filtered.pop("rules", []))
+        current_rules = cast("list[object]", current_filtered.pop("rules", []))
+        if not _rules_equal(desired_rules, current_rules):
+            return False
+
+    return desired_filtered == current_filtered
 
 
 # ---------------------------------------------------------------------------
