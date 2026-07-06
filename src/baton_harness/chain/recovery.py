@@ -32,6 +32,16 @@ Classification precedence (first match wins):
 
 Single ``_run`` subprocess seam (module-local) makes all ``git``/``gh``
 calls patchable in tests (spike finding F8).
+
+Worktree-scan layout assumption:
+    The worktree orphan-GC scan (``scan_orphan_worktrees`` and
+    ``_parse_worktree_list``) assumes the standard
+    ``.symphony/worktrees/<N>`` layout with ``baton/<N>``-prefixed
+    branch names (see ``WorkspaceManager`` /
+    ``_BATON_BRANCH_PREFIX``).  Worktrees that do not follow this
+    layout (non-standard branch names, manually-created worktrees,
+    detached HEADs) are silently skipped — they are neither counted
+    as orphans nor reported as errors.
 """
 
 from __future__ import annotations
@@ -442,7 +452,7 @@ _BATON_BRANCH_PREFIX = "refs/heads/baton/"
 
 def _parse_worktree_list(
     porcelain: str,
-) -> list[tuple[str, int | None]]:
+) -> list[tuple[str, int]]:
     """Parse ``git worktree list --porcelain`` output.
 
     Extracts ``(worktree_path, issue_number)`` pairs from each block.
@@ -455,9 +465,12 @@ def _parse_worktree_list(
 
     Returns:
         A list of ``(worktree_path, issue_number)`` pairs for worktrees
-        whose branch name encodes an issue number.
+        whose branch name encodes an issue number.  Only blocks that
+        resolved a non-``None`` issue number are included (see the
+        flush guards below), so every ``issue_number`` in the
+        returned list is a genuine ``int``.
     """
-    results: list[tuple[str, int | None]] = []
+    results: list[tuple[str, int]] = []
     current_path: str | None = None
     current_issue: int | None = None
 
@@ -650,9 +663,6 @@ async def scan_orphan_worktrees(
         worktrees = _parse_worktree_list(list_proc.stdout)
 
         for wt_path, issue_num in worktrees:
-            if issue_num is None:
-                continue
-
             # IS-5 predicate (a): issue in running/membership set → live.
             if issue_num in running_issues:
                 continue
@@ -692,6 +702,7 @@ async def scan_orphan_worktrees(
 
             if runlog is not None:
                 try:
+                    # best-effort: emit failures must never break the scan.
                     runlog.emit(
                         {
                             "event": "orphan_worktree",
