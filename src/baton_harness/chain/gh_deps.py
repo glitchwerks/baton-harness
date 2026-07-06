@@ -23,6 +23,17 @@ Pagination:
     (the API maximum) and fetches subsequent pages until a page contains
     fewer than 100 items, at which point pagination is complete.
 
+Issue-body dependency fallback (#126):
+    Some repositories cannot use the native issue-dependencies API (a
+    fine-grained PAT lacking the permission, a repo tier without the
+    feature, or an org policy disabling it) — the endpoint then returns
+    an empty array even when the issue really is blocked. When
+    ``fetch_blocked_by`` sees an empty native result, it falls back to
+    scanning the issue body text for a ``blocked_by #N`` / ``depends on
+    #N`` marker and returns those issue numbers instead, in the order
+    they appear in the body. The fallback never runs when the native API
+    already returned a non-empty result — that result wins outright.
+
 Subprocess style follows the ``before_run``/``after_run`` ``_run`` helper
 pattern: a single module-local ``_run`` function is the only subprocess
 seam, making it trivially patchable in tests (spike finding F8).
@@ -31,6 +42,7 @@ seam, making it trivially patchable in tests (spike finding F8).
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from typing import cast
 
@@ -133,6 +145,81 @@ def _paginate(
     return results
 
 
+#: Matches ``blocked_by #N`` or ``depends on #N`` (case-insensitive),
+#: capturing the referenced issue number. Used by the issue-body
+#: dependency fallback (#126). The leading ``\b`` requires a word
+#: boundary before ``blocked_by``/``depends on`` so a substring like
+#: ``unblocked_by #12`` does not falsely match.
+_BODY_MARKER_RE = re.compile(
+    r"\b(?:blocked_by|depends on)\s*#(\d+)", re.IGNORECASE
+)
+
+
+def _parse_blocked_by_from_body(body: str) -> list[int]:
+    """Scan issue body text for ``blocked_by #N`` / ``depends on #N`` markers.
+
+    Args:
+        body: The raw issue body text. May be empty.
+
+    Returns:
+        A list of blocker issue numbers, in the order the markers appear
+        in ``body``. Returns an empty list when no marker is present.
+    """
+    return [int(match) for match in _BODY_MARKER_RE.findall(body)]
+
+
+def _fetch_issue_body(
+    owner: str,
+    repo: str,
+    issue: int,
+    *,
+    installation_token: InstallationTokenSource = "",
+) -> str:
+    """Fetch the raw body text of a single issue.
+
+    Calls ``gh issue view <issue> --repo {owner}/{repo} --json body``.
+
+    Args:
+        owner: The GitHub repository owner (organisation or user).
+        repo: The repository name.
+        issue: The issue number to look up.
+        installation_token: Optional GitHub App installation access
+            token (``ghs_`` prefix). When non-empty, the call uses a
+            per-call env copy with ``GH_TOKEN`` overridden —
+            ``os.environ`` is never mutated.
+
+    Returns:
+        The issue body text, or ``""`` if the field is absent or the
+        response is not a JSON object shaped like an issue.
+
+    Raises:
+        RuntimeError: If the ``gh`` call returns a non-zero exit code.
+    """
+    env = gh_env(installation_token) if installation_token else None
+    proc = _run(
+        [
+            "gh",
+            "issue",
+            "view",
+            str(issue),
+            "--repo",
+            f"{owner}/{repo}",
+            "--json",
+            "body",
+        ],
+        env=env,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"gh api call failed (exit {proc.returncode}): {proc.stderr}"
+        )
+    data = json.loads(proc.stdout)
+    if not isinstance(data, dict):
+        return ""
+    body = data.get("body")
+    return body if isinstance(body, str) else ""
+
+
 def _extract_number(item: dict[str, object]) -> int:
     """Extract the ``number`` field from a GitHub API issue object.
 
@@ -174,6 +261,12 @@ def fetch_blocked_by(
     Same-repo only: all returned numbers are issues in the same
     ``{owner}/{repo}`` repository.
 
+    Issue-body fallback (#126): when the native API returns an empty
+    result, the issue body is scanned for a ``blocked_by #N`` /
+    ``depends on #N`` marker and those numbers are returned instead.
+    The fallback never runs when the native API already returned a
+    non-empty result.
+
     Args:
         owner: The GitHub repository owner (organisation or user).
         repo: The repository name.
@@ -185,7 +278,9 @@ def fetch_blocked_by(
 
     Returns:
         A list of issue numbers that block ``issue``, in API-returned order.
-        Returns an empty list when ``issue`` has no blockers.
+        Falls back to issue-body markers (see above) when the API result
+        is empty. Returns an empty list when ``issue`` has no blockers by
+        either means.
 
     Raises:
         RuntimeError: If the ``gh api`` call returns a non-zero exit code.
@@ -193,7 +288,12 @@ def fetch_blocked_by(
     """
     url = f"repos/{owner}/{repo}/issues/{issue}/dependencies/blocked_by"
     items = _paginate(url, installation_token=installation_token)
-    return [_extract_number(item) for item in items]
+    if items:
+        return [_extract_number(item) for item in items]
+    body = _fetch_issue_body(
+        owner, repo, issue, installation_token=installation_token
+    )
+    return _parse_blocked_by_from_body(body)
 
 
 def fetch_blocking(owner: str, repo: str, issue: int) -> list[int]:

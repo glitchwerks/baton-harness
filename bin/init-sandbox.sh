@@ -4,7 +4,8 @@
 # Prepares a throwaway sandbox GitHub repository for a bh-daemon smoke test:
 #   - Creates the five required harness labels (idempotent)
 #   - Creates a trivial trigger issue (agent-ready)
-#   - Creates a hello-feature milestone with two DAG-ordered issues
+#   - Creates a hello-feature milestone with two DAG-ordered issues, plus a
+#     third issue that carries only a body-marker dependency (#126 fallback)
 #   - Writes a stub CI workflow to the sandbox repo and pushes it
 #   - Writes .bh/config.env with repo/App/vault identifiers
 #   - Seeds .symphony/ into the sandbox repo's .gitignore and pushes it
@@ -65,7 +66,9 @@ Steps performed:
   1. Preflight checks (gh auth, git, BH_PROJECT_ROOT is a git repo)
   2. Create required labels (idempotent — skipped if already present)
   3. Create a trivial trigger issue (agent-ready, no milestone)
-  4. Create hello-feature milestone + 2 DAG-ordered issues (B blocked_by A)
+  4. Create hello-feature milestone + 2 DAG-ordered issues (B blocked_by A),
+     plus issue C — a body-marker-only dependency exercising the #126
+     issue-body fallback (no native dependency edge is wired for C)
   5. Write stub CI workflow (.github/workflows/ci.yml) to BH_PROJECT_ROOT
      and push to the sandbox default branch (idempotent if unchanged)
   6. Write BH_PROJECT_ROOT/.bh/config.env with sandbox repo/App/vault config
@@ -306,10 +309,15 @@ ISSUE_B_URL="$(_find_open_issue_url "${_issue_b_title}")" || true
 if [[ -n "${ISSUE_B_URL}" ]]; then
     echo "baton-harness:   issue B exists, reusing: ${ISSUE_B_URL}"
 else
+    # The blocked_by marker documents the intended dependency for
+    # readers, but B also gets a native dependency edge wired below —
+    # the native API result wins outright (gh_deps.fetch_blocked_by),
+    # so this marker alone does not exercise the #126 body-fallback
+    # path. Issue C below (no native edge) covers that case.
     ISSUE_B_URL="$(gh issue create \
         --repo "${REPO_SLUG}" \
         --title "${_issue_b_title}" \
-        --body "Add pytest tests for the hello() function from the prior issue." \
+        --body "Add pytest tests for the hello() function from the prior issue. blocked_by #${ISSUE_A_NUMBER}" \
         --label "agent-ready" \
         --milestone "${MILESTONE_TITLE}")"
     echo "baton-harness:   issue B created: ${ISSUE_B_URL}"
@@ -392,6 +400,36 @@ else
         exit 1
     fi
 fi
+
+# Issue C (body-marker-only dependency — exercises the #126 fallback)
+#
+# Issue B above carries a blocked_by marker AND a native dependency edge,
+# so the native API result wins outright and the body-fallback in
+# gh_deps.fetch_blocked_by is never actually invoked. Issue C carries the
+# same body marker but deliberately gets NO native dependency edge wired,
+# so the daemon must fall back to scanning the issue body to discover the
+# edge — the one thing this seed is meant to demonstrate.
+echo "baton-harness: creating issue C (add docs for hello(), fallback-only) ..."
+_issue_c_title="add docs for hello()"
+ISSUE_C_URL="$(_find_open_issue_url "${_issue_c_title}")" || true
+if [[ -n "${ISSUE_C_URL}" ]]; then
+    echo "baton-harness:   issue C exists, reusing: ${ISSUE_C_URL}"
+else
+    ISSUE_C_URL="$(gh issue create \
+        --repo "${REPO_SLUG}" \
+        --title "${_issue_c_title}" \
+        --body "Document the hello() function from the prior issue. blocked_by #${ISSUE_A_NUMBER}" \
+        --label "agent-ready" \
+        --milestone "${MILESTONE_TITLE}")"
+    echo "baton-harness:   issue C created: ${ISSUE_C_URL}"
+fi
+
+ISSUE_C_NUMBER="${ISSUE_C_URL##*/}"
+if [[ -z "${ISSUE_C_NUMBER}" || ! "${ISSUE_C_NUMBER}" =~ ^[0-9]+$ ]]; then
+    echo "baton-harness: error: failed to extract issue C number from URL (got: '${ISSUE_C_NUMBER}')" >&2
+    exit 1
+fi
+echo "baton-harness:   issue C: #${ISSUE_C_NUMBER} — ${ISSUE_C_URL} (blocked_by A via body marker only, no native edge)"
 
 # ---------------------------------------------------------------------------
 # Write stub CI workflow to the sandbox repo
@@ -571,7 +609,8 @@ echo "    - 5 required labels"
 echo "    - Trivial trigger issue:  ${TRIVIAL_ISSUE_URL}"
 echo "    - Milestone 'hello-feature' (#${MILESTONE_NUMBER})"
 echo "    - Issue A:  ${ISSUE_A_URL}"
-echo "    - Issue B:  ${ISSUE_B_URL}  (blocked_by A)"
+echo "    - Issue B:  ${ISSUE_B_URL}  (blocked_by A, native edge)"
+echo "    - Issue C:  ${ISSUE_C_URL}  (blocked_by A, body marker only — #126 fallback)"
 echo "    - Stub CI workflow: .github/workflows/ci.yml"
 echo "    - Created .bh/config.env"
 echo "    - .symphony/ entry in: .gitignore"

@@ -224,7 +224,9 @@ class TestFetchBlockedBy:
         with patch.object(gh_deps_mod, "_run", side_effect=fake_run):
             fetch_blocked_by("glitchwerks", "baton-harness", 99)
 
-        assert len(captured) == 1
+        # Native API result is empty here, so the #126 issue-body fallback
+        # also runs a follow-on call — only assert on the first (native
+        # dependencies endpoint) call, not the total call count.
         joined = " ".join(captured[0])
         assert "blocked_by" in joined
         assert "99" in joined
@@ -441,10 +443,14 @@ class TestGetMethodRegression:
             assert "-X" not in cmd or "POST" not in " ".join(cmd), (
                 f"Found -X POST in command: {cmd}"
             )
-            # Per_page and page must be embedded in the URL itself
-            url_arg = cmd[2]  # third element is the endpoint URL
-            assert "per_page" in url_arg, f"per_page not in URL: {url_arg}"
-            assert "page=" in url_arg, f"page= not in URL: {url_arg}"
+        # Per_page and page must be embedded in the URL of the paginated
+        # dependency-endpoint call. Native API result is empty here, so
+        # the #126 issue-body fallback also runs a follow-on call (a
+        # single-issue lookup, not paginated) — only the first call is
+        # required to carry per_page/page.
+        url_arg = captured[0][2]  # third element is the endpoint URL
+        assert "per_page" in url_arg, f"per_page not in URL: {url_arg}"
+        assert "page=" in url_arg, f"page= not in URL: {url_arg}"
 
     def test_blocking_no_dash_f_pagination(self) -> None:
         """fetch_blocking does not pass -F flags for pagination params."""
@@ -558,3 +564,230 @@ class TestThreePagePagination:
         assert 200 in result
         assert 201 in result
         assert 207 in result
+
+
+# ---------------------------------------------------------------------------
+# Issue-body fallback (#126)
+# ---------------------------------------------------------------------------
+
+
+class TestFetchBlockedByBodyFallback:
+    """Regression tests for #126: issue-body fallback for blocked_by.
+
+    ``fetch_blocked_by`` currently relies entirely on GitHub's native
+    issue-dependencies API. When that API is unavailable (fine-grained
+    PAT lacking the permission, repo tier without the feature, org
+    policy disabling it) the endpoint returns an empty array and the
+    daemon runs the issue ungated.
+
+    Required fallback (#126): when the native API result is empty,
+    scan the issue body for a ``blocked_by #N`` / ``depends on #N``
+    convention and return those issue numbers instead. When the API
+    already returned a non-empty result, the fallback must NOT run —
+    the API result wins outright.
+
+    Seam assumption: the module docstring states all ``gh api`` calls
+    are intercepted via the module-local ``_run`` helper, and no other
+    seam is exposed by the existing test suite. These tests therefore
+    stub a *second* ``_run`` call — made only when the first (native
+    dependencies) call returns empty — to answer the issue-body
+    lookup, shaped like ``gh issue view --json body`` output:
+    ``{"body": "<issue body text>"}``. This call shape is an
+    assumption; see the accompanying return-summary Gaps note.
+    """
+
+    def test_fallback_parses_blocked_by_marker_from_body(self) -> None:
+        """Empty API result + 'blocked_by #N' in body -> [N]."""
+        responses = [
+            _ok([]),
+            _ok({"number": 43, "body": "Follow-up work. blocked_by #12"}),
+        ]
+        call_count = 0
+
+        def fake_run(
+            cmd: list[str],
+            *,
+            env: dict[str, str] | None = None,
+        ) -> subprocess.CompletedProcess[str]:
+            nonlocal call_count
+            result = responses[call_count]
+            call_count += 1
+            return result
+
+        with patch.object(gh_deps_mod, "_run", side_effect=fake_run):
+            result = fetch_blocked_by("glitchwerks", "baton-harness", 43)
+
+        assert result == [12]
+
+    def test_fallback_parses_depends_on_marker_from_body(self) -> None:
+        """Empty API result + 'depends on #N' in body -> [N]."""
+        responses = [
+            _ok([]),
+            _ok(
+                {
+                    "number": 43,
+                    "body": "This depends on #34 finishing first.",
+                }
+            ),
+        ]
+        call_count = 0
+
+        def fake_run(
+            cmd: list[str],
+            *,
+            env: dict[str, str] | None = None,
+        ) -> subprocess.CompletedProcess[str]:
+            nonlocal call_count
+            result = responses[call_count]
+            call_count += 1
+            return result
+
+        with patch.object(gh_deps_mod, "_run", side_effect=fake_run):
+            result = fetch_blocked_by("glitchwerks", "baton-harness", 43)
+
+        assert result == [34]
+
+    def test_fallback_parses_multiple_markers_in_order(self) -> None:
+        """Both marker forms in one body -> both numbers, in body order."""
+        responses = [
+            _ok([]),
+            _ok(
+                {
+                    "number": 43,
+                    "body": "blocked_by #12\n\nAlso depends on #34.",
+                }
+            ),
+        ]
+        call_count = 0
+
+        def fake_run(
+            cmd: list[str],
+            *,
+            env: dict[str, str] | None = None,
+        ) -> subprocess.CompletedProcess[str]:
+            nonlocal call_count
+            result = responses[call_count]
+            call_count += 1
+            return result
+
+        with patch.object(gh_deps_mod, "_run", side_effect=fake_run):
+            result = fetch_blocked_by("glitchwerks", "baton-harness", 43)
+
+        assert result == [12, 34]
+
+    def test_no_marker_in_body_returns_empty_list(self) -> None:
+        """Empty API result + no marker in body -> []."""
+        responses = [
+            _ok([]),
+            _ok({"number": 43, "body": "Nothing relevant here."}),
+        ]
+        call_count = 0
+
+        def fake_run(
+            cmd: list[str],
+            *,
+            env: dict[str, str] | None = None,
+        ) -> subprocess.CompletedProcess[str]:
+            nonlocal call_count
+            result = responses[call_count]
+            call_count += 1
+            return result
+
+        with patch.object(gh_deps_mod, "_run", side_effect=fake_run):
+            result = fetch_blocked_by("glitchwerks", "baton-harness", 43)
+
+        assert result == []
+
+    def test_native_api_result_wins_fallback_does_not_run(self) -> None:
+        """Non-empty API result short-circuits the body-scan fallback.
+
+        The body also contains a 'blocked_by #99' marker; it must be
+        ignored because the native API already returned a result.
+        """
+        issue_7 = {
+            "id": 700,
+            "number": 7,
+            "state": "open",
+            "title": "Issue 7",
+            "milestone": None,
+        }
+        responses = [_ok([issue_7])]
+        call_count = 0
+
+        def fake_run(
+            cmd: list[str],
+            *,
+            env: dict[str, str] | None = None,
+        ) -> subprocess.CompletedProcess[str]:
+            nonlocal call_count
+            if call_count >= len(responses):
+                raise AssertionError(
+                    "fetch_blocked_by must not fetch the issue body "
+                    "when the native dependencies API is non-empty"
+                )
+            result = responses[call_count]
+            call_count += 1
+            return result
+
+        with patch.object(gh_deps_mod, "_run", side_effect=fake_run):
+            result = fetch_blocked_by("glitchwerks", "baton-harness", 43)
+
+        assert result == [7]
+        assert call_count == 1
+
+
+class TestFetchBlockedByBodyFallbackWordBoundary:
+    r"""Regression test: ``_BODY_MARKER_RE`` requires a word boundary.
+
+    CodeRabbit finding on PR #233 (issue #126): without a leading
+    ``\b``, the marker regex could match ``blocked_by #N`` as a
+    substring of ``unblocked_by #N``, producing a false-positive
+    dependency edge. Confirms the fix rejects that substring while
+    still matching a genuine ``blocked_by #N`` marker.
+    """
+
+    def test_unblocked_by_marker_does_not_match(self) -> None:
+        """'unblocked_by #99' with no genuine marker -> []."""
+        responses = [
+            _ok([]),
+            _ok({"number": 43, "body": "This issue is unblocked_by #99."}),
+        ]
+        call_count = 0
+
+        def fake_run(
+            cmd: list[str],
+            *,
+            env: dict[str, str] | None = None,
+        ) -> subprocess.CompletedProcess[str]:
+            nonlocal call_count
+            result = responses[call_count]
+            call_count += 1
+            return result
+
+        with patch.object(gh_deps_mod, "_run", side_effect=fake_run):
+            result = fetch_blocked_by("glitchwerks", "baton-harness", 43)
+
+        assert result == []
+
+    def test_genuine_blocked_by_marker_still_matches(self) -> None:
+        """Genuine 'blocked_by #12' still matches after the boundary fix."""
+        responses = [
+            _ok([]),
+            _ok({"number": 43, "body": "blocked_by #12"}),
+        ]
+        call_count = 0
+
+        def fake_run(
+            cmd: list[str],
+            *,
+            env: dict[str, str] | None = None,
+        ) -> subprocess.CompletedProcess[str]:
+            nonlocal call_count
+            result = responses[call_count]
+            call_count += 1
+            return result
+
+        with patch.object(gh_deps_mod, "_run", side_effect=fake_run):
+            result = fetch_blocked_by("glitchwerks", "baton-harness", 43)
+
+        assert result == [12]
