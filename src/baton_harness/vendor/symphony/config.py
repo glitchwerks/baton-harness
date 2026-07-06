@@ -120,6 +120,11 @@ def load_workflow(path: str) -> WorkflowConfig:
     # A scalar value (e.g. a typo'd string instead of a YAML list) is
     # truthy and would otherwise pass straight through and be iterated
     # char-by-char downstream -- guard to a list, else fall back to [].
+    # A list value may still contain non-string elements (e.g. a typo'd
+    # int like `- 123` alongside real check names) -- those can never
+    # match a real GitHub check name and would silently reproduce the
+    # fail-closed "no matching jobs" symptom (#225) for that element, so
+    # each element is filtered to `str` as well (#229).
     _raw_required_checks = _get(fm, "required_checks", default=[])
 
     return WorkflowConfig(
@@ -148,7 +153,7 @@ def load_workflow(path: str) -> WorkflowConfig:
         hook_timeout_ms=_int(_get(fm, "hooks", "timeout_ms"), 60000),
         prompt_template=prompt,
         required_checks=(
-            _raw_required_checks
+            [c for c in _raw_required_checks if isinstance(c, str)]
             if isinstance(_raw_required_checks, list)
             else []
         ),

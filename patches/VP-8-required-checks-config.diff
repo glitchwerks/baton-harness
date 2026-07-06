@@ -1,5 +1,5 @@
 diff --git a/src/baton_harness/vendor/symphony/config.py b/src/baton_harness/vendor/symphony/config.py
-index 61cb4ae..974b360 100644
+index 61cb4ae..c398c69 100644
 --- a/src/baton_harness/vendor/symphony/config.py
 +++ b/src/baton_harness/vendor/symphony/config.py
 @@ -1,4 +1,5 @@
@@ -22,7 +22,7 @@ index 61cb4ae..974b360 100644
 
  def _get(d: dict, *keys: str, default: Any = None) -> Any:
      """Nested dict get."""
-@@ -107,17 +115,30 @@ def load_workflow(path: str) -> WorkflowConfig:
+@@ -107,17 +115,35 @@ def load_workflow(path: str) -> WorkflowConfig:
          except (ValueError, TypeError):
              return default
 
@@ -31,6 +31,11 @@ index 61cb4ae..974b360 100644
 +    # A scalar value (e.g. a typo'd string instead of a YAML list) is
 +    # truthy and would otherwise pass straight through and be iterated
 +    # char-by-char downstream -- guard to a list, else fall back to [].
++    # A list value may still contain non-string elements (e.g. a typo'd
++    # int like `- 123` alongside real check names) -- those can never
++    # match a real GitHub check name and would silently reproduce the
++    # fail-closed "no matching jobs" symptom (#225) for that element, so
++    # each element is filtered to `str` as well (#229).
 +    _raw_required_checks = _get(fm, "required_checks", default=[])
 +
      return WorkflowConfig(
@@ -56,12 +61,12 @@ index 61cb4ae..974b360 100644
          skills=_get(fm, "agent", "skills", default=[]),
          mcp_servers=_get(fm, "agent", "mcp_servers", default=[]),
          hook_after_create=_get(fm, "hooks", "after_create"),
-@@ -126,4 +147,9 @@ def load_workflow(path: str) -> WorkflowConfig:
+@@ -126,4 +152,9 @@ def load_workflow(path: str) -> WorkflowConfig:
          hook_before_remove=_get(fm, "hooks", "before_remove"),
          hook_timeout_ms=_int(_get(fm, "hooks", "timeout_ms"), 60000),
          prompt_template=prompt,
 +        required_checks=(
-+            _raw_required_checks
++            [c for c in _raw_required_checks if isinstance(c, str)]
 +            if isinstance(_raw_required_checks, list)
 +            else []
 +        ),
