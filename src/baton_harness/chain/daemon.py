@@ -2810,6 +2810,17 @@ async def _poll_and_run(
         # same implementation used by the Orchestrator.  A fresh instance
         # is cheap (no I/O in __init__) and avoids exposing orch outside
         # _run_work_unit (B-I3 serial invariant).
+        #
+        # NOTE: symphony_dir is intentionally omitted here, defaulting to
+        # ``<project_root>/.symphony`` (see WorkspaceManager.__init__).
+        # Neither RepoConfig nor WorkflowConfig currently exposes a
+        # configurable symphony dir, and the Orchestrator itself
+        # constructs WorkspaceManager the same default way (see
+        # vendor/symphony/orchestrator.py) — so this sweep matches the
+        # rest of the daemon's assumption of the default ``.symphony``
+        # layout.  If a non-default symphony_dir is ever introduced via
+        # config, it must be threaded through both construction sites
+        # together, or a "reclaim" sweep here would target the wrong path.
         _ws = WorkspaceManager(str(repo_cfg.project_root))
         await scan_orphan_worktrees(
             owner=owner,
