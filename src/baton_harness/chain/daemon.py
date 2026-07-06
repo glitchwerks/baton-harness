@@ -2709,20 +2709,6 @@ async def _poll_and_run(
     if not orphans_raw:
         return
 
-    # Guard: confirm the response looks like an issue list (has "title"
-    # and "labels" keys).  Some test stubs accidentally return PR JSON
-    # for any query whose cmd string contains "list" — this check rejects
-    # that shape without breaking the real gh response.
-    if not isinstance(orphans_raw, list) or (
-        orphans_raw
-        and not isinstance(orphans_raw[0], dict)
-        or (orphans_raw and "title" not in orphans_raw[0])
-    ):
-        _log.debug(
-            "daemon: orphan scan response is not an issue list; skipping"
-        )
-        return
-
     # Walk each orphan; dedup by milestone number (or issue number for
     # un-milestoned).  Each milestone is seeded at most once.
     seen_orphan_ms: set[int] = set()
