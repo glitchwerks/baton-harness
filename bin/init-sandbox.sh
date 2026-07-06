@@ -306,10 +306,13 @@ ISSUE_B_URL="$(_find_open_issue_url "${_issue_b_title}")" || true
 if [[ -n "${ISSUE_B_URL}" ]]; then
     echo "baton-harness:   issue B exists, reusing: ${ISSUE_B_URL}"
 else
+    # blocked_by marker exercises the #126 issue-body dependency
+    # fallback in gh_deps.fetch_blocked_by alongside the native
+    # dependencies-API wiring set up below.
     ISSUE_B_URL="$(gh issue create \
         --repo "${REPO_SLUG}" \
         --title "${_issue_b_title}" \
-        --body "Add pytest tests for the hello() function from the prior issue." \
+        --body "Add pytest tests for the hello() function from the prior issue. blocked_by #${ISSUE_A_NUMBER}" \
         --label "agent-ready" \
         --milestone "${MILESTONE_TITLE}")"
     echo "baton-harness:   issue B created: ${ISSUE_B_URL}"
