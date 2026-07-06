@@ -734,3 +734,60 @@ class TestFetchBlockedByBodyFallback:
 
         assert result == [7]
         assert call_count == 1
+
+
+class TestFetchBlockedByBodyFallbackWordBoundary:
+    r"""Regression test: ``_BODY_MARKER_RE`` requires a word boundary.
+
+    CodeRabbit finding on PR #233 (issue #126): without a leading
+    ``\b``, the marker regex could match ``blocked_by #N`` as a
+    substring of ``unblocked_by #N``, producing a false-positive
+    dependency edge. Confirms the fix rejects that substring while
+    still matching a genuine ``blocked_by #N`` marker.
+    """
+
+    def test_unblocked_by_marker_does_not_match(self) -> None:
+        """'unblocked_by #99' with no genuine marker -> []."""
+        responses = [
+            _ok([]),
+            _ok({"number": 43, "body": "This issue is unblocked_by #99."}),
+        ]
+        call_count = 0
+
+        def fake_run(
+            cmd: list[str],
+            *,
+            env: dict[str, str] | None = None,
+        ) -> subprocess.CompletedProcess[str]:
+            nonlocal call_count
+            result = responses[call_count]
+            call_count += 1
+            return result
+
+        with patch.object(gh_deps_mod, "_run", side_effect=fake_run):
+            result = fetch_blocked_by("glitchwerks", "baton-harness", 43)
+
+        assert result == []
+
+    def test_genuine_blocked_by_marker_still_matches(self) -> None:
+        """Genuine 'blocked_by #12' still matches after the boundary fix."""
+        responses = [
+            _ok([]),
+            _ok({"number": 43, "body": "blocked_by #12"}),
+        ]
+        call_count = 0
+
+        def fake_run(
+            cmd: list[str],
+            *,
+            env: dict[str, str] | None = None,
+        ) -> subprocess.CompletedProcess[str]:
+            nonlocal call_count
+            result = responses[call_count]
+            call_count += 1
+            return result
+
+        with patch.object(gh_deps_mod, "_run", side_effect=fake_run):
+            result = fetch_blocked_by("glitchwerks", "baton-harness", 43)
+
+        assert result == [12]

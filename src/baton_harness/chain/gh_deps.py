@@ -147,9 +147,11 @@ def _paginate(
 
 #: Matches ``blocked_by #N`` or ``depends on #N`` (case-insensitive),
 #: capturing the referenced issue number. Used by the issue-body
-#: dependency fallback (#126).
+#: dependency fallback (#126). The leading ``\b`` requires a word
+#: boundary before ``blocked_by``/``depends on`` so a substring like
+#: ``unblocked_by #12`` does not falsely match.
 _BODY_MARKER_RE = re.compile(
-    r"(?:blocked_by|depends on)\s*#(\d+)", re.IGNORECASE
+    r"\b(?:blocked_by|depends on)\s*#(\d+)", re.IGNORECASE
 )
 
 
