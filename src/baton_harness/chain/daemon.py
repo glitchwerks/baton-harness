@@ -1381,6 +1381,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                     feature_branch=branch_name,
                     poll_interval=ci_poll_interval,
                     timeout=ci_timeout,
+                    required=required_checks,
                     installation_token=installation_token,
                 )
             except Exception as exc:

@@ -115,6 +115,13 @@ def load_workflow(path: str) -> WorkflowConfig:
         except (ValueError, TypeError):
             return default
 
+    # VENDOR-PATCH VP-8: top-level required_checks: front-matter key
+    # (sibling of tracker/polling/agent/hooks), absent -> [] default.
+    # A scalar value (e.g. a typo'd string instead of a YAML list) is
+    # truthy and would otherwise pass straight through and be iterated
+    # char-by-char downstream -- guard to a list, else fall back to [].
+    _raw_required_checks = _get(fm, "required_checks", default=[])
+
     return WorkflowConfig(
         tracker_kind=_get(fm, "tracker", "kind", default="github"),
         tracker_labels=_get(fm, "tracker", "labels", default=[]),
@@ -140,7 +147,9 @@ def load_workflow(path: str) -> WorkflowConfig:
         hook_before_remove=_get(fm, "hooks", "before_remove"),
         hook_timeout_ms=_int(_get(fm, "hooks", "timeout_ms"), 60000),
         prompt_template=prompt,
-        # VENDOR-PATCH VP-8: top-level required_checks: front-matter key
-        # (sibling of tracker/polling/agent/hooks), absent -> [] default.
-        required_checks=_get(fm, "required_checks", default=[]),
+        required_checks=(
+            _raw_required_checks
+            if isinstance(_raw_required_checks, list)
+            else []
+        ),
     )

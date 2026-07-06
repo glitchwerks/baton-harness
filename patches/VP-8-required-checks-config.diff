@@ -1,17 +1,17 @@
 diff --git a/src/baton_harness/vendor/symphony/config.py b/src/baton_harness/vendor/symphony/config.py
-index 61cb4ae..bd8894b 100644
+index 61cb4ae..974b360 100644
 --- a/src/baton_harness/vendor/symphony/config.py
 +++ b/src/baton_harness/vendor/symphony/config.py
 @@ -1,4 +1,5 @@
  """symphony/config.py — WORKFLOW.md parser and typed config."""
 +
  from __future__ import annotations
- 
+
  import os
 @@ -44,6 +45,13 @@ class WorkflowConfig:
      # Prompt
      prompt_template: str = ""
- 
+
 +    # Required checks (issue #225)
 +    # VENDOR-PATCH VP-8: operator-facing override for the merge gate's
 +    # required-check set (baton_harness.chain.merge.REQUIRED_CHECKS).
@@ -19,10 +19,20 @@ index 61cb4ae..bd8894b 100644
 +    # the hardcoded default and warns when this is empty.
 +    required_checks: list[str] = field(default_factory=list)
 +
- 
+
  def _get(d: dict, *keys: str, default: Any = None) -> Any:
      """Nested dict get."""
-@@ -110,14 +118,20 @@ def load_workflow(path: str) -> WorkflowConfig:
+@@ -107,17 +115,30 @@ def load_workflow(path: str) -> WorkflowConfig:
+         except (ValueError, TypeError):
+             return default
+
++    # VENDOR-PATCH VP-8: top-level required_checks: front-matter key
++    # (sibling of tracker/polling/agent/hooks), absent -> [] default.
++    # A scalar value (e.g. a typo'd string instead of a YAML list) is
++    # truthy and would otherwise pass straight through and be iterated
++    # char-by-char downstream -- guard to a list, else fall back to [].
++    _raw_required_checks = _get(fm, "required_checks", default=[])
++
      return WorkflowConfig(
          tracker_kind=_get(fm, "tracker", "kind", default="github"),
          tracker_labels=_get(fm, "tracker", "labels", default=[]),
@@ -46,11 +56,13 @@ index 61cb4ae..bd8894b 100644
          skills=_get(fm, "agent", "skills", default=[]),
          mcp_servers=_get(fm, "agent", "mcp_servers", default=[]),
          hook_after_create=_get(fm, "hooks", "after_create"),
-@@ -126,4 +140,7 @@ def load_workflow(path: str) -> WorkflowConfig:
+@@ -126,4 +147,9 @@ def load_workflow(path: str) -> WorkflowConfig:
          hook_before_remove=_get(fm, "hooks", "before_remove"),
          hook_timeout_ms=_int(_get(fm, "hooks", "timeout_ms"), 60000),
          prompt_template=prompt,
-+        # VENDOR-PATCH VP-8: top-level required_checks: front-matter key
-+        # (sibling of tracker/polling/agent/hooks), absent -> [] default.
-+        required_checks=_get(fm, "required_checks", default=[]),
++        required_checks=(
++            _raw_required_checks
++            if isinstance(_raw_required_checks, list)
++            else []
++        ),
      )

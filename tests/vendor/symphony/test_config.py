@@ -96,6 +96,16 @@ _FRONT_MATTER_WITH_REQUIRED_CHECKS = (
     "Prompt body.\n"
 )
 
+_FRONT_MATTER_WITH_SCALAR_REQUIRED_CHECKS = (
+    "---\n"
+    "tracker:\n"
+    "  kind: github\n"
+    '  labels: ["agent-ready"]\n'
+    'required_checks: "My CI"\n'
+    "---\n"
+    "Prompt body.\n"
+)
+
 
 # ---------------------------------------------------------------------------
 # WorkflowConfig.required_checks field
@@ -161,6 +171,27 @@ class TestLoadWorkflowRequiredChecksParsing:
         fallback-to-``REQUIRED_CHECKS`` + warning behavior is keyed on.
         """
         path = _write_workflow(tmp_path, _FRONT_MATTER_NO_REQUIRED_CHECKS)
+
+        cfg = load_workflow(path)
+
+        assert cfg.required_checks == []
+
+    def test_scalar_required_checks_falls_back_to_empty_default(
+        self, tmp_path: Path
+    ) -> None:
+        """A non-list scalar ``required_checks:`` value parses to ``[]``.
+
+        Regression test (CodeRabbit review, PR #228, VP-8): a front-matter
+        typo like ``required_checks: "My CI"`` (a YAML string, not a list)
+        is truthy and would otherwise pass straight through to the merge
+        gate, which iterates it char-by-char -- silently reproducing the
+        fail-closed "no matching jobs -> timeout" failure this feature
+        exists to fix. ``load_workflow`` must reject any non-list scalar
+        and fall back to the empty-list "unset" default instead.
+        """
+        path = _write_workflow(
+            tmp_path, _FRONT_MATTER_WITH_SCALAR_REQUIRED_CHECKS
+        )
 
         cfg = load_workflow(path)
 

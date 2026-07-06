@@ -10106,6 +10106,89 @@ def test_configured_required_checks_reach_merge_gate() -> None:
     )
 
 
+def test_ci_gate_reentry_passes_configured_required_checks() -> None:
+    """A configured ``required_checks`` reaches the CI-gate re-entry path.
+
+    Mirrors ``test_configured_required_checks_reach_merge_gate`` but
+    drives the OTHER ``merge_issue_branch`` call site: the
+    ``ci_gate_reentry`` restart path (``daemon.py`` "Rule 3a: re-enter
+    CI gate without ``_run_worker``").  Regression test (CodeRabbit
+    review, PR #228): that call site must also thread the configured
+    ``required_checks`` through as ``required=...`` instead of silently
+    falling back to the hardcoded ``merge.REQUIRED_CHECKS`` default.
+    """
+    ready_issues = [
+        {
+            "number": 10,
+            "title": "Issue 10",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/10",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        }
+    ]
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=_make_run_side_effect(
+                ready_issues=ready_issues,
+                pr_head_sha="abc123",
+                issue_branch="baton/issue-10-10",
+                feature_branch_exists=False,
+            ),
+        ),
+        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry={10},
+                redispatch=set(),
+            ),
+        ),
+        # Open PR found — reentry proceeds to merge_issue_branch.
+        patch(
+            "baton_harness.chain.daemon._find_issue_pr",
+            return_value=("baton/issue-10-10", "abc123"),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ) as mock_merge,
+        patch("baton_harness.chain.daemon.alert", return_value=True),
+        _patch_run_worker("pr_created"),
+    ):
+        asyncio.run(
+            run_daemon(
+                _wf_config_with_required_checks(["My CI"]),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    assert mock_merge.call_args is not None, (
+        "merge_issue_branch was never called"
+    )
+    _, call_kwargs = mock_merge.call_args
+    assert call_kwargs.get("required") == ["My CI"], (
+        "merge_issue_branch must be called with required=['My CI'] at the"
+        " ci_gate_reentry call site when the WorkflowConfig overrides"
+        f" required_checks; got required={call_kwargs.get('required')!r}"
+    )
+
+
 def test_unset_required_checks_falls_back_and_warns(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
