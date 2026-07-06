@@ -58,6 +58,7 @@ from baton_harness.chain.alert_post import post_slack_alert
 from baton_harness.chain.app_auth import (
     InstallationTokenSource,
     gh_env,
+    resolve_installation_token,
 )
 from baton_harness.chain.dag import build_dag
 from baton_harness.chain.escalation import alert
@@ -423,6 +424,59 @@ def _run(
         text=True,
         encoding="utf-8",
         env=env,
+    )
+
+
+def _authed_git_push(
+    repo_root: Path,
+    branch_name: str,
+    installation_token: InstallationTokenSource,
+) -> subprocess.CompletedProcess[str]:
+    """Push ``branch_name`` to origin, authed as the App installation.
+
+    A "daemon-only" feature ruleset (bypass actor = the App) rejects a
+    push authenticated as the ambient user PAT, so the push must
+    instead inject the installation token via an env var and override
+    the git credential helper inline (issue #220) — the raw token is
+    never placed in argv/URL or persisted to ``.git/config``, where it
+    would be visible in process listings, shell history, or disk.
+
+    Args:
+        repo_root: Path to the git worktree to push from.
+        branch_name: Name of the branch to push to origin.
+        installation_token: GitHub App installation access token (or a
+            refreshable provider).  Falsy values fall back to a bare
+            ``git push`` for non-App (PAT-only) deploys.
+
+    Returns:
+        The ``subprocess.CompletedProcess`` from the push invocation.
+    """
+    if not installation_token:
+        return _run(
+            ["git", "-C", str(repo_root), "push", "origin", branch_name]
+        )
+
+    push_env = gh_env(installation_token)
+    push_env["GH_INSTALLATION_TOKEN"] = resolve_installation_token(
+        installation_token
+    )
+    return _run(
+        [
+            "git",
+            "-C",
+            str(repo_root),
+            "-c",
+            "credential.https://github.com.helper=",
+            "-c",
+            "credential.https://github.com.helper=!f() { "
+            "echo username=x-access-token; "
+            'echo "password=$GH_INSTALLATION_TOKEN"; '
+            "}; f",
+            "push",
+            "origin",
+            branch_name,
+        ],
+        env=push_env,
     )
 
 
@@ -1075,9 +1129,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
     # when the first _run_worker executes.  An idempotent early push fixes
     # the ordering: re-runs where the branch is already on origin are no-ops
     # (git exits 0 for up-to-date / fast-forwardable pushes).
-    early_push = _run(
-        ["git", "-C", str(repo_root), "push", "origin", branch_name]
-    )
+    early_push = _authed_git_push(repo_root, branch_name, installation_token)
     if early_push.returncode != 0:
         _log.warning(
             "daemon: early git push %r to origin failed (exit %d): %s",
@@ -1914,9 +1966,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
 
     # --- Step 3: completion. ---
     # Push the feature branch.
-    push_proc = _run(
-        ["git", "-C", str(repo_root), "push", "origin", branch_name]
-    )
+    push_proc = _authed_git_push(repo_root, branch_name, installation_token)
     if push_proc.returncode != 0:
         _log.warning(
             "daemon: git push %r failed (exit %d): %s",
