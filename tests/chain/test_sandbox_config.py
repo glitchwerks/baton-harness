@@ -21,6 +21,18 @@ Coverage (issue #175):
 - Derived-twin keys appearing in file (BWS_APP_ID, BWS_INSTALLATION_ID)
   → silently ignored (no error).
 
+Coverage (issue #191 — env override):
+- A non-empty pre-existing os.environ value for a required or secret-ID
+  key is used instead of the file's value (validated with the same
+  per-key rules).
+- An absent env var falls back to the file's value.
+- An empty-string env var is treated as absent and falls back to the
+  file's value.
+- Derived twins BWS_APP_ID / BWS_INSTALLATION_ID always follow the
+  *resolved* (possibly env-overridden) BH_GITHUB_APP_ID /
+  BH_GITHUB_APP_INSTALLATION_ID — they are not independently
+  overloadable via their own env vars.
+
 All subprocess / network calls are intercepted via an injectable ``run``
 kwarg.  No real ``gh`` binary or GitHub API is contacted.
 """
@@ -124,6 +136,42 @@ def _write_env(tmp_path: Path, content: str) -> Path:
     p = tmp_path / "config.env"
     p.write_text(content, encoding="utf-8")
     return p
+
+
+def _delenv_all(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Remove all sandbox-config keys (file + derived) from os.environ.
+
+    Ensures each test starts from a clean environment so a value left
+    over from a previous test (or the real shell) cannot mask the
+    behavior under test.
+
+    Args:
+        monkeypatch: pytest's monkeypatch fixture.
+    """
+    for key in (
+        "BH_REPO_OWNER",
+        "BH_REPO_NAME",
+        "BH_GITHUB_APP_ID",
+        "BH_GITHUB_APP_INSTALLATION_ID",
+        "BWS_PEM_SECRET_ID",
+        "BWS_GH_TOKEN_SECRET_ID",
+        "BWS_HEARTBEAT_PING_URL_SECRET_ID",
+        "BWS_APP_ID",
+        "BWS_INSTALLATION_ID",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
+# ---------------------------------------------------------------------------
+# Env-override constants (issue #191) — deliberately distinct from the
+# file's canonical constants so an override is observable.
+# ---------------------------------------------------------------------------
+
+_ENV_OWNER = "env-org"
+_ENV_APP_ID = "99999"
+_ENV_PEM_UUID = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+_ENV_GH_TOKEN_UUID = "22222222-3333-4444-5555-666666666666"
+_ENV_INSTALL_ID = "13579"
 
 
 # ---------------------------------------------------------------------------
@@ -558,8 +606,17 @@ class TestOptionalSecretIds:
     def test_optional_ids_absent_defaults_to_empty_string(
         self,
         tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """SandboxConfig optional fields default to '' when keys are absent."""
+        """SandboxConfig optional fields default to '' when keys are absent.
+
+        Isolated from ambient os.environ (issue #191): a prior test in
+        this process may have left a non-empty BWS_GH_TOKEN_SECRET_ID /
+        BWS_HEARTBEAT_PING_URL_SECRET_ID in the real environment, which
+        would now be used as an override and mask the "absent → default
+        empty string" behavior this test asserts.
+        """
+        _delenv_all(monkeypatch)
         content = textwrap.dedent(
             f"""\
             BH_REPO_OWNER={_OWNER}
@@ -580,8 +637,16 @@ class TestOptionalSecretIds:
     def test_optional_id_malformed_uuid_raises_error(
         self,
         tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """BWS_GH_TOKEN_SECRET_ID with bad UUID → SandboxConfigError."""
+        """BWS_GH_TOKEN_SECRET_ID with bad UUID → SandboxConfigError.
+
+        Isolated from ambient os.environ (issue #191): a valid leftover
+        BWS_GH_TOKEN_SECRET_ID from a prior test would otherwise override
+        the file's malformed value and silently suppress the expected
+        error.
+        """
+        _delenv_all(monkeypatch)
         content = textwrap.dedent(
             f"""\
             BH_REPO_OWNER={_OWNER}
@@ -603,8 +668,16 @@ class TestOptionalSecretIds:
     def test_optional_heartbeat_malformed_uuid_raises_error(
         self,
         tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """BWS_HEARTBEAT_PING_URL_SECRET_ID bad UUID → SandboxConfigError."""
+        """BWS_HEARTBEAT_PING_URL_SECRET_ID bad UUID → SandboxConfigError.
+
+        Isolated from ambient os.environ (issue #191): a valid leftover
+        BWS_HEARTBEAT_PING_URL_SECRET_ID from a prior test would
+        otherwise override the file's malformed value and silently
+        suppress the expected error.
+        """
+        _delenv_all(monkeypatch)
         content = textwrap.dedent(
             f"""\
             BH_REPO_OWNER={_OWNER}
@@ -769,5 +842,272 @@ class TestDerivedTwinKeysInFile:
         )
         assert os.environ.get("BWS_INSTALLATION_ID") == _INSTALL_ID, (
             f"Expected BWS_INSTALLATION_ID={_INSTALL_ID!r} (derived), "
+            f"got {os.environ.get('BWS_INSTALLATION_ID')!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# H9. Env override (issue #191) — a non-empty pre-existing os.environ
+# value takes precedence over the file's value for the same key.
+# ---------------------------------------------------------------------------
+
+
+class TestEnvOverridesFileValue:
+    """A non-empty env var for a config key wins over the file's value.
+
+    Covers a representative key from each distinct validation class:
+    free-text/charset (BH_REPO_OWNER), positive integer (BH_GITHUB_APP_ID),
+    required UUID (BWS_PEM_SECRET_ID), and optional UUID
+    (BWS_GH_TOKEN_SECRET_ID).
+    """
+
+    def test_env_repo_owner_overrides_file_value(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A set BH_REPO_OWNER env var wins over the file's BH_REPO_OWNER."""
+        _delenv_all(monkeypatch)
+        monkeypatch.setenv("BH_REPO_OWNER", _ENV_OWNER)
+        env_file = _write_env(tmp_path, _VALID_ENV_CONTENT)
+        run = _make_run_stub()
+
+        result = read_and_validate(env_file, run=run)
+
+        assert result.repo_owner == _ENV_OWNER
+        assert result.repo_owner != _OWNER
+
+    def test_env_app_id_overrides_file_value(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A set BH_GITHUB_APP_ID env var wins over the file's value."""
+        _delenv_all(monkeypatch)
+        monkeypatch.setenv("BH_GITHUB_APP_ID", _ENV_APP_ID)
+        env_file = _write_env(tmp_path, _VALID_ENV_CONTENT)
+        run = _make_run_stub()
+
+        result = read_and_validate(env_file, run=run)
+
+        assert result.github_app_id == _ENV_APP_ID
+        assert result.github_app_id != _APP_ID
+
+    def test_env_pem_secret_id_overrides_file_value(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A set BWS_PEM_SECRET_ID env var wins over the file's value."""
+        _delenv_all(monkeypatch)
+        monkeypatch.setenv("BWS_PEM_SECRET_ID", _ENV_PEM_UUID)
+        env_file = _write_env(tmp_path, _VALID_ENV_CONTENT)
+        run = _make_run_stub()
+
+        result = read_and_validate(env_file, run=run)
+
+        assert result.bws_pem_secret_id == _ENV_PEM_UUID
+        assert result.bws_pem_secret_id != _PEM_UUID
+
+    def test_env_gh_token_secret_id_overrides_file_value(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A set BWS_GH_TOKEN_SECRET_ID env var wins over the file's value."""
+        _delenv_all(monkeypatch)
+        monkeypatch.setenv("BWS_GH_TOKEN_SECRET_ID", _ENV_GH_TOKEN_UUID)
+        env_file = _write_env(tmp_path, _VALID_ENV_CONTENT)
+        run = _make_run_stub()
+
+        result = read_and_validate(env_file, run=run)
+
+        assert result.bws_gh_token_secret_id == _ENV_GH_TOKEN_UUID
+        assert result.bws_gh_token_secret_id != _GH_TOKEN_UUID
+
+
+# ---------------------------------------------------------------------------
+# H10. Env absent (issue #191) — falls back to the file's value.
+# ---------------------------------------------------------------------------
+
+
+class TestEnvAbsentFallsBackToFile:
+    """No pre-existing env var for the key → the file's value is used."""
+
+    def test_repo_owner_absent_from_env_uses_file_value(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """BH_REPO_OWNER unset in env → SandboxConfig.repo_owner from file."""
+        _delenv_all(monkeypatch)
+        env_file = _write_env(tmp_path, _VALID_ENV_CONTENT)
+        run = _make_run_stub()
+
+        result = read_and_validate(env_file, run=run)
+
+        assert result.repo_owner == _OWNER
+
+    def test_app_id_absent_from_env_uses_file_value(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """BH_GITHUB_APP_ID unset in env → github_app_id from file."""
+        _delenv_all(monkeypatch)
+        env_file = _write_env(tmp_path, _VALID_ENV_CONTENT)
+        run = _make_run_stub()
+
+        result = read_and_validate(env_file, run=run)
+
+        assert result.github_app_id == _APP_ID
+
+    def test_pem_secret_id_absent_from_env_uses_file_value(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """BWS_PEM_SECRET_ID unset in env → bws_pem_secret_id from file."""
+        _delenv_all(monkeypatch)
+        env_file = _write_env(tmp_path, _VALID_ENV_CONTENT)
+        run = _make_run_stub()
+
+        result = read_and_validate(env_file, run=run)
+
+        assert result.bws_pem_secret_id == _PEM_UUID
+
+    def test_gh_token_secret_id_absent_from_env_uses_file_value(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """BWS_GH_TOKEN_SECRET_ID unset in env → value from file."""
+        _delenv_all(monkeypatch)
+        env_file = _write_env(tmp_path, _VALID_ENV_CONTENT)
+        run = _make_run_stub()
+
+        result = read_and_validate(env_file, run=run)
+
+        assert result.bws_gh_token_secret_id == _GH_TOKEN_UUID
+
+
+# ---------------------------------------------------------------------------
+# H11. Env empty string (issue #191) — treated as absent, falls back to
+# the file's value.
+# ---------------------------------------------------------------------------
+
+
+class TestEnvEmptyTreatedAsAbsent:
+    """An env var set to the empty string is treated as not-set."""
+
+    def test_repo_owner_empty_env_uses_file_value(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """BH_REPO_OWNER='' in env → repo_owner still comes from the file."""
+        _delenv_all(monkeypatch)
+        monkeypatch.setenv("BH_REPO_OWNER", "")
+        env_file = _write_env(tmp_path, _VALID_ENV_CONTENT)
+        run = _make_run_stub()
+
+        result = read_and_validate(env_file, run=run)
+
+        assert result.repo_owner == _OWNER
+
+    def test_app_id_empty_env_uses_file_value(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """BH_GITHUB_APP_ID='' in env → github_app_id still from the file."""
+        _delenv_all(monkeypatch)
+        monkeypatch.setenv("BH_GITHUB_APP_ID", "")
+        env_file = _write_env(tmp_path, _VALID_ENV_CONTENT)
+        run = _make_run_stub()
+
+        result = read_and_validate(env_file, run=run)
+
+        assert result.github_app_id == _APP_ID
+
+    def test_pem_secret_id_empty_env_uses_file_value(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """BWS_PEM_SECRET_ID='' in env → value still comes from the file."""
+        _delenv_all(monkeypatch)
+        monkeypatch.setenv("BWS_PEM_SECRET_ID", "")
+        env_file = _write_env(tmp_path, _VALID_ENV_CONTENT)
+        run = _make_run_stub()
+
+        result = read_and_validate(env_file, run=run)
+
+        assert result.bws_pem_secret_id == _PEM_UUID
+
+    def test_gh_token_secret_id_empty_env_uses_file_value(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """BWS_GH_TOKEN_SECRET_ID='' in env → value still from the file."""
+        _delenv_all(monkeypatch)
+        monkeypatch.setenv("BWS_GH_TOKEN_SECRET_ID", "")
+        env_file = _write_env(tmp_path, _VALID_ENV_CONTENT)
+        run = _make_run_stub()
+
+        result = read_and_validate(env_file, run=run)
+
+        assert result.bws_gh_token_secret_id == _GH_TOKEN_UUID
+
+
+# ---------------------------------------------------------------------------
+# H12. Derived twins follow the *resolved* app-id / installation-id
+# (issue #191) — not independently overloadable via their own env vars.
+# ---------------------------------------------------------------------------
+
+
+class TestDerivedTwinsFollowResolvedValues:
+    """BWS_APP_ID / BWS_INSTALLATION_ID track the env-overridden BH_* keys.
+
+    When BH_GITHUB_APP_ID / BH_GITHUB_APP_INSTALLATION_ID are overridden
+    by the environment, the derived twins written to os.environ must
+    reflect the *resolved* (env-overridden) value, not the file's
+    original value.
+    """
+
+    def test_bws_app_id_follows_env_overridden_app_id(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """BWS_APP_ID in os.environ equals the env-overridden app id."""
+        _delenv_all(monkeypatch)
+        monkeypatch.setenv("BH_GITHUB_APP_ID", _ENV_APP_ID)
+        env_file = _write_env(tmp_path, _VALID_ENV_CONTENT)
+        run = _make_run_stub()
+
+        read_and_validate(env_file, run=run)
+
+        assert os.environ.get("BWS_APP_ID") == _ENV_APP_ID, (
+            f"Expected BWS_APP_ID={_ENV_APP_ID!r} (resolved), "
+            f"got {os.environ.get('BWS_APP_ID')!r}"
+        )
+
+    def test_bws_installation_id_follows_env_overridden_installation_id(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """BWS_INSTALLATION_ID equals the env-overridden installation id."""
+        _delenv_all(monkeypatch)
+        monkeypatch.setenv("BH_GITHUB_APP_INSTALLATION_ID", _ENV_INSTALL_ID)
+        env_file = _write_env(tmp_path, _VALID_ENV_CONTENT)
+        run = _make_run_stub()
+
+        read_and_validate(env_file, run=run)
+
+        assert os.environ.get("BWS_INSTALLATION_ID") == _ENV_INSTALL_ID, (
+            f"Expected BWS_INSTALLATION_ID={_ENV_INSTALL_ID!r} (resolved), "
             f"got {os.environ.get('BWS_INSTALLATION_ID')!r}"
         )
