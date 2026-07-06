@@ -121,6 +121,24 @@ orchestration path.
   `env=` kwarg regardless of the argv shell flags. Marker:
   `# VENDOR-PATCH VP-7: non-login shell ("-c", not "-lc") ...`.
 
+### VP-8 — `WorkflowConfig.required_checks` operator override
+
+- **File:** `config.py`
+- **Patch file:** `patches/VP-8-required-checks-config.diff` (relative to repo root)
+- **Description:** Adds a `required_checks: list[str]` field (default
+  `field(default_factory=list)`, i.e. `[]`) to `WorkflowConfig`, and
+  parses a top-level `required_checks:` WORKFLOW.md front-matter key
+  (sibling of `tracker:`/`polling:`/`agent:`/`hooks:`) onto it in
+  `load_workflow`; an absent key yields the `[]` default (no
+  `KeyError`). The empty list is the "unset" sentinel the daemon's merge
+  gate checks against: when set, the daemon threads `required_checks` to
+  `merge_issue_branch(required=...)` instead of the hardcoded
+  `baton_harness.chain.merge.REQUIRED_CHECKS` default; when unset, the
+  gate falls back to `REQUIRED_CHECKS` and logs a one-time WARNING per
+  daemon run (issue #225; see `_effective_required_checks` in
+  `chain/daemon.py`, not part of the vendored tree). Marker:
+  `# VENDOR-PATCH VP-8: ...`.
+
 ### Vendoring-mechanics patches (not VP patches; no separate diff files)
 
 These are **structural edits required for re-packaging** — they change
@@ -164,6 +182,7 @@ When re-vendoring at a new upstream SHA, apply these steps in order:
    git apply patches/VP-4-worker-disallow-merge.diff
    git apply patches/VP-5-pr-exists-early-exit.diff
    git apply patches/VP-7-hooks-non-login-shell.diff
+   git apply patches/VP-8-required-checks-config.diff
    ```
 4. Re-apply the relative-import vendoring-mechanics patches manually (they
    are not in a diff file because they only depend on the module names, which
@@ -180,6 +199,7 @@ When re-vendoring at a new upstream SHA, apply these steps in order:
    - `VP-4` in `worker.py`
    - `VP-5` in `orchestrator.py`
    - `VP-7` in `hooks.py`
+   - `VP-8` in `config.py`
    - `relative import for vendoring` in `orchestrator.py`, `cli.py`,
      `prompt.py`, `worker.py`
 6. Update the **Pinned SHA** and **Vendor date** fields at the top of this
