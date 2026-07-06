@@ -184,6 +184,31 @@ def _common_patches(
     return ctx
 
 
+def _gh_noun_verb(cmd: list[str]) -> tuple[str | None, str | None]:
+    """Extract the ``gh <noun> <verb>`` tokens from a ``_run`` argv.
+
+    Disambiguates by argv token position rather than substring-matching
+    the joined command string.  A substring check for "pr" previously
+    misrouted ``gh issue list --label agent-in-progress`` to the
+    PR-list branch, because "agent-in-progress" contains the substring
+    "pr" (#92).  ``cmd`` is always the exact argv list, so ``cmd[1]``/
+    ``cmd[2]`` are the true noun/verb tokens for any
+    ``gh <noun> <verb> ...`` invocation.
+
+    Args:
+        cmd: The exact argv list passed to ``_run``.
+
+    Returns:
+        A ``(noun, verb)`` tuple. Both are ``None`` when ``cmd`` is not
+        a ``gh`` invocation; ``verb`` is ``None`` when ``cmd`` has no
+        third token (e.g. ``gh issue`` alone).
+    """
+    is_gh = bool(cmd) and cmd[0] == "gh"
+    noun = cmd[1] if is_gh and len(cmd) > 1 else None
+    verb = cmd[2] if is_gh and len(cmd) > 2 else None
+    return noun, verb
+
+
 def _make_run_side_effect(
     *,
     ready_issues: list[dict[str, Any]],
@@ -196,17 +221,7 @@ def _make_run_side_effect(
     def side_effect(cmd: list[str]) -> subprocess.CompletedProcess[str]:
         import json as _json
 
-        # Disambiguate the gh noun/verb by argv token position, not by
-        # substring-matching the joined command string.  A substring
-        # check for "pr" previously misrouted
-        # ``gh issue list --label agent-in-progress`` to the PR-list
-        # branch, because "agent-in-progress" contains the substring
-        # "pr" (#92).  ``cmd`` is always the exact argv list, so
-        # ``cmd[1]``/``cmd[2]`` are the true noun/verb tokens for any
-        # ``gh <noun> <verb> ...`` invocation.
-        is_gh = bool(cmd) and cmd[0] == "gh"
-        noun = cmd[1] if is_gh and len(cmd) > 1 else None
-        verb = cmd[2] if is_gh and len(cmd) > 2 else None
+        noun, verb = _gh_noun_verb(cmd)
 
         # Issue list for polling.
         if noun == "issue" and verb == "list" and "agent-ready" in cmd:
@@ -1806,14 +1821,7 @@ def test_integration_pr_body_contains_closes_keyword_per_issue_multi() -> None:
 
         if "pr" in cmd and "create" in cmd:
             pr_create_cmds.append(list(cmd))
-        # Disambiguate by argv token position (see _make_run_side_effect
-        # for the full rationale) rather than substring-matching the
-        # joined command string, so the orphan scan's
-        # ``gh issue list --label agent-in-progress`` is never
-        # misrouted to the PR-list branch.
-        is_gh = bool(cmd) and cmd[0] == "gh"
-        noun = cmd[1] if is_gh and len(cmd) > 1 else None
-        verb = cmd[2] if is_gh and len(cmd) > 2 else None
+        noun, verb = _gh_noun_verb(cmd)
         if noun == "issue" and verb == "list" and "agent-ready" in cmd:
             return _ok(_json.dumps(ready_issues_for_poll))
         if noun == "issue" and verb == "view":
