@@ -38,6 +38,8 @@ Coverage:
   list onto ``WorkflowConfig.required_checks``.
 - ``load_workflow`` on a WORKFLOW.md with no ``required_checks:`` key
   yields the empty-list default (not a ``KeyError``, not ``None``).
+- ``load_workflow`` on a mixed-type ``required_checks:`` list (#229)
+  drops non-string elements, keeping only the string check names.
 """
 
 from __future__ import annotations
@@ -102,6 +104,18 @@ _FRONT_MATTER_WITH_SCALAR_REQUIRED_CHECKS = (
     "  kind: github\n"
     '  labels: ["agent-ready"]\n'
     'required_checks: "My CI"\n'
+    "---\n"
+    "Prompt body.\n"
+)
+
+_FRONT_MATTER_WITH_MIXED_TYPE_REQUIRED_CHECKS = (
+    "---\n"
+    "tracker:\n"
+    "  kind: github\n"
+    '  labels: ["agent-ready"]\n'
+    "required_checks:\n"
+    "  - 123\n"
+    '  - "My CI"\n'
     "---\n"
     "Prompt body.\n"
 )
@@ -196,3 +210,30 @@ class TestLoadWorkflowRequiredChecksParsing:
         cfg = load_workflow(path)
 
         assert cfg.required_checks == []
+
+    def test_mixed_type_list_drops_non_string_elements(
+        self, tmp_path: Path
+    ) -> None:
+        """A mixed-type ``required_checks:`` list drops non-string items.
+
+        Regression test, issue #229: ``load_workflow`` only guards the
+        OUTER container type (``_raw if isinstance(_raw, list) else
+        []``) -- a per-element type check is missing. A front-matter
+        typo like ``required_checks: [123, "My CI"]`` currently passes
+        the non-string ``123`` straight through, unfiltered, since the
+        outer value is already a list. ``123`` can never match a real
+        GitHub check name, silently reproducing the fail-closed "no
+        matching jobs -> issue parks forever" symptom (#225) for a
+        single mistyped element. ``load_workflow`` must filter the list
+        to keep only ``str`` elements.
+
+        MUST FAIL now: the current code keeps ``123`` unfiltered, so
+        ``cfg.required_checks`` is ``[123, "My CI"]``, not ``["My CI"]``.
+        """
+        path = _write_workflow(
+            tmp_path, _FRONT_MATTER_WITH_MIXED_TYPE_REQUIRED_CHECKS
+        )
+
+        cfg = load_workflow(path)
+
+        assert cfg.required_checks == ["My CI"]
