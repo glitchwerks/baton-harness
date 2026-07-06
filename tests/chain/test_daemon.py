@@ -184,6 +184,31 @@ def _common_patches(
     return ctx
 
 
+def _gh_noun_verb(cmd: list[str]) -> tuple[str | None, str | None]:
+    """Extract the ``gh <noun> <verb>`` tokens from a ``_run`` argv.
+
+    Disambiguates by argv token position rather than substring-matching
+    the joined command string.  A substring check for "pr" previously
+    misrouted ``gh issue list --label agent-in-progress`` to the
+    PR-list branch, because "agent-in-progress" contains the substring
+    "pr" (#92).  ``cmd`` is always the exact argv list, so ``cmd[1]``/
+    ``cmd[2]`` are the true noun/verb tokens for any
+    ``gh <noun> <verb> ...`` invocation.
+
+    Args:
+        cmd: The exact argv list passed to ``_run``.
+
+    Returns:
+        A ``(noun, verb)`` tuple. Both are ``None`` when ``cmd`` is not
+        a ``gh`` invocation; ``verb`` is ``None`` when ``cmd`` has no
+        third token (e.g. ``gh issue`` alone).
+    """
+    is_gh = bool(cmd) and cmd[0] == "gh"
+    noun = cmd[1] if is_gh and len(cmd) > 1 else None
+    verb = cmd[2] if is_gh and len(cmd) > 2 else None
+    return noun, verb
+
+
 def _make_run_side_effect(
     *,
     ready_issues: list[dict[str, Any]],
@@ -196,17 +221,13 @@ def _make_run_side_effect(
     def side_effect(cmd: list[str]) -> subprocess.CompletedProcess[str]:
         import json as _json
 
-        cmd_str = " ".join(cmd)
+        noun, verb = _gh_noun_verb(cmd)
+
         # Issue list for polling.
-        is_issue_list = (
-            "issue" in cmd_str
-            and "list" in cmd_str
-            and "agent-ready" in cmd_str
-        )
-        if is_issue_list:
+        if noun == "issue" and verb == "list" and "agent-ready" in cmd:
             return _ok(_json.dumps(ready_issues))
         # Issue view (fetch_issue_obj and fetch_issue_labels).
-        if "issue" in cmd_str and "view" in cmd_str and "edit" not in cmd_str:
+        if noun == "issue" and verb == "view":
             # Extract the issue number from cmd.
             nums = [p for p in cmd if p.isdigit()]
             n = int(nums[0]) if nums else 10
@@ -222,10 +243,10 @@ def _make_run_side_effect(
             }
             return _ok(_json.dumps(raw))
         # Label edits (add/remove).
-        if "issue" in cmd_str and "edit" in cmd_str:
+        if noun == "issue" and verb == "edit":
             return _ok()
         # PR list (for finding issue branches and checking draft exists).
-        if "pr" in cmd_str and "list" in cmd_str:
+        if noun == "pr" and verb == "list":
             prs = [
                 {
                     "number": 1,
@@ -235,18 +256,18 @@ def _make_run_side_effect(
             ]
             return _ok(_json.dumps(prs))
         # PR create.
-        if "pr" in cmd_str and "create" in cmd_str:
+        if noun == "pr" and verb == "create":
             return _ok("https://github.com/o/r/pull/99")
         # Git push.
-        if "git" in cmd_str and "push" in cmd_str:
+        if "git" in cmd and "push" in cmd:
             return _ok()
         # git ls-remote (for branch existence check in branches.py).
-        if "ls-remote" in cmd_str:
+        if "ls-remote" in cmd:
             if feature_branch_exists:
                 return _ok("abc123\trefs/heads/feature/my-milestone\n")
             return _ok("")
         # git rev-parse (local branch check).
-        if "rev-parse" in cmd_str:
+        if "rev-parse" in cmd:
             return _ok("abc123deadbeef" * 2 + "\n")
         # Fallback.
         return _ok()
@@ -1800,14 +1821,10 @@ def test_integration_pr_body_contains_closes_keyword_per_issue_multi() -> None:
 
         if "pr" in cmd and "create" in cmd:
             pr_create_cmds.append(list(cmd))
-        cmd_str = " ".join(cmd)
-        if (
-            "issue" in cmd_str
-            and "list" in cmd_str
-            and "agent-ready" in cmd_str
-        ):
+        noun, verb = _gh_noun_verb(cmd)
+        if noun == "issue" and verb == "list" and "agent-ready" in cmd:
             return _ok(_json.dumps(ready_issues_for_poll))
-        if "issue" in cmd_str and "view" in cmd_str and "edit" not in cmd_str:
+        if noun == "issue" and verb == "view":
             nums = [p for p in cmd if p.isdigit()]
             n = int(nums[0]) if nums else 10
             return _ok(
@@ -1823,9 +1840,9 @@ def test_integration_pr_body_contains_closes_keyword_per_issue_multi() -> None:
                     }
                 )
             )
-        if "issue" in cmd_str and "edit" in cmd_str:
+        if noun == "issue" and verb == "edit":
             return _ok()
-        if "pr" in cmd_str and "list" in cmd_str:
+        if noun == "pr" and verb == "list":
             prs = [
                 {
                     "number": i,
@@ -1835,13 +1852,13 @@ def test_integration_pr_body_contains_closes_keyword_per_issue_multi() -> None:
                 for i, n in enumerate([10, 11], 1)
             ]
             return _ok(_json.dumps(prs))
-        if "pr" in cmd_str and "create" in cmd_str:
+        if noun == "pr" and verb == "create":
             return _ok("https://github.com/o/r/pull/99")
-        if "git" in cmd_str and "push" in cmd_str:
+        if "git" in cmd and "push" in cmd:
             return _ok()
-        if "ls-remote" in cmd_str:
+        if "ls-remote" in cmd:
             return _ok("")
-        if "rev-parse" in cmd_str:
+        if "rev-parse" in cmd:
             return _ok("abc123\n")
         return _ok()
 
