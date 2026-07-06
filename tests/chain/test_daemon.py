@@ -9721,3 +9721,256 @@ class TestRunWorkUnitForwardsTokenToDagAndRecovery:
             f"reconstruct; expected {_token!r}, "
             f"got {_kwargs.get('installation_token')!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Issue #220: git push origin <branch> must authenticate as the App
+# installation token via an env-injected inline credential helper, not
+# the ambient user PAT picked up by the default gh credential helper.
+# ---------------------------------------------------------------------------
+
+
+class TestAuthedGitPush:
+    """Both push sites in ``_run_work_unit`` must auth as the App token.
+
+    ``daemon.py`` pushes feature branches with a bare
+    ``git push origin <branch>`` at two sites inside ``_run_work_unit``
+    (which has ``installation_token`` in scope throughout):
+
+    - the early-publish push (~daemon.py:1078), issued right after
+      ``create_feature_branch`` and before any worker/agent runs.
+    - the completion push (~daemon.py:1917), issued at the start of
+      Step 3 after the per-DAG serial loop finishes.
+
+    A "daemon-only" feature ruleset (bypass actor = the App) rejects
+    a push authenticated as the ambient user PAT, so both sites must
+    instead inject the installation token via an env var and override
+    the git credential helper inline — never place the raw token in
+    argv/URL, where it would be visible in process listings and shell
+    history.
+
+    All tests in this class are expected to FAIL today: the current
+    ``_run(["git", "-C", repo_root, "push", "origin", branch_name])``
+    calls carry neither a credential-helper override nor an env-injected
+    token.
+    """
+
+    _TOKEN = "ghs_TESTTOKEN123"
+
+    @staticmethod
+    def _dash_c_values(cmd: list[str]) -> list[str]:
+        """Return every value passed via a ``-c`` flag in a git argv."""
+        return [
+            cmd[i + 1]
+            for i, tok in enumerate(cmd)
+            if tok == "-c" and i + 1 < len(cmd)
+        ]
+
+    def _assert_authed_push(
+        self,
+        cmd: list[str],
+        env: dict[str, str] | None,
+    ) -> None:
+        """Assert ``cmd``/``env`` carry the App-token credential override.
+
+        Args:
+            cmd: The argv list passed to the mocked ``_run``/subprocess
+                call for a ``git push origin <branch>`` invocation.
+            env: The ``env`` kwarg passed alongside ``cmd`` (``None`` if
+                omitted).
+
+        Raises:
+            AssertionError: If the credential-helper override is
+                missing, the token is absent from ``env``, or the raw
+                token string leaks into ``cmd``.
+        """
+        cmd_str = " ".join(cmd)
+        dash_c_values = self._dash_c_values(cmd)
+
+        # 1. Credential-helper override present: a reset of whatever
+        #    helper is already configured (empty value) AND a separate
+        #    inline helper that reads the token from an env var.
+        assert any(
+            v == "credential.https://github.com.helper=" for v in dash_c_values
+        ), (
+            "Expected a `-c credential.https://github.com.helper=` "
+            "reset in the git push argv (clears any pre-existing "
+            f"helper); -c values={dash_c_values}, cmd={cmd}"
+        )
+        assert any(
+            v.startswith("credential.https://github.com.helper=")
+            and "GH_INSTALLATION_TOKEN" in v
+            for v in dash_c_values
+        ), (
+            "Expected an inline `credential.https://github.com.helper=` "
+            "override referencing GH_INSTALLATION_TOKEN in the git push "
+            f"argv; -c values={dash_c_values}, cmd={cmd}"
+        )
+
+        # 2. Token must flow via env, never via argv/URL (security
+        #    regression guard).
+        assert env is not None, (
+            "git push must receive an env= override carrying the "
+            "installation token; got env=None"
+        )
+        assert env.get("GH_INSTALLATION_TOKEN") == self._TOKEN, (
+            "Expected env['GH_INSTALLATION_TOKEN'] == "
+            f"{self._TOKEN!r}; got env={env}"
+        )
+        assert self._TOKEN not in cmd_str, (
+            "Installation token must never appear in the git push argv "
+            f"(security regression); cmd={cmd}"
+        )
+        for tok in cmd:
+            assert self._TOKEN not in tok, (
+                f"Installation token leaked into argv token {tok!r} "
+                f"(e.g. an origin/URL argument); cmd={cmd}"
+            )
+
+    def test_early_publish_push_is_authed_with_installation_token(
+        self,
+    ) -> None:
+        """Early-publish push (~daemon.py:1078) must use the authed path.
+
+        Drives ``_run_work_unit`` directly and stops execution as soon
+        as the first ``git push origin`` call is observed (via a
+        sentinel exception raised from the mocked ``_run``), isolating
+        the early-publish push from the completion push.
+        """
+        captured: list[tuple[list[str], dict[str, str] | None]] = []
+
+        class _StopAfterEarlyPushError(Exception):
+            pass
+
+        def _run_side(
+            cmd: list[str],
+            env: dict[str, str] | None = None,
+        ) -> subprocess.CompletedProcess[str]:
+            cmd_str = " ".join(cmd)
+            if "git" in cmd_str and "push" in cmd_str and "origin" in cmd_str:
+                captured.append(
+                    (list(cmd), dict(env) if env is not None else None)
+                )
+                raise _StopAfterEarlyPushError("stop after early push")
+            return _ok()
+
+        with (
+            patch.object(daemon_mod, "_run", side_effect=_run_side),
+            patch(
+                "baton_harness.chain.daemon.fetch_blocked_by",
+                return_value=[],
+            ),
+            patch("baton_harness.chain.branches.create_feature_branch"),
+        ):
+            try:
+                asyncio.run(
+                    daemon_mod._run_work_unit(
+                        _minimal_wf_config(),
+                        _repo_cfg(),
+                        "feature/test-slug",
+                        "test-slug",
+                        frozenset({1}),
+                        agent_ready_issues=frozenset({1}),
+                        installation_token=self._TOKEN,
+                    )
+                )
+            except _StopAfterEarlyPushError:
+                pass  # Expected: we stopped execution right after it.
+
+        assert captured, (
+            "Early-publish git push origin was never invoked via _run"
+        )
+        cmd, env = captured[0]
+        self._assert_authed_push(cmd, env)
+
+    def test_completion_push_is_authed_with_installation_token(
+        self,
+    ) -> None:
+        """Completion push (~daemon.py:1917) must use the authed path.
+
+        Drives a full happy-path work unit to completion via
+        ``run_daemon(once=True)`` (single ready issue, worker returns
+        ``"pr_created"``, merge outcome ``MERGED``) so the per-DAG loop
+        finishes and Step 3's completion push fires.  Every recorded
+        ``git push origin`` call — both the early-publish push and the
+        completion push — must carry the authed credential-helper
+        override and env token.
+        """
+        ready_issues = [
+            {
+                "number": 10,
+                "title": "Issue 10",
+                "state": "open",
+                "body": "",
+                "url": "https://github.com/o/r/issues/10",
+                "labels": [{"name": "agent-ready"}],
+                "milestone": None,
+                "assignees": [],
+            }
+        ]
+
+        captured: list[tuple[list[str], dict[str, str] | None]] = []
+
+        def _run_side(
+            cmd: list[str],
+            env: dict[str, str] | None = None,
+        ) -> subprocess.CompletedProcess[str]:
+            cmd_str = " ".join(cmd)
+            if "git" in cmd_str and "push" in cmd_str and "origin" in cmd_str:
+                captured.append(
+                    (list(cmd), dict(env) if env is not None else None)
+                )
+            side_effect = _make_run_side_effect(
+                ready_issues=ready_issues,
+                pr_head_sha="abc123",
+                issue_branch="baton/issue-10-10",
+                feature_branch_exists=False,
+            )
+            return side_effect(cmd)
+
+        with (
+            patch.object(daemon_mod, "_run", side_effect=_run_side),
+            patch(
+                "baton_harness.chain.daemon.fetch_blocked_by",
+                return_value=[],
+            ),
+            patch("baton_harness.chain.branches.create_feature_branch"),
+            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch(
+                "baton_harness.chain.branches.record_cut_point",
+                return_value="deadbeef" * 5,
+            ),
+            patch(
+                "baton_harness.chain.recovery.reconstruct",
+                return_value=RecoveryResult(
+                    done=set(),
+                    parked_seed=set(),
+                    ci_gate_reentry=set(),
+                    redispatch=set(),
+                ),
+            ),
+            patch(
+                "baton_harness.chain.daemon.merge_issue_branch",
+                return_value=MergeOutcome.MERGED,
+            ),
+            patch("baton_harness.chain.daemon.alert", return_value=True),
+            _patch_run_worker("pr_created"),
+        ):
+            asyncio.run(
+                run_daemon(
+                    _minimal_wf_config(),
+                    [_repo_cfg()],
+                    once=True,
+                    poll_interval_s=0,
+                    installation_token=self._TOKEN,
+                )
+            )
+
+        # A happy single-issue unit pushes twice: early-publish, then
+        # completion.  Every push observed must be authed.
+        assert len(captured) >= 2, (
+            "Expected at least two git push origin calls (early-publish "
+            f"+ completion); captured={captured}"
+        )
+        for cmd, env in captured:
+            self._assert_authed_push(cmd, env)
