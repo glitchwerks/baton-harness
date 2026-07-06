@@ -143,6 +143,19 @@ if ! gh auth status &>/dev/null; then
 fi
 echo "baton-harness: gh auth OK"
 
+# gh auth setup-git — `gh auth login` authenticates the gh CLI only; it does
+# NOT install a git credential helper, so a bare `git push` later fails with
+# "Password authentication is not supported" even though a token is present
+# (#219). `gh auth setup-git` configures git to use gh's credential helper,
+# which reads the already-authenticated token.
+if ! gh auth setup-git &>/dev/null; then
+    echo "baton-harness: error: gh auth setup-git failed — could not configure" >&2
+    echo "  a git credential helper for gh. Re-run manually to see the error:" >&2
+    echo "  gh auth setup-git" >&2
+    exit 1
+fi
+echo "baton-harness: gh auth setup-git OK (git credential helper configured)"
+
 # git available
 if ! command -v git &>/dev/null; then
     echo "baton-harness: error: git not found on PATH" >&2
