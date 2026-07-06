@@ -73,7 +73,11 @@ from baton_harness.chain.labels import (
     assert_single_state,
     target_state_from_observed,
 )
-from baton_harness.chain.merge import MergeOutcome, merge_issue_branch
+from baton_harness.chain.merge import (
+    REQUIRED_CHECKS,
+    MergeOutcome,
+    merge_issue_branch,
+)
 from baton_harness.chain.obs_config import ObsConfig, load_obs_config
 from baton_harness.chain.reconcile import (
     reconcile_startup as reconcile_startup,
@@ -812,6 +816,43 @@ def _fetch_full_milestone_members(
         return frozenset()
 
 
+# (issue #225) Guard for the required_checks fallback warning -- fires
+# at most once per ``run_daemon`` invocation (reset at the top of
+# run_daemon), not once per merge/work-unit within that run.
+_required_checks_warned = False
+
+
+def _effective_required_checks(config: WorkflowConfig) -> list[str]:
+    """Resolve the merge gate's required-check set from ``config``.
+
+    Design decision (fallback + warn, issue #225): an operator-set
+    ``config.required_checks`` overrides the hardcoded default.  When
+    unset (empty list), falls back to ``merge.REQUIRED_CHECKS`` and logs
+    a startup WARNING (once per daemon run) so operators know they are
+    relying on the hardcoded default.
+
+    Args:
+        config: The loaded ``WorkflowConfig`` for the current run.
+
+    Returns:
+        The required check names to gate merges on: ``config
+        .required_checks`` when non-empty, else ``merge.REQUIRED_CHECKS``.
+    """
+    if config.required_checks:
+        return config.required_checks
+
+    global _required_checks_warned
+    if not _required_checks_warned:
+        _log.warning(
+            "daemon: required_checks not set in config/WORKFLOW.md;"
+            " falling back to hardcoded REQUIRED_CHECKS default %r ---"
+            " set `required_checks:` in config/WORKFLOW.md to override",
+            REQUIRED_CHECKS,
+        )
+        _required_checks_warned = True
+    return REQUIRED_CHECKS
+
+
 def _run_ci_gate(
     *,
     owner: str,
@@ -828,6 +869,7 @@ def _run_ci_gate(
     parked_reasons: dict[int, str],
     ci_poll_interval: float,
     ci_timeout: float,
+    required_checks: list[str] | None = None,
     installation_token: InstallationTokenSource = "",
 ) -> None:
     """Run the CI gate and apply the merge/park terminal for one issue.
@@ -867,6 +909,13 @@ def _run_ci_gate(
         parked_reasons: Mutable dict accumulating park reasons.
         ci_poll_interval: Seconds between CI status polls.
         ci_timeout: Hard ceiling for the CI gate in seconds.
+        required_checks: The required check names for the merge gate
+            (issue #225) -- the configured override, or the hardcoded
+            ``merge.REQUIRED_CHECKS`` default; see
+            ``_effective_required_checks``.  Defaults to ``None``
+            (forwarded to ``merge_issue_branch`` as-is, which falls back
+            to ``REQUIRED_CHECKS`` itself) for callers that predate
+            issue #225.
         installation_token: Optional GitHub App installation access token
             (``ghs_`` prefix).  Threaded to ``_label_edit`` calls.
     """
@@ -879,6 +928,7 @@ def _run_ci_gate(
             pr_head_sha=pr_head_sha,
             issue_branch=issue_branch,
             feature_branch=branch_name,
+            required=required_checks,
             poll_interval=ci_poll_interval,
             timeout=ci_timeout,
             installation_token=installation_token,
@@ -1082,6 +1132,11 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
     owner = repo_cfg.owner
     repo = repo_cfg.repo
     repo_root = repo_cfg.project_root
+
+    # (issue #225) Resolve the merge gate's required-check set once for
+    # this work unit -- config override, or the hardcoded default (with
+    # a one-time warning); see _effective_required_checks.
+    required_checks = _effective_required_checks(config)
 
     # FIX 1: default agent_ready_issues to membership when caller did not
     # supply it (un-milestoned N=1 unit where membership IS the ready set).
@@ -1326,6 +1381,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                     feature_branch=branch_name,
                     poll_interval=ci_poll_interval,
                     timeout=ci_timeout,
+                    required=required_checks,
                     installation_token=installation_token,
                 )
             except Exception as exc:
@@ -1828,6 +1884,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                         parked_reasons=parked_reasons,
                         ci_poll_interval=ci_poll_interval,
                         ci_timeout=ci_timeout,
+                        required_checks=required_checks,
                         installation_token=installation_token,
                     )
                     continue
@@ -1932,6 +1989,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 parked_reasons=parked_reasons,
                 ci_poll_interval=ci_poll_interval,
                 ci_timeout=ci_timeout,
+                required_checks=required_checks,
                 installation_token=installation_token,
             )
         else:
@@ -2104,6 +2162,13 @@ async def run_daemon(
         poll_interval_s,
         once,
     )
+
+    # (issue #225) Reset the required_checks fallback-warning guard on
+    # every daemon startup, so the warning fires at most once per
+    # ``run_daemon`` invocation (not once per merge) while still firing
+    # fresh on every new daemon run.
+    global _required_checks_warned
+    _required_checks_warned = False
 
     # --- Observability startup (best-effort; risk R2 — must never raise). ---
     runlog: RunLog | None = None

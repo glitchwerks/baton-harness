@@ -25,6 +25,10 @@ Coverage:
 - (slice 3a) The per-call env override does NOT mutate os.environ.
 - (slice 3a) merge.py:_query_action_jobs uses the installation token.
 - (slice 3a) escalation.py:escalate uses the installation token.
+- (issue #225) A configured ``WorkflowConfig.required_checks`` reaches
+  ``merge_issue_branch`` as ``required=...``.
+- (issue #225) An unset ``required_checks`` falls back to
+  ``merge.REQUIRED_CHECKS`` and logs a startup WARNING naming it.
 """
 
 from __future__ import annotations
@@ -9974,3 +9978,321 @@ class TestAuthedGitPush:
         )
         for cmd, env in captured:
             self._assert_authed_push(cmd, env)
+
+
+# ---------------------------------------------------------------------------
+# Configurable required-check set (issue #225)
+#
+# Design decision (fallback + warn): when the loaded WorkflowConfig's
+# ``required_checks`` is set (non-empty), the daemon must thread it to
+# ``merge_issue_branch(required=...)``.  When unset/empty, the gate falls
+# back to ``merge.REQUIRED_CHECKS`` AND emits a one-time startup WARNING
+# naming the hardcoded default.
+#
+# Seam choice (see tests/vendor/symphony/test_config.py for the full
+# rationale): the briefing frames the override as living on ``RepoConfig``
+# (chain/registry.py).  As of this writing ``RepoConfig`` never reads
+# WORKFLOW.md — the object actually threaded through
+# ``_run_work_unit(config: WorkflowConfig, repo_cfg: RepoConfig, ...)``
+# to both ``merge_issue_branch`` call sites is ``WorkflowConfig``.  These
+# tests therefore drive the override via ``WorkflowConfig.required_checks``,
+# the narrowest reachable seam, and flag the ``RepoConfig`` vs
+# ``WorkflowConfig`` placement question for reconciliation.
+# ---------------------------------------------------------------------------
+
+
+def _wf_config_with_required_checks(checks: list[str]) -> WorkflowConfig:
+    """Return a minimal ``WorkflowConfig`` overriding ``required_checks``.
+
+    Args:
+        checks: The required-check names to set on the config.
+
+    Returns:
+        A ``WorkflowConfig`` identical to ``_minimal_wf_config()`` except
+        for ``required_checks``.
+
+    Raises:
+        TypeError: Today, always — ``WorkflowConfig`` has no
+            ``required_checks`` field yet (issue #225 not implemented).
+            This is the expected RED failure for this seam until the
+            field is added.
+    """
+    import dataclasses
+
+    return dataclasses.replace(_minimal_wf_config(), required_checks=checks)
+
+
+def test_configured_required_checks_reach_merge_gate() -> None:
+    """A configured ``required_checks`` reaches ``merge_issue_branch``.
+
+    When ``WorkflowConfig.required_checks`` is set to e.g. ``["My CI"]``,
+    the daemon must call ``merge_issue_branch(..., required=["My CI"])``
+    at the CI-gate call site — not silently fall back to the hardcoded
+    ``merge.REQUIRED_CHECKS`` default.
+
+    MUST FAIL now for two independent reasons, either of which is a
+    valid red:
+    1. ``WorkflowConfig`` has no ``required_checks`` field yet (this test
+       fails at config-construction time with a ``TypeError``).
+    2. Even if the field existed, neither ``daemon.py:874`` nor
+       ``daemon.py:1319`` currently pass a ``required=`` kwarg to
+       ``merge_issue_branch`` at all — the captured call's ``required``
+       would be absent/``None``, not ``["My CI"]``.
+    """
+    ready_issues = [
+        {
+            "number": 10,
+            "title": "Issue 10",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/10",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        }
+    ]
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=_make_run_side_effect(
+                ready_issues=ready_issues,
+                pr_head_sha="abc123",
+                issue_branch="baton/issue-10-10",
+                feature_branch_exists=False,
+            ),
+        ),
+        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ) as mock_merge,
+        patch("baton_harness.chain.daemon.alert", return_value=True),
+        _patch_run_worker("pr_created"),
+    ):
+        asyncio.run(
+            run_daemon(
+                _wf_config_with_required_checks(["My CI"]),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    assert mock_merge.call_args is not None, (
+        "merge_issue_branch was never called"
+    )
+    _, call_kwargs = mock_merge.call_args
+    assert call_kwargs.get("required") == ["My CI"], (
+        "merge_issue_branch must be called with required=['My CI'] when"
+        " the WorkflowConfig overrides required_checks; got"
+        f" required={call_kwargs.get('required')!r}"
+    )
+
+
+def test_ci_gate_reentry_passes_configured_required_checks() -> None:
+    """A configured ``required_checks`` reaches the CI-gate re-entry path.
+
+    Mirrors ``test_configured_required_checks_reach_merge_gate`` but
+    drives the OTHER ``merge_issue_branch`` call site: the
+    ``ci_gate_reentry`` restart path (``daemon.py`` "Rule 3a: re-enter
+    CI gate without ``_run_worker``").  Regression test (CodeRabbit
+    review, PR #228): that call site must also thread the configured
+    ``required_checks`` through as ``required=...`` instead of silently
+    falling back to the hardcoded ``merge.REQUIRED_CHECKS`` default.
+    """
+    ready_issues = [
+        {
+            "number": 10,
+            "title": "Issue 10",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/10",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        }
+    ]
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=_make_run_side_effect(
+                ready_issues=ready_issues,
+                pr_head_sha="abc123",
+                issue_branch="baton/issue-10-10",
+                feature_branch_exists=False,
+            ),
+        ),
+        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry={10},
+                redispatch=set(),
+            ),
+        ),
+        # Open PR found — reentry proceeds to merge_issue_branch.
+        patch(
+            "baton_harness.chain.daemon._find_issue_pr",
+            return_value=("baton/issue-10-10", "abc123"),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ) as mock_merge,
+        patch("baton_harness.chain.daemon.alert", return_value=True),
+        _patch_run_worker("pr_created"),
+    ):
+        asyncio.run(
+            run_daemon(
+                _wf_config_with_required_checks(["My CI"]),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    assert mock_merge.call_args is not None, (
+        "merge_issue_branch was never called"
+    )
+    _, call_kwargs = mock_merge.call_args
+    assert call_kwargs.get("required") == ["My CI"], (
+        "merge_issue_branch must be called with required=['My CI'] at the"
+        " ci_gate_reentry call site when the WorkflowConfig overrides"
+        f" required_checks; got required={call_kwargs.get('required')!r}"
+    )
+
+
+def test_unset_required_checks_falls_back_and_warns(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Unset ``required_checks`` falls back to the default AND warns.
+
+    When the loaded config's ``required_checks`` is unset/empty, the gate
+    must (a) still gate on the hardcoded ``merge.REQUIRED_CHECKS`` names,
+    and (b) emit a startup WARNING naming the hardcoded default so
+    operators know they are relying on it.
+
+    MUST FAIL now: no such warning is ever logged anywhere in the daemon
+    or merge-gate startup path today.  (The fallback-gates-correctly half
+    of this behavior already holds today by omission — the call site
+    simply never passes ``required=``, so ``evaluate_ci``/
+    ``merge_issue_branch`` already default to ``REQUIRED_CHECKS`` — but
+    that is incidental, not a deliberate "unset" branch, and carries no
+    warning.)
+    """
+    import logging
+
+    from baton_harness.chain.merge import REQUIRED_CHECKS
+
+    ready_issues = [
+        {
+            "number": 10,
+            "title": "Issue 10",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/10",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        }
+    ]
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=_make_run_side_effect(
+                ready_issues=ready_issues,
+                pr_head_sha="abc123",
+                issue_branch="baton/issue-10-10",
+                feature_branch_exists=False,
+            ),
+        ),
+        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ) as mock_merge,
+        patch("baton_harness.chain.daemon.alert", return_value=True),
+        _patch_run_worker("pr_created"),
+    ):
+        with caplog.at_level(logging.WARNING, logger="baton_harness"):
+            asyncio.run(
+                run_daemon(
+                    _minimal_wf_config(),  # required_checks unset/default
+                    [_repo_cfg()],
+                    once=True,
+                    poll_interval_s=0,
+                )
+            )
+
+    # (a) The gate must still reflect the hardcoded default -- either by
+    # omitting `required` (so evaluate_ci's own default applies) or by
+    # passing REQUIRED_CHECKS explicitly. Both count as "uses the
+    # default"; only an *overridden* value would violate this.
+    _, call_kwargs = mock_merge.call_args
+    effective_required = call_kwargs.get("required")
+    assert effective_required in (None, REQUIRED_CHECKS), (
+        "With required_checks unset, the gate must use the hardcoded"
+        f" REQUIRED_CHECKS default, not {effective_required!r}"
+    )
+
+    # (b) A one-time startup WARNING naming the hardcoded default must
+    # have been logged.
+    warning_records = [
+        r for r in caplog.records if r.levelno == logging.WARNING
+    ]
+    default_naming_warnings = [
+        r
+        for r in warning_records
+        if any(check in r.message for check in REQUIRED_CHECKS)
+        or "REQUIRED_CHECKS" in r.message
+        or "required_checks" in r.message.lower()
+    ]
+    assert default_naming_warnings, (
+        "Expected a startup WARNING naming the hardcoded default"
+        " required-check set when required_checks is unset; WARNING"
+        f" records seen: {[r.message for r in warning_records]}"
+    )
