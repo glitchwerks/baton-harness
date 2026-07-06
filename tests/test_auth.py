@@ -716,6 +716,34 @@ class TestReconcileUsesDaemonValidator:
     ``validate_github_token`` to ``validate_daemon_token`` (slice 3a).
     """
 
+    @pytest.fixture(autouse=True)
+    def _patch_git_credential_helper(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Neutralise G3d for this class (issue #219).
+
+        These tests drive ``reconcile_startup`` end-to-end and pre-date
+        the G3d git-push-credential-helper gate. A CI runner (or a dev
+        machine) may have no github.com/global git credential helper
+        configured, which would cause G3d to fire sys.exit(1) and fail
+        every test in this class.
+
+        We patch the module-level seam _get_git_credential_helpers to
+        report a helper as configured, so G3d always passes here,
+        independent of the runner's real git config. Tests that
+        specifically validate G3d live in
+        test_reconcile_git_credential_helper.py.
+
+        Args:
+            monkeypatch: Pytest monkeypatch fixture for attribute
+                patching.
+        """
+        monkeypatch.setattr(
+            "baton_harness.chain.reconcile._get_git_credential_helpers",
+            lambda: ["!fake credential helper for tests"],
+        )
+
     def test_reconcile_startup_calls_validate_daemon_token(
         self,
         tmp_path: Path,

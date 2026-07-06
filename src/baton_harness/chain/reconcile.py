@@ -1,10 +1,11 @@
 """Startup reconciliation sweep for the baton-harness daemon.
 
-Runs startup checks at daemon startup (issues #40, #108):
+Runs startup checks at daemon startup (issues #40, #108, #219):
 
 - **G3a** — GitHub token validation (fatal on failure).
 - **G3b** — ``ANTHROPIC_API_KEY`` presence check (fatal on failure).
 - **G3c** — OAuth credential-volume health-check (fatal on failure).
+- **G3d** — git push credential-helper presence check (fatal on failure).
 - **G2** — Ungraceful-prior-exit detection via a marker file.
 - **G1** — Orphan ``claude`` process sweep (detect-only, non-fatal).
 
@@ -19,6 +20,11 @@ The marker file path is::
 
 It is **written** at startup and **cleared** on graceful shutdown by the
 caller (``run_daemon`` finally-block).
+
+G3d (issue #219) is a presence/shape check only: it inspects ``git
+config`` key NAMES to confirm a credential helper is configured, and
+never reads or logs a helper's VALUE or any credential material (see
+CLAUDE.md § Credentials and Secrets).
 """
 
 from __future__ import annotations
@@ -82,6 +88,53 @@ def _list_claude_procs() -> list[int]:
     return []
 
 
+# git config keys probed by G3d, in priority order.  The github.com-scoped
+# key is checked first; the global ``credential.helper`` is the fallback
+# used when no host-scoped helper is configured.
+_GIT_CREDENTIAL_HELPER_KEYS: tuple[str, ...] = (
+    "credential.https://github.com.helper",
+    "credential.helper",
+)
+
+
+def _get_git_credential_helpers() -> list[str]:
+    """Return configured git credential helper NAMES for github.com push.
+
+    Probes ``git config --get-all`` for a github.com-scoped credential
+    helper first, falling back to the global ``credential.helper`` key
+    when the scoped one is absent.  This is a structural presence/shape
+    check only — helper command strings may be returned (they name a
+    helper program, e.g. ``manager`` or ``!gh auth git-credential``),
+    but no credential VALUE (token, password) is ever read or returned;
+    ``git config`` never exposes secret material for this key.
+
+    Returns:
+        A list of configured helper command strings for the first key
+        (in priority order) that has any value.  Empty list when
+        neither the github.com-scoped nor the global helper is
+        configured, or when ``git`` itself cannot be invoked.
+    """
+    for key in _GIT_CREDENTIAL_HELPER_KEYS:
+        try:
+            result = subprocess.run(
+                ["git", "config", "--get-all", key],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+        except OSError:
+            # git not on PATH — treat as "no helper configured" rather
+            # than crashing the startup gate.
+            return []
+        if result.returncode == 0:
+            helpers = [
+                line for line in result.stdout.splitlines() if line.strip()
+            ]
+            if helpers:
+                return helpers
+    return []
+
+
 async def reconcile_startup(
     repo_cfgs: list[RepoConfig],
     obs: ObsConfig | None,
@@ -91,8 +144,8 @@ async def reconcile_startup(
 ) -> None:
     """Run the startup reconciliation sweep.
 
-    Executes the three startup checks in order.  Credential failures
-    (G3a, G3b) are fatal: they emit a critical alert then call
+    Executes the startup checks in order.  Credential failures (G3a,
+    G3b, G3c, G3d) are fatal: they emit a critical alert then call
     ``sys.exit(1)``.  All other checks are non-fatal and independently
     guarded.
 
@@ -100,8 +153,9 @@ async def reconcile_startup(
         1. G3a — GitHub token validation (fatal).
         2. G3b — ``ANTHROPIC_API_KEY`` presence (fatal).
         3. G3c — OAuth credential-volume readability (fatal).
-        4. G2 — Ungraceful-prior-exit marker check (non-fatal, critical).
-        5. G1 — Orphan ``claude`` process sweep (non-fatal, warn).
+        4. G3d — git push credential-helper presence (fatal).
+        5. G2 — Ungraceful-prior-exit marker check (non-fatal, critical).
+        6. G1 — Orphan ``claude`` process sweep (non-fatal, warn).
 
     Args:
         repo_cfgs: List of repo registry entries.  ``repo_cfgs[0]`` is
@@ -192,6 +246,31 @@ async def reconcile_startup(
             None,
             f"OAuth credential file absent or unreadable: {_OAUTH_CRED_PATH}"
             " — mount the Claude credential volume before starting the daemon",
+            severity="critical",
+            runlog=runlog,
+            installation_token=installation_token,
+        )
+        sys.exit(1)
+
+    # ------------------------------------------------------------------
+    # G3d: git push credential-helper presence — FATAL if absent (#219).
+    # `gh auth login` authenticates the gh CLI but does NOT install a git
+    # credential helper, so a bare `git push` fails at first use with
+    # "Password authentication is not supported" even though GH_TOKEN is
+    # present.  Fail loud at startup instead of at first push.
+    # Structural check only: probes `git config` key NAMES for a
+    # github.com-scoped or global credential helper; never reads or logs
+    # a helper's value or any credential material.
+    # ------------------------------------------------------------------
+    if not _get_git_credential_helpers():
+        alert(
+            owner,
+            repo,
+            None,
+            "No git credential helper configured for github.com (or "
+            "globally) — `git push` will fail with 'Password "
+            "authentication is not supported' even though a GitHub "
+            "token is present. Fix: run `gh auth setup-git`.",
             severity="critical",
             runlog=runlog,
             installation_token=installation_token,

@@ -90,9 +90,20 @@ def _patch_passing_prereqs(
     Removes ANTHROPIC_API_KEY (must be absent) and sets GH_TOKEN to
     a fake ghs_ installation token so the token-type check in
     validate_daemon_token passes before we patch it out.
+
+    Also neutralises G3d (git push credential-helper presence, #219)
+    so tests focused on G3c are not sensitive to the runner's real git
+    configuration — mirrors the same neutralisation applied in
+    test_reconcile.py for tests that pre-date a given gate. Tests that
+    specifically validate G3d live in
+    test_reconcile_git_credential_helper.py.
     """
     monkeypatch.setenv("GH_TOKEN", _INSTALLATION_TOKEN)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "baton_harness.chain.reconcile._get_git_credential_helpers",
+        lambda: ["!fake credential helper for tests"],
+    )
 
 
 # ---------------------------------------------------------------------------

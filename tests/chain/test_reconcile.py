@@ -123,6 +123,30 @@ def _patch_oauth_cred_path(
     )
 
 
+@pytest.fixture(autouse=True)
+def _patch_git_credential_helper(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Neutralise G3d for all tests in this file (issue #219).
+
+    These tests pre-date the G3d git-push-credential-helper gate. A CI
+    runner (or a dev machine) may have no github.com/global git
+    credential helper configured, which would cause G3d to fire
+    sys.exit(1) and fail every test that calls reconcile_startup.
+
+    We patch the module-level seam _get_git_credential_helpers to
+    report a helper as configured, so G3d always passes here,
+    independent of the runner's real git config. Tests that
+    specifically validate G3d live in
+    test_reconcile_git_credential_helper.py.
+
+    Args:
+        monkeypatch: Pytest monkeypatch fixture for attribute patching.
+    """
+    monkeypatch.setattr(
+        "baton_harness.chain.reconcile._get_git_credential_helpers",
+        lambda: ["!fake credential helper for tests"],
+    )
+
+
 # ---------------------------------------------------------------------------
 # G3 — Credential validation
 # ---------------------------------------------------------------------------
