@@ -158,10 +158,10 @@ if [[ ${#_missing_env[@]} -gt 0 ]]; then
         echo "  missing: ${_var}" >&2
     done
     echo "" >&2
-    echo "  Set them before running bin/verify-recovery.sh:" >&2
-    echo "    export BH_REPO_OWNER=<owner>" >&2
-    echo "    export BH_REPO_NAME=<repo>" >&2
-    echo "    export BH_PROJECT_ROOT=/path/to/local/sandbox/clone" >&2
+    echo "Set them via one of:" >&2
+    echo "  - Run bin/setup-env.sh (writes BH_PROJECT_ROOT to ~/.config/baton-harness/host.env)" >&2
+    echo "  - Run bin/init-sandbox.sh (writes BH_REPO_OWNER/BH_REPO_NAME to \${BH_PROJECT_ROOT}/.bh/config.env)" >&2
+    echo "  - Or export the missing variables in your shell as a last-resort override" >&2
     exit 1
 fi
 
