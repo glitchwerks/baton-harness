@@ -72,7 +72,7 @@ Two human-owned bookends; everything between is the system's responsibility.
 
 **Morning (≤30 min):** review the milestone, confirm issues are well-scoped and have clear acceptance criteria, apply the `agent-ready` label to each issue that should run. Nothing runs without this label.
 
-**Evening:** review draft PRs, respond to `agent-blocked` issues, triage `agent-failed` issues, merge what's ready. PRs remain draft until merged by me.
+**Evening:** review open PRs, respond to `agent-blocked` issues, triage `agent-failed` issues, merge what's ready. No PR merges to `main` until I do it.
 
 **Daytime:** respond to Slack decision cards as needed; no active monitoring required.
 
@@ -113,7 +113,7 @@ Transitions are owned by the orchestrator (Layer 4); the human owns initial `age
 
 **Current model [implemented (v1, serial)]:** The always-on daemon + vendored symphony model. The external-process Baton model (pilot) is superseded. The orchestration layer is split into two components with distinct responsibilities.
 
-**Orchestrator = custom always-on daemon [implemented].** A persistent harness process that never exits between work units or on a block (`src/baton_harness/chain/daemon.py`). It watches for ready work units, builds and schedules the DAG (`graphlib.TopologicalSorter`), owns the `feature/<slug>` branch lifecycle (creation, CI-gated `--no-ff` merge of per-issue branches, draft `feature → main` PR at completion), drives Slack escalation, and parks/resumes sub-trees. Symphony's flat poll/dispatch loop (`run`/`_tick`/`_dispatch`/`_on_worker_done`), `cli.start`, and `watchfiles` are **dropped** — the custom daemon replaces them entirely.
+**Orchestrator = custom always-on daemon [implemented].** A persistent harness process that never exits between work units or on a block (`src/baton_harness/chain/daemon.py`). It watches for ready work units, builds and schedules the DAG (`graphlib.TopologicalSorter`), owns the `feature/<slug>` branch lifecycle (creation, CI-gated `--no-ff` merge of per-issue branches, ready-for-review `feature → main` PR at completion), drives Slack escalation, and parks/resumes sub-trees. Symphony's flat poll/dispatch loop (`run`/`_tick`/`_dispatch`/`_on_worker_done`), `cli.start`, and `watchfiles` are **dropped** — the custom daemon replaces them entirely.
 
 **Worker = vendored `symphony._run_worker` [implemented].** Called by the daemon as a library function per issue (`src/baton_harness/vendor/symphony/`). Responsible for: creating the per-issue git worktree, firing `before_run` and `after_run` hooks, running the `claude -p` turn-loop, and detecting PR creation. The worker is the boundary between the daemon and Claude Code. Worktrees and branches follow symphony's existing naming: `.symphony/worktrees/<N>` (bare-integer directory) and `baton/<slug>-<N>` branches. The daemon resolves the issue number from the worktree directory basename (works post-PR #20). Base-ref to the feature branch: the daemon checks out `feature/<slug>` as HEAD before calling `_run_worker`, so symphony's HEAD-based worktree creation naturally targets the feature branch.
 
@@ -240,7 +240,7 @@ Single Docker container running Baton, Claude Code, and supporting tools. The bo
 
 ## 6. Lifecycle of a work unit [implemented (v1, serial)]
 
-There is one execution path, parameterized by the DAG. A **work unit** is either a milestone (all its issues form one DAG → one `feature/<slug>` branch → one draft `feature → main` PR) or a single un-milestoned issue (its own N=1 DAG → its own feature branch → its own PR). N=1 is the degenerate case of the same logic — not a separate code path.
+There is one execution path, parameterized by the DAG. A **work unit** is either a milestone (all its issues form one DAG → one `feature/<slug>` branch → one ready-for-review `feature → main` PR) or a single un-milestoned issue (its own N=1 DAG → its own feature branch → its own PR). N=1 is the degenerate case of the same logic — not a separate code path.
 
 The always-on daemon owns the outer loop and never exits between work units or on a block.
 
@@ -255,8 +255,8 @@ The always-on daemon owns the outer loop and never exits between work units or o
 | 5. Run | Worker (`_run_worker`) | Creates per-issue worktree off feature branch; fires `before_run` (rebase onto feature branch); runs `claude -p` turn-loop; fires `after_run` |
 | 6. Route | `after_run` outcome router | PR opened → CI-gated `--no-ff` merge into feature branch → "dependency satisfied"; block or fail → park sub-tree + Slack escalation |
 | 7. Continue | Daemon | Independent branches in the DAG continue; parked sub-tree waits for guidance |
-| 8. Completion | Daemon | All issues in the DAG complete → daemon opens one draft `feature/<slug> → main` PR; harness never merges to `main` |
-| 9. Evening | Human | Review the draft PR; merge when satisfied; triage any parked blocked/failed issues |
+| 8. Completion | Daemon | All issues in the DAG complete → daemon opens one ready-for-review `feature/<slug> → main` PR; harness never merges to `main` |
+| 9. Evening | Human | Review the PR; merge when satisfied; triage any parked blocked/failed issues |
 
 ### 6.2 Guidance flow for blocked issues [implemented]
 

@@ -201,7 +201,7 @@ A milestone is a dependency graph, not a flat bag of independent issues. The fla
 ### Everything is a DAG — unified execution model
 
 There is **one** execution path, parameterized by the DAG. A **work unit** is:
-- A **milestone** — all its issues = one DAG → one `feature/<slug>` branch → one draft `feature → main` PR.
+- A **milestone** — all its issues = one DAG → one `feature/<slug>` branch → one ready-for-review `feature → main` PR.
 - A **single un-milestoned issue** — its own N=1 DAG → its own feature branch → its own PR.
 
 N=1 is the degenerate DAG. The same logic handles both; there is no separate flat-run entry point.
@@ -219,7 +219,7 @@ N=1 is the degenerate DAG. The same logic handles both; there is no separate fla
 - CI-gated `--no-ff` merge of completed per-issue branches into the feature branch. "Dependency satisfied" = **merged into the feature branch**; not "PR opened"; not "merged to main."
 - Sub-tree parking on block or failure; continues independent branches; the daemon never exits on a block.
 - Slack escalation (stall summary to `#agent-decisions`) when a sub-tree is parked.
-- Draft `feature/<slug> → main` PR when all issues in the DAG complete. The harness never merges to `main`.
+- Ready-for-review `feature/<slug> → main` PR when all issues in the DAG complete. The harness never merges to `main`.
 
 Symphony's flat poll/dispatch loop (`run`/`_tick`/`_dispatch`/`_on_worker_done`), `cli.start`, and `watchfiles` are **dropped** — the custom daemon replaces them.
 
@@ -565,9 +565,9 @@ I define the milestone or feature scope, write acceptance criteria, and explicit
 When the agent hits a threshold-crossing question it cannot resolve, it posts the question as a comment on the issue and applies the `blocked` label. The orchestrator pings me on Slack with a stall summary. I post guidance on the issue and remove `blocked`; the daemon's next poll resumes the parked sub-tree. The GitHub issue is the durable record; Slack is the notification channel. Questions that fall below the threshold do not reach me — the system handles them autonomously.
 
 **End point — approved by me**
-All PRs are draft until I review and merge. Blocked issues sit idle until I respond. Nothing ships without my sign-off.
+No PR merges to `main` without my review. Blocked issues sit idle until I respond. Nothing ships without my sign-off.
 
-> **Note on chain-driver orchestration [implemented, issue #27]:** The always-on daemon performs `git merge --no-ff` of completed per-issue branches into the feature branch without per-issue human review. This is an intra-feature-branch operation — analogous to a developer's own local `git merge` while building a feature. The "human owns merge" checkpoint operates at the `feature → main` boundary: the harness opens a single draft `feature → main` PR; the human reviews and merges that. The daemon never merges to `main`.
+> **Note on chain-driver orchestration [implemented, issue #27]:** The always-on daemon performs `git merge --no-ff` of completed per-issue branches into the feature branch without per-issue human review. This is an intra-feature-branch operation — analogous to a developer's own local `git merge` while building a feature. The "human owns merge" checkpoint operates at the `feature → main` boundary: the harness opens a single ready-for-review `feature → main` PR; the human reviews and merges that. The daemon never merges to `main`.
 
 Everything between those two checkpoints is the agent's responsibility, with threshold-crossing questions escalated asynchronously as described above.
 

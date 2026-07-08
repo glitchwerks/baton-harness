@@ -45,9 +45,9 @@ bin/run-daemon.sh --once   # one poll-dispatch tick, then exit
 
 The daemon polls the target repo for `agent-ready` issues, groups them into dependency-
 ordered DAGs (milestones) or N=1 single-issue work units, calls `Orchestrator._run_worker(issue)`
-directly for each DAG-ready issue, CI-gates each agent's PR, and opens a single draft
-`feature/<slug> → main` PR when all issues in a work unit are done. It never merges to
-`main`.
+directly for each DAG-ready issue, CI-gates each agent's PR, and opens a single
+ready-for-review `feature/<slug> → main` PR when all issues in a work unit are done. It
+never merges to `main`.
 
 For a full walkthrough, see [docs/smoke-test-daemon.md](docs/smoke-test-daemon.md).
 
@@ -366,8 +366,8 @@ code, commit, push branches, and open GitHub PRs autonomously. Before running:
 
 - **Use a throwaway sandbox repo** — never a real project. See [Prerequisites (runtime)](#prerequisites-runtime).
 - **Always start with `--once`** for a first run — one poll-dispatch tick, then exit.
-- **Draft PRs only** — the daemon opens `feature/<slug> → main` draft PRs and never merges
-  to `main`. A human reviews and merges.
+- **No-merge boundary** — the daemon opens `feature/<slug> → main` PRs ready for review
+  and never merges to `main`. A human reviews and merges.
 - **`ANTHROPIC_API_KEY` must not be set** — OAuth/subscription auth only; the key's presence
   triggers an immediate abort at startup.
 - See [docs/smoke-test-daemon.md §"WARNING: safety first"](docs/smoke-test-daemon.md) for
@@ -379,8 +379,8 @@ code, commit, push branches, and open GitHub PRs autonomously. Before running:
 
 `bh-daemon` is the always-on poll loop that watches a GitHub repo for `agent-ready`
 issues, runs Claude Code agents against them in dependency order, CI-gates each agent's
-PR, and opens a draft `feature/<slug> → main` PR when a work unit completes. It never
-merges to `main`.
+PR, and opens a ready-for-review `feature/<slug> → main` PR when a work unit completes.
+It never merges to `main`.
 
 **Required shell variable:**
 

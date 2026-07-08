@@ -16,7 +16,7 @@ The chain layer solves this by owning the feature branch, the topological dispat
 
 There is **one** execution path, parameterized by the DAG:
 
-- **A milestone** — all open issues in the milestone form one DAG, executed on one `feature/<slug>` branch, finalized as one draft `feature → main` PR.
+- **A milestone** — all open issues in the milestone form one DAG, executed on one `feature/<slug>` branch, finalized as one ready-for-review `feature → main` PR.
 - **An un-milestoned issue** — its own N=1 DAG on a `feature/issue-<N>` branch, its own PR.
 
 N=1 is the degenerate DAG. There is no separate flat-run entry point. The daemon processes these identically.
@@ -115,7 +115,7 @@ Step 2: while scheduler.is_active():
                 re-read labels (after_run may have set blocked)
                 apply §7 outcome protocol
 Step 3: push feature branch
-        open one draft PR  feature/<slug> → main  (never merge to main)
+        open one ready-for-review PR  feature/<slug> → main  (never merge to main)
 ```
 
 ---
@@ -205,10 +205,10 @@ The daemon **never exits on a block.** A parked sub-tree is escalated and the lo
 When the per-DAG loop terminates (all nodes done or parked, or frontier has only un-greenlit members):
 
 1. Push the feature branch to origin.
-2. Open exactly **one draft PR** `feature/<slug> → main`. PR body lists merged issues (one `Closes #N` keyword per line — GitHub does not parse comma-continuation) and parked issues with reasons.
+2. Open exactly **one ready-for-review PR** `feature/<slug> → main`. PR body lists merged issues (one `Closes #N` keyword per line — GitHub does not parse comma-continuation) and parked issues with reasons.
 3. The daemon **stops processing this work unit.** It never merges `feature → main`. That is a hard constraint (issue #27; `harness-design.md §10`).
 
-If the feature branch has zero commits over `origin/main`, the draft PR is skipped (prevents empty PRs when no issue produced commits).
+If the feature branch has zero commits over `origin/main`, the PR is skipped (prevents empty PRs when no issue produced commits).
 
 ---
 
