@@ -9,15 +9,15 @@ Async test functions are driven with ``asyncio.run`` so no pytest-asyncio
 dependency is needed.
 
 Coverage:
-- Happy linear DAG: all issues merge, draft PR opened, never merges to
-  main.
+- Happy linear DAG: all issues merge, ready-for-review PR opened, never
+  merges to main.
 - ``no_pr`` result → park + escalate; no retry (worker called once).
 - ``agent-in-progress`` removed on every terminal outcome.
 - Fully parked DAG → work unit exits + escalate, daemon stays alive
   (``once=True``).
 - ``agent-done`` → ``agent-merged`` relabel after CI-gated merge.
-- Never opens a non-draft PR / never merges to main (guard assertions).
-- ``--draft`` flag present in ``gh pr create`` call.
+- Never merges to main (guard assertions).
+- ``--draft`` flag absent from ``gh pr create`` call.
 - Mid-DAG block parks only its sub-tree.
 - Serial dispatch: one ``_run_worker`` at a time (call order).
 - (slice 3a) Daemon-side gh subprocess calls inject GH_TOKEN from the
@@ -245,7 +245,7 @@ def _make_run_side_effect(
         # Label edits (add/remove).
         if noun == "issue" and verb == "edit":
             return _ok()
-        # PR list (for finding issue branches and checking draft exists).
+        # PR list (for finding issue branches and checking PR exists).
         if noun == "pr" and verb == "list":
             prs = [
                 {
@@ -301,8 +301,8 @@ def _labels_json(*labels: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_happy_linear_dag_merges_and_opens_draft_pr() -> None:
-    """Happy path: single issue merges; draft PR opened; never merges main."""
+def test_happy_linear_dag_merges_and_opens_pr() -> None:
+    """Happy path: single issue merges; PR opened; never merges main."""
     ready_issues = [
         {
             "number": 10,
@@ -372,11 +372,11 @@ def test_happy_linear_dag_merges_and_opens_draft_pr() -> None:
                 )
             )
 
-    # Draft PR assertion is in test_draft_pr_flag_present_in_pr_create.
+    # --draft-absence assertion is in test_draft_pr_flag_absent_from_pr_create.
 
 
-def test_draft_pr_flag_present_in_pr_create() -> None:
-    """The gh pr create call must include --draft (hard constraint)."""
+def test_draft_pr_flag_absent_from_pr_create() -> None:
+    """The gh pr create call must NOT include --draft (hard constraint)."""
     ready_issues = [
         {
             "number": 10,
@@ -404,6 +404,9 @@ def test_draft_pr_flag_present_in_pr_create() -> None:
 
     with (
         patch.object(daemon_mod, "_run", side_effect=recording_run),
+        patch.object(
+            daemon_mod, "_open_pr", wraps=daemon_mod._open_pr
+        ) as mock_open_pr,
         patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
         patch("baton_harness.chain.branches.create_feature_branch"),
         patch("baton_harness.chain.branches.checkout_feature_branch"),
@@ -436,9 +439,14 @@ def test_draft_pr_flag_present_in_pr_create() -> None:
             )
         )
 
+    mock_open_pr.assert_called_once()
     assert pr_create_cmds, "Expected at least one gh pr create call"
     for cmd in pr_create_cmds:
-        assert "--draft" in cmd, f"--draft missing from: {cmd}"
+        assert "--draft" not in cmd, f"--draft must be absent from: {cmd}"
+        assert "--base" in cmd and "main" in cmd, (
+            f"--base main missing from: {cmd}"
+        )
+        assert "--head" in cmd, f"--head missing from: {cmd}"
         # Guard: must NOT target main as a merge (create is ok, only
         # merging to main is forbidden).
         assert "merge" not in cmd, (
@@ -1233,7 +1241,7 @@ def test_waiting_for_greenlight_exits_work_unit_without_escalating() -> None:
     """Milestone has A (not agent-ready) and B (agent-ready, blocked_by A).
 
     After B is skipped (A not done), the work unit must exit cleanly by
-    opening the draft PR — NOT escalate as a block/park — and the daemon
+    opening the PR — NOT escalate as a block/park — and the daemon
     must survive (once=True returns normally).
     """
     ready_issues_for_poll = _make_milestone_issues(
@@ -1747,7 +1755,7 @@ def test_integration_pr_body_contains_closes_keyword_per_issue() -> None:
     # The integration PR body is the --body argument in the gh pr create call.
     assert pr_create_cmds, "Expected at least one gh pr create call"
     # Find the integration PR (opens feature → main, not the agent PR).
-    # The integration PR is opened by _open_draft_pr via _run, so it has
+    # The integration PR is opened by _open_pr via _run, so it has
     # --title with "[daemon]" prefix.
     integration_pr_cmds = [
         c for c in pr_create_cmds if any("[daemon]" in arg for arg in c)
@@ -2072,13 +2080,13 @@ def test_feature_branch_pushed_to_origin_before_run_worker() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_zero_commit_branch_skips_draft_pr_and_logs_info(
+def test_zero_commit_branch_skips_pr_and_logs_info(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Zero commits over main → no gh pr create call; INFO log emitted.
 
     When ``git rev-list --count origin/main..<branch>`` returns ``0``,
-    ``_run_work_unit`` must skip ``_open_draft_pr`` entirely and emit an
+    ``_run_work_unit`` must skip ``_open_pr`` entirely and emit an
     informational log line describing the skip.
 
     Asserts:
@@ -2089,7 +2097,7 @@ def test_zero_commit_branch_skips_draft_pr_and_logs_info(
       choose exact wording).
 
     This test MUST FAIL against the current implementation because
-    ``_open_draft_pr`` is always called today.
+    ``_open_pr`` is always called today.
     """
     ready_issues = [
         {
@@ -2180,19 +2188,19 @@ def test_zero_commit_branch_skips_draft_pr_and_logs_info(
     ]
     assert skip_log_records, (
         "Expected an INFO log record containing 'no commits' or 'skipping'"
-        " when draft PR creation is skipped; records seen:"
+        " when PR creation is skipped; records seen:"
         f" {[r.message for r in caplog.records if r.levelno == logging.INFO]}"
     )
 
 
-def test_nonzero_commit_branch_proceeds_to_draft_pr() -> None:
+def test_nonzero_commit_branch_proceeds_to_pr() -> None:
     r"""Non-zero commits over main → gh pr create IS called (regression guard).
 
     When ``git rev-list --count origin/main..<branch>`` returns ``3``,
-    the existing ``_open_draft_pr`` path must execute unchanged.
+    the existing ``_open_pr`` path must execute unchanged.
 
     This test exercises the same rev-list seam as
-    ``test_zero_commit_branch_skips_draft_pr_and_logs_info`` but with
+    ``test_zero_commit_branch_skips_pr_and_logs_info`` but with
     stdout ``"3\n"``, confirming the guard does not break the normal path.
     """
     ready_issues = [
@@ -2267,12 +2275,12 @@ def test_nonzero_commit_branch_proceeds_to_draft_pr() -> None:
     )
 
 
-def test_revlist_count_failure_falls_through_to_draft_pr() -> None:
+def test_revlist_count_failure_falls_through_to_pr() -> None:
     """rev-list --count failure → gh pr create still attempted (fail-open).
 
     If the ``git rev-list --count`` command exits non-zero (e.g. the
     remote ref is not yet fetched), the daemon must NOT silently skip
-    ``_open_draft_pr``.  Skipping on error would cause silent data loss.
+    ``_open_pr``.  Skipping on error would cause silent data loss.
     The guard must be fail-open: any subprocess error from the count
     command causes the code to proceed as if the count is non-zero.
     """
