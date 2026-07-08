@@ -602,3 +602,104 @@ This is not a failure — it is the script correctly detecting that the G3c gate
 - After a server reboot, before restarting the daemon in continuous mode.
 - When validating the #40 recovery behavior after a harness upgrade.
 - As part of a post-deploy smoke test alongside the `--once` dispatch check.
+
+---
+
+## #239 block-escalation verification (`bin/verify-block-escalation.sh`)
+
+Issue #239 exercises the WORKFLOW.md "Confidence / block rule" end to end: an agent that judges an issue's acceptance criteria genuinely ambiguous is expected to stop, post a clarifying question, and self-block rather than guess. `bin/verify-block-escalation.sh` confirms that when this happens, the daemon's park-and-escalate chain actually fires against a live sandbox.
+
+### What it verifies and why it matters
+
+Unlike `bin/verify-recovery.sh`, this script is **not** a decoy-only harness — it dispatches one real `claude -p` agent turn against one seeded issue. It seeds a deliberately ambiguous `agent-ready` issue (the acceptance criteria call for "a reasonable eviction policy" without specifying which one), runs a single `bh-daemon --once` poll tick, and asserts that the full chain described in the WORKFLOW.md confidence/block rule (`config/WORKFLOW.md` §"Confidence / block rule") completed:
+
+1. the agent posts a clarifying question as an issue comment instead of guessing,
+2. the agent adds the `blocked` label to signal it cannot proceed,
+3. the daemon's post-turn label re-read (`src/baton_harness/chain/daemon.py`) sees `blocked` and takes the park path (`kind="block"`),
+4. `escalation.escalate()` (`src/baton_harness/chain/escalation.py`) posts a durable GitHub comment and, when configured, attempts a best-effort Slack ping.
+
+**Where to find the agent's actual question — read this before you go looking for it in Slack.** The clarifying question the agent wrote lands **only** on the GitHub issue comment thread. If `BH_SLACK_WEBHOOK_URL` is configured, the Slack message that fires is the *daemon's* own park summary — a fixed string like `"Issue #N parked: blocked label set."` — not the agent's question text. Slack tells you *that* an issue parked; the GitHub issue comment tells you *why*. The script's own assertions reflect this split: it asserts a GitHub comment exists (assertion 4) but only asserts that a Slack POST was *attempted* (assertion 5) — it cannot inspect delivered Slack content at all.
+
+Two related signals are logged by the daemon but not locally assertable by this script: the runlog JSONL `escalation` event (written to `obs.runlog_path`), and the literal content actually delivered to Slack. Check those manually if you need to confirm delivery beyond "a POST was attempted."
+
+### Prerequisites
+
+> **Safety: the sandbox must have zero open `agent-ready` issues before running this script.** The script seeds exactly one ambiguous issue and runs a single `--once` poll tick; if other `agent-ready` issues already exist, that tick could dispatch the wrong one instead of (or in addition to) the seeded issue. The script checks this at startup and aborts if any are found.
+
+**Platform:** the script has no `/proc` or `pgrep` dependency (more portable than `verify-recovery.sh`), but it **does** spawn a real agent turn that commits and comments — do not run it against a repo you are not prepared to have a real agent touch.
+
+**Environment requirements:**
+
+- `BH_REPO_OWNER`, `BH_REPO_NAME`, `BH_PROJECT_ROOT` — via `.bh/config.env` + `~/.config/baton-harness/host.env`, or exported directly.
+- `bh-daemon` must be on `PATH`.
+- `BH_PROJECT_ROOT` must be a git repository.
+- `GH_TOKEN` or `GITHUB_TOKEN` must be set (fine-grained PAT; structural check only).
+- `ANTHROPIC_API_KEY` must **not** be set (G3b — OAuth/subscription deployment).
+- `~/.claude/.credentials.json` must be present and readable (G3c).
+- The `agent-ready`, `agent-in-progress`, and `blocked` labels must exist in the target repo (the script does not check `agent-done` or `agent-merged`, since it never expects the seeded issue to complete normally).
+
+**`~/.claude/.credentials.json` must be present and readable.** As with `verify-recovery.sh`, if the OAuth credential file is absent, the G3c preflight prints `RESULT: SKIPPED` and exits 0 before seeding any issue — this avoids a misleading `[FAIL]` on every assertion when the daemon would exit 1 at startup regardless of the block-escalation behavior under test.
+
+**Optional:** set `BH_SLACK_WEBHOOK_URL` to also exercise the Slack-attempt assertion; leave it unset to skip that assertion cleanly. Set `BH_VERIFY_BLOCK_TIMEOUT_SECS` to override the default 600-second timeout on the daemon's single poll tick (real model latency for reasoning through the ambiguity, posting a comment, and adding the label can take several minutes).
+
+Usage and options:
+
+```bash
+bin/verify-block-escalation.sh [--help|-h]
+```
+
+### Assertion table
+
+The script runs one scenario (not a suite of scenarios like `verify-recovery.sh`) and reports one `[PASS]`/`[FAIL]`/`[SKIPPED]` line per assertion, all prefixed `BLOCK-`:
+
+| Assertion | What it checks | Conditional? |
+|---|---|---|
+| `BLOCK-label-present` | The seeded issue carries the `blocked` label after the run | No |
+| `BLOCK-in-progress-cleared` | The seeded issue does NOT carry `agent-in-progress` after the run | No |
+| `BLOCK-escalation-logged` | Captured daemon stdout/stderr contains a line with `escalate:`, `issue #<n>`, and `kind=block` | No |
+| `BLOCK-comment-posted` | The issue has at least one comment post-run (the agent's clarifying question) | No |
+| `BLOCK-slack-attempted` | Daemon output contains `escalate: Slack ...` with `issue #<n>` and `kind=block` | Yes — only runs if `BH_SLACK_WEBHOOK_URL` is set; otherwise reported `[SKIPPED]`, not `[FAIL]` |
+
+Notes on specific assertions:
+- **`BLOCK-escalation-logged` is deliberately tolerant of both log levels.** `escalation.escalate()` logs `"escalate: GitHub comment posted on issue #N (kind=block)"` at INFO on success and a WARNING variant on failure — both contain the same `issue #N` and `kind=block` substrings. The script greps for that pair rather than hard-coding one log level, so it still reports a meaningful pass/fail even if the GitHub comment POST itself fails (as opposed to only checking "did escalate() run at all").
+- **`BLOCK-slack-attempted` cannot see delivered content**, only that the daemon logged a POST attempt (success or failure). It intentionally does not — and cannot — assert on what the Slack message says.
+- A `gh issue view` failure while re-fetching labels for the first two assertions is reported as its own failure (`BLOCK-labels-fetch`) rather than silently short-circuiting the rest of the assertions.
+
+### Reading the output
+
+A passing run looks like:
+
+```
+baton-harness: --- Assertions: block escalation chain for #142 ---
+baton-harness: [PASS] BLOCK-label-present
+baton-harness: [PASS] BLOCK-in-progress-cleared
+baton-harness: [PASS] BLOCK-escalation-logged
+baton-harness: [PASS] BLOCK-comment-posted
+baton-harness: [SKIPPED] BLOCK-slack-attempted — BH_SLACK_WEBHOOK_URL not set — Slack channel not exercised
+baton-harness: ==============================
+baton-harness: Block escalation verification summary
+baton-harness: ==============================
+baton-harness:   PASSED:  4
+baton-harness:   FAILED:  0
+baton-harness:   SKIPPED: 1
+baton-harness: RESULT: PASS
+```
+
+With `BH_SLACK_WEBHOOK_URL` set, the fifth line becomes a `[PASS]`/`[FAIL]` instead of `[SKIPPED]`, and the summary's `PASSED`/`SKIPPED` counts shift accordingly.
+
+If the OAuth credential file is absent, the entire scenario is skipped before any issue is seeded:
+
+```
+baton-harness: G3c preflight: OAuth creds absent at /home/agent/.claude/.credentials.json — skipping the block-escalation scenario
+baton-harness: RESULT: SKIPPED
+```
+
+This mirrors `verify-recovery.sh`'s G3c handling — it is not a failure, it is the script correctly detecting that the daemon would exit 1 before ever polling, which would otherwise produce five misleading `[FAIL]` lines instead of one clear `SKIPPED`.
+
+The EXIT trap always removes the `agent-ready` / `agent-in-progress` / `blocked` / `agent-done` labels from the seeded issue and closes it, regardless of whether the run passed, failed, or was interrupted — no manual sandbox cleanup is needed after a run.
+
+### When to run it
+
+- As part of pre-release smoke testing, alongside the positive-path dispatch check (#168) and `bin/verify-recovery.sh`'s startup-recovery gates.
+- When validating the #239 self-block escalation chain after a change to `config/WORKFLOW.md`'s confidence/block rule, `src/baton_harness/chain/daemon.py`'s park path, or `src/baton_harness/chain/escalation.py`.
+- Before enabling `BH_SLACK_WEBHOOK_URL` in a new deployment, to confirm the Slack-attempt path fires as expected.
