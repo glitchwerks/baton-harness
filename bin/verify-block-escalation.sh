@@ -434,7 +434,24 @@ fi
 
 _ISSUE_NUM="${_issue_url##*/}"
 if ! [[ "${_ISSUE_NUM}" =~ ^[0-9]+$ ]]; then
-    echo "baton-harness: error: could not parse issue number from gh output: ${_issue_url}" >&2
+    # gh issue create SUCCEEDED (we already returned early above on a
+    # non-zero exit) but its output could not be parsed for an issue
+    # number. Blanking _ISSUE_NUM disables the EXIT-trap cleanup below —
+    # so without a loud warning, the seeded issue (still carrying
+    # agent-ready) would silently orphan and trip the safety gate on the
+    # next run. Preserve every scrap of context an operator needs to find
+    # and delete it by hand.
+    echo "" >&2
+    echo "baton-harness: *** ORPHAN ISSUE WARNING — MANUAL CLEANUP REQUIRED ***" >&2
+    echo "baton-harness: error: gh issue create succeeded but its output could not" >&2
+    echo "  be parsed for an issue number, so this script cannot identify the" >&2
+    echo "  issue to clean it up automatically (the EXIT trap needs a numeric" >&2
+    echo "  issue number to remove labels / close it)." >&2
+    echo "  raw gh issue create output (should contain the issue URL): ${_issue_url}" >&2
+    echo "  ACTION REQUIRED: find the issue above in ${_REPO_SLUG}, remove its" >&2
+    echo "  agent-ready label, and close it BEFORE running this script again —" >&2
+    echo "  otherwise the safety gate will abort the next run." >&2
+    echo "" >&2
     _ISSUE_NUM=""
     exit 1
 fi
@@ -507,25 +524,32 @@ fi
 
 # --- Assertion 3: escalation log line present in captured daemon output ---
 # escalation.escalate() logs "issue #<n>" and "kind=block" on both the
-# success (INFO) and failure (WARNING) paths — see header note. Grep for
-# both substrings on the same line rather than hard-coding one log level.
-if grep -q "escalate:" "${_DAEMON_OUTPUT_FILE}" \
-    && grep -q "issue #${_ISSUE_NUM}" "${_DAEMON_OUTPUT_FILE}" \
-    && grep -q "kind=block" "${_DAEMON_OUTPUT_FILE}"; then
+# success (INFO) and failure (WARNING) paths — see header note. Match all
+# three tokens on a SINGLE line via one grep -E rather than three separate
+# grep -q checks, which could each match a different line and produce a
+# false pass. The character class after the issue number requires a
+# non-digit immediately following it, so "#5" cannot false-match "#50".
+if grep -qE "escalate:.*issue #${_ISSUE_NUM}[^0-9].*kind=block" "${_DAEMON_OUTPUT_FILE}"; then
     pass "BLOCK-escalation-logged"
 else
-    fail "BLOCK-escalation-logged" "no 'escalate: ... issue #${_ISSUE_NUM} ... kind=block' line found in daemon output"
+    fail "BLOCK-escalation-logged" "no single line matching 'escalate: ... issue #${_ISSUE_NUM} ... kind=block' found in daemon output"
 fi
 
-# --- Assertion 4: at least one comment exists on the issue post-run ---
+# --- Assertion 4: at least 2 comments exist on the issue post-run ---
+# A bare >=1 check is too weak: escalation.escalate() posts its OWN
+# GitHub comment (the daemon's park summary, e.g. "Issue #N parked:
+# blocked label set.") as the durable record — see header note. That
+# comment alone satisfies a >=1 check even if the agent never posted its
+# clarifying question. Require >=2 so both the agent's question AND the
+# daemon's escalation comment are proven present.
 _comment_count="$(gh issue view "${_ISSUE_NUM}" \
     --repo "${_REPO_SLUG}" \
     --json comments \
     --jq '.comments | length' 2>&1)" || _comment_count="error"
-if [[ "${_comment_count}" =~ ^[0-9]+$ ]] && [[ "${_comment_count}" -ge 1 ]]; then
+if [[ "${_comment_count}" =~ ^[0-9]+$ ]] && [[ "${_comment_count}" -ge 2 ]]; then
     pass "BLOCK-comment-posted"
 else
-    fail "BLOCK-comment-posted" "expected >=1 comment on issue #${_ISSUE_NUM}, got: ${_comment_count}"
+    fail "BLOCK-comment-posted" "expected >=2 comments (agent clarifying question + daemon escalation comment) on issue #${_ISSUE_NUM}, got: ${_comment_count}"
 fi
 
 # --- Assertion 5 (conditional): Slack block ping attempted ---
@@ -535,12 +559,14 @@ fi
 # all and this assertion is SKIPPED, not failed (mirrors verify-recovery.sh
 # G3c SKIPPED handling).
 if [[ -n "${BH_SLACK_WEBHOOK_URL:-}" ]]; then
-    if grep -q "escalate: Slack" "${_DAEMON_OUTPUT_FILE}" \
-        && grep -q "issue #${_ISSUE_NUM}" "${_DAEMON_OUTPUT_FILE}" \
-        && grep -q "kind=block" "${_DAEMON_OUTPUT_FILE}"; then
+    # Same bounded-issue-number, single-line treatment as Assertion 3 above
+    # — three independent grep -q checks could each match a different
+    # line, and the earlier GitHub-comment escalation output could
+    # satisfy the issue-#/kind=block pair on its own.
+    if grep -qE "escalate: Slack.*issue #${_ISSUE_NUM}[^0-9].*kind=block" "${_DAEMON_OUTPUT_FILE}"; then
         pass "BLOCK-slack-attempted"
     else
-        fail "BLOCK-slack-attempted" "BH_SLACK_WEBHOOK_URL is set but no 'escalate: Slack ... issue #${_ISSUE_NUM} ... kind=block' line found in daemon output"
+        fail "BLOCK-slack-attempted" "BH_SLACK_WEBHOOK_URL is set but no single line matching 'escalate: Slack ... issue #${_ISSUE_NUM} ... kind=block' found in daemon output"
     fi
 else
     skipped "BLOCK-slack-attempted" "BH_SLACK_WEBHOOK_URL not set — Slack channel not exercised"

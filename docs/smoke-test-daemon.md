@@ -656,20 +656,21 @@ The script runs one scenario (not a suite of scenarios like `verify-recovery.sh`
 |---|---|---|
 | `BLOCK-label-present` | The seeded issue carries the `blocked` label after the run | No |
 | `BLOCK-in-progress-cleared` | The seeded issue does NOT carry `agent-in-progress` after the run | No |
-| `BLOCK-escalation-logged` | Captured daemon stdout/stderr contains a line with `escalate:`, `issue #<n>`, and `kind=block` | No |
-| `BLOCK-comment-posted` | The issue has at least one comment post-run (the agent's clarifying question) | No |
-| `BLOCK-slack-attempted` | Daemon output contains `escalate: Slack ...` with `issue #<n>` and `kind=block` | Yes — only runs if `BH_SLACK_WEBHOOK_URL` is set; otherwise reported `[SKIPPED]`, not `[FAIL]` |
+| `BLOCK-escalation-logged` | Captured daemon stdout/stderr contains a SINGLE line with `escalate:`, `issue #<n>`, and `kind=block`, in that order | No |
+| `BLOCK-comment-posted` | The issue has at least TWO comments post-run — the agent's clarifying question AND the daemon's escalation park-summary comment | No |
+| `BLOCK-slack-attempted` | Daemon output contains a SINGLE line with `escalate: Slack ...`, `issue #<n>`, and `kind=block` | Yes — only runs if `BH_SLACK_WEBHOOK_URL` is set; otherwise reported `[SKIPPED]`, not `[FAIL]` |
 
 Notes on specific assertions:
-- **`BLOCK-escalation-logged` is deliberately tolerant of both log levels.** `escalation.escalate()` logs `"escalate: GitHub comment posted on issue #N (kind=block)"` at INFO on success and a WARNING variant on failure — both contain the same `issue #N` and `kind=block` substrings. The script greps for that pair rather than hard-coding one log level, so it still reports a meaningful pass/fail even if the GitHub comment POST itself fails (as opposed to only checking "did escalate() run at all").
-- **`BLOCK-slack-attempted` cannot see delivered content**, only that the daemon logged a POST attempt (success or failure). It intentionally does not — and cannot — assert on what the Slack message says.
+- **`BLOCK-escalation-logged` is deliberately tolerant of both log levels, but requires all three tokens on the same line.** `escalation.escalate()` logs `"escalate: GitHub comment posted on issue #N (kind=block)"` at INFO on success and a WARNING variant on failure — both contain the same `issue #N` and `kind=block` substrings in the same order. The script matches all three tokens with one `grep -E`, so a match can't be assembled out of three unrelated lines, and the issue number is bounded (a non-digit must follow it) so `#5` cannot false-match `#50`. This still reports a meaningful pass/fail even if the GitHub comment POST itself fails (as opposed to only checking "did escalate() run at all").
+- **`BLOCK-comment-posted` requires >=2 comments, not >=1.** `escalation.escalate()` posts its own GitHub comment (the daemon's park summary, e.g. "Issue #N parked: blocked label set.") as the durable record. That comment alone would satisfy a bare `>=1` check even if the agent never posted its clarifying question, so the assertion requires both comments to be present.
+- **`BLOCK-slack-attempted` cannot see delivered content**, only that the daemon logged a POST attempt (success or failure), matched with the same single-line, bounded-issue-number `grep -E` as `BLOCK-escalation-logged`. It intentionally does not — and cannot — assert on what the Slack message says.
 - A `gh issue view` failure while re-fetching labels for the first two assertions is reported as its own failure (`BLOCK-labels-fetch`) rather than silently short-circuiting the rest of the assertions.
 
 ### Reading the output
 
 A passing run looks like:
 
-```
+```text
 baton-harness: --- Assertions: block escalation chain for #142 ---
 baton-harness: [PASS] BLOCK-label-present
 baton-harness: [PASS] BLOCK-in-progress-cleared
@@ -689,7 +690,7 @@ With `BH_SLACK_WEBHOOK_URL` set, the fifth line becomes a `[PASS]`/`[FAIL]` inst
 
 If the OAuth credential file is absent, the entire scenario is skipped before any issue is seeded:
 
-```
+```text
 baton-harness: G3c preflight: OAuth creds absent at /home/agent/.claude/.credentials.json — skipping the block-escalation scenario
 baton-harness: RESULT: SKIPPED
 ```
