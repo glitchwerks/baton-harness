@@ -4,7 +4,7 @@ This guide walks through the first live run of `bh-daemon`. The daemon has only 
 
 ## What the daemon does
 
-`bh-daemon` is an always-on poll loop that watches a GitHub repository for issues labelled `agent-ready`. It groups them into work units: a milestone becomes a single work unit whose issues are ordered by their `blocked_by` dependency edges into a DAG; an un-milestoned issue becomes its own N=1 unit. The daemon processes one work unit and one issue at a time (serial v1). For each issue it checks out a `feature/<slug>` branch, runs a Claude Code agent, waits for CI to pass on the agent's PR, then merges that PR into the feature branch with `--no-ff`. When all issues in a work unit are done it opens a single **draft** `feature/<slug> → main` PR. The daemon never merges to `main` — a human does that.
+`bh-daemon` is an always-on poll loop that watches a GitHub repository for issues labelled `agent-ready`. It groups them into work units: a milestone becomes a single work unit whose issues are ordered by their `blocked_by` dependency edges into a DAG; an un-milestoned issue becomes its own N=1 unit. The daemon processes one work unit and one issue at a time (serial v1). For each issue it checks out a `feature/<slug>` branch, runs a Claude Code agent, waits for CI to pass on the agent's PR, then merges that PR into the feature branch with `--no-ff`. When all issues in a work unit are done it opens a single ready-for-review `feature/<slug> → main` PR. The daemon never merges to `main` — a human does that.
 
 ### State persistence
 
@@ -201,7 +201,7 @@ bin/provision-ruleset.sh
 The script is idempotent — safe to re-run if rulesets drift from the checked-in configs at `config/ruleset.main.json` and `config/ruleset.feature.json`. Exit codes: `0` = success (rulesets match or were corrected); `1` = drift could not be fixed; `2` = missing env vars or preflight App-ID mismatch.
 
 The script provisions two rulesets:
-- `harness-main-no-merge` — prevents direct merges to `main`, enforcing the draft-PR-only flow
+- `harness-main-no-merge` — prevents direct merges to `main`, enforcing the no-merge-to-`main` flow (the daemon opens a PR for review; only a human merges it)
 - `harness-feature-daemon-only` — restricts pushes to `feature/*` branches to the harness App only
 
 After provisioning, verify with:
@@ -225,7 +225,7 @@ gh api /repos/<owner>/<repo>/installation --jq '.permissions'
 | Permission | Level | Why required |
 |---|---|---|
 | `contents` | `write` | Push `feature/*` and `baton/*` branches; read repo files |
-| `pull_requests` | `write` | Create draft PRs; post review comments |
+| `pull_requests` | `write` | Create PRs; post review comments |
 | `issues` | `write` | Label transitions (`agent-ready` / `agent-in-progress` / `blocked` / `agent-done` / `agent-merged`); post escalation comments |
 | `actions` or `checks` | `read` | Poll CI check-runs for the merge gate |
 | `administration` | `read` | #144 preflight reads rulesets via `GET /repos/.../rulesets` (`ruleset_status.py:L356–361` returns `RulesetStatus.ERROR` on non-2xx, refusing every launch) |
@@ -246,7 +246,7 @@ gh issue create \
   --label agent-ready
 ```
 
-This exercises: poll → select work unit → dispatch → agent run → PR creation → CI gate → merge or park → draft PR.
+This exercises: poll → select work unit → dispatch → agent run → PR creation → CI gate → merge or park → ready-for-review PR.
 
 ### (b) Optional: 2-issue milestone with a blocked_by edge — exercises DAG ordering
 
@@ -339,7 +339,7 @@ INFO baton_harness.chain.daemon: dispatching issue #N ...
 INFO baton_harness.chain.daemon: agent run complete for issue #N
 INFO baton_harness.chain.daemon: CI gate: polling check-runs for sha=...
 INFO baton_harness.chain.daemon: merge outcome for issue #N: MERGED
-INFO baton_harness.chain.daemon: work unit complete; opening draft PR feature/... → main
+INFO baton_harness.chain.daemon: work unit complete; opening PR feature/... → main
 ```
 
 ---

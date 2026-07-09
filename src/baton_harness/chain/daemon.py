@@ -18,8 +18,9 @@ The daemon is the central orchestrator.  It:
      ``agent-in-progress``), ``await orch._run_worker(issue)``.
    - Applies the §3.5 outcome protocol.
    - CI-gates merges via ``merge.merge_issue_branch``.
-4. On work-unit completion: pushes the feature branch and opens a **draft**
-   ``feature/<slug> → main`` PR.  The daemon NEVER merges to ``main``.
+4. On work-unit completion: pushes the feature branch and opens a
+   ready-for-review ``feature/<slug> → main`` PR.  The daemon NEVER
+   merges to ``main``.
 5. Escalates stalled issues via ``escalation.alert`` (dual-channel:
    GitHub comment + optional Slack).
 
@@ -1007,7 +1008,7 @@ def _run_ci_gate(
         )
 
 
-def _open_draft_pr(
+def _open_pr(
     owner: str,
     repo: str,
     branch_name: str,
@@ -1016,9 +1017,9 @@ def _open_draft_pr(
     *,
     installation_token: InstallationTokenSource = "",
 ) -> None:
-    """Open a draft PR from ``branch_name`` → main.
+    """Open a ready-for-review PR from ``branch_name`` → main.
 
-    The daemon NEVER merges to main — this function only creates a draft PR.
+    The daemon NEVER merges to main — this function only creates a PR.
 
     Args:
         owner: The GitHub repository owner.
@@ -1041,7 +1042,6 @@ def _open_draft_pr(
             "create",
             "--repo",
             f"{owner}/{repo}",
-            "--draft",
             "--base",
             "main",
             "--head",
@@ -1057,7 +1057,7 @@ def _open_draft_pr(
         # "already exists" is OK — the PR already tracks this branch.
         if "already exists" in proc.stderr or "already exists" in proc.stdout:
             _log.info(
-                "daemon: draft PR for %r already exists; skipping create",
+                "daemon: PR for %r already exists; skipping create",
                 branch_name,
             )
         else:
@@ -1068,7 +1068,7 @@ def _open_draft_pr(
                 proc.stderr,
             )
     else:
-        _log.info("daemon: draft PR opened for %r → main", branch_name)
+        _log.info("daemon: PR opened for %r → main", branch_name)
 
 
 # ---------------------------------------------------------------------------
@@ -1278,7 +1278,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
 
         if not actionable:
             # Only un-greenlit milestone members remain in the frontier.
-            # Exit the work unit cleanly (open the draft PR below) without
+            # Exit the work unit cleanly (open the PR below) without
             # escalating.  The outer poll loop will re-trigger this milestone
             # on the next tick once the human labels more issues agent-ready.
             _log.info(
@@ -2054,11 +2054,11 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
     )
     pr_title = f"[daemon] {slug}"
 
-    # Guard: skip _open_draft_pr when the feature branch has zero commits
+    # Guard: skip _open_pr when the feature branch has zero commits
     # over origin/main.  This prevents an empty "Warning: 1 uncommitted
     # change" PR when the agent produced no commits (issue #65).
     # Fail-open: if rev-list exits non-zero or stdout is unparseable, we
-    # proceed to _open_draft_pr rather than silently losing the PR.
+    # proceed to _open_pr rather than silently losing the PR.
     count_proc = _run(
         [
             "git",
@@ -2072,13 +2072,13 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
     if count_proc.returncode == 0 and count_proc.stdout.strip() == "0":
         _log.info(
             "daemon: work unit %r produced no commits over main"
-            " — skipping draft PR (%d merged, %d parked)",
+            " — skipping PR (%d merged, %d parked)",
             slug,
             len(merged_issues),
             len(parked_reasons),
         )
     else:
-        _open_draft_pr(
+        _open_pr(
             owner,
             repo,
             branch_name,
