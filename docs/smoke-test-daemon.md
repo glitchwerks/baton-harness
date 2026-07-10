@@ -611,7 +611,7 @@ Issue #239 exercises the WORKFLOW.md "Confidence / block rule" end to end: an ag
 
 ### What it verifies and why it matters
 
-Unlike `bin/verify-recovery.sh`, this script is **not** a decoy-only harness — it dispatches one real `claude -p` agent turn against one seeded issue. It seeds a deliberately ambiguous `agent-ready` issue (the acceptance criteria call for "a reasonable eviction policy" without specifying which one), runs a single `bh-daemon --once` poll tick, and asserts that the full chain described in the WORKFLOW.md confidence/block rule (`config/WORKFLOW.md` §"Confidence / block rule") completed:
+Unlike `bin/verify-recovery.sh`, this script is **not** a decoy-only harness — it dispatches one real `claude -p` agent turn against one seeded issue. It seeds a genuinely un-defaultable `agent-ready` issue: two acceptance criteria directly contradict each other (evict least-recently-used entries once the cache is full, but never evict any entry once it has been read), so no single reasonable implementation can satisfy both. It then runs a single `bh-daemon --once` poll tick, and asserts that the full chain described in the WORKFLOW.md confidence/block rule (`config/WORKFLOW.md` §"Confidence / block rule") completed:
 
 1. the agent posts a clarifying question as an issue comment instead of guessing,
 2. the agent adds the `blocked` label to signal it cannot proceed,
@@ -697,7 +697,9 @@ baton-harness: RESULT: SKIPPED
 
 This mirrors `verify-recovery.sh`'s G3c handling — it is not a failure, it is the script correctly detecting that the daemon would exit 1 before ever polling, which would otherwise produce five misleading `[FAIL]` lines instead of one clear `SKIPPED`.
 
-The EXIT trap always removes the `agent-ready` / `agent-in-progress` / `blocked` / `agent-done` labels from the seeded issue and closes it, regardless of whether the run passed, failed, or was interrupted — no manual sandbox cleanup is needed after a run.
+The EXIT trap always closes the seeded issue (with the same cleanup comment) and then removes the `agent-ready` / `agent-in-progress` / `blocked` / `agent-done` labels, regardless of whether the run passed, failed, or was interrupted — no manual sandbox cleanup is needed after a run. Close happens *before* label removal (not after) so a label PATCH can't shift the issue's state out from under the close call; each of the two `gh` calls is logged independently and never aborts the other.
+
+**On assertion failure, the daemon log is preserved, not deleted.** If any assertion fails — even when the daemon itself exited 0 — the summary dumps the last 40 lines of daemon output to stderr and copies the full captured output to a stable, announced path: `${BH_PROJECT_ROOT}/verify-block-escalation-daemon-<issue-number>.log`. Only on a clean run (zero failed assertions) does cleanup delete the temporary capture file.
 
 ### When to run it
 
