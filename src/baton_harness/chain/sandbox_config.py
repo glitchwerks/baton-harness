@@ -38,6 +38,8 @@ import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from baton_harness.chain.identity import Identity, env_for
+
 # ---------------------------------------------------------------------------
 # Type alias for the injectable run callable
 # ---------------------------------------------------------------------------
@@ -159,6 +161,7 @@ def _default_run(
         capture_output=True,
         text=True,
         encoding="utf-8",
+        env=env_for(Identity.WORKER),
     )
 
 

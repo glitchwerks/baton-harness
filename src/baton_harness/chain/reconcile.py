@@ -77,10 +77,12 @@ def _list_claude_procs() -> list[int]:
         FileNotFoundError: On Windows where ``pgrep`` is not installed.
         subprocess.SubprocessError: If the subprocess call fails unexpectedly.
     """
-    result = subprocess.run(
-        ["pgrep", "-f", "claude -p"],
-        capture_output=True,
-        text=True,
+    result = (
+        subprocess.run(  # identity: env-exempt -- local pgrep liveness probe
+            ["pgrep", "-f", "claude -p"],
+            capture_output=True,
+            text=True,
+        )
     )
     # pgrep exits 1 when no matches found (not an error).
     if result.returncode == 0:
@@ -116,7 +118,7 @@ def _get_git_credential_helpers() -> list[str]:
     """
     for key in _GIT_CREDENTIAL_HELPER_KEYS:
         try:
-            result = subprocess.run(
+            result = subprocess.run(  # identity: env-exempt
                 ["git", "config", "--get-all", key],
                 capture_output=True,
                 text=True,

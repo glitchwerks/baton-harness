@@ -33,6 +33,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from baton_harness.chain.identity import Identity, env_for
+
 # Conservative pattern for a valid git ref component used as a branch slug.
 # Allows alphanumerics, dots, hyphens, and forward-slashes (for sub-paths).
 # Rejects: empty strings, leading hyphens, leading slashes, whitespace, and
@@ -44,7 +46,10 @@ _VALID_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 # ---------------------------------------------------------------------------
 
 
-def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+def _run(
+    cmd: list[str],
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     """Run an external command and return its completed process.
 
     Centralises subprocess invocation so tests can patch a single symbol
@@ -52,6 +57,9 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
 
     Args:
         cmd: Command and arguments to execute (no shell interpolation).
+        env: Optional subprocess environment. Defaults to the worker
+            identity env so local git commands inherit PATH-like vars
+            without inheriting privileged GitHub auth keys.
 
     Returns:
         A ``subprocess.CompletedProcess`` with captured stdout/stderr.
@@ -62,6 +70,7 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         encoding="utf-8",
+        env=env if env is not None else env_for(Identity.WORKER),
     )
 
 

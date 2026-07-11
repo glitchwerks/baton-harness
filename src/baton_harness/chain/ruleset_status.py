@@ -59,6 +59,8 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import cast
 
+from baton_harness.chain.identity import Identity, env_for
+
 _log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -285,6 +287,7 @@ def _default_runner(args: list[str]) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         encoding="utf-8",
+        env=env_for(Identity.WORKER),
     )
 
 

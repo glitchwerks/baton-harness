@@ -59,7 +59,6 @@ from baton_harness.chain.alert_post import post_slack_alert
 from baton_harness.chain.app_auth import (
     InstallationTokenSource,
     gh_env,
-    resolve_installation_token,
 )
 from baton_harness.chain.dag import build_dag
 from baton_harness.chain.escalation import alert
@@ -67,6 +66,7 @@ from baton_harness.chain.gh_deps import (
     fetch_blocked_by,
 )
 from baton_harness.chain.heartbeat import LivenessState, run_heartbeat_loop
+from baton_harness.chain.identity import Identity, env_for
 from baton_harness.chain.labels import (
     LABEL_AGENT_READY,
     LABEL_BLOCKED,
@@ -230,7 +230,11 @@ def _build_preflight_runner(
         ``CompletedProcess[str]`` with ``env`` set to the resolved App
         token environment.
     """
-    _env = gh_env(installation_token)
+    _env = (
+        gh_env(installation_token)
+        if installation_token
+        else env_for(Identity.WORKER)
+    )
 
     def _runner(
         args: list[str],
@@ -462,9 +466,6 @@ def _authed_git_push(
         )
 
     push_env = gh_env(installation_token)
-    push_env["GH_INSTALLATION_TOKEN"] = resolve_installation_token(
-        installation_token
-    )
     return _run(
         [
             "git",
