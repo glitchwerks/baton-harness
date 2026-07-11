@@ -206,13 +206,15 @@ def _should_launch_worker(
 def _build_preflight_runner(
     installation_token: InstallationTokenSource,
 ) -> Callable[[list[str]], subprocess.CompletedProcess[str]]:
-    """Build a gh runner with the App's installation token in env.
+    """Build a gh runner with the correct auth environment for preflight.
 
-    Uses ``chain.app_auth.gh_env(installation_token)`` to construct the
-    env dict; passes ``env=...`` to ``subprocess.run`` so ``gh``
-    authenticates as the harness App per-call.  This matches the pattern
-    used by ``gh_deps``, ``escalation``, ``merge``, and ``recovery``
-    elsewhere in ``chain/``.
+    Uses ``chain.app_auth.gh_env(installation_token)`` when an
+    installation token is provided; otherwise falls back to the worker
+    identity environment from ``env_for(Identity.WORKER)``. Passes
+    ``env=...`` to ``subprocess.run`` so ``gh`` authenticates with the
+    intended per-call identity. This matches the pattern used by
+    ``gh_deps``, ``escalation``, ``merge``, and ``recovery`` elsewhere
+    in ``chain/``.
 
     Without this, a bare ``subprocess.run(["gh", ...])`` passes no env
     override, so ruleset ``gh api`` calls authenticate via ambient
@@ -228,7 +230,8 @@ def _build_preflight_runner(
     Returns:
         A callable that accepts a list of gh args and returns a
         ``CompletedProcess[str]`` with ``env`` set to the resolved App
-        token environment.
+        token environment when ``installation_token`` is truthy, or to
+        ``env_for(Identity.WORKER)`` when it is falsy or absent.
     """
     _env = (
         gh_env(installation_token)

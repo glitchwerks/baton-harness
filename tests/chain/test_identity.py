@@ -33,6 +33,14 @@ Coverage:
   non-credential env vars so the worker subprocess can actually run.
 - ``env_for(Identity.WORKER, ...)`` never mutates the real
   ``os.environ``.
+- ``env_for(Identity.WORKER, installation_token="")`` must NOT strip
+  an unrelated ambient env var whose value is also the empty string —
+  an empty ``installation_token`` must be treated as "no token
+  supplied", never as a real (blank) credential value that then
+  triggers value-based filtering of every empty-valued env var.
+- ``env_for(Identity.APP, installation_token="")`` must raise
+  ``ValueError`` — an empty string is not a valid App installation
+  credential, exactly like ``None``.
 
 Contract decisions pinned by these tests (see PR/return notes):
 - ``env_for`` returns one superset dict per identity; there is no
@@ -44,6 +52,11 @@ Contract decisions pinned by these tests (see PR/return notes):
 - ``Identity.WORKER`` denial is unconditional: it does not matter
   whether the caller passed a token or whether one leaked into ambient
   ``os.environ`` — the returned dict never carries the privileged keys.
+- An empty-string ``installation_token`` is equivalent to ``None`` for
+  purposes of "was a token supplied": it must never be treated as a
+  real (blank) credential value that collateral-damages unrelated
+  empty-valued env vars, and it must still trip the ``Identity.APP``
+  missing-credential ``ValueError``.
 """
 
 from __future__ import annotations
@@ -200,6 +213,17 @@ class TestEnvForApp:
         with pytest.raises(ValueError):
             env_for(Identity.APP)
 
+    def test_raises_when_installation_token_is_empty_string(self) -> None:
+        """An empty-string ``installation_token`` for APP must raise.
+
+        Regression for a production bug: an empty string passes an
+        ``is not None`` check and is silently accepted as a "real"
+        (blank) credential. It must be treated the same as a missing
+        token, not as a valid-but-empty one.
+        """
+        with pytest.raises(ValueError):
+            env_for(Identity.APP, installation_token="")
+
 
 # ---------------------------------------------------------------------------
 # env_for(Identity.WORKER, ...)
@@ -302,3 +326,24 @@ class TestEnvForWorker:
         env_for(Identity.WORKER, installation_token=_APP_TOKEN)
 
         assert dict(os.environ) == before
+
+    def test_empty_installation_token_does_not_strip_empty_ambient_vars(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An empty ``installation_token`` must not collateral-damage.
+
+        Regression for a production bug: ``installation_token=""``
+        passes an ``is not None`` check, becomes the "resolved" token,
+        and a naive ``value != ""`` env-value filter then strips
+        *every* ambient env var whose value happens to also be the
+        empty string — unrelated to credential leakage. An empty
+        token must be treated as "no token supplied", so unrelated
+        empty-valued env vars must survive untouched.
+        """
+        monkeypatch.setenv(_AMBIENT_VAR, "")
+
+        env = env_for(Identity.WORKER, installation_token="")
+
+        assert _AMBIENT_VAR in env
+        assert env[_AMBIENT_VAR] == ""

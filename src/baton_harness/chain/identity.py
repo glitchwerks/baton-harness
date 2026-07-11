@@ -50,6 +50,8 @@ def env_for(
         if installation_token is not None
         else None
     )
+    if not worker_token:
+        worker_token = None
     filtered = {
         key: value
         for key, value in env.items()
