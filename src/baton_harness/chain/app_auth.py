@@ -506,11 +506,9 @@ def gh_env(installation_token: InstallationTokenSource) -> dict[str, str]:
         ``os.environ`` at the time of the call, with ``GH_TOKEN`` and
         ``GITHUB_TOKEN`` overridden to the resolved installation token.
     """
-    env = dict(os.environ)
-    token = resolve_installation_token(installation_token)
-    env["GH_TOKEN"] = token
-    env["GITHUB_TOKEN"] = token
-    return env
+    from baton_harness.chain.identity import Identity, env_for
+
+    return env_for(Identity.APP, installation_token=installation_token)
 
 
 def _github_http_post(

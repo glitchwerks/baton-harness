@@ -419,6 +419,29 @@ The sweep is guarded: the entire `scan_orphan_worktrees` body is wrapped in a `t
 
 ---
 
+## 12. Two-identity subprocess auth model (identity broker) [implemented — issue #222]
+
+Every subprocess the daemon spawns needs a GitHub credential decision: does this process act as the harness's own privileged identity, or as the unprivileged worker doing the actual issue work? A single shared credential cannot answer both cases — a fine-grained PAT cannot hold the `checks` permission the daemon's CI reads need, and a feature-branch push to a ruleset-protected branch requires the bypass actor to be the GitHub App itself, not a PAT (issue #220; see `_authed_git_push` in `daemon.py`). So the harness models exactly two identities and never collapses them into one ambient environment.
+
+`src/baton_harness/chain/identity.py` defines the model:
+
+| Identity | Env keys carried | Used for | Failure mode |
+|---|---|---|---|
+| `Identity.APP` | `GH_TOKEN`, `GITHUB_TOKEN`, `GH_INSTALLATION_TOKEN` (all three set to the resolved installation token) | Daemon-side privileged ops: feature-branch push (`_authed_git_push`, `daemon.py`), ruleset preflight `gh api` reads (`_build_preflight_runner`, `daemon.py` lines 206–237), label edits, CI reads | Missing/empty `installation_token` raises `ValueError` — a hard fail, never a silently empty credential (`identity.py` lines 33–46) |
+| `Identity.WORKER` | None of the three privileged keys — all stripped unconditionally, plus any env value that happens to equal the resolved token is filtered out even if a caller passes one in | The Claude Code worker subprocess and other unprivileged chain spawns (git branch ops, sandboxed tool calls) | No exception path; the identity is deliberately additive-safe — asking for `WORKER` can only remove credentials, never grant them (`identity.py` lines 48–59) |
+
+### `env_for` is the single resolution point
+
+`env_for(identity, *, installation_token=None) -> dict[str, str]` (`identity.py` lines 25–59) is the only function in the codebase that decides what a spawned subprocess's GitHub credentials look like. It starts from a fresh copy of `os.environ` (never mutates the real one) and either injects the three privileged keys (`APP`) or strips them (`WORKER`). Two distinct guarantees follow from this. At the low level, every `subprocess.run`/`Popen`/`call` spawn in `chain/` passes an explicit `env=` keyword, so no spawn site inherits an ambient GitHub token by omission — `cli.py:204`, `ruleset_status.py:290`, `sandbox_config.py:164`, and `daemon.py:236` each construct `env=env_for(Identity.WORKER)` directly at the call site, and `daemon.py`'s preflight runner and `_authed_git_push` resolve `Identity.APP` via `gh_env` (`app_auth.py` line 511, itself a thin wrapper: `return env_for(Identity.APP, installation_token=installation_token)`). At the helper level, some callers don't build an env at all: `branches._run` (`branches.py:49–74`) takes an optional `env` parameter and only defaults to `env_for(Identity.WORKER)` when the caller supplies none (`branches.py:73`) — its own git-branch-op callers all rely on that default rather than constructing a broker env per call.
+
+This centralizes what used to be five near-identical per-module `_gh_env` helpers (`daemon`, `escalation`, `gh_deps`, `merge`, `recovery` — PR #163 reviewer W1) into one broker, and extends that consolidation to the worker side: the `cli.py` vault-fetch path that used to do `os.environ["GH_TOKEN"] = ...` before spawning the worker was removed as part of this change, so the installation token is never written to `os.environ` at all — it is passed by value into the one subprocess call that needs it and discarded (`app_auth.py` module docstring, "Security invariant (env-discipline seam)").
+
+### Guard: every spawn must declare its identity
+
+`tests/chain/test_identity_spawn_guard.py` AST-walks every `.py` file in `src/baton_harness/chain/` looking for a `subprocess.run`/`Popen`/`call` invocation that omits an explicit `env=` keyword. A call site is exempted only by a trailing `# identity: env-exempt` comment on the same source line, reserved for genuinely auth-agnostic spawns with no credential surface — e.g. the `pgrep` liveness probe and a `git config --get-all` key read in `reconcile.py`. The guard fails closed: any new bare spawn in `chain/` breaks this test until it either resolves an explicit identity via `env_for` or is marked exempt at review time.
+
+---
+
 ## Decision records
 
 Historical decisions made during the spike that ground the design. These were previously in `docs/spike-findings.md` (deleted — content moved here, issue #114).

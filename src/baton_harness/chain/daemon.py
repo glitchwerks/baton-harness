@@ -59,7 +59,6 @@ from baton_harness.chain.alert_post import post_slack_alert
 from baton_harness.chain.app_auth import (
     InstallationTokenSource,
     gh_env,
-    resolve_installation_token,
 )
 from baton_harness.chain.dag import build_dag
 from baton_harness.chain.escalation import alert
@@ -67,6 +66,7 @@ from baton_harness.chain.gh_deps import (
     fetch_blocked_by,
 )
 from baton_harness.chain.heartbeat import LivenessState, run_heartbeat_loop
+from baton_harness.chain.identity import Identity, env_for
 from baton_harness.chain.labels import (
     LABEL_AGENT_READY,
     LABEL_BLOCKED,
@@ -206,13 +206,15 @@ def _should_launch_worker(
 def _build_preflight_runner(
     installation_token: InstallationTokenSource,
 ) -> Callable[[list[str]], subprocess.CompletedProcess[str]]:
-    """Build a gh runner with the App's installation token in env.
+    """Build a gh runner with the correct auth environment for preflight.
 
-    Uses ``chain.app_auth.gh_env(installation_token)`` to construct the
-    env dict; passes ``env=...`` to ``subprocess.run`` so ``gh``
-    authenticates as the harness App per-call.  This matches the pattern
-    used by ``gh_deps``, ``escalation``, ``merge``, and ``recovery``
-    elsewhere in ``chain/``.
+    Uses ``chain.app_auth.gh_env(installation_token)`` when an
+    installation token is provided; otherwise falls back to the worker
+    identity environment from ``env_for(Identity.WORKER)``. Passes
+    ``env=...`` to ``subprocess.run`` so ``gh`` authenticates with the
+    intended per-call identity. This matches the pattern used by
+    ``gh_deps``, ``escalation``, ``merge``, and ``recovery`` elsewhere
+    in ``chain/``.
 
     Without this, a bare ``subprocess.run(["gh", ...])`` passes no env
     override, so ruleset ``gh api`` calls authenticate via ambient
@@ -228,9 +230,14 @@ def _build_preflight_runner(
     Returns:
         A callable that accepts a list of gh args and returns a
         ``CompletedProcess[str]`` with ``env`` set to the resolved App
-        token environment.
+        token environment when ``installation_token`` is truthy, or to
+        ``env_for(Identity.WORKER)`` when it is falsy or absent.
     """
-    _env = gh_env(installation_token)
+    _env = (
+        gh_env(installation_token)
+        if installation_token
+        else env_for(Identity.WORKER)
+    )
 
     def _runner(
         args: list[str],
@@ -462,9 +469,6 @@ def _authed_git_push(
         )
 
     push_env = gh_env(installation_token)
-    push_env["GH_INSTALLATION_TOKEN"] = resolve_installation_token(
-        installation_token
-    )
     return _run(
         [
             "git",

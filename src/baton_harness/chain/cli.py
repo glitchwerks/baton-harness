@@ -39,10 +39,12 @@ from baton_harness.chain.app_auth import (
     resolve_installation_token,
 )
 from baton_harness.chain.daemon import run_daemon
+from baton_harness.chain.identity import Identity, env_for
 from baton_harness.chain.registry import load_registry
 from baton_harness.vendor.symphony.config import load_workflow
 
 _log = logging.getLogger(__name__)
+_BOOTSTRAPPED_GH_TOKEN = ""
 
 _FORCE_PR_NOT_MERGE_SELF_TEST_PAYLOAD = json.dumps(
     {
@@ -80,9 +82,10 @@ def bootstrap_secrets(
 
     - ``BWS_GH_TOKEN_SECRET_ID``: optional Bitwarden Secrets ID for a
       GitHub fine-grained PAT.  When set and ``GH_TOKEN`` is absent or
-      empty in the environment, fetches the PAT and writes it to
-      ``os.environ["GH_TOKEN"]``.  If ``GH_TOKEN`` is already set to a
-      non-empty value, the vault is not called (operator override wins).
+      empty in the environment, fetches the PAT for immediate startup
+      validation without writing it into ``os.environ``.  If ``GH_TOKEN``
+      is already set to a non-empty value, the vault is not called
+      (operator override wins).
     - ``BWS_HEARTBEAT_PING_URL_SECRET_ID``: optional Bitwarden Secrets ID
       for a heartbeat webhook URL.  When set and ``BH_HEARTBEAT_PING_URL``
       is absent or empty, fetches the URL and writes it to
@@ -132,15 +135,20 @@ def bootstrap_secrets(
     # token is only read (not consumed) at this stage.
     # ------------------------------------------------------------------
 
+    global _BOOTSTRAPPED_GH_TOKEN
+
     _access_token = os.environ.get("BWS_ACCESS_TOKEN", "")
+    _BOOTSTRAPPED_GH_TOKEN = ""
 
     # Step 1: optional GH_TOKEN vault fetch (skip if already set).
     _gh_token_secret_id = os.environ.get("BWS_GH_TOKEN_SECRET_ID", "")
+    _gh_token = os.environ.get("GH_TOKEN", "")
     if _gh_token_secret_id and not os.environ.get("GH_TOKEN"):
-        os.environ["GH_TOKEN"] = bws_client.fetch_secret(
+        _gh_token = bws_client.fetch_secret(
             _gh_token_secret_id,
             access_token=_access_token,
         )
+    _BOOTSTRAPPED_GH_TOKEN = _gh_token
 
     # Step 2: optional BH_HEARTBEAT_PING_URL vault fetch (skip if set).
     _heartbeat_secret_id = os.environ.get(
@@ -193,6 +201,7 @@ def _assert_force_pr_not_merge_tripwire() -> None:
             text=True,
             encoding="utf-8",
             cwd=tmpdir,
+            env=env_for(Identity.WORKER),
         )
     if result.returncode != 2 or not result.stderr.startswith(
         "BH_WORKER_TRIED_MERGE:"
@@ -356,6 +365,8 @@ def main(argv: list[str] | None = None) -> int:
     # The installation token is NEVER written to os.environ; it is
     # passed by value to run_daemon (env-discipline invariant).
     try:
+        global _BOOTSTRAPPED_GH_TOKEN
+        _BOOTSTRAPPED_GH_TOKEN = ""
         installation_token = bootstrap_secrets()
     except (AppAuthError, Exception) as exc:
         print(
@@ -367,7 +378,7 @@ def main(argv: list[str] | None = None) -> int:
     # Fail fast if a vault-configured GH_TOKEN resolved empty (issue #212).
     try:
         validate_gh_token(
-            os.environ.get("GH_TOKEN", ""),
+            os.environ.get("GH_TOKEN", "") or _BOOTSTRAPPED_GH_TOKEN,
             secret_id_configured=bool(
                 os.environ.get("BWS_GH_TOKEN_SECRET_ID")
             ),

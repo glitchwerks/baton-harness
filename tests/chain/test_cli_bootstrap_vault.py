@@ -1,8 +1,9 @@
 """Tests for vault-fetch extensions to bootstrap_secrets() in cli.py.
 
-Coverage (issue #171):
+Coverage (issue #171 / #222):
 - GH_TOKEN is fetched from Bitwarden vault when BWS_GH_TOKEN_SECRET_ID is
-  set and GH_TOKEN is absent from the environment.
+  set and GH_TOKEN is absent from the environment, but is NOT written
+  into ambient ``os.environ``.
 - BH_HEARTBEAT_PING_URL is fetched from Bitwarden vault when
   BWS_HEARTBEAT_PING_URL_SECRET_ID is set and BH_HEARTBEAT_PING_URL is
   absent from the environment.
@@ -143,18 +144,19 @@ def _make_provider_patch() -> MagicMock:
 
 
 class TestGhTokenVaultFetch:
-    """GH_TOKEN is populated from Bitwarden when absent from env."""
+    """GH_TOKEN is fetched by value when absent from env."""
 
     def test_bootstrap_fetches_gh_token_from_vault_when_env_absent(
         self,
         base_env: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """GH_TOKEN is set in os.environ after bootstrap when fetched.
+        """Fetched GH_TOKEN stays out of ambient ``os.environ``.
 
         BWS_GH_TOKEN_SECRET_ID is set; GH_TOKEN is absent.  After
-        bootstrap_secrets() returns, os.environ["GH_TOKEN"] must equal
-        the value returned by the vault.
+        bootstrap_secrets() returns, the fetched token must be available
+        through the startup-only by-value seam, not written into
+        ``os.environ``.
         """
         monkeypatch.setenv("BWS_GH_TOKEN_SECRET_ID", _GH_TOKEN_SECRET_ID)
 
@@ -172,13 +174,18 @@ class TestGhTokenVaultFetch:
                 return_value=provider,
             ),
         ):
-            from baton_harness.chain.cli import bootstrap_secrets
+            import baton_harness.chain.cli as cli_mod
 
-            bootstrap_secrets()
+            cli_mod.bootstrap_secrets()
 
-        assert os.environ.get("GH_TOKEN") == _FAKE_GH_TOKEN, (
-            f"Expected GH_TOKEN={_FAKE_GH_TOKEN!r} after bootstrap, "
-            f"got {os.environ.get('GH_TOKEN')!r}"
+        assert "GH_TOKEN" not in os.environ, (
+            "bootstrap_secrets must not write the fetched GH_TOKEN into "
+            "ambient os.environ"
+        )
+        assert cli_mod._BOOTSTRAPPED_GH_TOKEN == _FAKE_GH_TOKEN, (
+            "bootstrap_secrets must retain the fetched GH_TOKEN for "
+            "immediate startup validation without storing it in "
+            f"os.environ; got {cli_mod._BOOTSTRAPPED_GH_TOKEN!r}"
         )
 
     def test_bootstrap_fetch_uses_access_token_before_it_is_popped(
@@ -795,9 +802,11 @@ class TestGhTokenEmptyButPresentGuard:
         secret ID, stubs ``fetch_secret`` to return a sentinel value for
         that ID, and no-ops ``build_installation_token_provider`` so
         ``bootstrap_secrets()`` can run without touching a real vault or
-        PEM. After ``bootstrap_secrets()`` returns, ``os.environ
-        ["GH_TOKEN"]`` must equal the fetched sentinel — i.e. the fetch
-        WAS attempted despite the pre-existing empty value.
+        PEM. After ``bootstrap_secrets()`` returns, ambient
+        ``os.environ["GH_TOKEN"]`` must remain the pre-existing empty
+        string, while the fetched sentinel is retained only in the
+        startup-only by-value seam — i.e. the fetch WAS attempted
+        despite the pre-existing empty value.
 
         MUST FAIL today: the current presence-only guard sees
         ``"GH_TOKEN" in os.environ`` (even though the value is ``""``)
@@ -826,14 +835,19 @@ class TestGhTokenEmptyButPresentGuard:
                 return_value=provider,
             ),
         ):
-            from baton_harness.chain.cli import bootstrap_secrets
+            import baton_harness.chain.cli as cli_mod
 
-            bootstrap_secrets()
+            cli_mod.bootstrap_secrets()
 
-        assert os.environ.get("GH_TOKEN") == "tok-sentinel", (
-            "Expected the vault fetch to overwrite an empty-but-present "
-            f"GH_TOKEN with the vault value; got "
-            f"{os.environ.get('GH_TOKEN')!r}"
+        assert os.environ.get("GH_TOKEN") == "", (
+            "bootstrap_secrets must not overwrite ambient GH_TOKEN even "
+            "when it is empty; the fetched value must stay out of "
+            f"os.environ, got {os.environ.get('GH_TOKEN')!r}"
+        )
+        assert cli_mod._BOOTSTRAPPED_GH_TOKEN == "tok-sentinel", (
+            "Expected the vault fetch to retain the fetched value in the "
+            "startup-only by-value seam; got "
+            f"{cli_mod._BOOTSTRAPPED_GH_TOKEN!r}"
         )
 
 
