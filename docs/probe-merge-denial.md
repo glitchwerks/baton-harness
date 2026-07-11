@@ -188,9 +188,11 @@ Running this probe in CI is **deferred** — it requires:
 
 These preconditions are suitable for a release-validation workflow but not
 for per-PR CI. A future enhancement tracked under
-[glitchwerks/baton-harness #133](https://github.com/glitchwerks/baton-harness/issues/133)
+[glitchwerks/baton-harness #249](https://github.com/glitchwerks/baton-harness/issues/249)
 covers wiring this probe into release-validation once a sandbox-credential
-management strategy is established for the Actions runner.
+management strategy is established for the Actions runner. (Previously
+tracked under #133, which is closed and did not cover this residual; #249
+supersedes it.)
 
 ---
 

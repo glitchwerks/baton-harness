@@ -19,9 +19,11 @@ Required-check set (C-I2 finding):
         - ``"Test (pytest)"``
         - ``"Type check (mypy)"``
 
-    TODO: wire ``REQUIRED_CHECKS`` to a ``required_checks`` list in
-    ``config/WORKFLOW.md`` or a daemon config object (P3) so operators can
-    override it without editing this file.
+    Operators may override this default via a ``required_checks:`` list
+    in ``config/WORKFLOW.md`` (issue #225 / VENDOR-PATCH VP-8); see
+    ``chain.daemon._effective_required_checks``, which resolves the
+    configured override and falls back to this module's
+    ``REQUIRED_CHECKS`` (with a one-time warning) when unset.
 
 CRITICAL — no vacuous green:
     ``evaluate_ci`` NEVER treats "zero matching jobs found" as green.  If a
@@ -102,9 +104,12 @@ _log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Required-check set (C-I2 resolution)
 #
-# TODO (P3): read this from config/WORKFLOW.md or a daemon config object so
-# the list can be overridden without editing this file.  The current default
-# matches the three checks confirmed from .github/workflows/ci.yml.
+# Hardcoded fallback default matching the three checks confirmed from
+# .github/workflows/ci.yml.  Operators override it via a
+# `required_checks:` list in config/WORKFLOW.md (issue #225 / VP-8); see
+# chain.daemon._effective_required_checks, which resolves the configured
+# override and falls back to this constant (with a one-time warning) when
+# unset.
 # ---------------------------------------------------------------------------
 
 REQUIRED_CHECKS: list[str] = [

@@ -172,7 +172,7 @@ A per-issue branch may merge into the feature branch only after CI is green on t
 
 **No vacuous green.** Zero matching checks → NOT-YET until hard timeout, then RED. An absent check never passes.
 
-**Required-check set:** hardcoded in `REQUIRED_CHECKS` in `merge.py` (`"Lint (ruff)"`, `"Test (pytest)"`, `"Type check (mypy)"`) — the repo exposes no branch-protection required-check API (returns 404). TODO: wire to `config/WORKFLOW.md` so operators can override without editing code.
+**Required-check set:** defaults to `REQUIRED_CHECKS` in `merge.py` (`"Lint (ruff)"`, `"Test (pytest)"`, `"Type check (mypy)"`) — the repo exposes no branch-protection required-check API (returns 404). As of #225 (closed 2026-07-06, vendor-patch VP-8), operators can override the set via a top-level `required_checks:` key in `config/WORKFLOW.md` (`WorkflowConfig.required_checks` in `config.py`, resolved through `daemon._effective_required_checks`) without editing code; the hardcoded constant remains the fallback when no override is configured.
 
 **CI trigger prerequisite.** `ci.yml` was extended to include the `feature/**` branch glob so PRs targeting the feature branch trigger CI. Without this extension, the CI gate would be unenforceable.
 
@@ -249,7 +249,7 @@ All modules use a single module-local `_run` subprocess seam — patchable in te
 - **Parallel dispatch within a DAG level** — deferred to v2. The scheduler already returns the full ready set; the serial constraint is the only gate. See `harness-design.md §10` note on the v2 extension.
 - **Cross-repo chains** — not possible; GitHub dependency API is same-repo only.
 - **Auto-merge of `feature → main`** — hard constraint; never automated.
-- **Required-check set in config** — currently hardcoded in `merge.py`; TODO item to wire to `config/WORKFLOW.md`.
+- **Required-check set in config** — done. Configurable via `required_checks:` in `config/WORKFLOW.md` as of #225 (closed 2026-07-06, vendor-patch VP-8); `REQUIRED_CHECKS` in `merge.py` remains the fallback default.
 - **Webhook-driven unblock detection** — v1 is poll-driven; webhook-driven unblock is a v2 latency optimization.
 - **Multi-repo daemon** — seam is present (registry list, `max_concurrent` in `WORKFLOW.md`); v1 registry has one entry.
 
