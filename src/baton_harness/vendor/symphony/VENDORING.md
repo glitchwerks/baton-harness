@@ -105,6 +105,25 @@ orchestration path.
   use the best-effort swallow-and-continue pattern matching VP-2/VP-3.
   Marker: `# VENDOR-PATCH VP-5: mid-loop PR-exists early-exit (#137)`.
 
+### VP-6 — `OrchestratorState.load()` — restore state on startup
+
+- **Files:** `state.py`, `orchestrator.py`
+- **Patch file:** `patches/VP-6-state-load-on-startup.diff` (relative to repo root)
+- **Description:** Adds an `OrchestratorState.load(path)` method that restores
+  `running`, `retry_queue`, and `claimed` from a previously-persisted
+  `state.json`. A missing file is a no-op (first-ever startup); malformed
+  JSON or an unreadable file logs a WARNING and leaves state empty (safe
+  fresh-start rather than a crash). `last_event_at` is always `None` after
+  load because that field is intentionally omitted from the persisted JSON.
+  `Orchestrator.__init__` calls `self.state.load(state_path)` immediately
+  after constructing `self.state`, so restore is transparent to callers.
+  Also hardens `persist()` to write atomically — via a sibling `tempfile` +
+  `os.replace` — so a crash or exception mid-write can no longer leave a
+  partial/corrupt `state.json` (the file `load()` would otherwise have to
+  tolerate). Closes issue #106 (merged via PR #166): the daemon's retry
+  queue and running-issue state now survive a restart instead of resetting
+  to empty on every boot. Marker: `# VENDOR-PATCH VP-6: ...`.
+
 ### VP-7 — `run_hook` drops the login-shell flag
 
 - **File:** `hooks.py`
@@ -181,6 +200,7 @@ When re-vendoring at a new upstream SHA, apply these steps in order:
    git apply patches/VP-3-progress-callback.diff
    git apply patches/VP-4-worker-disallow-merge.diff
    git apply patches/VP-5-pr-exists-early-exit.diff
+   git apply patches/VP-6-state-load-on-startup.diff
    git apply patches/VP-7-hooks-non-login-shell.diff
    git apply patches/VP-8-required-checks-config.diff
    ```
@@ -198,6 +218,7 @@ When re-vendoring at a new upstream SHA, apply these steps in order:
    - `VP-3` in `orchestrator.py`
    - `VP-4` in `worker.py`
    - `VP-5` in `orchestrator.py`
+   - `VP-6` in `state.py` and `orchestrator.py`
    - `VP-7` in `hooks.py`
    - `VP-8` in `config.py`
    - `relative import for vendoring` in `orchestrator.py`, `cli.py`,

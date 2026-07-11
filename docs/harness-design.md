@@ -254,7 +254,7 @@ All OQs resolved as of issue #27 (P0–P3):
 
 "CI green" for the `merge.py` CI gate means:
 
-- **Green = every REQUIRED check has `status: completed` and `conclusion` in `{success, neutral, skipped}`.** The required set is the hardcoded `REQUIRED_CHECKS` constant in `merge.py` (`Lint (ruff)`, `Test (pytest)`, `Type check (mypy)`) — this repo exposes **no** branch-protection required-check set (the API returns 404), so per the C-I2 resolution the set lives in code (TODO: wire to `config/WORKFLOW.md`). Optional checks are ignored.
+- **Green = every REQUIRED check has `status: completed` and `conclusion` in `{success, neutral, skipped}`.** The required set defaults to the `REQUIRED_CHECKS` constant in `merge.py` (`Lint (ruff)`, `Test (pytest)`, `Type check (mypy)`) — this repo exposes **no** branch-protection required-check set (the API returns 404), so per the C-I2 resolution the set lives outside branch protection. As of #225 (closed 2026-07-06, vendor-patch VP-8) it is operator-configurable via a top-level `required_checks:` key in `config/WORKFLOW.md` (`WorkflowConfig.required_checks` in `config.py`, resolved through `daemon._effective_required_checks`); the hardcoded constant is now only the fallback when no override is present. Optional checks are ignored.
 - **`failure` / `cancelled` / `timed_out` / `action_required` on any required check = RED** → park sub-tree + escalate.
 - **`queued` / `in_progress` on required checks = NOT YET** → poll with bounded backoff (default 10 s interval, 30 min ceiling); on hard timeout → `CI_TIMEOUT` → RED, never merge on incomplete signal.
 - **A required check that never reports at all** is treated as NOT YET, then RED on timeout — no vacuous pass from absent checks.
