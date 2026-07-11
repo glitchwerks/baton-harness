@@ -52,6 +52,7 @@ import enum
 import os
 
 import pytest
+
 from baton_harness.chain.identity import Identity, env_for
 
 _APP_TOKEN = "ghs_FAKEFAKEFAKEFAKEFAKEFAKEFAKE"
