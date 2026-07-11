@@ -46,12 +46,10 @@ def env_for(
         return env
 
     worker_token: str | None = (
-        resolve_installation_token(installation_token)
-        if installation_token is not None
+        installation_token
+        if isinstance(installation_token, str) and installation_token
         else None
     )
-    if not worker_token:
-        worker_token = None
     filtered = {
         key: value
         for key, value in env.items()

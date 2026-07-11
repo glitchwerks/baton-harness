@@ -6,9 +6,19 @@ sanity check.
 
 Coverage:
 - ``_find_unguarded_spawn_calls`` (the AST-walking helper this guard is
-  built on) flags a bare ``subprocess.run``/``Popen``/``call`` call that
-  omits ``env=``.
-- The helper does NOT flag a call that already passes ``env=``.
+  built on) flags a bare
+  ``subprocess.run``/``Popen``/``call``/``check_call``/``check_output``
+  call that omits ``env=``.
+- The helper does NOT flag a call that passes ``env=`` with a
+  non-``None`` expression (a name, a call, a dict literal, ...).
+- The helper DOES flag a call that passes ``env=None`` literally — that
+  spells "inherit the ambient ``os.environ``", the exact bypass this
+  guard exists to prevent, so a literal ``None`` is a violation, not
+  compliance.
+- The helper resolves subprocess access through import aliases: both
+  ``import subprocess as sp; sp.run(...)`` and
+  ``from subprocess import run; run(...)`` (with or without ``as``)
+  are recognized, not just the literal ``subprocess.run(...)`` spelling.
 - The helper honours the ``# identity: env-exempt`` trailing-comment
   marker as an explicit, per-call-site exemption for genuinely
   env-agnostic spawns (e.g. a liveness ``pgrep`` probe) — but only when
@@ -53,7 +63,9 @@ from pathlib import Path
 
 import pytest
 
-_SPAWN_ATTRS = frozenset({"run", "Popen", "call"})
+_SPAWN_ATTRS = frozenset(
+    {"run", "Popen", "call", "check_call", "check_output"}
+)
 _EXEMPT_MARKER = "# identity: env-exempt"
 
 
@@ -80,14 +92,72 @@ def _collect_comment_lines(source: str) -> dict[int, str]:
     return comments
 
 
+def _resolve_subprocess_aliases(
+    tree: ast.Module,
+) -> tuple[set[str], dict[str, str]]:
+    """Resolve local names bound to the ``subprocess`` module or funcs.
+
+    Handles ``import subprocess`` / ``import subprocess as <alias>``
+    (module-level aliasing, used with attribute-style calls like
+    ``sp.run(...)``) and ``from subprocess import <func>[, ...]`` /
+    ``from subprocess import <func> as <alias>`` (name-level aliasing,
+    used with bare calls like ``run(...)``).
+
+    Args:
+        tree: The parsed module AST to inspect for import statements.
+
+    Returns:
+        A 2-tuple of:
+        - The set of local names bound to the ``subprocess`` module
+          itself (e.g. ``{"subprocess", "sp"}``).
+        - A dict mapping each local name bound via
+          ``from subprocess import ...`` to the real spawn-function
+          name it refers to (e.g. ``{"run": "run", "r": "run"}``).
+    """
+    module_aliases: set[str] = set()
+    func_aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "subprocess":
+                    module_aliases.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            if node.module == "subprocess":
+                for alias in node.names:
+                    if alias.name in _SPAWN_ATTRS:
+                        func_aliases[alias.asname or alias.name] = alias.name
+    return module_aliases, func_aliases
+
+
+def _is_none_literal(value: ast.expr) -> bool:
+    """Return whether an AST expression is the literal ``None``.
+
+    Args:
+        value: The expression node to inspect (e.g. a keyword
+            argument's value).
+
+    Returns:
+        True if ``value`` is exactly the ``None`` constant. False for
+        any other expression, including names/calls that might
+        evaluate to ``None`` at runtime — this is a static, syntactic
+        check only.
+    """
+    return isinstance(value, ast.Constant) and value.value is None
+
+
 def _find_unguarded_spawn_calls(root: Path) -> list[str]:
     """Return ``"file:line"`` strings for spawn calls missing ``env=``.
 
     Walks every ``.py`` file directly under ``root`` (the chain package
     is flat, so this is intentionally non-recursive) looking for
-    ``subprocess.run``/``subprocess.Popen``/``subprocess.call`` calls
-    that do not pass an explicit ``env=`` keyword argument. A call is
-    exempted only if a genuine comment token carrying the
+    ``subprocess.run``/``Popen``/``call``/``check_call``/
+    ``check_output`` calls — including via a module import alias
+    (``import subprocess as sp``) or a ``from subprocess import ...``
+    binding — that do not pass an explicit, non-``None`` ``env=``
+    keyword argument. A call that passes ``env=None`` literally is
+    treated the same as a missing ``env=``: it means "inherit the
+    ambient environment", the exact bypass this guard exists to catch.
+    A call is exempted only if a genuine comment token carrying the
     ``# identity: env-exempt`` marker appears on one of the lines the
     call's source spans.
 
@@ -125,19 +195,27 @@ def _find_unguarded_spawn_calls(root: Path) -> list[str]:
         source = py_file.read_text(encoding="utf-8")
         comment_lines = _collect_comment_lines(source)
         tree = ast.parse(source, filename=str(py_file))
+        module_aliases, func_aliases = _resolve_subprocess_aliases(tree)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
             func = node.func
-            is_subprocess_spawn = (
-                isinstance(func, ast.Attribute)
-                and func.attr in _SPAWN_ATTRS
-                and isinstance(func.value, ast.Name)
-                and func.value.id == "subprocess"
-            )
+            if isinstance(func, ast.Attribute):
+                is_subprocess_spawn = (
+                    func.attr in _SPAWN_ATTRS
+                    and isinstance(func.value, ast.Name)
+                    and func.value.id in module_aliases
+                )
+            elif isinstance(func, ast.Name):
+                is_subprocess_spawn = func.id in func_aliases
+            else:
+                is_subprocess_spawn = False
             if not is_subprocess_spawn:
                 continue
-            if any(kw.arg == "env" for kw in node.keywords):
+            env_kw = next(
+                (kw for kw in node.keywords if kw.arg == "env"), None
+            )
+            if env_kw is not None and not _is_none_literal(env_kw.value):
                 continue
             end_lineno = node.end_lineno or node.lineno
             is_exempted = any(
@@ -175,6 +253,43 @@ class TestFindUnguardedSpawnCallsHelper:
             "import subprocess\n\n\n"
             "def f():\n"
             "    subprocess.run(['ls'], env={})\n"
+        )
+        (tmp_path / "fake_mod.py").write_text(src, encoding="utf-8")
+
+        assert _find_unguarded_spawn_calls(tmp_path) == []
+
+    def test_env_none_literal_is_flagged(self, tmp_path: Path) -> None:
+        """``env=None`` must be flagged, not treated as compliant.
+
+        ``env=None`` means "inherit the ambient ``os.environ``" — the
+        exact bypass this guard exists to prevent. Only the *presence*
+        of the ``env=`` keyword used to be checked, so a literal
+        ``None`` slipped through as if it were a real environment.
+        """
+        src = (
+            "import subprocess\n\n\n"
+            "def f():\n"
+            "    subprocess.run(['ls'], env=None)\n"
+        )
+        (tmp_path / "fake_mod.py").write_text(src, encoding="utf-8")
+
+        violations = _find_unguarded_spawn_calls(tmp_path)
+
+        assert len(violations) == 1
+        assert violations[0].endswith("fake_mod.py:5")
+
+    def test_env_non_none_value_is_compliant(self, tmp_path: Path) -> None:
+        """A non-``None`` ``env=`` expression (e.g. a name) must pass.
+
+        Only a literal ``None`` is a violation — a name, call, or dict
+        expression passed as ``env=`` is compliant regardless of what
+        it evaluates to at runtime, since the guard is a static check.
+        """
+        src = (
+            "import subprocess\n\n\n"
+            "def f():\n"
+            "    some_env = {'PATH': '/usr/bin'}\n"
+            "    subprocess.run(['ls'], env=some_env)\n"
         )
         (tmp_path / "fake_mod.py").write_text(src, encoding="utf-8")
 
@@ -220,20 +335,54 @@ class TestFindUnguardedSpawnCallsHelper:
     def test_flags_popen_and_call_variants(self, tmp_path: Path) -> None:
         """Non-``run`` spawn functions are covered too.
 
-        ``subprocess.Popen`` and ``subprocess.call``, not just
-        ``subprocess.run``.
+        ``subprocess.Popen``, ``subprocess.call``,
+        ``subprocess.check_call``, and ``subprocess.check_output`` —
+        not just ``subprocess.run``.
         """
         src = (
             "import subprocess\n\n\n"
             "def f():\n"
             "    subprocess.Popen(['ls'])\n"
             "    subprocess.call(['ls'])\n"
+            "    subprocess.check_call(['ls'])\n"
+            "    subprocess.check_output(['ls'])\n"
         )
         (tmp_path / "fake_mod.py").write_text(src, encoding="utf-8")
 
         violations = _find_unguarded_spawn_calls(tmp_path)
 
-        assert len(violations) == 2
+        assert len(violations) == 4
+
+    def test_resolves_module_import_alias(self, tmp_path: Path) -> None:
+        """``import subprocess as sp; sp.run(...)`` must be resolved.
+
+        The matcher must not be fooled by an aliased module import —
+        ``sp.run(...)`` is exactly as much of an ambient-inheritance
+        bypass risk as ``subprocess.run(...)``.
+        """
+        src = "import subprocess as sp\n\n\ndef f():\n    sp.run(['ls'])\n"
+        (tmp_path / "fake_mod.py").write_text(src, encoding="utf-8")
+
+        violations = _find_unguarded_spawn_calls(tmp_path)
+
+        assert len(violations) == 1
+        assert violations[0].endswith("fake_mod.py:5")
+
+    def test_resolves_from_import(self, tmp_path: Path) -> None:
+        """``from subprocess import run; run(...)`` must be resolved.
+
+        A bare call to a name imported directly from ``subprocess``
+        bypasses the ``subprocess.<attr>`` attribute-access pattern
+        entirely, so it must be tracked through the ``from`` import
+        binding instead.
+        """
+        src = "from subprocess import run\n\n\ndef f():\n    run(['ls'])\n"
+        (tmp_path / "fake_mod.py").write_text(src, encoding="utf-8")
+
+        violations = _find_unguarded_spawn_calls(tmp_path)
+
+        assert len(violations) == 1
+        assert violations[0].endswith("fake_mod.py:5")
 
     def test_ignores_non_subprocess_calls(self, tmp_path: Path) -> None:
         """Non-``subprocess`` calls named ``run``/``call`` must pass.
@@ -290,8 +439,11 @@ class TestChainPackageSpawnGuard:
     def test_no_unexempted_spawn_sites_in_chain_package(self) -> None:
         """No un-exempted spawn call in ``chain/`` may omit ``env=``.
 
-        Covers ``subprocess.run``/``Popen``/``call``. This is the
-        steady-state post-migration invariant: every real spawn site
+        Covers ``subprocess.run``/``Popen``/``call``/``check_call``/
+        ``check_output``, resolved through import aliases too, and
+        rejects a literal ``env=None`` as equivalent to a missing
+        ``env=``. This is the steady-state post-migration invariant:
+        every real spawn site
         already builds its env via ``chain.identity.env_for`` (or
         otherwise passes an explicit ``env=``), or marks a genuinely
         env-agnostic call (e.g. a liveness ``pgrep`` probe) with a
