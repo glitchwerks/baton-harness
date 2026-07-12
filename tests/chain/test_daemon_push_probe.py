@@ -74,6 +74,66 @@ Coverage:
 - B9: an unexpected exception raised BY the probe (defense in depth,
   distinct from A4b's probe-internal handling) does not crash the launch
   decision and still results in a fail-closed refusal + park.
+
+CodeRabbit correctness fixes on PR #253 (tracked as issue #223 follow-ups)
+------------------------------------------------------------------------
+
+Four corrections to the contract above, pinned by this revision of the
+file:
+
+1. ``_probe_worker_push_denied`` no longer returns a bare ``bool``. It
+   returns a ``ProbeResult`` (a frozen dataclass the code-writer defines
+   at module scope in ``daemon.py``, alongside a ``ProbeDenialReason``
+   enum)::
+
+       class ProbeDenialReason(Enum):
+           ACCEPTED = "accepted"              # push was ACCEPTED (breach)
+           UNRECOGNIZED = "unrecognized"       # rejected, unrecognized signal
+           TRANSPORT_ERROR = "transport_error"  # raised exception on push
+           TIMEOUT = "timeout"                  # push/cleanup timed out
+           CLEANUP_FAILED = "cleanup_failed"    # accepted push, cleanup
+                                                 # delete did not succeed
+
+       @dataclass(frozen=True)
+       class ProbeResult:
+           denied: bool                          # True only = safe/DENIED
+           reason: ProbeDenialReason | None = None  # None iff denied
+           detail: str = ""                      # human-readable detail
+
+   ``result.denied is True`` replaces the old ``result is True`` (safe,
+   push-protection intact; ``result.reason`` is ``None``).
+   ``result.denied is False`` replaces the old ``result is False``, and
+   ``result.reason`` names WHY: ``ACCEPTED``, ``UNRECOGNIZED``,
+   ``TRANSPORT_ERROR``, ``TIMEOUT``, or ``CLEANUP_FAILED``. Tests A2/A3/
+   A4a/A4b below are updated in place to assert on ``.denied``/``.reason``
+   instead of raw booleans, and B6/B7/B8 supply ``ProbeResult`` instances
+   wherever they previously supplied a bare ``bool`` to the patched
+   ``_probe_worker_push_denied``. The refusal alert built in
+   ``_should_launch_worker`` must include the reason (see the updated B7
+   assertions).
+
+2. Fail-closed for a non-git ``repo_root`` (C10 below): when
+   ``_launch_one_issue`` resolves a ``repo_root`` with no ``.git`` entry,
+   the behavioral probe cannot run — launch must be refused outright,
+   never routed through the comparator-only gate (where a bare MATCH
+   would otherwise authorize launch with no behavioral check at all).
+
+3. A stalled probe push/cleanup must not block daemon startup forever
+   (C12/C13 below): ``_run`` must be given a timeout for both the push
+   and the cleanup delete, and a ``subprocess.TimeoutExpired`` must be
+   distinguished from a generic transport error via
+   ``ProbeDenialReason.TIMEOUT``.
+
+4. A nonzero-returncode cleanup delete must not be silently swallowed
+   (C11 below): it must be logged/escalated and surfaced via
+   ``ProbeDenialReason.CLEANUP_FAILED``, distinct from the plain
+   ``ACCEPTED`` reason used when cleanup itself succeeds.
+
+Because a corrected ``_run`` may now be called with an additional
+``timeout=`` keyword, every hand-written ``_run`` stub/spy in this file
+accepts ``**kwargs`` (or an explicit ``timeout`` capture) so a compliant
+implementation does not trip a spurious ``TypeError`` in an unrelated,
+already-pinned test.
 """
 
 from __future__ import annotations
@@ -166,6 +226,29 @@ def _get_probe_fn(daemon_mod: Any) -> Any:  # noqa: ANN401
     return probe_fn
 
 
+def _get_probe_result_types(daemon_mod: Any) -> tuple[Any, Any]:  # noqa: ANN401
+    """Fetch the corrected result-type contract (CodeRabbit finding #2).
+
+    Args:
+        daemon_mod: The imported ``baton_harness.chain.daemon`` module.
+
+    Returns:
+        A ``(ProbeResult, ProbeDenialReason)`` tuple.
+    """
+    result_cls = getattr(daemon_mod, "ProbeResult", None)
+    reason_enum = getattr(daemon_mod, "ProbeDenialReason", None)
+    assert result_cls is not None and reason_enum is not None, (
+        "chain/daemon.py must define module-level `ProbeResult` (a "
+        "frozen dataclass with `denied: bool`, "
+        "`reason: ProbeDenialReason | None = None`, `detail: str = ''`) "
+        "and `ProbeDenialReason` (an Enum with ACCEPTED, UNRECOGNIZED, "
+        "TRANSPORT_ERROR, TIMEOUT, and CLEANUP_FAILED members) — see "
+        "this test file's module docstring for the full contract "
+        "(CodeRabbit finding #2 on PR #253)"
+    )
+    return result_cls, reason_enum
+
+
 def _run_side_effect(
     *,
     returncode: int,
@@ -187,7 +270,9 @@ def _run_side_effect(
     """
 
     def _side_effect(
-        cmd: list[str], env: dict[str, str] | None = None
+        cmd: list[str],
+        env: dict[str, str] | None = None,
+        **_kwargs: Any,  # noqa: ANN401 (e.g. a future `timeout=` kwarg)
     ) -> subprocess.CompletedProcess[str]:
         if calls is not None:
             calls.append(list(cmd))
@@ -229,7 +314,9 @@ def test_probe_pushes_using_worker_identity_via_run_seam(
     run_envs: list[dict[str, str] | None] = []
 
     def _spy_run(
-        cmd: list[str], env: dict[str, str] | None = None
+        cmd: list[str],
+        env: dict[str, str] | None = None,
+        **_kwargs: Any,  # noqa: ANN401 (e.g. a future `timeout=` kwarg)
     ) -> subprocess.CompletedProcess[str]:
         run_calls.append(list(cmd))
         run_envs.append(env)
@@ -300,6 +387,7 @@ def test_probe_returns_denied_on_recognizable_rejection(
     import baton_harness.chain.daemon as daemon_mod
 
     probe_fn = _get_probe_fn(daemon_mod)
+    _get_probe_result_types(daemon_mod)  # fail fast if the type is missing
 
     with patch.object(
         daemon_mod,
@@ -308,10 +396,16 @@ def test_probe_returns_denied_on_recognizable_rejection(
     ):
         result = probe_fn(tmp_path)
 
-    assert result is True, (
+    assert result.denied is True, (
         "A rejected push (non-zero exit) carrying a recognizable denial "
         "signal (GH006 / 'protected branch hook declined') must be "
-        f"reported as DENIED (push protection intact); got {result!r}"
+        f"reported as DENIED (push protection intact); got "
+        f"result.denied={result.denied!r}"
+    )
+    assert result.reason is None, (
+        "A DENIED (safe) ProbeResult must carry no not-safe reason "
+        f"(reason is only set for a not-safe outcome); got "
+        f"{result.reason!r}"
     )
 
 
@@ -334,6 +428,7 @@ def test_probe_returns_not_denied_on_accepted_push_and_cleans_up(
     import baton_harness.chain.daemon as daemon_mod
 
     probe_fn = _get_probe_fn(daemon_mod)
+    _, ProbeDenialReason = _get_probe_result_types(daemon_mod)
 
     run_calls: list[list[str]] = []
 
@@ -344,10 +439,14 @@ def test_probe_returns_not_denied_on_accepted_push_and_cleans_up(
     ):
         result = probe_fn(tmp_path)
 
-    assert result is False, (
+    assert result.denied is False, (
         "An ACCEPTED push (returncode 0) means the push-protection "
         "boundary was BREACHED — the probe must report NOT denied; "
-        f"got {result!r}"
+        f"got result.denied={result.denied!r}"
+    )
+    assert result.reason == ProbeDenialReason.ACCEPTED, (
+        "An accepted push whose cleanup delete ALSO succeeded must carry "
+        f"the plain ACCEPTED reason; got {result.reason!r}"
     )
     assert len(run_calls) >= 2, (
         "An accepted probe push must be followed by a cleanup delete of "
@@ -387,6 +486,7 @@ def test_probe_fails_closed_on_unrecognized_nonzero_exit(
     import baton_harness.chain.daemon as daemon_mod
 
     probe_fn = _get_probe_fn(daemon_mod)
+    _, ProbeDenialReason = _get_probe_result_types(daemon_mod)
 
     with patch.object(
         daemon_mod,
@@ -397,10 +497,16 @@ def test_probe_fails_closed_on_unrecognized_nonzero_exit(
     ):
         result = probe_fn(tmp_path)
 
-    assert result is False, (
+    assert result.denied is False, (
         "A non-zero exit WITHOUT a recognizable denial signal (e.g. a "
         "transport/network failure) is UNPROVEN, not a confirmed "
-        f"denial — the probe must fail closed; got {result!r}"
+        f"denial — the probe must fail closed; got "
+        f"result.denied={result.denied!r}"
+    )
+    assert result.reason == ProbeDenialReason.UNRECOGNIZED, (
+        "An unrecognized non-zero exit must carry the UNRECOGNIZED "
+        f"reason, distinct from a raised transport exception; got "
+        f"{result.reason!r}"
     )
 
 
@@ -423,18 +529,27 @@ def test_probe_fails_closed_when_subprocess_seam_raises(
     import baton_harness.chain.daemon as daemon_mod
 
     probe_fn = _get_probe_fn(daemon_mod)
+    _, ProbeDenialReason = _get_probe_result_types(daemon_mod)
 
     def _raising_run(
-        cmd: list[str], env: dict[str, str] | None = None
+        cmd: list[str],
+        env: dict[str, str] | None = None,
+        **_kwargs: Any,  # noqa: ANN401 (e.g. a future `timeout=` kwarg)
     ) -> subprocess.CompletedProcess[str]:
         raise OSError("network unreachable")
 
     with patch.object(daemon_mod, "_run", side_effect=_raising_run):
         result = probe_fn(tmp_path)  # must NOT raise
 
-    assert result is False, (
+    assert result.denied is False, (
         "A raised transport/subprocess exception must be treated as "
-        f"unproven ⇒ NOT denied (fail-closed); got {result!r}"
+        f"unproven ⇒ NOT denied (fail-closed); got "
+        f"result.denied={result.denied!r}"
+    )
+    assert result.reason == ProbeDenialReason.TRANSPORT_ERROR, (
+        "A raised OSError from the push subprocess call must carry the "
+        f"TRANSPORT_ERROR reason, distinct from TIMEOUT; got "
+        f"{result.reason!r}"
     )
 
 
@@ -460,7 +575,9 @@ def test_probe_uses_distinct_refs_across_invocations(
     seen_refs: list[str] = []
 
     def _spy_run(
-        cmd: list[str], env: dict[str, str] | None = None
+        cmd: list[str],
+        env: dict[str, str] | None = None,
+        **_kwargs: Any,  # noqa: ANN401 (e.g. a future `timeout=` kwarg)
     ) -> subprocess.CompletedProcess[str]:
         match = _PROBE_REF_RE.search(" ".join(cmd))
         if match:
@@ -518,6 +635,7 @@ def test_launch_proceeds_when_probe_denies_despite_comparator_drift(
     )
 
     _get_probe_fn(daemon_mod)  # fail fast with a clear reason if missing
+    ProbeResult, _ = _get_probe_result_types(daemon_mod)
 
     obs = _make_obs(tmp_path)
     mock_orch = MagicMock()
@@ -544,7 +662,9 @@ def test_launch_proceeds_when_probe_denies_despite_comparator_drift(
             daemon_mod, "check_ruleset_signals", side_effect=_fake_check
         ),
         patch.object(
-            daemon_mod, "_probe_worker_push_denied", return_value=True
+            daemon_mod,
+            "_probe_worker_push_denied",
+            return_value=ProbeResult(denied=True),
         ),
         patch.object(mock_orch, "_run_worker", new=mock_orch._run_worker),
         caplog.at_level(logging.WARNING),
@@ -585,6 +705,11 @@ def test_launch_proceeds_when_probe_denies_despite_comparator_drift(
 # B7 — probe NOT denied + comparator MATCH -> refuse; park semantics fire
 # ---------------------------------------------------------------------------
 
+_ACCEPTED_PUSH_DETAIL = (
+    "probe push to feature/__bh-probe-abc123 was ACCEPTED (returncode=0) "
+    "— push-protection boundary breached"
+)
+
 
 def test_launch_refuses_when_probe_accepts_despite_comparator_match(
     tmp_path: Path,
@@ -609,6 +734,7 @@ def test_launch_refuses_when_probe_accepts_despite_comparator_match(
     )
 
     _get_probe_fn(daemon_mod)
+    ProbeResult, ProbeDenialReason = _get_probe_result_types(daemon_mod)
 
     obs = _make_obs(tmp_path)
     mock_orch = MagicMock()
@@ -656,7 +782,13 @@ def test_launch_refuses_when_probe_accepts_despite_comparator_match(
             return_value=RulesetCheckResult(status=RulesetStatus.MATCH),
         ),
         patch.object(
-            daemon_mod, "_probe_worker_push_denied", return_value=False
+            daemon_mod,
+            "_probe_worker_push_denied",
+            return_value=ProbeResult(
+                denied=False,
+                reason=ProbeDenialReason.ACCEPTED,
+                detail=_ACCEPTED_PUSH_DETAIL,
+            ),
         ),
         patch.object(daemon_mod, "post_slack_alert", side_effect=_fake_post),
         patch.object(
@@ -687,6 +819,16 @@ def test_launch_refuses_when_probe_accepts_despite_comparator_match(
         "The refuse path must still fire the Slack alert even when the "
         "comparator says MATCH — behavioral truth overrides a clean "
         "config diff"
+    )
+    alert_message = slack_calls[0][1]
+    assert (
+        _ACCEPTED_PUSH_DETAIL in alert_message
+        or ProbeDenialReason.ACCEPTED.name in alert_message
+    ), (
+        "The refusal alert must include the probe's failure reason "
+        "(CodeRabbit finding #2) — either the ProbeResult.detail text or "
+        f"the ProbeDenialReason name — not just a generic refusal "
+        f"message; got {alert_message!r}"
     )
     assert comment_calls and any(
         "preflight refused" in body for body in comment_calls
@@ -742,6 +884,7 @@ def test_comparator_called_exactly_once_regardless_of_probe_outcome(
     )
 
     _get_probe_fn(daemon_mod)
+    ProbeResult, ProbeDenialReason = _get_probe_result_types(daemon_mod)
 
     obs = _make_obs(tmp_path)
     mock_orch = MagicMock()
@@ -761,6 +904,11 @@ def test_comparator_called_exactly_once_regardless_of_probe_outcome(
         check_calls.append(1)
         return RulesetCheckResult(status=RulesetStatus.MATCH)
 
+    probe_result = ProbeResult(
+        denied=probe_denied,
+        reason=None if probe_denied else ProbeDenialReason.ACCEPTED,
+    )
+
     with (
         patch.object(
             daemon_mod, "check_ruleset_signals", side_effect=_fake_check
@@ -768,7 +916,7 @@ def test_comparator_called_exactly_once_regardless_of_probe_outcome(
         patch.object(
             daemon_mod,
             "_probe_worker_push_denied",
-            return_value=probe_denied,
+            return_value=probe_result,
         ),
         patch.object(daemon_mod, "post_slack_alert", return_value=True),
         patch.object(daemon_mod, "_label_edit", return_value=None),
@@ -882,3 +1030,298 @@ def test_launch_refuses_and_parks_when_probe_itself_raises_unexpectedly(
         "A blocking comment must still be posted when the probe itself "
         "raises unexpectedly"
     )
+
+
+# ---------------------------------------------------------------------------
+# C10 — Fix #1: non-git repo_root must refuse launch outright, never
+# routed through the comparator-only gate (CodeRabbit finding, line 410)
+# ---------------------------------------------------------------------------
+
+
+def test_launch_refuses_when_repo_root_has_no_git_dir_despite_comparator_match(
+    tmp_path: Path,
+) -> None:
+    """A non-git ``repo_root`` must fail closed, even on comparator MATCH.
+
+    Before the fix: ``_launch_one_issue`` resolves a ``repo_root`` with no
+    ``.git`` entry, sets the module-level active-probe-repo-root to
+    ``None``, and that routes the decision into the legacy
+    comparator-only gate — where a bare ``RulesetStatus.MATCH`` alone
+    authorizes launch with NO behavioral push-denial check at all.
+
+    After the fix: a non-git ``repo_root`` means the decisive behavioral
+    probe cannot run, so launch must be refused outright — the comparator
+    must not, by itself, ever authorize a launch it could not verify
+    behaviorally.
+
+    ``tmp_path`` is a plain directory with no ``.git`` subdirectory,
+    exactly the "resolved but not a git worktree" case the finding
+    describes.
+
+    Args:
+        tmp_path: Pytest tmp_path fixture; deliberately NOT a git
+            worktree (used directly as ``repo_root``).
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    import baton_harness.chain.daemon as daemon_mod
+    from baton_harness.chain.ruleset_status import (
+        RulesetCheckResult,
+        RulesetStatus,
+    )
+
+    obs = _make_obs(tmp_path)
+    mock_orch = MagicMock()
+    mock_orch._run_worker = AsyncMock(return_value="pr_created")
+    mock_issue = MagicMock()
+    mock_issue.number = _ISSUE
+
+    def _forbidden_probe(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        raise AssertionError(
+            "the behavioral push-denial probe must not be invoked "
+            "against a non-git repo_root — there is no git worktree to "
+            "push from; the fix is to refuse launch outright rather "
+            "than fall back to the comparator-only gate"
+        )
+
+    comment_calls: list[str] = []
+
+    def _record_alert(
+        owner: str,
+        repo: str,
+        issue: int,
+        summary: str,
+        **kwargs: Any,  # noqa: ANN401
+    ) -> bool:
+        comment_calls.append(summary)
+        return True
+
+    with (
+        patch.object(
+            daemon_mod,
+            "check_ruleset_signals",
+            return_value=RulesetCheckResult(status=RulesetStatus.MATCH),
+        ),
+        patch.object(
+            daemon_mod,
+            "_probe_worker_push_denied",
+            side_effect=_forbidden_probe,
+        ),
+        patch.object(daemon_mod, "post_slack_alert", return_value=True),
+        patch.object(daemon_mod, "_label_edit", return_value=None),
+        patch.object(daemon_mod, "alert", side_effect=_record_alert),
+        patch.object(mock_orch, "_run_worker", new=mock_orch._run_worker),
+    ):
+        result = asyncio.run(
+            daemon_mod._launch_one_issue(  # type: ignore[attr-defined]
+                mock_orch,
+                mock_issue,
+                _OWNER,
+                _REPO,
+                _APP_ID,
+                _TOKEN,
+                obs,
+                repo_root=tmp_path,
+            )
+        )
+
+    mock_orch._run_worker.assert_not_called()
+    assert result is None, (
+        "A repo_root with no .git directory means the decisive "
+        "behavioral probe cannot run — launch must be refused (fail "
+        "closed) even though the comparator reported MATCH; got "
+        f"{result!r}"
+    )
+    assert comment_calls, (
+        "A blocking comment must be posted when launch is refused "
+        "because the repo_root is not a git worktree"
+    )
+
+
+# ---------------------------------------------------------------------------
+# C11 — Fix #4: a nonzero-returncode cleanup delete must be surfaced as a
+# distinct CLEANUP_FAILED reason, not silently swallowed (CodeRabbit
+# finding, line 623)
+# ---------------------------------------------------------------------------
+
+
+def test_probe_reports_cleanup_failed_when_delete_returns_nonzero(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A failed cleanup delete (nonzero exit, no exception) must not vanish.
+
+    Before the fix: only a RAISED exception from the cleanup delete is
+    caught; a normal nonzero returncode is silently ignored, leaving the
+    worker-created probe ref on origin (durable residue) with no trace in
+    the result or the logs.
+
+    After the fix: the cleanup returncode is checked. A nonzero exit is
+    logged/escalated at ERROR level and surfaced via the distinct
+    ``ProbeDenialReason.CLEANUP_FAILED`` — never collapsed into the plain
+    ``ACCEPTED`` reason used when cleanup itself succeeds (see A3, which
+    still expects ``ACCEPTED`` when cleanup returns 0).
+
+    Args:
+        tmp_path: Pytest tmp_path fixture; used as a stand-in repo_root.
+        caplog: Pytest log-capture fixture.
+    """
+    import baton_harness.chain.daemon as daemon_mod
+
+    probe_fn = _get_probe_fn(daemon_mod)
+    _, ProbeDenialReason = _get_probe_result_types(daemon_mod)
+
+    # First _run call = the probe push (accepted, rc=0). Second call =
+    # the cleanup delete, which fails with a nonzero returncode but does
+    # NOT raise.
+    responses = [
+        subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="", stderr=""
+        ),
+        subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr=(
+                "error: unable to delete "
+                "'refs/heads/feature/__bh-probe-abc123': remote ref "
+                "does not exist"
+            ),
+        ),
+    ]
+    run_calls: list[list[str]] = []
+
+    def _sequenced_run(
+        cmd: list[str],
+        env: dict[str, str] | None = None,
+        **_kwargs: Any,  # noqa: ANN401 (e.g. a future `timeout=` kwarg)
+    ) -> subprocess.CompletedProcess[str]:
+        run_calls.append(list(cmd))
+        return responses[len(run_calls) - 1]
+
+    with (
+        patch.object(daemon_mod, "_run", side_effect=_sequenced_run),
+        caplog.at_level(logging.ERROR),
+    ):
+        result = probe_fn(tmp_path)
+
+    assert result.denied is False, (
+        "An accepted push is never safe, regardless of the cleanup "
+        f"outcome; got result.denied={result.denied!r}"
+    )
+    assert result.reason == ProbeDenialReason.CLEANUP_FAILED, (
+        "A cleanup delete that returns a nonzero exit code (no "
+        "exception raised) must be surfaced as its own distinct "
+        "CLEANUP_FAILED reason — not swallowed, and not collapsed into "
+        f"the generic ACCEPTED reason; got {result.reason!r}"
+    )
+    assert len(run_calls) >= 2, (
+        "the cleanup delete must still be attempted even though the "
+        f"probe already knows the push was accepted; calls: {run_calls!r}"
+    )
+    assert any(r.levelno >= logging.ERROR for r in caplog.records), (
+        "A failed cleanup delete must be logged/escalated at ERROR "
+        "level, not silently ignored; previously only a RAISED "
+        f"exception was caught. records: "
+        f"{[r.getMessage() for r in caplog.records]!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# C12/C13 — Fix #3: a stalled probe push/cleanup must not block daemon
+# startup forever (CodeRabbit finding, line 603)
+# ---------------------------------------------------------------------------
+
+
+def test_probe_fails_closed_with_timeout_reason_when_push_times_out(
+    tmp_path: Path,
+) -> None:
+    """A stalled push (``subprocess.TimeoutExpired``) fails closed as TIMEOUT.
+
+    Distinct from the generic ``TRANSPORT_ERROR`` reason used for other
+    raised exceptions (see A4b) — an operator debugging a daemon that
+    never finishes starting up needs to see "timeout", not a generic
+    transport failure, so a stuck credential prompt is diagnosable at a
+    glance.
+
+    Args:
+        tmp_path: Pytest tmp_path fixture; used as a stand-in repo_root.
+    """
+    import baton_harness.chain.daemon as daemon_mod
+
+    probe_fn = _get_probe_fn(daemon_mod)
+    _, ProbeDenialReason = _get_probe_result_types(daemon_mod)
+
+    def _timing_out_run(
+        cmd: list[str],
+        env: dict[str, str] | None = None,
+        **kwargs: Any,  # noqa: ANN401
+    ) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(
+            cmd=cmd, timeout=kwargs.get("timeout", 30)
+        )
+
+    with patch.object(daemon_mod, "_run", side_effect=_timing_out_run):
+        result = probe_fn(tmp_path)  # must NOT raise
+
+    assert result.denied is False, (
+        "A timed-out probe push is unproven — never treated as a "
+        f"confirmed denial; got result.denied={result.denied!r}"
+    )
+    assert result.reason == ProbeDenialReason.TIMEOUT, (
+        "A subprocess.TimeoutExpired raised from the probe push must be "
+        "reported as the distinct TIMEOUT reason, not the generic "
+        f"TRANSPORT_ERROR reason used for other exceptions; got "
+        f"{result.reason!r}"
+    )
+
+
+def test_probe_push_and_cleanup_are_each_given_a_positive_timeout(
+    tmp_path: Path,
+) -> None:
+    """Both the probe push and its cleanup delete must request a deadline.
+
+    Without a deadline threaded down to the subprocess call, a stalled
+    git/credential prompt can block daemon startup indefinitely — merely
+    catching ``subprocess.TimeoutExpired`` defensively (see the previous
+    test) is not sufficient if no timeout is ever actually requested.
+
+    Args:
+        tmp_path: Pytest tmp_path fixture; used as a stand-in repo_root.
+    """
+    import baton_harness.chain.daemon as daemon_mod
+
+    probe_fn = _get_probe_fn(daemon_mod)
+
+    call_kwargs: list[dict[str, Any]] = []
+
+    def _spy_run(
+        cmd: list[str],
+        env: dict[str, str] | None = None,
+        **kwargs: Any,  # noqa: ANN401
+    ) -> subprocess.CompletedProcess[str]:
+        call_kwargs.append(kwargs)
+        # returncode=0 (accepted) so a cleanup delete call is also made.
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout="", stderr=""
+        )
+
+    with patch.object(daemon_mod, "_run", side_effect=_spy_run):
+        probe_fn(tmp_path)
+
+    assert len(call_kwargs) >= 2, (
+        "expected both a push call and a cleanup delete call to _run; "
+        f"got {call_kwargs!r}"
+    )
+    for i, kwargs in enumerate(call_kwargs):
+        timeout_value = kwargs.get("timeout")
+        call_label = "push" if i == 0 else "cleanup delete"
+        assert (
+            isinstance(timeout_value, (int, float))
+            and not isinstance(timeout_value, bool)
+            and timeout_value > 0
+        ), (
+            f"_run call #{i + 1} ({call_label}) must be given a positive "
+            "`timeout=` kwarg so a stalled git/credential prompt cannot "
+            f"block daemon startup indefinitely; got kwargs={kwargs!r}"
+        )

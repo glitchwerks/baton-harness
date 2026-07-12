@@ -55,7 +55,13 @@ from baton_harness.vendor.symphony.config import WorkflowConfig
 # Helpers
 # ---------------------------------------------------------------------------
 
-_REPO_ROOT = Path("/fake/repo")
+# A real git worktree root (this repo's own checkout) rather than a
+# nonexistent path (issue #223 CodeRabbit finding C10): `_launch_one_issue`
+# now fails closed on a `repo_root` with no `.git` entry, and these
+# integration tests rely on the autoused `_probe_worker_push_denied`
+# patch (see tests/conftest.py) to authorize launch — that patch is only
+# consulted when `repo_root` resolves to an actual git worktree.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 _OWNER = "glitchwerks"
 _REPO_NAME = "baton-harness"
 

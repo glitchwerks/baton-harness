@@ -50,7 +50,9 @@ import sys
 import threading
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -127,10 +129,70 @@ _PUSH_DENIAL_SIGNALS: tuple[str, ...] = (
     "gh006",
 )
 
+#: Timeout (seconds) applied to both the probe push and its cleanup
+#: delete `_run` calls (CodeRabbit PR #253 finding C12/C13) so a stalled
+#: git/credential prompt cannot block daemon startup indefinitely.
+_PROBE_PUSH_TIMEOUT_SECONDS: float = 30.0
+
+
+class ProbeDenialReason(Enum):
+    """Why `_probe_worker_push_denied` reported a not-safe outcome.
+
+    ``ACCEPTED`` and ``CLEANUP_FAILED`` are both raised from an accepted
+    (breached) push; ``CLEANUP_FAILED`` is the more specific of the two
+    and is used instead of ``ACCEPTED`` whenever the post-accept cleanup
+    delete itself did not succeed (CodeRabbit PR #253 finding C11).
+    """
+
+    ACCEPTED = "accepted"
+    UNRECOGNIZED = "unrecognized"
+    TRANSPORT_ERROR = "transport_error"
+    TIMEOUT = "timeout"
+    CLEANUP_FAILED = "cleanup_failed"
+
+
+@dataclass(frozen=True)
+class ProbeResult:
+    """Outcome of a worker-identity push-denial probe.
+
+    Attributes:
+        denied: ``True`` only when the push was rejected with a
+            recognizable protection signal (safe). ``False`` for every
+            other outcome (accepted, indeterminate, timed out, or
+            raised) — always fail-closed.
+        reason: ``None`` when ``denied`` is ``True``; otherwise one of
+            ``ProbeDenialReason`` naming why the outcome was not safe.
+        detail: Human-readable detail for logs/alerts.
+    """
+
+    denied: bool
+    reason: ProbeDenialReason | None = None
+    detail: str = ""
+
+
+class _NonGitRepoRootSentinel:
+    """Marks the resolved ``repo_root`` as not a git worktree.
+
+    Distinct from the legacy default (``None``), which means "no probe
+    context is active — a direct caller of ``_should_launch_worker``";
+    see ``_active_probe_repo_root`` below.
+    """
+
+
+#: Sentinel value for ``_active_probe_repo_root`` when `_launch_one_issue`
+#: resolves a ``repo_root`` with no ``.git`` entry (CodeRabbit PR #253
+#: finding C10). Distinct from the legacy ``None`` default so
+#: `_should_launch_worker` can fail closed on it WITHOUT invoking the
+#: behavioral probe (there is no git worktree to push from), while
+#: direct callers of `_should_launch_worker` (bypassing
+#: `_launch_one_issue` entirely) still see the legacy ``None`` and keep
+#: the comparator-only gate.
+_NON_GIT_REPO_ROOT = _NonGitRepoRootSentinel()
+
 # Serial-launch probe context for issue #223. `_launch_one_issue` sets this
 # around its call to `_should_launch_worker`, then resets it in a `finally`
 # block so direct callers of `_should_launch_worker` keep the legacy path.
-_active_probe_repo_root: Path | None = None
+_active_probe_repo_root: Path | _NonGitRepoRootSentinel | None = None
 
 
 def _should_launch_worker(
@@ -179,7 +241,51 @@ def _should_launch_worker(
     """
     result = check_ruleset_signals(owner, repo, app_id=app_id, runner=runner)
 
-    if _active_probe_repo_root is not None:
+    # Snapshot the module-level probe context into a local so mypy can
+    # narrow it (Path vs the non-git sentinel vs the legacy None) across
+    # the two checks below without losing the narrowing to a call in
+    # between.
+    active_repo_root = _active_probe_repo_root
+
+    if isinstance(active_repo_root, _NonGitRepoRootSentinel):
+        # CodeRabbit PR #253 finding C10: a resolved repo_root with no
+        # `.git` entry means the decisive behavioral probe cannot run at
+        # all — refuse outright rather than falling through to the
+        # comparator-only gate below, where a bare MATCH would otherwise
+        # authorize launch with no behavioral check.
+        _log.warning(
+            "daemon: repo_root for issue #%d is not a git worktree; "
+            "the behavioral push-denial probe cannot run — refusing "
+            "launch (comparator=%s)",
+            issue_number,
+            result.status.name,
+        )
+        checks_detail = result.detail or _GENERIC_CHECKS_DETAIL
+        message = (
+            "baton-harness refusing to launch worker — "
+            "repo_root is not a git worktree; the decisive push-denial "
+            "probe cannot run. Will NOT run in dangerous mode. "
+            f"Comparator status: {result.status.name}. "
+            f"Failed checks: {checks_detail}."
+        )
+        if obs.heartbeat_ping_url is None:
+            _log.warning(
+                "daemon: no heartbeat_ping_url configured; "
+                "Slack preflight alert not sent for issue #%d",
+                issue_number,
+            )
+        else:
+            try:
+                post_slack_alert(obs.heartbeat_ping_url, message)
+            except Exception:  # noqa: BLE001
+                _log.warning(
+                    "daemon: post_slack_alert raised despite no-raise "
+                    "contract (issue #%d); swallowing",
+                    issue_number,
+                )
+        return False
+
+    if active_repo_root is not None:
         if result.status is not RulesetStatus.MATCH:
             _log.warning(
                 "daemon: comparator reported %s for issue #%d; "
@@ -189,7 +295,7 @@ def _should_launch_worker(
             )
 
         try:
-            denied = _probe_worker_push_denied(_active_probe_repo_root)
+            probe_result = _probe_worker_push_denied(active_repo_root)
         except Exception as exc:  # noqa: BLE001
             _log.warning(
                 "daemon: push-denial probe raised for issue #%d; "
@@ -197,16 +303,25 @@ def _should_launch_worker(
                 issue_number,
                 exc,
             )
-            denied = False
+            probe_result = ProbeResult(
+                denied=False,
+                reason=ProbeDenialReason.TRANSPORT_ERROR,
+                detail=f"push-denial probe raised unexpectedly: {exc}",
+            )
 
-        if denied:
+        if probe_result.denied:
             return True
 
         checks_detail = result.detail or _GENERIC_CHECKS_DETAIL
+        reason_text = probe_result.detail or (
+            probe_result.reason.name
+            if probe_result.reason is not None
+            else "UNKNOWN"
+        )
         message = (
             "baton-harness refusing to launch worker — "
             "push-denial probe did not confirm denial "
-            f"(probe_denied={denied!r}; comparator={result.status.name}). "
+            f"(reason={reason_text}; comparator={result.status.name}). "
             "Will NOT run in dangerous mode. "
             f"Failed checks: {checks_detail}."
         )
@@ -381,9 +496,10 @@ async def _launch_one_issue(
         repo_root: Repository root used by the decisive worker-identity
             push probe. Defaults to ``Path.cwd()`` when omitted. When an
             explicit path is supplied but does not point at a git
-            worktree (no ``.git`` entry), the decisive push probe is
-            disabled but the launch still passes through
-            ``_should_launch_worker``'s fail-closed comparator gate.
+            worktree (no ``.git`` entry), the decisive push probe
+            cannot run at all — launch is refused outright (fail
+            closed) rather than falling back to the comparator-only
+            gate (CodeRabbit PR #253 finding C10).
 
     Returns:
         The worker result string on success, or ``None`` when preflight
@@ -396,7 +512,9 @@ async def _launch_one_issue(
     has_git_dir = (resolved_repo_root / ".git").exists()
 
     preflight_runner = _build_preflight_runner(installation_token)
-    _active_probe_repo_root = resolved_repo_root if has_git_dir else None
+    _active_probe_repo_root = (
+        resolved_repo_root if has_git_dir else _NON_GIT_REPO_ROOT
+    )
     try:
         preflight = _should_launch_worker(
             issue_number,
@@ -493,6 +611,7 @@ _CLAUDE_ATTRIBUTION = (
 def _run(
     cmd: list[str],
     env: dict[str, str] | None = None,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run an external command and return its completed process.
 
@@ -505,6 +624,12 @@ def _run(
             ``None``, the subprocess inherits ``os.environ`` unchanged.
             Pass ``gh_env(installation_token)`` for daemon-side calls
             to override ``GH_TOKEN`` without mutating ``os.environ``.
+        timeout: Optional deadline in seconds forwarded to
+            ``subprocess.run``. ``None`` (the default) means no
+            deadline, matching prior behavior for existing callers.
+            Raises ``subprocess.TimeoutExpired`` if the deadline
+            elapses; callers that need a bounded wait (e.g. the #223
+            push-denial probe) must catch it explicitly.
 
     Returns:
         A ``subprocess.CompletedProcess`` with captured stdout/stderr.
@@ -516,7 +641,37 @@ def _run(
         text=True,
         encoding="utf-8",
         env=env,
+        timeout=timeout,
     )
+
+
+def _run_gh(
+    cmd: list[str],
+    gh_call_env: dict[str, str] | None,
+) -> subprocess.CompletedProcess[str]:
+    """Call ``_run``, omitting ``env=`` entirely when no override applies.
+
+    A handful of ``gh``-invoking helpers build an optional per-call
+    ``env`` override via ``gh_env(installation_token)`` and only need it
+    passed through when an installation token was actually supplied.
+    Many test doubles patch ``_run`` with a ``cmd``-only signature, so
+    always passing ``env=None`` explicitly would raise ``TypeError``
+    against those stubs — omitting the kwarg when there's no override
+    keeps call sites both type-safe (vs. a ``**kwargs`` unpack, which
+    mypy checks against every remaining ``_run`` parameter including the
+    unrelated ``timeout``) and compatible with the existing test suite.
+
+    Args:
+        cmd: Command and arguments to execute.
+        gh_call_env: The env override to pass through, or ``None`` to
+            call ``_run`` with no ``env=`` kwarg at all.
+
+    Returns:
+        The ``subprocess.CompletedProcess`` from ``_run``.
+    """
+    if gh_call_env is not None:
+        return _run(cmd, env=gh_call_env)
+    return _run(cmd)
 
 
 def _authed_git_push(
@@ -569,21 +724,37 @@ def _authed_git_push(
     )
 
 
-def _probe_worker_push_denied(repo_root: Path) -> bool:
+def _probe_worker_push_denied(repo_root: Path) -> ProbeResult:
     """Probe whether worker-identity pushes are correctly denied.
 
     Attempts a best-effort push of ``HEAD`` to a unique throwaway
     ``feature/`` ref using the worker identity. A recognized denial means
     the protection boundary is intact and launch is safe. Any accepted,
-    indeterminate, or exception outcome fails closed.
+    indeterminate, timed-out, or exception outcome fails closed.
+
+    Both the probe push and its cleanup delete are given a positive
+    ``timeout=`` on the shared ``_run`` seam (CodeRabbit PR #253 finding
+    C12/C13) so a stalled git/credential prompt cannot block daemon
+    startup indefinitely; a ``subprocess.TimeoutExpired`` is reported via
+    the distinct ``ProbeDenialReason.TIMEOUT`` rather than the generic
+    ``TRANSPORT_ERROR``.
+
+    When the push is ACCEPTED (returncode 0 — protection breached), the
+    cleanup delete's outcome is itself checked: a nonzero returncode (no
+    exception raised) is logged at ERROR level and surfaced via the
+    distinct ``ProbeDenialReason.CLEANUP_FAILED`` rather than being
+    silently swallowed and collapsed into the plain ``ACCEPTED`` reason
+    (CodeRabbit PR #253 finding C11).
 
     Args:
         repo_root: Repository root to run the probe push from.
 
     Returns:
-        ``True`` when the push was denied with a recognizable protection
-        signal. ``False`` when the push was accepted, indeterminate, or
-        raised.
+        A ``ProbeResult``. ``denied=True`` (``reason=None``) only when
+        the push was rejected with a recognizable protection signal.
+        ``denied=False`` for every other outcome, with ``reason`` naming
+        why (``ACCEPTED``, ``CLEANUP_FAILED``, ``UNRECOGNIZED``,
+        ``TRANSPORT_ERROR``, or ``TIMEOUT``).
     """
     probe_ref = f"feature/__bh-probe-{uuid.uuid4().hex[:12]}"
     worker_env = env_for(Identity.WORKER)
@@ -597,10 +768,30 @@ def _probe_worker_push_denied(repo_root: Path) -> bool:
     ]
 
     try:
-        push_result = _run(push_cmd, env=worker_env)
+        push_result = _run(
+            push_cmd, env=worker_env, timeout=_PROBE_PUSH_TIMEOUT_SECONDS
+        )
+    except subprocess.TimeoutExpired:
+        _log.warning(
+            "daemon: push-denial probe push to %s timed out after %ss",
+            probe_ref,
+            _PROBE_PUSH_TIMEOUT_SECONDS,
+        )
+        return ProbeResult(
+            denied=False,
+            reason=ProbeDenialReason.TIMEOUT,
+            detail=(
+                f"probe push to {probe_ref} timed out after "
+                f"{_PROBE_PUSH_TIMEOUT_SECONDS}s"
+            ),
+        )
     except Exception as exc:  # noqa: BLE001
         _log.warning("daemon: push-denial probe transport failure: %s", exc)
-        return False
+        return ProbeResult(
+            denied=False,
+            reason=ProbeDenialReason.TRANSPORT_ERROR,
+            detail=f"probe push to {probe_ref} raised: {exc}",
+        )
 
     if push_result.returncode == 0:
         cleanup_cmd = [
@@ -612,20 +803,88 @@ def _probe_worker_push_denied(repo_root: Path) -> bool:
             "--delete",
             probe_ref,
         ]
+        accepted_prefix = (
+            f"probe push to {probe_ref} was ACCEPTED (returncode=0) — "
+            "push-protection boundary breached"
+        )
         try:
-            _run(cleanup_cmd, env=worker_env)
+            cleanup_result = _run(
+                cleanup_cmd,
+                env=worker_env,
+                timeout=_PROBE_PUSH_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            _log.error(
+                "daemon: probe cleanup delete for %s timed out after "
+                "%ss — probe ref may remain on origin (remediation: "
+                "manually delete refs/heads/%s on origin)",
+                probe_ref,
+                _PROBE_PUSH_TIMEOUT_SECONDS,
+                probe_ref,
+            )
+            return ProbeResult(
+                denied=False,
+                reason=ProbeDenialReason.CLEANUP_FAILED,
+                detail=(
+                    f"{accepted_prefix}; cleanup delete timed out after "
+                    f"{_PROBE_PUSH_TIMEOUT_SECONDS}s, ref may remain on "
+                    "origin"
+                ),
+            )
         except Exception as exc:  # noqa: BLE001
-            _log.warning(
-                "daemon: probe cleanup delete failed for %s: %s",
+            _log.error(
+                "daemon: probe cleanup delete failed for %s: %s "
+                "(remediation: manually delete refs/heads/%s on origin)",
                 probe_ref,
                 exc,
+                probe_ref,
             )
-        return False
+            return ProbeResult(
+                denied=False,
+                reason=ProbeDenialReason.CLEANUP_FAILED,
+                detail=f"{accepted_prefix}; cleanup delete raised: {exc}",
+            )
+
+        if cleanup_result.returncode != 0:
+            _log.error(
+                "daemon: probe cleanup delete for %s exited %d — probe "
+                "ref may remain on origin (remediation: manually delete "
+                "refs/heads/%s on origin): %s",
+                probe_ref,
+                cleanup_result.returncode,
+                probe_ref,
+                cleanup_result.stderr,
+            )
+            return ProbeResult(
+                denied=False,
+                reason=ProbeDenialReason.CLEANUP_FAILED,
+                detail=(
+                    f"{accepted_prefix}; cleanup delete exited "
+                    f"{cleanup_result.returncode}, ref may remain on "
+                    f"origin (remediation: manually delete "
+                    f"refs/heads/{probe_ref} on origin)"
+                ),
+            )
+
+        return ProbeResult(
+            denied=False,
+            reason=ProbeDenialReason.ACCEPTED,
+            detail=accepted_prefix,
+        )
 
     stderr_lower = (push_result.stderr or "").lower()
     if any(signal in stderr_lower for signal in _PUSH_DENIAL_SIGNALS):
-        return True
-    return False
+        return ProbeResult(denied=True)
+
+    return ProbeResult(
+        denied=False,
+        reason=ProbeDenialReason.UNRECOGNIZED,
+        detail=(
+            f"probe push to {probe_ref} was rejected (returncode="
+            f"{push_result.returncode}) without a recognizable denial "
+            f"signal: {push_result.stderr!r}"
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -686,10 +945,7 @@ def _label_edit(
     for lbl in remove or []:
         cmd += ["--remove-label", lbl]
     _gh_call_env = gh_env(installation_token) if installation_token else None
-    _env_kw: dict[str, dict[str, str]] = (
-        {"env": _gh_call_env} if _gh_call_env is not None else {}
-    )
-    proc = _run(cmd, **_env_kw)
+    proc = _run_gh(cmd, _gh_call_env)
     if proc.returncode != 0:
         _log.warning(
             "daemon: gh issue edit failed for #%d (exit %d): %s",
@@ -724,10 +980,7 @@ def _find_issue_pr(
         ``(None, None)`` if no matching PR exists.
     """
     _gh_call_env = gh_env(installation_token) if installation_token else None
-    _env_kw: dict[str, dict[str, str]] = (
-        {"env": _gh_call_env} if _gh_call_env is not None else {}
-    )
-    proc = _run(
+    proc = _run_gh(
         [
             "gh",
             "pr",
@@ -741,7 +994,7 @@ def _find_issue_pr(
             "--limit",
             "100",
         ],
-        **_env_kw,
+        _gh_call_env,
     )
     if proc.returncode != 0:
         _log.warning(
@@ -802,10 +1055,7 @@ def _fetch_issue_labels(
         (Codex P1 #3, PR #95).
     """
     _gh_call_env = gh_env(installation_token) if installation_token else None
-    _env_kw: dict[str, dict[str, str]] = (
-        {"env": _gh_call_env} if _gh_call_env is not None else {}
-    )
-    proc = _run(
+    proc = _run_gh(
         [
             "gh",
             "issue",
@@ -816,7 +1066,7 @@ def _fetch_issue_labels(
             "--json",
             "labels",
         ],
-        **_env_kw,
+        _gh_call_env,
     )
     if proc.returncode != 0:
         return None
@@ -848,10 +1098,7 @@ def _fetch_issue_obj(
         An ``Issue`` object or ``None`` on error.
     """
     _gh_call_env = gh_env(installation_token) if installation_token else None
-    _env_kw: dict[str, dict[str, str]] = (
-        {"env": _gh_call_env} if _gh_call_env is not None else {}
-    )
-    proc = _run(
+    proc = _run_gh(
         [
             "gh",
             "issue",
@@ -862,7 +1109,7 @@ def _fetch_issue_obj(
             "--json",
             "number,title,state,body,url,labels,assignees",
         ],
-        **_env_kw,
+        _gh_call_env,
     )
     if proc.returncode != 0:
         _log.warning(
@@ -917,10 +1164,7 @@ def _fetch_full_milestone_members(
         Falls back to an empty frozenset on error.
     """
     _gh_call_env = gh_env(installation_token) if installation_token else None
-    _env_kw: dict[str, dict[str, str]] = (
-        {"env": _gh_call_env} if _gh_call_env is not None else {}
-    )
-    proc = _run(
+    proc = _run_gh(
         [
             "gh",
             "issue",
@@ -936,7 +1180,7 @@ def _fetch_full_milestone_members(
             "--limit",
             "200",
         ],
-        **_env_kw,
+        _gh_call_env,
     )
     if proc.returncode != 0:
         _log.warning(
@@ -1175,10 +1419,7 @@ def _open_pr(
             via a per-call copy — ``os.environ`` is never mutated.
     """
     _gh_call_env = gh_env(installation_token) if installation_token else None
-    _env_kw: dict[str, dict[str, str]] = (
-        {"env": _gh_call_env} if _gh_call_env is not None else {}
-    )
-    proc = _run(
+    proc = _run_gh(
         [
             "gh",
             "pr",
@@ -1194,7 +1435,7 @@ def _open_pr(
             "--body",
             body,
         ],
-        **_env_kw,
+        _gh_call_env,
     )
     if proc.returncode != 0:
         # "already exists" is OK — the PR already tracks this branch.
@@ -2551,10 +2792,7 @@ async def _poll_and_run(
 
     # Fetch open agent-ready issues.
     _poll_gh_env = gh_env(installation_token) if installation_token else None
-    _poll_env_kw: dict[str, dict[str, str]] = (
-        {"env": _poll_gh_env} if _poll_gh_env is not None else {}
-    )
-    proc = _run(
+    proc = _run_gh(
         [
             "gh",
             "issue",
@@ -2570,7 +2808,7 @@ async def _poll_and_run(
             "--limit",
             "100",
         ],
-        **_poll_env_kw,
+        _poll_gh_env,
     )
     if proc.returncode != 0:
         _log.error(
@@ -2818,7 +3056,7 @@ async def _poll_and_run(
     # tally/liveness fire for lone crash-orphaned issues.
     # Daemon is strictly serial (B-I3) — awaits run sequentially.
     # ------------------------------------------------------------------
-    orphan_proc = _run(
+    orphan_proc = _run_gh(
         [
             "gh",
             "issue",
@@ -2834,7 +3072,7 @@ async def _poll_and_run(
             "--limit",
             "100",
         ],
-        **_poll_env_kw,
+        _poll_gh_env,
     )
     if orphan_proc.returncode != 0:
         _log.warning(
