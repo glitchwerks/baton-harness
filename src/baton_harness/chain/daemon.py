@@ -48,6 +48,7 @@ import signal
 import subprocess
 import sys
 import threading
+import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -118,6 +119,19 @@ _GENERIC_CHECKS_DETAIL = (
     "(ruleset check returned no detail)"
 )
 
+_PUSH_DENIAL_SIGNALS: tuple[str, ...] = (
+    "403",
+    "protected",
+    "declined",
+    "refusing to allow",
+    "gh006",
+)
+
+# Serial-launch probe context for issue #223. `_launch_one_issue` sets this
+# around its call to `_should_launch_worker`, then resets it in a `finally`
+# block so direct callers of `_should_launch_worker` keep the legacy path.
+_active_probe_repo_root: Path | None = None
+
 
 def _should_launch_worker(
     issue_number: int,
@@ -164,6 +178,55 @@ def _should_launch_worker(
         ``True`` when the preflight passes (MATCH); ``False`` otherwise.
     """
     result = check_ruleset_signals(owner, repo, app_id=app_id, runner=runner)
+
+    if _active_probe_repo_root is not None:
+        if result.status is not RulesetStatus.MATCH:
+            _log.warning(
+                "daemon: comparator reported %s for issue #%d; "
+                "treating as diagnostic-only while push probe decides",
+                result.status.name,
+                issue_number,
+            )
+
+        try:
+            denied = _probe_worker_push_denied(_active_probe_repo_root)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "daemon: push-denial probe raised for issue #%d; "
+                "failing closed: %s",
+                issue_number,
+                exc,
+            )
+            denied = False
+
+        if denied:
+            return True
+
+        checks_detail = result.detail or _GENERIC_CHECKS_DETAIL
+        message = (
+            "baton-harness refusing to launch worker — "
+            "push-denial probe did not confirm denial "
+            f"(probe_denied={denied!r}; comparator={result.status.name}). "
+            "Will NOT run in dangerous mode. "
+            f"Failed checks: {checks_detail}."
+        )
+
+        if obs.heartbeat_ping_url is None:
+            _log.warning(
+                "daemon: no heartbeat_ping_url configured; "
+                "Slack preflight alert not sent for issue #%d",
+                issue_number,
+            )
+        else:
+            try:
+                post_slack_alert(obs.heartbeat_ping_url, message)
+            except Exception:  # noqa: BLE001
+                _log.warning(
+                    "daemon: post_slack_alert raised despite no-raise "
+                    "contract (issue #%d); swallowing",
+                    issue_number,
+                )
+        return False
 
     if result.status is RulesetStatus.MATCH:
         return True
@@ -288,6 +351,8 @@ async def _launch_one_issue(
     app_id: str,
     installation_token: InstallationTokenSource,
     obs: ObsConfig,
+    *,
+    repo_root: Path | None = None,
 ) -> str | None:
     """Preflight + launch helper extracted from the daemon's launch loop.
 
@@ -313,21 +378,36 @@ async def _launch_one_issue(
             (``ghs_`` prefix).  Used to build the preflight runner so
             ruleset checks authenticate as the App, not ambient env.
         obs: Observability config for preflight alert routing.
+        repo_root: Repository root used by the decisive worker-identity
+            push probe. Defaults to ``Path.cwd()`` when omitted. When an
+            explicit path is supplied but does not point at a git
+            worktree (no ``.git`` entry), the decisive push probe is
+            disabled but the launch still passes through
+            ``_should_launch_worker``'s fail-closed comparator gate.
 
     Returns:
         The worker result string on success, or ``None`` when preflight
         refuses the launch.
     """
+    global _active_probe_repo_root
+
     issue_number: int = issue_obj.number  # type: ignore[attr-defined]
+    resolved_repo_root = repo_root or Path.cwd()
+    has_git_dir = (resolved_repo_root / ".git").exists()
+
     preflight_runner = _build_preflight_runner(installation_token)
-    preflight = _should_launch_worker(
-        issue_number,
-        owner,
-        repo,
-        app_id=app_id,
-        runner=preflight_runner,
-        obs=obs,
-    )
+    _active_probe_repo_root = resolved_repo_root if has_git_dir else None
+    try:
+        preflight = _should_launch_worker(
+            issue_number,
+            owner,
+            repo,
+            app_id=app_id,
+            runner=preflight_runner,
+            obs=obs,
+        )
+    finally:
+        _active_probe_repo_root = None
     if not preflight:
         # P2a: restore agent-ready so the issue stays visible to future
         # poll ticks (protection may be restored later).
@@ -487,6 +567,65 @@ def _authed_git_push(
         ],
         env=push_env,
     )
+
+
+def _probe_worker_push_denied(repo_root: Path) -> bool:
+    """Probe whether worker-identity pushes are correctly denied.
+
+    Attempts a best-effort push of ``HEAD`` to a unique throwaway
+    ``feature/`` ref using the worker identity. A recognized denial means
+    the protection boundary is intact and launch is safe. Any accepted,
+    indeterminate, or exception outcome fails closed.
+
+    Args:
+        repo_root: Repository root to run the probe push from.
+
+    Returns:
+        ``True`` when the push was denied with a recognizable protection
+        signal. ``False`` when the push was accepted, indeterminate, or
+        raised.
+    """
+    probe_ref = f"feature/__bh-probe-{uuid.uuid4().hex[:12]}"
+    worker_env = env_for(Identity.WORKER)
+    push_cmd = [
+        "git",
+        "-C",
+        str(repo_root),
+        "push",
+        "origin",
+        f"HEAD:refs/heads/{probe_ref}",
+    ]
+
+    try:
+        push_result = _run(push_cmd, env=worker_env)
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("daemon: push-denial probe transport failure: %s", exc)
+        return False
+
+    if push_result.returncode == 0:
+        cleanup_cmd = [
+            "git",
+            "-C",
+            str(repo_root),
+            "push",
+            "origin",
+            "--delete",
+            probe_ref,
+        ]
+        try:
+            _run(cleanup_cmd, env=worker_env)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "daemon: probe cleanup delete failed for %s: %s",
+                probe_ref,
+                exc,
+            )
+        return False
+
+    stderr_lower = (push_result.stderr or "").lower()
+    if any(signal in stderr_lower for signal in _PUSH_DENIAL_SIGNALS):
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -1672,6 +1811,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 _app_id,
                 installation_token,
                 obs,
+                repo_root=repo_root,
             )
         except Exception as exc:
             _log.error("daemon: _run_worker raised for #%d: %s", n, exc)
