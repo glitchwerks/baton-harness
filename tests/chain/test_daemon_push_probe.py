@@ -428,7 +428,7 @@ def test_probe_returns_not_denied_on_accepted_push_and_cleans_up(
     import baton_harness.chain.daemon as daemon_mod
 
     probe_fn = _get_probe_fn(daemon_mod)
-    _, ProbeDenialReason = _get_probe_result_types(daemon_mod)
+    _, ProbeDenialReason = _get_probe_result_types(daemon_mod)  # noqa: N806
 
     run_calls: list[list[str]] = []
 
@@ -486,7 +486,7 @@ def test_probe_fails_closed_on_unrecognized_nonzero_exit(
     import baton_harness.chain.daemon as daemon_mod
 
     probe_fn = _get_probe_fn(daemon_mod)
-    _, ProbeDenialReason = _get_probe_result_types(daemon_mod)
+    _, ProbeDenialReason = _get_probe_result_types(daemon_mod)  # noqa: N806
 
     with patch.object(
         daemon_mod,
@@ -529,7 +529,7 @@ def test_probe_fails_closed_when_subprocess_seam_raises(
     import baton_harness.chain.daemon as daemon_mod
 
     probe_fn = _get_probe_fn(daemon_mod)
-    _, ProbeDenialReason = _get_probe_result_types(daemon_mod)
+    _, ProbeDenialReason = _get_probe_result_types(daemon_mod)  # noqa: N806
 
     def _raising_run(
         cmd: list[str],
@@ -635,7 +635,7 @@ def test_launch_proceeds_when_probe_denies_despite_comparator_drift(
     )
 
     _get_probe_fn(daemon_mod)  # fail fast with a clear reason if missing
-    ProbeResult, _ = _get_probe_result_types(daemon_mod)
+    ProbeResult, _ = _get_probe_result_types(daemon_mod)  # noqa: N806
 
     obs = _make_obs(tmp_path)
     mock_orch = MagicMock()
@@ -734,7 +734,7 @@ def test_launch_refuses_when_probe_accepts_despite_comparator_match(
     )
 
     _get_probe_fn(daemon_mod)
-    ProbeResult, ProbeDenialReason = _get_probe_result_types(daemon_mod)
+    ProbeResult, ProbeDenialReason = _get_probe_result_types(daemon_mod)  # noqa: N806
 
     obs = _make_obs(tmp_path)
     mock_orch = MagicMock()
@@ -884,7 +884,7 @@ def test_comparator_called_exactly_once_regardless_of_probe_outcome(
     )
 
     _get_probe_fn(daemon_mod)
-    ProbeResult, ProbeDenialReason = _get_probe_result_types(daemon_mod)
+    ProbeResult, ProbeDenialReason = _get_probe_result_types(daemon_mod)  # noqa: N806
 
     obs = _make_obs(tmp_path)
     mock_orch = MagicMock()
@@ -1169,7 +1169,7 @@ def test_probe_reports_cleanup_failed_when_delete_returns_nonzero(
     import baton_harness.chain.daemon as daemon_mod
 
     probe_fn = _get_probe_fn(daemon_mod)
-    _, ProbeDenialReason = _get_probe_result_types(daemon_mod)
+    _, ProbeDenialReason = _get_probe_result_types(daemon_mod)  # noqa: N806
 
     # First _run call = the probe push (accepted, rc=0). Second call =
     # the cleanup delete, which fails with a nonzero returncode but does
@@ -1250,7 +1250,7 @@ def test_probe_fails_closed_with_timeout_reason_when_push_times_out(
     import baton_harness.chain.daemon as daemon_mod
 
     probe_fn = _get_probe_fn(daemon_mod)
-    _, ProbeDenialReason = _get_probe_result_types(daemon_mod)
+    _, ProbeDenialReason = _get_probe_result_types(daemon_mod)  # noqa: N806
 
     def _timing_out_run(
         cmd: list[str],
