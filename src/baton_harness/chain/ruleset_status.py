@@ -987,13 +987,28 @@ def check_ruleset_signals(
             )
         ruleset_id = entry["ruleset_id"]
 
-        proc = run(
-            [
-                "api",
-                "--include",
-                f"repos/{owner}/{repo}/rulesets/{ruleset_id}",
-            ]
-        )
+        try:
+            proc = run(
+                [
+                    "api",
+                    "--include",
+                    f"repos/{owner}/{repo}/rulesets/{ruleset_id}",
+                ]
+            )
+        except subprocess.TimeoutExpired as exc:
+            # CodeRabbit PR #253 round 2, finding #5: the comparator's
+            # `runner` seam has no guaranteed bound on its own -- a
+            # stalled `gh api` call must degrade to an ordinary ERROR
+            # result here, never propagate.  The comparator is
+            # diagnostic-only (#223 demotion), so its own subprocess
+            # failure must never crash/hang the caller.
+            return RulesetCheckResult(
+                status=RulesetStatus.ERROR,
+                detail=(
+                    f"ruleset {name!r} (id={ruleset_id}) gh call hit its "
+                    f"timeout ({exc.timeout}s): {exc}"
+                ),
+            )
         status = _parse_http_status(proc.stdout)
 
         if status == 404:

@@ -134,6 +134,30 @@ Because a corrected ``_run`` may now be called with an additional
 accepts ``**kwargs`` (or an explicit ``timeout`` capture) so a compliant
 implementation does not trip a spurious ``TypeError`` in an unrelated,
 already-pinned test.
+
+CodeRabbit correctness fixes on PR #253, round 2
+-------------------------------------------------
+
+Finding #6 (Data Integrity, Major): ``_probe_worker_push_denied`` only
+attempted cleanup (``git push origin --delete <probe_ref>``) on the
+ACCEPTED-push path. A TIMEOUT, TRANSPORT_ERROR, or UNRECOGNIZED-rejection
+outcome does NOT prove the remote rejected the push — the throwaway ref
+may have been created before the client lost the result, leaving durable
+residue on origin.  The fix (pinned by the C14-C18 tests below): attempt
+an IDEMPOTENT cleanup delete for every outcome EXCEPT a confirmed denial
+(``denied=True``), while preserving the ORIGINAL refusal reason — a
+cleanup attempt must never overwrite ``TIMEOUT``/``TRANSPORT_ERROR``/
+``UNRECOGNIZED`` with the unrelated ``CLEANUP_FAILED`` reason, which
+stays reserved for the accepted-push cleanup-failure case (see C11
+above). A cleanup failure encountered on one of these indeterminate
+paths must be escalated (logged at ERROR) and reflected in the result's
+``detail`` text without discarding the original ``reason``.
+
+(Finding #5 — bounding the diagnostic comparator runner with a timeout —
+is pinned separately in ``tests/chain/test_daemon_preflight.py`` and
+``tests/test_ruleset_status.py``, since it concerns
+``_build_preflight_runner``/``check_ruleset_signals``, not the push
+probe defined in this file.)
 """
 
 from __future__ import annotations
@@ -1325,3 +1349,307 @@ def test_probe_push_and_cleanup_are_each_given_a_positive_timeout(
             "`timeout=` kwarg so a stalled git/credential prompt cannot "
             f"block daemon startup indefinitely; got kwargs={kwargs!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# C14-C18 — Finding #6 (PR #253 round 2): reconcile the probe ref after
+# indeterminate outcomes. Cleanup must be attempted for every outcome
+# EXCEPT a confirmed denial, and the ORIGINAL refusal reason must survive
+# the cleanup attempt regardless of whether cleanup itself succeeds,
+# fails, or raises.
+# ---------------------------------------------------------------------------
+
+
+def _first_call_raises_then_succeeds(
+    *,
+    exc: BaseException,
+    cleanup_returncode: int = 0,
+    cleanup_stderr: str = "",
+    calls: list[list[str]] | None = None,
+) -> Callable[..., subprocess.CompletedProcess[str]]:
+    """Build a ``daemon_mod._run`` stub: first call raises, rest succeed.
+
+    Simulates an indeterminate push outcome (a raised timeout or
+    transport exception) followed by a normal cleanup-delete attempt, so
+    tests can assert the cleanup call actually happens after the first
+    call fails.
+
+    Args:
+        exc: Exception instance to raise on the FIRST invocation only.
+        cleanup_returncode: Return code for every call after the first.
+        cleanup_stderr: stderr text for every call after the first.
+        calls: Optional list that each invoked ``cmd`` is appended onto,
+            for spying on call count/order/content.
+
+    Returns:
+        A callable matching ``daemon_mod._run(cmd, env=None, **kwargs)``.
+    """
+    call_count = 0
+
+    def _side_effect(
+        cmd: list[str],
+        env: dict[str, str] | None = None,
+        **_kwargs: Any,  # noqa: ANN401 (e.g. a `timeout=` kwarg)
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal call_count
+        call_count += 1
+        if calls is not None:
+            calls.append(list(cmd))
+        if call_count == 1:
+            raise exc
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=cleanup_returncode,
+            stdout="",
+            stderr=cleanup_stderr,
+        )
+
+    return _side_effect
+
+
+def test_probe_attempts_cleanup_on_timeout_and_preserves_timeout_reason(
+    tmp_path: Path,
+) -> None:
+    """A timed-out push must still attempt cleanup; reason stays TIMEOUT.
+
+    CodeRabbit finding #6 (PR #253 round 2): before the fix, only the
+    ACCEPTED-push path attempted a cleanup delete. A TIMEOUT outcome does
+    NOT prove the remote rejected the push — the throwaway ref may have
+    been created before the client lost the result — so a cleanup delete
+    must be attempted here too, and the ORIGINAL TIMEOUT reason must be
+    preserved (never overwritten by the cleanup attempt's own outcome).
+
+    Args:
+        tmp_path: Pytest tmp_path fixture; used as a stand-in repo_root.
+    """
+    import baton_harness.chain.daemon as daemon_mod
+
+    probe_fn = _get_probe_fn(daemon_mod)
+    _, ProbeDenialReason = _get_probe_result_types(daemon_mod)  # noqa: N806
+
+    run_calls: list[list[str]] = []
+    timeout_exc = subprocess.TimeoutExpired(cmd=["git", "push"], timeout=30)
+
+    with patch.object(
+        daemon_mod,
+        "_run",
+        side_effect=_first_call_raises_then_succeeds(
+            exc=timeout_exc, calls=run_calls
+        ),
+    ):
+        result = probe_fn(tmp_path)
+
+    assert result.denied is False, (
+        "a timed-out push is unproven, never a confirmed denial; got "
+        f"result.denied={result.denied!r}"
+    )
+    assert result.reason == ProbeDenialReason.TIMEOUT, (
+        "the ORIGINAL TIMEOUT reason must be preserved even though a "
+        f"cleanup attempt followed it; got {result.reason!r}"
+    )
+    assert len(run_calls) >= 2, (
+        "a TIMEOUT push outcome does not prove the remote rejected the "
+        "push — the probe ref may have been created before the client "
+        "lost the result, so a cleanup delete must still be attempted; "
+        f"only saw calls: {run_calls!r}"
+    )
+
+
+def test_probe_attempts_cleanup_on_transport_error_and_preserves_reason(
+    tmp_path: Path,
+) -> None:
+    """A raised transport exception must still attempt cleanup.
+
+    Reason stays TRANSPORT_ERROR — the same "unproven, not confirmed
+    denial" rationale as the TIMEOUT case above.
+
+    Args:
+        tmp_path: Pytest tmp_path fixture; used as a stand-in repo_root.
+    """
+    import baton_harness.chain.daemon as daemon_mod
+
+    probe_fn = _get_probe_fn(daemon_mod)
+    _, ProbeDenialReason = _get_probe_result_types(daemon_mod)  # noqa: N806
+
+    run_calls: list[list[str]] = []
+    transport_exc = OSError("network unreachable")
+
+    with patch.object(
+        daemon_mod,
+        "_run",
+        side_effect=_first_call_raises_then_succeeds(
+            exc=transport_exc, calls=run_calls
+        ),
+    ):
+        result = probe_fn(tmp_path)
+
+    assert result.denied is False, (
+        "a raised transport exception is unproven, never a confirmed "
+        f"denial; got result.denied={result.denied!r}"
+    )
+    assert result.reason == ProbeDenialReason.TRANSPORT_ERROR, (
+        "the ORIGINAL TRANSPORT_ERROR reason must be preserved even "
+        f"though a cleanup attempt followed it; got {result.reason!r}"
+    )
+    assert len(run_calls) >= 2, (
+        "a TRANSPORT_ERROR push outcome does not prove the remote "
+        "rejected the push — a cleanup delete must still be attempted; "
+        f"only saw calls: {run_calls!r}"
+    )
+
+
+def test_probe_attempts_cleanup_on_unrecognized_rejection_and_preserves_reason(
+    tmp_path: Path,
+) -> None:
+    """An unrecognized nonzero rejection must still attempt cleanup.
+
+    Reason stays UNRECOGNIZED — a rejection with no known denial signal
+    is unproven, same as the raised-exception cases above.
+
+    Args:
+        tmp_path: Pytest tmp_path fixture; used as a stand-in repo_root.
+    """
+    import baton_harness.chain.daemon as daemon_mod
+
+    probe_fn = _get_probe_fn(daemon_mod)
+    _, ProbeDenialReason = _get_probe_result_types(daemon_mod)  # noqa: N806
+
+    run_calls: list[list[str]] = []
+    responses = [
+        subprocess.CompletedProcess(
+            args=[], returncode=128, stdout="", stderr=_UNRECOGNIZED_STDERR
+        ),
+        subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="", stderr=""
+        ),
+    ]
+
+    def _sequenced_run(
+        cmd: list[str],
+        env: dict[str, str] | None = None,
+        **_kwargs: Any,  # noqa: ANN401 (e.g. a `timeout=` kwarg)
+    ) -> subprocess.CompletedProcess[str]:
+        run_calls.append(list(cmd))
+        return responses[len(run_calls) - 1]
+
+    with patch.object(daemon_mod, "_run", side_effect=_sequenced_run):
+        result = probe_fn(tmp_path)
+
+    assert result.denied is False, (
+        "an unrecognized nonzero rejection is unproven, never a "
+        f"confirmed denial; got result.denied={result.denied!r}"
+    )
+    assert result.reason == ProbeDenialReason.UNRECOGNIZED, (
+        "the ORIGINAL UNRECOGNIZED reason must be preserved even though "
+        f"a cleanup attempt followed it; got {result.reason!r}"
+    )
+    assert len(run_calls) >= 2, (
+        "an UNRECOGNIZED push outcome does not prove the remote "
+        "rejected the push — a cleanup delete must still be attempted; "
+        f"only saw calls: {run_calls!r}"
+    )
+
+
+def test_probe_does_not_attempt_cleanup_on_confirmed_denial(
+    tmp_path: Path,
+) -> None:
+    """A CONFIRMED denial must NOT attempt any cleanup delete.
+
+    A recognized denial signal proves the probe ref was never created on
+    origin (the push was rejected before a ref could land), so there is
+    nothing to clean up — attempting a delete here would be a wasted
+    (and potentially confusing) extra call.
+
+    Args:
+        tmp_path: Pytest tmp_path fixture; used as a stand-in repo_root.
+    """
+    import baton_harness.chain.daemon as daemon_mod
+
+    probe_fn = _get_probe_fn(daemon_mod)
+
+    run_calls: list[list[str]] = []
+
+    with patch.object(
+        daemon_mod,
+        "_run",
+        side_effect=_run_side_effect(
+            returncode=1, stderr=_DENIAL_STDERR, calls=run_calls
+        ),
+    ):
+        result = probe_fn(tmp_path)
+
+    assert result.denied is True, (
+        f"a recognized denial signal must report denied=True; got "
+        f"result.denied={result.denied!r}"
+    )
+    assert len(run_calls) == 1, (
+        "a confirmed denial proves the probe ref was never created on "
+        "origin — no cleanup delete should be attempted; calls: "
+        f"{run_calls!r}"
+    )
+
+
+def test_probe_escalates_cleanup_failure_on_timeout_but_keeps_reason(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A FAILED cleanup on an indeterminate path must escalate, not hide.
+
+    When the TIMEOUT path's cleanup delete ALSO fails (nonzero exit, a
+    genuine failure — not an idempotent "ref does not exist" outcome),
+    the failure must be logged at ERROR level and reflected in the
+    result's ``detail`` text — but the reason must stay the ORIGINAL
+    ``TIMEOUT``, never overwritten by ``CLEANUP_FAILED`` (that reason is
+    reserved for the accepted-push cleanup-failure case pinned by C11
+    above — a distinct scenario from residue left by an indeterminate
+    outcome).
+
+    Args:
+        tmp_path: Pytest tmp_path fixture; used as a stand-in repo_root.
+        caplog: Pytest log-capture fixture.
+    """
+    import baton_harness.chain.daemon as daemon_mod
+
+    probe_fn = _get_probe_fn(daemon_mod)
+    _, ProbeDenialReason = _get_probe_result_types(daemon_mod)  # noqa: N806
+
+    run_calls: list[list[str]] = []
+    timeout_exc = subprocess.TimeoutExpired(cmd=["git", "push"], timeout=30)
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=_first_call_raises_then_succeeds(
+                exc=timeout_exc,
+                cleanup_returncode=1,
+                cleanup_stderr="remote: Permission denied (publickey)",
+                calls=run_calls,
+            ),
+        ),
+        caplog.at_level(logging.ERROR),
+    ):
+        result = probe_fn(tmp_path)
+
+    assert result.reason == ProbeDenialReason.TIMEOUT, (
+        "a FAILED cleanup delete on an indeterminate (TIMEOUT) outcome "
+        "must never overwrite the ORIGINAL refusal reason — "
+        "CLEANUP_FAILED is reserved for the accepted-push cleanup-fail "
+        f"case (see C11); got {result.reason!r}"
+    )
+    assert len(run_calls) >= 2, (
+        "the cleanup delete must still be attempted on the TIMEOUT path "
+        f"even though it goes on to fail; calls: {run_calls!r}"
+    )
+    assert "cleanup" in (result.detail or "").lower(), (
+        "the cleanup failure must be surfaced in the result detail "
+        "without discarding the original TIMEOUT reason; got detail="
+        f"{result.detail!r}"
+    )
+    assert any(r.levelno >= logging.ERROR for r in caplog.records), (
+        "a cleanup-delete failure following an indeterminate probe "
+        "outcome must be logged/escalated at ERROR level — durable "
+        "residue left on origin is a data-integrity concern, not "
+        "something to silently swallow; records: "
+        f"{[r.getMessage() for r in caplog.records]!r}"
+    )

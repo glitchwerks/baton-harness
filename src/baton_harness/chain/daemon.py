@@ -90,6 +90,7 @@ from baton_harness.chain.recovery import RecoveryResult, scan_orphan_worktrees
 from baton_harness.chain.redispatch import RedispatchTally
 from baton_harness.chain.registry import RepoConfig
 from baton_harness.chain.ruleset_status import (
+    RulesetCheckResult,
     RulesetStatus,
     check_ruleset_signals,
     # Not called from this module (#206 hard swap moved the gate to
@@ -133,6 +134,13 @@ _PUSH_DENIAL_SIGNALS: tuple[str, ...] = (
 #: delete `_run` calls (CodeRabbit PR #253 finding C12/C13) so a stalled
 #: git/credential prompt cannot block daemon startup indefinitely.
 _PROBE_PUSH_TIMEOUT_SECONDS: float = 30.0
+
+#: Timeout (seconds) applied to the comparator's gh runner (built by
+#: `_build_preflight_runner`) so a stalled `gh api` ruleset call cannot
+#: hang daemon launch indefinitely (CodeRabbit PR #253 round 2, finding
+#: #5). The comparator is diagnostic-only (#223 demotion) -- a timeout
+#: here degrades to an ERROR result rather than blocking launch.
+_COMPARATOR_TIMEOUT_SECONDS: float = 30.0
 
 
 class ProbeDenialReason(Enum):
@@ -239,7 +247,29 @@ def _should_launch_worker(
     Returns:
         ``True`` when the preflight passes (MATCH); ``False`` otherwise.
     """
-    result = check_ruleset_signals(owner, repo, app_id=app_id, runner=runner)
+    try:
+        result = check_ruleset_signals(
+            owner, repo, app_id=app_id, runner=runner
+        )
+    except subprocess.TimeoutExpired as exc:
+        # CodeRabbit PR #253 round 2, finding #5: even with a bound
+        # timeout on the runner (see _build_preflight_runner), a
+        # TimeoutExpired that still escapes check_ruleset_signals must
+        # not propagate out of the launch decision -- the comparator is
+        # diagnostic-only (#223 demotion), so its own failure degrades
+        # to an ERROR result and the existing non-MATCH refusal path
+        # below handles the rest (fail-closed, alert still attempted).
+        _log.warning(
+            "daemon: check_ruleset_signals raised TimeoutExpired for "
+            "issue #%d; degrading to ERROR (comparator is "
+            "diagnostic-only): %s",
+            issue_number,
+            exc,
+        )
+        result = RulesetCheckResult(
+            status=RulesetStatus.ERROR,
+            detail=f"comparator check_ruleset_signals timed out: {exc}",
+        )
 
     # Snapshot the module-level probe context into a local so mypy can
     # narrow it (Path vs the non-git sentinel vs the legacy None) across
@@ -399,6 +429,13 @@ def _build_preflight_runner(
     credentials.  In deployments without an ambient ``GH_TOKEN``, every
     launch is refused with ``RulesetStatus.ERROR``.
 
+    The returned runner also bounds its ``subprocess.run`` call with
+    ``timeout=_COMPARATOR_TIMEOUT_SECONDS`` (CodeRabbit PR #253 round 2,
+    finding #5) so a stalled ``gh api`` call cannot hang daemon launch
+    indefinitely; a resulting ``subprocess.TimeoutExpired`` degrades to
+    an ``ERROR`` result rather than propagating (see
+    ``check_ruleset_signals`` and ``_should_launch_worker``).
+
     Args:
         installation_token: GitHub App installation access token
             (``ghs_`` prefix, or a refreshable token-source object) to
@@ -426,6 +463,7 @@ def _build_preflight_runner(
             text=True,
             encoding="utf-8",
             env=_env,
+            timeout=_COMPARATOR_TIMEOUT_SECONDS,
         )
 
     return _runner
@@ -724,6 +762,85 @@ def _authed_git_push(
     )
 
 
+def _attempt_probe_ref_cleanup(
+    repo_root: Path,
+    probe_ref: str,
+    worker_env: dict[str, str],
+) -> str | None:
+    """Attempt an idempotent cleanup delete of a throwaway probe ref.
+
+    CodeRabbit PR #253 round 2, finding #6: before the fix, cleanup was
+    only attempted on the ACCEPTED (breached) push path. The TIMEOUT,
+    TRANSPORT_ERROR, and UNRECOGNIZED outcomes returned without any
+    cleanup attempt — but the throwaway ref may have been created on
+    origin before the client lost the result, leaving durable residue.
+
+    Idempotent: a cleanup delete that fails because the ref was never
+    created (git reports "does not exist") is treated as success — that
+    is the expected outcome when the push never actually landed, not a
+    failure to escalate.
+
+    Args:
+        repo_root: Repository root to run the cleanup delete from.
+        probe_ref: The throwaway ``feature/`` ref to delete.
+        worker_env: The worker-identity environment used for the
+            original probe push, reused here for the cleanup delete.
+
+    Returns:
+        ``None`` on success (including the idempotent "ref does not
+        exist" outcome). Otherwise a human-readable failure-detail
+        string describing why the cleanup delete itself failed
+        (timeout, raised exception, or a genuine nonzero exit).
+    """
+    cleanup_cmd = [
+        "git",
+        "-C",
+        str(repo_root),
+        "push",
+        "origin",
+        "--delete",
+        probe_ref,
+    ]
+    remediation = (
+        f"remediation: manually delete refs/heads/{probe_ref} on origin"
+    )
+
+    try:
+        cleanup_result = _run(
+            cleanup_cmd,
+            env=worker_env,
+            timeout=_PROBE_PUSH_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        detail = (
+            f"cleanup delete for {probe_ref} timed out after "
+            f"{_PROBE_PUSH_TIMEOUT_SECONDS}s, ref may remain on origin"
+        )
+        _log.error("daemon: %s (%s)", detail, remediation)
+        return detail
+    except Exception as exc:  # noqa: BLE001
+        detail = f"cleanup delete for {probe_ref} raised: {exc}"
+        _log.error("daemon: %s (%s)", detail, remediation)
+        return detail
+
+    if cleanup_result.returncode == 0:
+        return None
+
+    stderr_lower = (cleanup_result.stderr or "").lower()
+    if "does not exist" in stderr_lower:
+        # Idempotent: the ref was never created on origin (the push
+        # never landed) -- this is the expected outcome, not a failure.
+        return None
+
+    detail = (
+        f"cleanup delete for {probe_ref} exited "
+        f"{cleanup_result.returncode}, ref may remain on origin: "
+        f"{cleanup_result.stderr}"
+    )
+    _log.error("daemon: %s (%s)", detail, remediation)
+    return detail
+
+
 def _probe_worker_push_denied(repo_root: Path) -> ProbeResult:
     """Probe whether worker-identity pushes are correctly denied.
 
@@ -745,6 +862,18 @@ def _probe_worker_push_denied(repo_root: Path) -> ProbeResult:
     distinct ``ProbeDenialReason.CLEANUP_FAILED`` rather than being
     silently swallowed and collapsed into the plain ``ACCEPTED`` reason
     (CodeRabbit PR #253 finding C11).
+
+    Every OTHER non-denied outcome — ``TIMEOUT``, ``TRANSPORT_ERROR``,
+    and ``UNRECOGNIZED`` — also attempts an idempotent cleanup delete
+    via ``_attempt_probe_ref_cleanup`` (CodeRabbit PR #253 round 2,
+    finding #6), since none of those outcomes prove the throwaway ref
+    was never created on origin. The cleanup is a side effect only: the
+    ORIGINAL refusal reason is always preserved, and a cleanup failure
+    on these paths is logged at ERROR and appended to ``detail`` rather
+    than escalated to ``CLEANUP_FAILED`` (that reason is reserved for
+    the accepted-push cleanup failure above). A CONFIRMED denial is the
+    only outcome that skips cleanup entirely — a recognized denial
+    signal proves the ref was never created.
 
     Args:
         repo_root: Repository root to run the probe push from.
@@ -777,20 +906,40 @@ def _probe_worker_push_denied(repo_root: Path) -> ProbeResult:
             probe_ref,
             _PROBE_PUSH_TIMEOUT_SECONDS,
         )
+        # CodeRabbit PR #253 round 2, finding #6: a TIMEOUT does not
+        # prove the remote rejected the push -- the throwaway ref may
+        # have been created before the client lost the result, so
+        # cleanup must still be attempted. The ORIGINAL TIMEOUT reason
+        # is preserved regardless of the cleanup outcome.
+        detail = (
+            f"probe push to {probe_ref} timed out after "
+            f"{_PROBE_PUSH_TIMEOUT_SECONDS}s"
+        )
+        cleanup_failure = _attempt_probe_ref_cleanup(
+            repo_root, probe_ref, worker_env
+        )
+        if cleanup_failure is not None:
+            detail = f"{detail}; {cleanup_failure}"
         return ProbeResult(
             denied=False,
             reason=ProbeDenialReason.TIMEOUT,
-            detail=(
-                f"probe push to {probe_ref} timed out after "
-                f"{_PROBE_PUSH_TIMEOUT_SECONDS}s"
-            ),
+            detail=detail,
         )
     except Exception as exc:  # noqa: BLE001
         _log.warning("daemon: push-denial probe transport failure: %s", exc)
+        # Same rationale as the TIMEOUT branch above: a raised transport
+        # exception does not prove the push was rejected -- attempt
+        # cleanup, but preserve the ORIGINAL TRANSPORT_ERROR reason.
+        detail = f"probe push to {probe_ref} raised: {exc}"
+        cleanup_failure = _attempt_probe_ref_cleanup(
+            repo_root, probe_ref, worker_env
+        )
+        if cleanup_failure is not None:
+            detail = f"{detail}; {cleanup_failure}"
         return ProbeResult(
             denied=False,
             reason=ProbeDenialReason.TRANSPORT_ERROR,
-            detail=f"probe push to {probe_ref} raised: {exc}",
+            detail=detail,
         )
 
     if push_result.returncode == 0:
@@ -874,16 +1023,29 @@ def _probe_worker_push_denied(repo_root: Path) -> ProbeResult:
 
     stderr_lower = (push_result.stderr or "").lower()
     if any(signal in stderr_lower for signal in _PUSH_DENIAL_SIGNALS):
+        # A CONFIRMED denial proves the probe ref was never created on
+        # origin (the push was rejected before a ref could land) --
+        # nothing to clean up, so no cleanup delete is attempted here.
         return ProbeResult(denied=True)
 
+    # CodeRabbit PR #253 round 2, finding #6: an UNRECOGNIZED rejection
+    # does not prove the remote actually rejected the push -- attempt
+    # cleanup, but preserve the ORIGINAL UNRECOGNIZED reason regardless
+    # of the cleanup outcome.
+    detail = (
+        f"probe push to {probe_ref} was rejected (returncode="
+        f"{push_result.returncode}) without a recognizable denial "
+        f"signal: {push_result.stderr!r}"
+    )
+    cleanup_failure = _attempt_probe_ref_cleanup(
+        repo_root, probe_ref, worker_env
+    )
+    if cleanup_failure is not None:
+        detail = f"{detail}; {cleanup_failure}"
     return ProbeResult(
         denied=False,
         reason=ProbeDenialReason.UNRECOGNIZED,
-        detail=(
-            f"probe push to {probe_ref} was rejected (returncode="
-            f"{push_result.returncode}) without a recognizable denial "
-            f"signal: {push_result.stderr!r}"
-        ),
+        detail=detail,
     )
 
 

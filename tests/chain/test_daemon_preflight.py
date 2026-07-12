@@ -75,6 +75,26 @@ P2a — issue visibility on preflight refusal: when preflight returns False,
      must be posted to the issue.  agent-in-progress must NOT be left set.
 
 See also test_alert_post.py for P2b (webhook URL secret not logged).
+
+CodeRabbit correctness fixes on PR #253, round 2
+-------------------------------------------------
+
+Finding #5 (Stability, Major): the ``_runner`` closure
+``_build_preflight_runner`` returns previously called ``subprocess.run``
+with NO ``timeout=`` at all, so a stalled ``gh api`` ruleset call could
+hang daemon launch indefinitely. The fix, pinned by the P3/P4 tests
+below:
+
+- P3: the runner passes a POSITIVE ``timeout=`` kwarg through to
+  ``subprocess.run``.
+- P4: a ``subprocess.TimeoutExpired`` surfaced while running the
+  (diagnostic-only, #223-demoted) comparator must not propagate out of
+  ``_should_launch_worker`` uncaught — it must degrade to a diagnostic
+  error and the launch decision must still complete (fail-closed), never
+  crash or hang. See also
+  ``test_check_ruleset_signals_degrades_to_error_when_runner_times_out``
+  in ``tests/test_ruleset_status.py``, which pins the same requirement
+  one layer down at ``check_ruleset_signals`` itself.
 """
 
 from __future__ import annotations
@@ -1315,4 +1335,145 @@ def test_preflight_refusal_posts_blocking_comment_with_reason(
     assert any("preflight refused" in body for body in comment_calls), (
         "At least one alert/comment must contain 'preflight refused'; "
         f"got: {comment_calls!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# P3 — CodeRabbit PR #253 round 2, finding #5: the comparator runner built
+# by _build_preflight_runner must bound its subprocess.run call with a
+# positive timeout= so a stalled `gh api` call cannot hang daemon launch
+# indefinitely.
+# ---------------------------------------------------------------------------
+
+
+def test_build_preflight_runner_passes_positive_timeout_to_subprocess_run(
+    tmp_path: Path,
+) -> None:
+    """The runner _build_preflight_runner returns must bound its gh call.
+
+    CodeRabbit finding #5 (PR #253 round 2): ``_build_preflight_runner``'s
+    ``_runner`` closure previously called ``subprocess.run(...)`` with no
+    ``timeout=`` at all, so a stalled ``gh api`` ruleset call could hang
+    daemon launch forever. This pins that the runner now passes a
+    POSITIVE numeric ``timeout=`` kwarg through to ``subprocess.run``.
+
+    Test mechanism mirrors
+    ``test_build_preflight_runner_injects_gh_token_into_subprocess_env``
+    above (P1): patch ``chain.daemon.subprocess.run`` and assert on the
+    captured kwargs, driving the runner factory directly rather than
+    through ``_launch_one_issue``.
+
+    Args:
+        tmp_path: Pytest tmp_path fixture (unused; kept for fixture arity
+            consistency across this module).
+    """
+    import subprocess as _subprocess
+
+    import baton_harness.chain.daemon as daemon_mod
+
+    captured_kwargs: list[dict[str, Any]] = []
+
+    def _spy_run(
+        args: list[str],
+        **kwargs: Any,  # noqa: ANN401
+    ) -> _subprocess.CompletedProcess[str]:
+        captured_kwargs.append(kwargs)
+        return _subprocess.CompletedProcess(
+            args=args, returncode=0, stdout="", stderr=""
+        )
+
+    runner_factory = getattr(daemon_mod, "_build_preflight_runner", None)
+    assert runner_factory is not None, (
+        "_build_preflight_runner must be defined at module scope in "
+        "chain/daemon.py (P1 seam)"
+    )
+
+    runner = runner_factory(_TOKEN)
+
+    with patch(
+        "baton_harness.chain.daemon.subprocess.run", side_effect=_spy_run
+    ):
+        runner(["gh", "api", "repos/o/r/rulesets"])
+
+    assert captured_kwargs, "subprocess.run must be called by the runner"
+    timeout_value = captured_kwargs[0].get("timeout")
+    assert (
+        isinstance(timeout_value, (int, float))
+        and not isinstance(timeout_value, bool)
+        and timeout_value > 0
+    ), (
+        "the comparator runner must pass a POSITIVE `timeout=` kwarg to "
+        "subprocess.run so a stalled `gh api` call cannot hang daemon "
+        f"launch indefinitely; got kwargs={captured_kwargs[0]!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# P4 — CodeRabbit PR #253 round 2, finding #5: a subprocess.TimeoutExpired
+# raised while running the (diagnostic-only) comparator must degrade to a
+# diagnostic error result rather than propagating out of the launch
+# decision -- the comparator's own failure must never crash/hang launch.
+# ---------------------------------------------------------------------------
+
+
+def test_should_launch_worker_fails_closed_when_comparator_raises_timeout(
+    tmp_path: Path,
+) -> None:
+    """A TimeoutExpired from the comparator must not crash launch decision.
+
+    CodeRabbit finding #5 (PR #253 round 2): even with a timeout bound
+    on the runner (P3 above), a resulting ``subprocess.TimeoutExpired``
+    must not propagate out of ``_should_launch_worker`` uncaught — the
+    comparator is diagnostic-only (#223 demotion), so its own failure
+    must degrade to an error-detail result and the launch decision must
+    still complete (fail-closed, exactly like the existing ERROR-status
+    path pinned by ``test_should_launch_worker_refuses_and_alerts_on_
+    error_fail_closed`` above).
+
+    Args:
+        tmp_path: Pytest tmp_path fixture.
+    """
+    import subprocess as _subprocess
+
+    import baton_harness.chain.daemon as daemon_mod
+
+    obs = _make_obs(tmp_path)
+    post_calls: list[tuple[str, str]] = []
+
+    def _fake_post(url: str, message: str, **kwargs: Any) -> bool:  # noqa: ANN401
+        post_calls.append((url, message))
+        return True
+
+    def _raising_check(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        raise _subprocess.TimeoutExpired(cmd=["gh", "api"], timeout=30)
+
+    with (
+        patch.object(
+            daemon_mod, "check_ruleset_signals", side_effect=_raising_check
+        ),
+        patch(
+            "baton_harness.chain.daemon.post_slack_alert",
+            side_effect=_fake_post,
+        ),
+    ):
+        # Must NOT raise -- a stalled comparator call must degrade, not
+        # crash or hang the launch decision.
+        result = daemon_mod._should_launch_worker(  # type: ignore[attr-defined]
+            _ISSUE,
+            _OWNER,
+            _REPO,
+            app_id=_APP_ID,
+            runner=_fake_runner,
+            obs=obs,
+        )
+
+    assert result is False, (
+        "a comparator that times out is unproven -- _should_launch_worker "
+        f"must fail closed (refuse), not raise or treat it as safe; got "
+        f"{result!r}"
+    )
+    assert post_calls, (
+        "A Slack alert must still be attempted when the comparator "
+        "degrades to an error (a diagnostic-only failure must not "
+        "silently swallow the refusal notification)"
     )
