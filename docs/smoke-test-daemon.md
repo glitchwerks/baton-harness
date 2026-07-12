@@ -658,11 +658,13 @@ The script runs one scenario (not a suite of scenarios like `verify-recovery.sh`
 | `BLOCK-in-progress-cleared` | The seeded issue does NOT carry `agent-in-progress` after the run | No |
 | `BLOCK-escalation-logged` | Captured daemon stdout/stderr contains the specific SUCCESS message `escalate: GitHub comment posted on issue #<n> (kind=block)` | No |
 | `BLOCK-comment-posted` | The issue has at least TWO comments post-run — the agent's clarifying question AND the daemon's escalation park-summary comment | No |
+| `BLOCK-agent-clarification-comment` | An issue comment exists that is distinct from the daemon's fixed park message and contains a `?`, as a proxy for the agent's clarifying question | No |
 | `BLOCK-slack-attempted` | Daemon output contains a SINGLE line with `escalate: Slack ...`, `issue #<n>`, and `kind=block` | Yes — only runs if `BH_SLACK_WEBHOOK_URL` is set; otherwise reported `[SKIPPED]`, not `[FAIL]` |
 
 Notes on specific assertions:
 - **`BLOCK-escalation-logged` requires the SUCCESS log line specifically.** `escalation.escalate()` logs `"escalate: GitHub comment posted on issue #N (kind=block)"` at INFO only after the GitHub comment is posted. If only the WARNING failure-path text is present, the assertion fails instead of treating a real GitHub-comment-post failure as an acceptable outcome.
 - **`BLOCK-comment-posted` requires >=2 comments, not >=1.** `escalation.escalate()` posts its own GitHub comment (the daemon's park summary, e.g. "Issue #N parked: blocked label set.") as the durable record. That comment alone would satisfy a bare `>=1` check even if the agent never posted its clarifying question, so the assertion requires both comments to be present.
+- **`BLOCK-agent-clarification-comment` uses a body-content heuristic, not author identity.** This smoke test has no GitHub-App/installation-token identity broker wired in, so author login is not a reliable discriminator between the agent's clarification and the daemon's park comment. Requiring a non-park comment containing `?` is only a proxy for a question, not a guarantee: a real agent could phrase a clarifying request without a literal `?`, producing a rare, otherwise-passing `[FAIL]` on this assertion even though the escalation chain itself succeeded.
 - **`BLOCK-slack-attempted` cannot see delivered content**, only that the daemon logged a POST attempt (success or failure), matched with the same single-line, bounded-issue-number `grep -E` as `BLOCK-escalation-logged`. It intentionally does not — and cannot — assert on what the Slack message says.
 - A `gh issue view` failure while re-fetching labels for the first two assertions is reported as its own failure (`BLOCK-labels-fetch`) rather than silently short-circuiting the rest of the assertions.
 
@@ -676,17 +678,18 @@ baton-harness: [PASS] BLOCK-label-present
 baton-harness: [PASS] BLOCK-in-progress-cleared
 baton-harness: [PASS] BLOCK-escalation-logged
 baton-harness: [PASS] BLOCK-comment-posted
+baton-harness: [PASS] BLOCK-agent-clarification-comment
 baton-harness: [SKIPPED] BLOCK-slack-attempted — BH_SLACK_WEBHOOK_URL not set — Slack channel not exercised
 baton-harness: ==============================
 baton-harness: Block escalation verification summary
 baton-harness: ==============================
-baton-harness:   PASSED:  4
+baton-harness:   PASSED:  5
 baton-harness:   FAILED:  0
 baton-harness:   SKIPPED: 1
 baton-harness: RESULT: PASS
 ```
 
-With `BH_SLACK_WEBHOOK_URL` set, the fifth line becomes a `[PASS]`/`[FAIL]` instead of `[SKIPPED]`, and the summary's `PASSED`/`SKIPPED` counts shift accordingly.
+With `BH_SLACK_WEBHOOK_URL` set, the sixth line becomes a `[PASS]`/`[FAIL]` instead of `[SKIPPED]`, and the summary's `PASSED`/`SKIPPED` counts shift accordingly.
 
 If the OAuth credential file is absent, the entire scenario is skipped before any issue is seeded:
 
@@ -695,7 +698,7 @@ baton-harness: G3c preflight: OAuth creds absent at /home/agent/.claude/.credent
 baton-harness: RESULT: SKIPPED
 ```
 
-This mirrors `verify-recovery.sh`'s G3c handling — it is not a failure, it is the script correctly detecting that the daemon would exit 1 before ever polling, which would otherwise produce five misleading `[FAIL]` lines instead of one clear `SKIPPED`.
+This mirrors `verify-recovery.sh`'s G3c handling — it is not a failure, it is the script correctly detecting that the daemon would exit 1 before ever polling, which would otherwise produce six misleading `[FAIL]` lines instead of one clear `SKIPPED`.
 
 The EXIT trap performs **best-effort** cleanup: it closes the seeded issue (with the same cleanup comment) and then removes the `agent-ready` / `agent-in-progress` / `blocked` / `agent-done` labels. It can act only if `_ISSUE_NUM` was successfully parsed from `gh issue create` output; after an `ORPHAN ISSUE WARNING`, it has no issue number and cannot clean up. Close happens *before* label removal (not after) so a label PATCH can't shift the issue's state out from under the close call. Each `gh` cleanup call is independently non-fatal: a transient failure is logged as a `warning:` line but does not stop the trap or script. After any orphan-issue warning or cleanup `warning:` line, manually verify the seeded issue in the sandbox repo and close or de-label it if the trap did not.
 

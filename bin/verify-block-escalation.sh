@@ -588,7 +588,25 @@ else
     fail "BLOCK-comment-posted" "expected >=2 comments (agent clarifying question + daemon escalation comment) on issue #${_ISSUE_NUM}, got: ${_comment_count}"
 fi
 
-# --- Assertion 5 (conditional): Slack block ping attempted ---
+# --- Assertion 5: agent-authored clarification comment present ---
+# NOTE: Use body content rather than author login because this smoke test has no
+# GitHub-App/installation-token identity broker wired in, so the agent and daemon
+# comments are not guaranteed to have distinguishable identities. The literal
+# "?" is only a proxy: a real, non-deterministic claude -p turn may phrase a
+# clarifying request without one (for example, as a list of ambiguities), causing
+# this assertion alone to false-negative even though the escalation log and count
+# still prove the chain succeeded. Keep this smoke-test heuristic deliberately simple.
+_agent_clarification_comment="$(gh issue view "${_ISSUE_NUM}" \
+    --repo "${_REPO_SLUG}" \
+    --json comments \
+    --jq 'any(.comments[]; (.body | contains("parked: blocked label set.") | not) and (.body | contains("?")))' 2>&1)" || _agent_clarification_comment="error: ${_agent_clarification_comment}"
+if [[ "${_agent_clarification_comment}" == "true" ]]; then
+    pass "BLOCK-agent-clarification-comment"
+else
+    fail "BLOCK-agent-clarification-comment" "expected a comment distinct from the daemon park comment and containing a '?'; jq fetch result/error: ${_agent_clarification_comment}"
+fi
+
+# --- Assertion 6 (conditional): Slack block ping attempted ---
 # Slack cannot be inspected directly, so this asserts on the daemon's own
 # log line for the Slack POST attempt (success or failure — see header
 # note). When BH_SLACK_WEBHOOK_URL is unset, Slack is not attempted at
