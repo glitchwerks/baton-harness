@@ -45,10 +45,9 @@
 #   escalation.escalate() logs a line for every GitHub-comment attempt it
 #   makes: INFO ("escalate: GitHub comment posted on issue #N (kind=block)")
 #   on success, WARNING ("escalate: failed to post GitHub comment on issue
-#   #N ... kind=block ...") on failure. Both substrings include "issue #N"
-#   and "kind=block", so this script greps for that pair rather than
-#   hard-coding one log level — a real sandbox run is expected to succeed
-#   (INFO), but the assertion tolerates the WARNING failure-path text too.
+#   #N ... kind=block ...") on failure. Assertion 3 requires the SUCCESS
+#   (INFO) line specifically; the WARNING failure-path text is a real
+#   assertion failure.
 #   Slack notifications (when BH_SLACK_WEBHOOK_URL is set) log similarly:
 #   INFO "escalate: Slack notification posted (issue #N kind=block)" or
 #   WARNING "escalate: Slack POST failed (issue #N kind=block): ...".
@@ -130,10 +129,10 @@ print_safety_banner() {
     echo "  script seeds its own — otherwise the poll tick could dispatch" >&2
     echo "  unrelated work. The script aborts before seeding if any exist." >&2
     echo "" >&2
-    echo "  The seeded issue contains two acceptance criteria that directly" >&2
-    echo "  contradict each other, so no single reasonable implementation" >&2
-    echo "  can satisfy both — the agent is expected to self-block rather" >&2
-    echo "  than implement anything." >&2
+    echo "  The seeded issue's acceptance criteria are mutually" >&2
+    echo "  unsatisfiable by construction, so no single reasonable" >&2
+    echo "  implementation can satisfy all of them — the agent is expected" >&2
+    echo "  to self-block rather than implement anything." >&2
     echo "" >&2
     echo "  Target repo is read from BH_REPO_OWNER / BH_REPO_NAME." >&2
     echo "" >&2
@@ -420,13 +419,13 @@ trap '_cleanup' EXIT
 # ---------------------------------------------------------------------------
 # Seed a genuinely ambiguous agent-ready issue.
 #
-# The acceptance criteria below directly contradict each other on
-# purpose: one requires evicting the least-recently-used entry once the
-# cache is full, the other forbids ever evicting any entry that has been
-# read. Once every entry in a full cache has been read at least once
-# (the ordinary case for any get/set cache under real use), both
-# criteria cannot hold simultaneously — there is no single reasonable
-# interpretation that satisfies both, so the WORKFLOW.md confidence/
+# The acceptance criteria below directly contradict each other on purpose:
+# capacity is exactly one with no overflow storage, yet a full cache must
+# evict its LRU entry, set("a", 1), get("a"), and set("b", 2) must succeed
+# with get("b") returning 2, and a read entry can never be evicted. Once
+# "a" is read it cannot be evicted, but "b" must still be stored despite
+# the one-entry limit. No single reasonable implementation can satisfy
+# all of these, so the WORKFLOW.md confidence/
 # block rule requires the agent to stop and ask rather than pick one.
 # ---------------------------------------------------------------------------
 
@@ -441,9 +440,13 @@ same input are served from cache instead of recomputing.
 ## Acceptance Criteria
 
 - [ ] Add a cache utility (function or class) with a `get`/`set`-style
-      interface.
+      interface. The cache's maximum capacity is exactly ONE entry;
+      secondary or overflow storage of any kind is NOT permitted.
 - [ ] When the cache is full and a new entry is added, the cache MUST
-      evict the least-recently-used entry to make room for the new one.
+      evict the least-recently-used (LRU) entry to make room for the
+      new one.
+- [ ] `set("a", 1)`, `get("a")`, `set("b", 2)` must all succeed, and
+      `get("b")` must return `2`.
 - [ ] Once an entry has been read via `get` at least one time, it MUST
       NEVER be evicted from the cache for the remaining lifetime of the
       process.
@@ -517,7 +520,7 @@ timeout "${_BLOCK_TIMEOUT_SECS}" \
     > "${_DAEMON_OUTPUT_FILE}" 2>&1 || _daemon_exit=$?
 
 if [[ "${_daemon_exit}" -ne 0 ]]; then
-    echo "baton-harness: warning: bh-daemon --once exited ${_daemon_exit} (expected 0 — park is non-fatal)" >&2
+    fail "BLOCK-daemon-exit" "bh-daemon --once exited ${_daemon_exit} (expected 0 — park is non-fatal)"
     if [[ "${_daemon_exit}" -eq 124 ]]; then
         echo "baton-harness: warning: exit 124 means the ${_BLOCK_TIMEOUT_SECS}s timeout fired" >&2
     fi
@@ -557,16 +560,15 @@ else
 fi
 
 # --- Assertion 3: escalation log line present in captured daemon output ---
-# escalation.escalate() logs "issue #<n>" and "kind=block" on both the
-# success (INFO) and failure (WARNING) paths — see header note. Match all
-# three tokens on a SINGLE line via one grep -E rather than three separate
-# grep -q checks, which could each match a different line and produce a
-# false pass. The character class after the issue number requires a
-# non-digit immediately following it, so "#5" cannot false-match "#50".
-if grep -qE "escalate:.*issue #${_ISSUE_NUM}[^0-9].*kind=block" "${_DAEMON_OUTPUT_FILE}"; then
+# Require the literal SUCCESS message, not merely three tokens anywhere on
+# one line. The single space after the issue number prevents "#5" from
+# false-matching "#50", because a real issue number 50 cannot be followed
+# immediately by a space when the pattern searches for "#5 "; no separate
+# non-digit character class is needed.
+if grep -qE "escalate: GitHub comment posted on issue #${_ISSUE_NUM} \(kind=block\)" "${_DAEMON_OUTPUT_FILE}"; then
     pass "BLOCK-escalation-logged"
 else
-    fail "BLOCK-escalation-logged" "no single line matching 'escalate: ... issue #${_ISSUE_NUM} ... kind=block' found in daemon output"
+    fail "BLOCK-escalation-logged" "no line matching 'escalate: GitHub comment posted on issue #${_ISSUE_NUM} (kind=block)' found in daemon output (posting may have failed, or the log format changed)"
 fi
 
 # --- Assertion 4: at least 2 comments exist on the issue post-run ---
