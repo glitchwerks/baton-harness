@@ -15,13 +15,14 @@ gate every worker dispatch:
   ``ERROR`` (or ``NOT_PROVISIONED``, absent a pinned baseline) and park
   every issue.
 
-The two autouse fixtures below provide safe defaults so that integration-
-level daemon tests (``test_daemon.py``, etc.) remain unaffected by the
-new gate layer.
+The three autouse fixtures below provide safe defaults so that
+integration-level daemon tests (``test_daemon.py``, etc.) remain
+unaffected by the new gate layer.
 
-Preflight-specific unit tests (``test_daemon_preflight.py``) patch these
-symbols inside each individual test body via ``patch.object``; those inner
-patches take precedence and these autouse fixtures have no effect on them.
+Preflight-specific unit tests (``test_daemon_preflight.py``,
+``test_daemon_push_probe.py``) patch these symbols inside each
+individual test body via ``patch.object``; those inner patches take
+precedence and these autouse fixtures have no effect on them.
 """
 
 from __future__ import annotations
@@ -85,5 +86,44 @@ def _auto_patch_ruleset_check_daemon() -> None:  # type: ignore[return]
     with patch(
         "baton_harness.chain.daemon.check_ruleset_signals",
         return_value=RulesetCheckResult(status=RulesetStatus.MATCH),
+    ):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _auto_patch_push_probe_daemon(
+    request: pytest.FixtureRequest,
+) -> None:  # type: ignore[return]
+    """Return a DENIED (safe) probe result for tests that don't exercise it.
+
+    ``_probe_worker_push_denied`` (issue #223 decisive behavioral gate,
+    demoted ``check_ruleset_signals`` to diagnostic-only) attempts a real
+    git push authenticated as the worker identity. Integration tests do
+    not set up a real git remote or worker credentials, so without this
+    autouse the probe would either raise (transport error) or hang, and
+    ``_should_launch_worker`` would fail closed and park every issue
+    before dispatching a worker.
+
+    Preflight tests use their own explicit
+    ``patch.object(daemon_mod, "_probe_worker_push_denied", …)`` inside
+    each test body; those inner patches take precedence (same pattern as
+    ``_auto_patch_ruleset_check_daemon`` above).
+
+    ``tests/chain/test_daemon_push_probe.py`` is excluded outright rather
+    than relying on inner-patch precedence: several of its tests fetch
+    ``_probe_worker_push_denied`` itself via ``getattr`` and invoke it
+    directly to pin its own internals (only patching the lower-level
+    ``_run`` seam) — those tests need the REAL function, not this
+    autouse's mock, so this fixture is a no-op for that module.
+    """
+    if request.module.__name__.endswith(".test_daemon_push_probe"):
+        yield
+        return
+
+    from baton_harness.chain.daemon import ProbeResult
+
+    with patch(
+        "baton_harness.chain.daemon._probe_worker_push_denied",
+        return_value=ProbeResult(denied=True),
     ):
         yield

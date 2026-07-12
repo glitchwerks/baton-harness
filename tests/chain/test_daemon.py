@@ -55,7 +55,13 @@ from baton_harness.vendor.symphony.config import WorkflowConfig
 # Helpers
 # ---------------------------------------------------------------------------
 
-_REPO_ROOT = Path("/fake/repo")
+# A real git worktree root (this repo's own checkout) rather than a
+# nonexistent path (issue #223 CodeRabbit finding C10): `_launch_one_issue`
+# now fails closed on a `repo_root` with no `.git` entry, and these
+# integration tests rely on the autoused `_probe_worker_push_denied`
+# patch (see tests/conftest.py) to authorize launch — that patch is only
+# consulted when `repo_root` resolves to an actual git worktree.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 _OWNER = "glitchwerks"
 _REPO_NAME = "baton-harness"
 
@@ -97,6 +103,26 @@ def _repo_cfg() -> RepoConfig:
         owner=_OWNER,
         repo=_REPO_NAME,
         project_root=_REPO_ROOT,
+    )
+
+
+def _make_obs(base_path: Path) -> ObsConfig:
+    """Build a minimal ObsConfig for daemon launch tests.
+
+    Args:
+        base_path: Existing path used to derive required file paths.
+
+    Returns:
+        A populated ObsConfig with a deterministic Slack webhook URL.
+    """
+    return ObsConfig(
+        runlog_path=base_path / "runlog.jsonl",
+        heartbeat_file=base_path / "heartbeat",
+        redispatch_window_ticks=10,
+        redispatch_max=3,
+        heartbeat_stall_s=7200.0,
+        heartbeat_ping_url="https://hooks.slack.com/services/T00/B00/secret",
+        redispatch_counts_path=base_path / "dispatch-counts.json",
     )
 
 
@@ -10003,6 +10029,48 @@ class TestAuthedGitPush:
         )
         for cmd, env in captured:
             self._assert_authed_push(cmd, env)
+
+
+def test_launch_one_issue_runs_preflight_for_explicit_non_git_repo_root() -> (
+    None
+):
+    """_launch_one_issue must not bypass preflight for non-git repo roots."""
+    obs = _make_obs(Path.cwd())
+    mock_orch = MagicMock()
+    mock_orch._run_worker = AsyncMock(return_value="pr_created")
+    mock_issue = MagicMock()
+    mock_issue.number = 42
+    repo_root = Path.cwd() / "tests"
+
+    with (
+        patch.object(daemon_mod, "_build_preflight_runner") as mock_factory,
+        patch.object(
+            daemon_mod, "_should_launch_worker", return_value=False
+        ) as mock_preflight,
+        patch.object(daemon_mod, "_label_edit", return_value=None),
+        patch.object(daemon_mod, "alert", return_value=True),
+    ):
+        result = asyncio.run(
+            daemon_mod._launch_one_issue(
+                mock_orch,
+                mock_issue,
+                _OWNER,
+                _REPO_NAME,
+                "111",
+                "ghs_TESTTOKEN",
+                obs,
+                repo_root=repo_root,
+            )
+        )
+
+    mock_factory.assert_called_once_with("ghs_TESTTOKEN")
+    mock_preflight.assert_called_once()
+    mock_orch._run_worker.assert_not_called()
+    assert result is None, (
+        "_launch_one_issue must still route an explicit non-git repo_root "
+        "through _should_launch_worker instead of bypassing the gate and "
+        "launching the worker directly"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -51,6 +51,13 @@ Coverage:
   single dict key by ``type``. DRIFT when a duplicated rule type is
   missing one occurrence on the current side; MATCH when both sides
   carry the same multiset of occurrences regardless of array order.
+- Regression (CodeRabbit finding #5 on PR #253, round 2): a
+  ``subprocess.TimeoutExpired`` raised by the injected ``runner`` while
+  ``check_ruleset_signals`` is mid-comparison must degrade to an
+  ordinary ``RulesetCheckResult(status=ERROR, ...)`` return value, never
+  propagate as a raised exception — the comparator is diagnostic-only
+  (#223 demotion), so a stalled ``gh api`` call must never crash or hang
+  the caller.
 """
 
 from __future__ import annotations
@@ -1464,6 +1471,75 @@ def test_expected_bypass_verdict_always_when_app_is_bypass_actor() -> None:
     }
     assert (
         _expected_bypass_verdict(app_bypass_config, app_id=_APP_ID) == "always"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test Q0 — CodeRabbit finding #5 (PR #253, round 2): a runner that raises
+# subprocess.TimeoutExpired must degrade to an ERROR result, not propagate.
+# ---------------------------------------------------------------------------
+
+
+def _timeout_raising_runner(
+    args: list[str],
+) -> subprocess.CompletedProcess[str]:
+    """Raise ``subprocess.TimeoutExpired`` on every call.
+
+    Simulates a stalled ``gh api`` call under the comparator's ``runner``
+    injection seam.
+
+    Args:
+        args: The args list the (stalled) gh call would have carried.
+
+    Raises:
+        subprocess.TimeoutExpired: Always.
+    """
+    raise subprocess.TimeoutExpired(cmd=["gh", *args], timeout=30)
+
+
+def test_check_ruleset_signals_degrades_to_error_when_runner_times_out(
+    tmp_path: Path,
+) -> None:
+    """A stalled `gh api` call must degrade to ERROR, never propagate.
+
+    CodeRabbit finding #5 (PR #253, round 2): before the fix, the
+    comparator's ``runner`` had no bound timeout, and any
+    ``subprocess.TimeoutExpired`` it did raise was not caught by
+    ``check_ruleset_signals`` at all — it propagated straight out,
+    capable of crashing/hanging the launch decision. The comparator is
+    diagnostic-only (#223 demotion), so its own subprocess failure must
+    degrade to a ``RulesetCheckResult(status=ERROR, ...)`` — an ordinary
+    return value, never a raised exception.
+
+    Args:
+        tmp_path: Pytest tmp_path fixture.
+    """
+    from baton_harness.chain.ruleset_status import (
+        RulesetStatus,
+        check_ruleset_signals,
+    )
+
+    baseline_path = tmp_path / "ruleset-baseline.json"
+    _write_baseline(baseline_path, "o", "r")
+
+    # Must NOT raise -- a stalled comparator subprocess call must degrade
+    # to an ordinary ERROR result, not crash the caller.
+    result = check_ruleset_signals(
+        "o",
+        "r",
+        app_id=_APP_ID,
+        runner=_timeout_raising_runner,
+        baseline_path=baseline_path,
+    )
+
+    assert result.status is RulesetStatus.ERROR, (
+        "a subprocess.TimeoutExpired from the runner must degrade to "
+        f"RulesetStatus.ERROR, not propagate; got {result!r}"
+    )
+    assert result.detail and "timeout" in result.detail.lower(), (
+        "the ERROR result's detail must name the timeout so an operator "
+        f"can diagnose a stalled `gh api` call at a glance; got detail="
+        f"{result.detail!r}"
     )
 
 
