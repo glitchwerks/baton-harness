@@ -17,6 +17,31 @@ Coverage:
   ``os.environ`` after fetching the private key (env-discipline scrub).
 - ``bootstrap_secrets`` ensures the installation token value is absent
   from ``os.environ`` after startup (env-discipline scrub).
+
+CLI entrypoint coverage (issue #200 — ``main()`` in
+``baton_harness.chain.app_auth``, invoked as
+``python -m baton_harness.chain.app_auth {jwt|token}``):
+
+- ``main(["jwt"])`` mints and prints an App JWT to stdout, exit 0.
+- ``main(["token"])`` mints and prints an installation token to stdout,
+  exit 0.
+- Neither the fetched PEM content nor ``BWS_ACCESS_TOKEN`` ever appears
+  in captured stdout/stderr, on both the success path and the error
+  path (e.g. an unparseable PEM causing ``build_app_jwt`` to raise).
+- Missing/malformed required env vars (``BH_GITHUB_APP_ID``,
+  ``BH_GITHUB_APP_INSTALLATION_ID``, ``BWS_PEM_SECRET_ID``,
+  ``BWS_ACCESS_TOKEN``) produce a non-zero exit and a clear stderr
+  message naming the missing var, without ever calling
+  ``bws_client.fetch_secret`` or the network transport.
+- All Bitwarden and GitHub HTTP calls are intercepted via
+  ``baton_harness.chain.bws_client.fetch_secret`` and
+  ``baton_harness.chain.app_auth._github_http_post`` mocks — no live
+  network call is made by this test module.
+
+These CLI tests import ``main`` locally inside each test body (not at
+module import time) because the symbol does not exist yet; a top-level
+import would turn every test in this file into a collection error
+instead of isolating the failure to the new CLI coverage.
 """
 
 from __future__ import annotations
@@ -25,6 +50,7 @@ import json
 import os
 import time
 import urllib.error
+from collections.abc import Callable
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -744,4 +770,535 @@ class TestBootstrapSecretsEnvDisciplineInvariants:
         assert unique_token not in env_values, (
             "Installation token must not be set anywhere in os.environ; "
             f"found token {unique_token!r} in env values"
+        )
+
+
+# ---------------------------------------------------------------------------
+# E. CLI entrypoint (issue #200): main() in baton_harness.chain.app_auth
+#
+# Contract asserted by these tests (authored here — no implementation
+# exists yet):
+#   - ``baton_harness.chain.app_auth.main(argv: list[str]) -> int``
+#   - ``main(["jwt"])``   -> mints + prints an App JWT to stdout, exit 0.
+#   - ``main(["token"])`` -> mints + prints an installation token to
+#     stdout, exit 0.
+#   - Required env vars: BH_GITHUB_APP_ID, BWS_PEM_SECRET_ID,
+#     BWS_ACCESS_TOKEN (both modes); BH_GITHUB_APP_INSTALLATION_ID
+#     (token mode only — jwt mode does not need an installation id).
+#   - PEM fetch goes through ``baton_harness.chain.bws_client
+#     .fetch_secret`` (patched at that module attribute, matching the
+#     established pattern in test_cli_bootstrap_vault.py).
+#   - The GitHub HTTP transport for token mode goes through
+#     ``baton_harness.chain.app_auth._github_http_post`` (the existing
+#     internal transport helper already used by
+#     ``build_installation_token_provider``).
+# ---------------------------------------------------------------------------
+
+_CLI_APP_ID = "424242"
+_CLI_INSTALLATION_ID = "989898"
+_CLI_PEM_SECRET_ID = "pem-secret-cli-aaaa-bbbb-cccc-dddddddddddd"
+_CLI_ACCESS_TOKEN_SENTINEL = "0.cli-sentinel-bws-access-token-fake-9f3c1a"
+
+
+@pytest.fixture()
+def cli_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Set the four env vars the CLI entrypoint requires (issue #200)."""
+    monkeypatch.setenv("BH_GITHUB_APP_ID", _CLI_APP_ID)
+    monkeypatch.setenv("BH_GITHUB_APP_INSTALLATION_ID", _CLI_INSTALLATION_ID)
+    monkeypatch.setenv("BWS_PEM_SECRET_ID", _CLI_PEM_SECRET_ID)
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", _CLI_ACCESS_TOKEN_SENTINEL)
+
+
+def _make_cli_fetch_secret_stub(pem: str) -> Callable[..., str]:
+    """Return a fetch_secret stub bound to the CLI's PEM secret ID.
+
+    Asserts it is called with the expected secret_id and the
+    access_token sourced from BWS_ACCESS_TOKEN (set by ``cli_env``) —
+    this doubles as proof that the CLI forwards the env-sourced access
+    token rather than a hardcoded or empty value.
+
+    Args:
+        pem: The PEM string to return when called correctly.
+
+    Returns:
+        A callable matching the ``bws_client.fetch_secret`` signature.
+    """
+
+    def _stub(
+        secret_id: str,
+        *,
+        access_token: str | None = None,
+        run: object = None,
+    ) -> str:
+        assert secret_id == _CLI_PEM_SECRET_ID, (
+            f"expected fetch_secret to be called with "
+            f"{_CLI_PEM_SECRET_ID!r}, got {secret_id!r}"
+        )
+        assert access_token == _CLI_ACCESS_TOKEN_SENTINEL, (
+            "expected fetch_secret to receive the BWS_ACCESS_TOKEN env "
+            f"value, got {access_token!r}"
+        )
+        return pem
+
+    return _stub
+
+
+class TestCliJwtMode:
+    """``main(["jwt"])`` mints and prints an App JWT.
+
+    MUST FAIL today: ``main`` does not exist yet in
+    ``baton_harness.chain.app_auth`` — expect ``ImportError``.
+    """
+
+    def test_prints_valid_app_jwt_and_exits_zero(
+        self,
+        cli_env: None,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Stdout carries a JWT whose iss claim equals BH_GITHUB_APP_ID."""
+        pem, pub_der = _generate_rsa_keypair()
+        stub = _make_cli_fetch_secret_stub(pem)
+
+        with patch(
+            "baton_harness.chain.bws_client.fetch_secret",
+            side_effect=stub,
+        ):
+            from baton_harness.chain.app_auth import main
+
+            exit_code = main(["jwt"])
+
+        captured = capsys.readouterr()
+        assert exit_code == 0, (
+            f"expected exit 0, got {exit_code}; stderr={captured.err!r}"
+        )
+        token = captured.out.strip()
+        pub_key = load_der_public_key(pub_der)
+        claims = jwt.decode(
+            token,
+            pub_key,  # type: ignore[arg-type]
+            algorithms=["RS256"],
+            options={"verify_exp": False},
+        )
+        assert claims["iss"] == _CLI_APP_ID
+
+    def test_does_not_leak_pem_or_access_token_in_output(
+        self,
+        cli_env: None,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """PEM content and BWS_ACCESS_TOKEN never reach stdout/stderr."""
+        pem, _pub_der = _generate_rsa_keypair()
+        stub = _make_cli_fetch_secret_stub(pem)
+
+        with patch(
+            "baton_harness.chain.bws_client.fetch_secret",
+            side_effect=stub,
+        ):
+            from baton_harness.chain.app_auth import main
+
+            main(["jwt"])
+
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert pem not in combined, (
+            "raw PEM content leaked into CLI stdout/stderr"
+        )
+        assert "BEGIN PRIVATE KEY" not in combined, (
+            "PEM header leaked into CLI stdout/stderr"
+        )
+        assert _CLI_ACCESS_TOKEN_SENTINEL not in combined, (
+            "BWS_ACCESS_TOKEN value leaked into CLI stdout/stderr"
+        )
+
+
+class TestCliTokenMode:
+    """``main(["token"])`` mints and prints an installation token.
+
+    MUST FAIL today: ``main`` does not exist yet — expect ``ImportError``.
+    """
+
+    def test_prints_installation_token_and_exits_zero(
+        self,
+        cli_env: None,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Stdout equals exactly the minted installation token string."""
+        pem, _pub_der = _generate_rsa_keypair()
+        stub = _make_cli_fetch_secret_stub(pem)
+
+        captured_urls: list[str] = []
+
+        def fake_http_post(
+            url: str,
+            headers: dict[str, str],
+        ) -> dict[str, Any]:
+            captured_urls.append(url)
+            return {"token": _FAKE_TOKEN, "expires_at": _FAKE_EXPIRES_AT}
+
+        with (
+            patch(
+                "baton_harness.chain.bws_client.fetch_secret",
+                side_effect=stub,
+            ),
+            patch(
+                "baton_harness.chain.app_auth._github_http_post",
+                side_effect=fake_http_post,
+            ),
+        ):
+            from baton_harness.chain.app_auth import main
+
+            exit_code = main(["token"])
+
+        captured = capsys.readouterr()
+        assert exit_code == 0, (
+            f"expected exit 0, got {exit_code}; stderr={captured.err!r}"
+        )
+        assert captured.out.strip() == _FAKE_TOKEN, (
+            "expected stdout to be exactly the minted token, got "
+            f"{captured.out!r}"
+        )
+        assert captured_urls, "the mocked GitHub transport was never called"
+        assert (
+            f"app/installations/{_CLI_INSTALLATION_ID}/access_tokens"
+            in captured_urls[0]
+        )
+
+    def test_does_not_leak_pem_or_access_token_in_output(
+        self,
+        cli_env: None,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """PEM content and BWS_ACCESS_TOKEN never reach stdout/stderr."""
+        pem, _pub_der = _generate_rsa_keypair()
+        stub = _make_cli_fetch_secret_stub(pem)
+
+        def fake_http_post(
+            url: str,
+            headers: dict[str, str],
+        ) -> dict[str, Any]:
+            return {"token": _FAKE_TOKEN, "expires_at": _FAKE_EXPIRES_AT}
+
+        with (
+            patch(
+                "baton_harness.chain.bws_client.fetch_secret",
+                side_effect=stub,
+            ),
+            patch(
+                "baton_harness.chain.app_auth._github_http_post",
+                side_effect=fake_http_post,
+            ),
+        ):
+            from baton_harness.chain.app_auth import main
+
+            main(["token"])
+
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert pem not in combined, (
+            "raw PEM content leaked into CLI stdout/stderr"
+        )
+        assert _CLI_ACCESS_TOKEN_SENTINEL not in combined, (
+            "BWS_ACCESS_TOKEN value leaked into CLI stdout/stderr"
+        )
+
+    def test_no_live_network_call_when_transport_unmocked_would_error(
+        self,
+        cli_env: None,
+    ) -> None:
+        """The CLI must route through the injected transport, not urlopen.
+
+        Patches ``urllib.request.urlopen`` to raise if invoked at all,
+        as a defensive check that token mode never falls through to a
+        raw socket call outside the mocked ``_github_http_post`` seam.
+        """
+        pem, _pub_der = _generate_rsa_keypair()
+        stub = _make_cli_fetch_secret_stub(pem)
+
+        def fake_http_post(
+            url: str,
+            headers: dict[str, str],
+        ) -> dict[str, Any]:
+            return {"token": _FAKE_TOKEN, "expires_at": _FAKE_EXPIRES_AT}
+
+        def _explode(*args: object, **kwargs: object) -> None:
+            raise AssertionError(
+                "urllib.request.urlopen must not be called directly by "
+                "the CLI — it must go through the mocked "
+                "_github_http_post seam"
+            )
+
+        with (
+            patch(
+                "baton_harness.chain.bws_client.fetch_secret",
+                side_effect=stub,
+            ),
+            patch(
+                "baton_harness.chain.app_auth._github_http_post",
+                side_effect=fake_http_post,
+            ),
+            patch("urllib.request.urlopen", side_effect=_explode),
+        ):
+            from baton_harness.chain.app_auth import main
+
+            exit_code = main(["token"])
+
+        assert exit_code == 0
+
+
+class TestCliMissingEnvVars:
+    """Missing/malformed required env vars fail clean with a non-zero exit.
+
+    MUST FAIL today: ``main`` does not exist yet — expect ``ImportError``.
+    """
+
+    def test_missing_app_id_exits_nonzero_without_calling_vault(
+        self,
+        cli_env: None,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Absent BH_GITHUB_APP_ID fails before any vault fetch."""
+        monkeypatch.delenv("BH_GITHUB_APP_ID", raising=False)
+        fetch_mock = MagicMock(
+            side_effect=AssertionError(
+                "fetch_secret must not be called when BH_GITHUB_APP_ID "
+                "is missing"
+            )
+        )
+
+        with patch(
+            "baton_harness.chain.bws_client.fetch_secret",
+            fetch_mock,
+        ):
+            from baton_harness.chain.app_auth import main
+
+            exit_code = main(["jwt"])
+
+        captured = capsys.readouterr()
+        assert exit_code != 0, "expected a non-zero exit code"
+        assert "BH_GITHUB_APP_ID" in captured.err, (
+            f"expected stderr to name the missing var, got {captured.err!r}"
+        )
+        fetch_mock.assert_not_called()
+
+    def test_missing_pem_secret_id_exits_nonzero_without_calling_vault(
+        self,
+        cli_env: None,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Absent BWS_PEM_SECRET_ID fails before any vault fetch."""
+        monkeypatch.delenv("BWS_PEM_SECRET_ID", raising=False)
+        fetch_mock = MagicMock(
+            side_effect=AssertionError(
+                "fetch_secret must not be called when BWS_PEM_SECRET_ID "
+                "is missing"
+            )
+        )
+
+        with patch(
+            "baton_harness.chain.bws_client.fetch_secret",
+            fetch_mock,
+        ):
+            from baton_harness.chain.app_auth import main
+
+            exit_code = main(["jwt"])
+
+        captured = capsys.readouterr()
+        assert exit_code != 0, "expected a non-zero exit code"
+        assert "BWS_PEM_SECRET_ID" in captured.err, (
+            f"expected stderr to name the missing var, got {captured.err!r}"
+        )
+        fetch_mock.assert_not_called()
+
+    def test_missing_access_token_exits_nonzero_without_calling_vault(
+        self,
+        cli_env: None,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Absent BWS_ACCESS_TOKEN fails before any vault fetch."""
+        monkeypatch.delenv("BWS_ACCESS_TOKEN", raising=False)
+        fetch_mock = MagicMock(
+            side_effect=AssertionError(
+                "fetch_secret must not be called when BWS_ACCESS_TOKEN "
+                "is missing"
+            )
+        )
+
+        with patch(
+            "baton_harness.chain.bws_client.fetch_secret",
+            fetch_mock,
+        ):
+            from baton_harness.chain.app_auth import main
+
+            exit_code = main(["jwt"])
+
+        captured = capsys.readouterr()
+        assert exit_code != 0, "expected a non-zero exit code"
+        assert "BWS_ACCESS_TOKEN" in captured.err, (
+            f"expected stderr to name the missing var, got {captured.err!r}"
+        )
+        fetch_mock.assert_not_called()
+
+    def test_missing_installation_id_fails_token_mode_only(
+        self,
+        cli_env: None,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Token mode requires the installation id; jwt mode does not.
+
+        Confirms the missing-var check is mode-aware rather than an
+        unconditional gate on all four vars regardless of the selected
+        output mode.
+        """
+        monkeypatch.delenv("BH_GITHUB_APP_INSTALLATION_ID", raising=False)
+        pem, _pub_der = _generate_rsa_keypair()
+        stub = _make_cli_fetch_secret_stub(pem)
+
+        with patch(
+            "baton_harness.chain.bws_client.fetch_secret",
+            side_effect=stub,
+        ):
+            from baton_harness.chain.app_auth import main
+
+            token_exit = main(["token"])
+            token_captured = capsys.readouterr()
+
+            jwt_exit = main(["jwt"])
+            jwt_captured = capsys.readouterr()
+
+        assert token_exit != 0, "expected token mode to fail: no exit code"
+        assert "BH_GITHUB_APP_INSTALLATION_ID" in token_captured.err
+        assert jwt_exit == 0, (
+            "jwt mode does not require BH_GITHUB_APP_INSTALLATION_ID and "
+            f"should have succeeded; stderr={jwt_captured.err!r}"
+        )
+
+    def test_malformed_installation_id_exits_nonzero(
+        self,
+        cli_env: None,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A non-numeric BH_GITHUB_APP_INSTALLATION_ID fails clean."""
+        monkeypatch.setenv("BH_GITHUB_APP_INSTALLATION_ID", "not-a-number")
+        pem, _pub_der = _generate_rsa_keypair()
+        stub = _make_cli_fetch_secret_stub(pem)
+
+        with patch(
+            "baton_harness.chain.bws_client.fetch_secret",
+            side_effect=stub,
+        ):
+            from baton_harness.chain.app_auth import main
+
+            exit_code = main(["token"])
+
+        captured = capsys.readouterr()
+        assert exit_code != 0, "expected a non-zero exit for malformed id"
+        assert "BH_GITHUB_APP_INSTALLATION_ID" in captured.err, (
+            f"expected stderr to name the malformed var, got {captured.err!r}"
+        )
+        assert _CLI_ACCESS_TOKEN_SENTINEL not in captured.err, (
+            "BWS_ACCESS_TOKEN leaked into the malformed-id error message"
+        )
+
+
+class TestCliErrorPathDoesNotLeakSecrets:
+    """Secrets never appear in output even when minting itself fails.
+
+    MUST FAIL today: ``main`` does not exist yet — expect ``ImportError``.
+    """
+
+    def test_unparseable_pem_error_does_not_leak_pem_or_token(
+        self,
+        cli_env: None,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """An invalid PEM from the vault raises cleanly, without leaking it.
+
+        ``fetch_secret`` is stubbed to return an obviously-fake,
+        structurally invalid PEM string (not a real secret) so that
+        ``build_app_jwt`` raises when asked to sign with it. The CLI
+        must catch this, print a non-empty error to stderr, exit
+        non-zero, and never echo the fake PEM string or the
+        BWS_ACCESS_TOKEN sentinel back to the caller.
+        """
+        fake_invalid_pem = (
+            "-----BEGIN FAKE PLACEHOLDER-----\n"
+            "not-a-real-key-obviously-fake-marker-8f2c\n"
+            "-----END FAKE PLACEHOLDER-----\n"
+        )
+        stub = _make_cli_fetch_secret_stub(fake_invalid_pem)
+
+        with patch(
+            "baton_harness.chain.bws_client.fetch_secret",
+            side_effect=stub,
+        ):
+            from baton_harness.chain.app_auth import main
+
+            exit_code = main(["jwt"])
+
+        captured = capsys.readouterr()
+        assert exit_code != 0, (
+            "expected a non-zero exit when the vault PEM is invalid"
+        )
+        combined = captured.out + captured.err
+        assert fake_invalid_pem not in combined, (
+            "the invalid PEM value leaked into CLI output on the error path"
+        )
+        assert "8f2c" not in combined, (
+            "the fake PEM marker leaked into CLI output on the error path"
+        )
+        assert _CLI_ACCESS_TOKEN_SENTINEL not in combined, (
+            "BWS_ACCESS_TOKEN leaked into CLI output on the error path"
+        )
+        assert captured.err.strip(), (
+            "expected a non-empty error message on stderr"
+        )
+
+    def test_vault_fetch_failure_does_not_leak_access_token(
+        self,
+        cli_env: None,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A vault-fetch failure is reported without leaking the token.
+
+        Simulates a ``BwsClientError`` from ``fetch_secret`` itself
+        (e.g. a vault outage) and asserts the CLI's error report never
+        contains the BWS_ACCESS_TOKEN value that was used for the
+        attempted fetch.
+        """
+        from baton_harness.chain.bws_client import BwsClientError
+
+        def failing_fetch(
+            secret_id: str,
+            *,
+            access_token: str | None = None,
+            run: object = None,
+        ) -> str:
+            raise BwsClientError(
+                f"bws exited 1 for secret {secret_id!r} (simulated outage)"
+            )
+
+        with patch(
+            "baton_harness.chain.bws_client.fetch_secret",
+            side_effect=failing_fetch,
+        ):
+            from baton_harness.chain.app_auth import main
+
+            exit_code = main(["jwt"])
+
+        captured = capsys.readouterr()
+        assert exit_code != 0, (
+            "expected a non-zero exit when the vault fetch fails"
+        )
+        combined = captured.out + captured.err
+        assert _CLI_ACCESS_TOKEN_SENTINEL not in combined, (
+            "BWS_ACCESS_TOKEN leaked into CLI output on the vault-fetch "
+            "error path"
+        )
+        assert captured.err.strip(), (
+            "expected a non-empty error message on stderr"
         )
