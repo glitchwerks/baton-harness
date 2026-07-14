@@ -264,6 +264,15 @@ def _invoke(
         "BH_ADMIN_ROLE_ID": admin_role_id,
         "BH_FAKE_GH_LOG": str(log_path),
         "BH_FAKE_GH_CANNED_DIR": str(canned_state_dir),
+        # #200: the script now unconditionally obtains App-auth credentials
+        # before any gh call. These two overrides stand in for the real
+        # `python -m baton_harness.chain.app_auth {jwt|token}` invocation so
+        # this suite's 21 pre-existing cases keep exercising the ruleset
+        # write/idempotency behavior without needing real BWS_* secrets.
+        "BH_APP_AUTH_JWT_CMD": ("printf %s fake-jwt-for-idempotency-tests"),
+        "BH_APP_AUTH_TOKEN_CMD": (
+            "printf %s fake-install-token-for-idempotency-tests"
+        ),
     }
     proc = subprocess.run(
         [_BASH, str(SCRIPT)],
