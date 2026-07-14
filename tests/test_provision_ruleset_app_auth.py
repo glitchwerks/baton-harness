@@ -1,4 +1,5 @@
-"""Issue #200 — bin/provision-ruleset.sh must obtain App-auth credentials
+"""Issue #200 — bin/provision-ruleset.sh must obtain App-auth credentials.
+
 via ``baton_harness.chain.app_auth`` instead of relying on ambient ``gh``
 auth, and must never fall back to ambient auth if that fails.
 
@@ -25,7 +26,8 @@ needed it, with NO fallback to ambient ``gh`` auth.
 
 Coverage:
 
-1. Happy path (``test_jwt_used_for_app_preflight_and_token_used_for_repo_calls``):
+1. Happy path
+   (``test_jwt_used_for_app_preflight_and_token_used_for_repo_calls``):
    the JWT override's value is the bearer credential observed on the
    ``GET /app`` preflight call; the installation-token override's value
    is the bearer credential observed on EVERY ``repos/<slug>/...`` call
