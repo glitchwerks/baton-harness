@@ -276,41 +276,70 @@ if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
 fi
 echo "baton-harness: ANTHROPIC_API_KEY is unset (G3b precondition OK)"
 
-# Safety gate: abort if the sandbox already has open agent-ready issues.
-# This script is about to seed exactly one — if others already exist, the
-# single --once tick could dispatch the wrong issue (or several).
-echo "baton-harness: checking sandbox for open agent-ready issues (safety gate)..."
-_ready_count=0
-# Fail CLOSED: if gh cannot run (auth error, network error, wrong repo, etc.)
-# we must NOT proceed — a failed query cannot prove the sandbox is empty.
-if ! _ready_out="$(gh issue list \
-    --repo "${_REPO_SLUG}" \
-    --label "agent-ready" \
-    --state open \
-    --json number \
-    --jq 'length' 2>&1)"; then
-    echo "baton-harness: ABORT: gh issue list failed — cannot prove sandbox has zero" >&2
-    echo "  agent-ready issues; refusing to seed a new issue or run the daemon." >&2
-    echo "  Check BH_REPO_OWNER/BH_REPO_NAME, GH_TOKEN, and network." >&2
-    echo "  gh output: ${_ready_out}" >&2
-    exit 1
-fi
-# Guard against non-numeric output (e.g. jq parse error)
-if ! [[ "${_ready_out}" =~ ^[0-9]+$ ]]; then
-    echo "baton-harness: ABORT: gh issue list returned non-integer output '${_ready_out}'" >&2
-    echo "  Cannot prove sandbox has zero agent-ready issues — refusing to proceed." >&2
-    exit 1
-fi
-_ready_count="${_ready_out}"
+# Safety gate: assert the sandbox has exactly the expected open agent-ready
+# issues. Before seeding that means zero; immediately before the daemon tick it
+# means the one issue this script seeded, identified by number.
+_assert_agent_ready_isolation() {
+    local _expected_count="$1"
+    local _expected_issue_num="${2:-}"
+    local _ready_out
+    local _ready_number
+    local _ready_count
+    local _found_numbers="none"
+    local -a _ready_numbers=()
 
-if [[ "${_ready_count}" -gt 0 ]]; then
-    echo "baton-harness: ABORT: sandbox has ${_ready_count} open agent-ready issue(s)." >&2
-    echo "  The single --once poll tick this script runs could dispatch any of" >&2
-    echo "  them instead of (or in addition to) the issue this script seeds." >&2
-    echo "  Close or re-label all agent-ready issues before running this script." >&2
-    exit 1
-fi
-echo "baton-harness: safety gate OK — zero open agent-ready issues"
+    echo "baton-harness: checking sandbox for open agent-ready issues (safety gate)..."
+    # Fail CLOSED: if gh cannot run (auth error, network error, wrong repo,
+    # etc.) we must NOT proceed — a failed query cannot prove isolation.
+    if ! _ready_out="$(gh issue list \
+        --repo "${_REPO_SLUG}" \
+        --label "agent-ready" \
+        --state open \
+        --json number \
+        --jq '.[].number' 2>&1)"; then
+        echo "baton-harness: ABORT: gh issue list failed — cannot prove sandbox isolation" >&2
+        echo "  Refusing to seed a new issue or run the daemon." >&2
+        echo "  Check BH_REPO_OWNER/BH_REPO_NAME, GH_TOKEN, and network." >&2
+        echo "  gh output: ${_ready_out}" >&2
+        exit 1
+    fi
+
+    if [[ -n "${_ready_out}" ]]; then
+        while IFS= read -r _ready_number; do
+            if ! [[ "${_ready_number}" =~ ^[0-9]+$ ]]; then
+                echo "baton-harness: ABORT: gh issue list returned non-integer output '${_ready_out}'" >&2
+                echo "  Cannot prove sandbox isolation — refusing to proceed." >&2
+                exit 1
+            fi
+            _ready_numbers+=("${_ready_number}")
+        done <<< "${_ready_out}"
+    fi
+
+    _ready_count="${#_ready_numbers[@]}"
+    if [[ "${_ready_count}" -gt 0 ]]; then
+        _found_numbers="${_ready_numbers[*]}"
+    fi
+
+    if [[ "${_ready_count}" -ne "${_expected_count}" ]]; then
+        echo "baton-harness: ABORT: expected ${_expected_count} open agent-ready issue(s), found ${_ready_count} (${_found_numbers})." >&2
+        echo "  The single --once poll tick could dispatch the wrong issue or multiple issues." >&2
+        exit 1
+    fi
+
+    if [[ -n "${_expected_issue_num}" && "${_ready_numbers[0]}" != "${_expected_issue_num}" ]]; then
+        echo "baton-harness: ABORT: expected seeded issue #${_expected_issue_num} to be the sole open agent-ready issue, found #${_ready_numbers[0]}." >&2
+        echo "  Refusing to run bh-daemon --once against the wrong issue." >&2
+        exit 1
+    fi
+
+    if [[ "${_expected_count}" -eq 0 ]]; then
+        echo "baton-harness: safety gate OK — zero open agent-ready issues"
+    else
+        echo "baton-harness: safety gate OK — seeded issue #${_expected_issue_num} is the sole open agent-ready issue"
+    fi
+}
+
+_assert_agent_ready_isolation 0
 
 # Required-labels preflight (mirrors bin/run-daemon.sh) — this script both
 # seeds `agent-ready` and asserts on `blocked` / `agent-in-progress`.
@@ -507,6 +536,7 @@ echo ""
 # still take several minutes.
 # ---------------------------------------------------------------------------
 
+_assert_agent_ready_isolation 1 "${_ISSUE_NUM}"
 echo "baton-harness: --- Running bh-daemon --once (dispatches real agent turn) ---"
 
 _DAEMON_OUTPUT_FILE="$(mktemp "${TMPDIR:-/tmp}/bh-verify-block.XXXXXX")"

@@ -626,6 +626,8 @@ Two related signals are logged by the daemon but not locally assertable by this 
 
 > **Safety: the sandbox must have zero open `agent-ready` issues before running this script.** The script seeds exactly one ambiguous issue and runs a single `--once` poll tick; if other `agent-ready` issues already exist, that tick could dispatch the wrong one instead of (or in addition to) the seeded issue. The script checks this at startup and aborts if any are found.
 
+**Exclusive maintenance window required:** no other actor should add `agent-ready` labels in the target repo while this script runs. The startup safety gate and immediate pre-launch recheck narrow the shared-repo TOCTOU window but cannot eliminate it from the verifier side alone.
+
 **Platform:** the script has no `/proc` or `pgrep` dependency (more portable than `verify-recovery.sh`), but it **does** spawn a real agent turn that commits and comments — do not run it against a repo you are not prepared to have a real agent touch.
 
 **Environment requirements:**
