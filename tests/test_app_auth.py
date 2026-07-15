@@ -1302,3 +1302,41 @@ class TestCliErrorPathDoesNotLeakSecrets:
         assert captured.err.strip(), (
             "expected a non-empty error message on stderr"
         )
+
+    def test_vault_fetch_error_text_does_not_leak_access_token(
+        self,
+        cli_env: None,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Vault error text is reported without leaking the access token."""
+        from baton_harness.chain.bws_client import BwsClientError
+
+        def failing_fetch(
+            secret_id: str,
+            *,
+            access_token: str | None = None,
+            run: object = None,
+        ) -> str:
+            raise BwsClientError(
+                f"bws exited 1: leaked {_CLI_ACCESS_TOKEN_SENTINEL} in stderr"
+            )
+
+        with patch(
+            "baton_harness.chain.bws_client.fetch_secret",
+            side_effect=failing_fetch,
+        ):
+            from baton_harness.chain.app_auth import main
+
+            exit_code = main(["jwt"])
+
+        captured = capsys.readouterr()
+        assert exit_code != 0, (
+            "expected a non-zero exit when the vault fetch fails"
+        )
+        combined = captured.out + captured.err
+        assert _CLI_ACCESS_TOKEN_SENTINEL not in combined, (
+            "BWS_ACCESS_TOKEN leaked through vault error text"
+        )
+        assert captured.err.strip(), (
+            "expected a non-empty error message on stderr"
+        )

@@ -642,8 +642,8 @@ def main(argv: list[str]) -> int:
             secret_id,
             access_token=access_token,
         )
-    except bws_client.BwsClientError as exc:
-        print(f"app_auth: failed to fetch private key: {exc}", file=sys.stderr)
+    except bws_client.BwsClientError:
+        print("app_auth: failed to fetch private key", file=sys.stderr)
         return 1
     except Exception:
         print("app_auth: failed to fetch private key", file=sys.stderr)

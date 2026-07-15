@@ -102,6 +102,7 @@ unset PYTHONHOME PYTHONPATH 2>/dev/null || true
 # Acquire the App JWT before making any GitHub API call. The command override
 # is a test/operator seam; production falls back to the app_auth module.
 if [[ -n "${BH_APP_AUTH_JWT_CMD:-}" ]]; then
+    # Trusted operator/test-only override; never wire to untrusted input.
     if ! _APP_JWT="$(eval "${BH_APP_AUTH_JWT_CMD}")"; then
         echo "provision-ruleset: could not obtain the App JWT." >&2
         exit 2
@@ -171,6 +172,7 @@ fi
 # Acquire the installation token only after the App-ID preflight. All
 # repository- and organization-scoped calls below use this credential.
 if [[ -n "${BH_APP_AUTH_TOKEN_CMD:-}" ]]; then
+    # Trusted operator/test-only override; never wire to untrusted input.
     if ! _INSTALL_TOKEN="$(eval "${BH_APP_AUTH_TOKEN_CMD}")"; then
         echo "provision-ruleset: could not obtain the installation token." >&2
         exit 2
