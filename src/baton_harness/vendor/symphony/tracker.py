@@ -7,16 +7,39 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any, cast
 
 
 class TrackerError(Exception):
-    def __init__(self, code: str, message: str):
+    """Raised for tracker-level failures (e.g. `gh` CLI failures)."""
+
+    def __init__(self, code: str, message: str) -> None:
+        """Initialize the error with a machine-readable code and message.
+
+        Args:
+            code: Short machine-readable error code.
+            message: Human-readable error message.
+        """
         self.code = code
         super().__init__(f"{code}: {message}")
 
 
 @dataclass
 class Issue:
+    """A GitHub issue tracked by the orchestrator.
+
+    Attributes:
+        number: The issue number.
+        title: The issue title.
+        state: The issue state (e.g. "open", "closed"), lowercased.
+        body: The issue body text.
+        url: The issue's HTML URL.
+        labels: Lowercased label names attached to the issue.
+        assignees: GitHub logins assigned to the issue.
+        created_at: When the issue was created, if known.
+        updated_at: When the issue was last updated, if known.
+    """
+
     number: int
     title: str
     state: str
@@ -29,11 +52,21 @@ class Issue:
 
     @property
     def identifier(self) -> str:
+        """Return the issue number as a string identifier."""
         return str(self.number)
 
     @classmethod
-    def from_gh(cls, raw: dict) -> Issue:
-        labels = [l["name"].lower() for l in raw.get("labels", [])]
+    def from_gh(cls, raw: dict[str, Any]) -> Issue:
+        """Build an Issue from a raw `gh issue list`/`view` JSON record.
+
+        Args:
+            raw: A single issue record as decoded from `gh`'s JSON
+                output.
+
+        Returns:
+            The parsed Issue.
+        """
+        labels = [label["name"].lower() for label in raw.get("labels", [])]
         assignees = [a.get("login", "") for a in raw.get("assignees", [])]
         created_at = None
         if raw.get("createdAt"):
@@ -76,7 +109,8 @@ async def run_gh(args: list[str]) -> str:
     if proc.returncode != 0:
         raise TrackerError(
             "gh_command_failed",
-            f"gh {' '.join(args)} failed (rc={proc.returncode}): {stderr.decode().strip()}",
+            f"gh {' '.join(args)} failed (rc={proc.returncode}): "
+            f"{stderr.decode().strip()}",
         )
     return stdout.decode()
 
@@ -104,14 +138,25 @@ def parse_issue_skills(body: str) -> list[str]:
 
 
 class GitHubTracker:
+    """GitHub issue tracker client backed by the `gh` CLI."""
+
     def __init__(
         self,
         labels: list[str] | None = None,
         exclude_labels: list[str] | None = None,
         assignee: str | None = None,
-    ):
+    ) -> None:
+        """Initialize the tracker with candidate-selection filters.
+
+        Args:
+            labels: Only fetch issues carrying all of these labels.
+            exclude_labels: Skip issues carrying any of these labels.
+            assignee: Only fetch issues assigned to this GitHub login.
+        """
         self.labels = labels or []
-        self.exclude_labels = [l.lower() for l in (exclude_labels or [])]
+        self.exclude_labels = [
+            label.lower() for label in (exclude_labels or [])
+        ]
         self.assignee = assignee
 
     async def fetch_candidates(self) -> list[Issue]:
@@ -160,7 +205,7 @@ class GitHubTracker:
             ]
         )
         raw = json.loads(output)
-        return raw["state"].lower()
+        return cast(str, raw["state"]).lower()
 
     async def fetch_issue_states(self, numbers: list[int]) -> dict[int, str]:
         """Fetch current states for multiple issues."""
@@ -192,7 +237,8 @@ class GitHubTracker:
             branch_suffix = f"-{issue_number}"
             for pr in prs:
                 head = pr.get("headRefName", "")
-                # Match by branch name pattern (baton/*-{number}) or issue reference
+                # Match by branch name pattern (baton/*-{number}) or
+                # issue reference
                 if head.startswith("baton/") and head.endswith(branch_suffix):
                     return True
                 if issue_ref in pr.get("title", "") or issue_ref in (
