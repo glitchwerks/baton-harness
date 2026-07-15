@@ -14,8 +14,8 @@ async def run_hook(
     script: str | None,
     cwd: str,
     timeout_ms: int = 60000,
-    env: dict[str, str]
-    | None = None,  # VENDOR-PATCH VP-1: run_hook env= threading (merged into os.environ)
+    # VENDOR-PATCH VP-1: run_hook env= threading (merged into os.environ)
+    env: dict[str, str] | None = None,
 ) -> bool:
     """Run a shell hook script. Returns True on success, False on failure."""
     if not script or not script.strip():
@@ -50,7 +50,8 @@ async def run_hook(
 
         if proc.returncode != 0:
             log.error(
-                f"hook:{name} failed (rc={proc.returncode}): {stderr.decode()[:500]}"
+                f"hook:{name} failed (rc={proc.returncode}): "
+                f"{stderr.decode()[:500]}"
             )
             return False
 
