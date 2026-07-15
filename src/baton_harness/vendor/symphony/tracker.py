@@ -1,4 +1,5 @@
 """symphony/tracker.py — GitHub Issues client via gh CLI."""
+
 from __future__ import annotations
 
 import asyncio
@@ -37,13 +38,17 @@ class Issue:
         created_at = None
         if raw.get("createdAt"):
             try:
-                created_at = datetime.fromisoformat(raw["createdAt"].replace("Z", "+00:00"))
+                created_at = datetime.fromisoformat(
+                    raw["createdAt"].replace("Z", "+00:00")
+                )
             except (ValueError, TypeError):
                 pass
         updated_at = None
         if raw.get("updatedAt"):
             try:
-                updated_at = datetime.fromisoformat(raw["updatedAt"].replace("Z", "+00:00"))
+                updated_at = datetime.fromisoformat(
+                    raw["updatedAt"].replace("Z", "+00:00")
+                )
             except (ValueError, TypeError):
                 pass
         return cls(
@@ -62,7 +67,8 @@ class Issue:
 async def run_gh(args: list[str]) -> str:
     """Run a gh CLI command and return stdout."""
     proc = await asyncio.create_subprocess_exec(
-        "gh", *args,
+        "gh",
+        *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -79,7 +85,9 @@ def parse_issue_skills(body: str) -> list[str]:
     """Extract skill names from a ## Skills section in the issue body."""
     if not body:
         return []
-    match = re.search(r"##\s*Skills\s*\n((?:\s*-\s*.+\n?)+)", body, re.IGNORECASE)
+    match = re.search(
+        r"##\s*Skills\s*\n((?:\s*-\s*.+\n?)+)", body, re.IGNORECASE
+    )
     if not match:
         return []
     lines = match.group(1).strip().split("\n")
@@ -109,10 +117,14 @@ class GitHubTracker:
     async def fetch_candidates(self) -> list[Issue]:
         """Fetch open issues matching configured filters."""
         args = [
-            "issue", "list",
-            "--state", "open",
-            "--json", "number,title,state,labels,body,url,createdAt,updatedAt,assignees",
-            "--limit", "100",
+            "issue",
+            "list",
+            "--state",
+            "open",
+            "--json",
+            "number,title,state,labels,body,url,createdAt,updatedAt,assignees",
+            "--limit",
+            "100",
         ]
         for label in self.labels:
             args.extend(["--label", label])
@@ -127,7 +139,8 @@ class GitHubTracker:
         # Apply exclude filter
         if self.exclude_labels:
             issues = [
-                i for i in issues
+                i
+                for i in issues
                 if not any(el in i.labels for el in self.exclude_labels)
             ]
 
@@ -137,10 +150,15 @@ class GitHubTracker:
 
     async def fetch_issue_state(self, number: int) -> str:
         """Fetch current state of a single issue."""
-        output = await run_gh([
-            "issue", "view", str(number),
-            "--json", "number,state",
-        ])
+        output = await run_gh(
+            [
+                "issue",
+                "view",
+                str(number),
+                "--json",
+                "number,state",
+            ]
+        )
         raw = json.loads(output)
         return raw["state"].lower()
 
@@ -157,12 +175,18 @@ class GitHubTracker:
     async def check_pr_exists(self, issue_number: int) -> bool:
         """Check if an open PR exists that references this issue."""
         try:
-            output = await run_gh([
-                "pr", "list",
-                "--state", "open",
-                "--json", "number,title,body,headRefName",
-                "--limit", "50",
-            ])
+            output = await run_gh(
+                [
+                    "pr",
+                    "list",
+                    "--state",
+                    "open",
+                    "--json",
+                    "number,title,body,headRefName",
+                    "--limit",
+                    "50",
+                ]
+            )
             prs = json.loads(output)
             issue_ref = f"#{issue_number}"
             branch_suffix = f"-{issue_number}"
@@ -171,7 +195,9 @@ class GitHubTracker:
                 # Match by branch name pattern (baton/*-{number}) or issue reference
                 if head.startswith("baton/") and head.endswith(branch_suffix):
                     return True
-                if issue_ref in pr.get("title", "") or issue_ref in (pr.get("body") or ""):
+                if issue_ref in pr.get("title", "") or issue_ref in (
+                    pr.get("body") or ""
+                ):
                     return True
             return False
         except TrackerError:
