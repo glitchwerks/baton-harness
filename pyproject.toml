@@ -26,6 +26,7 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.4",
     "mypy>=1.10",
+    "types-PyYAML>=6.0",
 ]
 
 # Console entry points — one per hook.
@@ -59,12 +60,23 @@ packages = ["src/baton_harness"]
 [tool.ruff]
 line-length = 79
 target-version = "py310"
-# Exclude the vendored third-party tree from all lint/format checks.
-# The vendored symphony source is upstream code we do not own; its style
-# is irrelevant and patching it for lint compliance creates unnecessary
-# churn during re-vending.  Mirrors the mypy ignore_errors override.
+# The vendored symphony tree is being assimilated as owned code (#224):
+# each file is removed from this list as it is cleaned, file by file,
+# leaves-to-root (see docs/superpowers/plans/2026-07-14-assimilate-
+# vendored-symphony-224.md). Directory-level exclusion can't be lifted
+# incrementally, so this is an explicit per-file list rather than a
+# single "src/baton_harness/vendor" directory entry.
 exclude = [
-    "src/baton_harness/vendor",
+    "src/baton_harness/vendor/__init__.py",
+    "src/baton_harness/vendor/symphony/__init__.py",
+    "src/baton_harness/vendor/symphony/config.py",
+    "src/baton_harness/vendor/symphony/hooks.py",
+    "src/baton_harness/vendor/symphony/orchestrator.py",
+    "src/baton_harness/vendor/symphony/prompt.py",
+    "src/baton_harness/vendor/symphony/state.py",
+    "src/baton_harness/vendor/symphony/tracker.py",
+    "src/baton_harness/vendor/symphony/worker.py",
+    "src/baton_harness/vendor/symphony/workspace.py",
 ]
 
 [tool.ruff.lint]
@@ -100,13 +112,25 @@ warn_unused_ignores = true
 warn_return_any = true
 show_error_codes = true
 
-# mypy: ignore all errors in the vendored third-party tree.
-# Full annotation of the vendored symphony source is deferred; the daemon
-# calls into it via a narrow typed seam in chain/ only.
-# Recorded as patches/mypy-strict-remediation.diff (kept separate from
-# the behaviour patches VP-1, VP-2, etc.).
+# mypy: ignore errors in the not-yet-assimilated portion of the vendored
+# tree (#224). Each module is removed from this list as it is cleaned,
+# file by file, leaves-to-root (see docs/superpowers/plans/2026-07-14-
+# assimilate-vendored-symphony-224.md). Recorded as
+# patches/mypy-strict-remediation.diff (kept separate from the behaviour
+# patches VP-1, VP-2, etc.).
 [[tool.mypy.overrides]]
-module = "baton_harness.vendor.*"
+module = [
+    "baton_harness.vendor",
+    "baton_harness.vendor.symphony",
+    "baton_harness.vendor.symphony.config",
+    "baton_harness.vendor.symphony.hooks",
+    "baton_harness.vendor.symphony.orchestrator",
+    "baton_harness.vendor.symphony.prompt",
+    "baton_harness.vendor.symphony.state",
+    "baton_harness.vendor.symphony.tracker",
+    "baton_harness.vendor.symphony.worker",
+    "baton_harness.vendor.symphony.workspace",
+]
 ignore_errors = true
 
 [tool.pytest.ini_options]

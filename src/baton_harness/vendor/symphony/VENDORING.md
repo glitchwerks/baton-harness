@@ -164,9 +164,20 @@ These are **structural edits required for re-packaging** — they change
 no runtime behavior; they merely make the absolute `symphony.*` imports
 resolve correctly under the `baton_harness.vendor.symphony` namespace.
 
-- **Absolute → relative imports** (`orchestrator.py`, `cli.py`, `prompt.py`,
+- **Absolute → relative imports** (`orchestrator.py`, `prompt.py`,
   `worker.py`): all `from symphony.X import Y` statements converted to
   `from .X import Y`. Marker: `# VENDOR-PATCH: relative import for vendoring`.
+
+### Deleted dead code (#224)
+
+- **`cli.py` and `log.py` were deleted as dead code by #224.** Neither was
+  reachable from the harness: `cli.py` implemented the retired `baton
+  start/status/stop` CLI for the external-process launcher (`bin/run.sh`,
+  itself already retired in favor of `bin/run-daemon.sh`), had no
+  `__main__` guard so `python -m ...cli` never worked, and was the only
+  importer of `log.py`'s `setup_logging`/`SymphonyFormatter`. Deleting
+  `cli.py` also removed the undeclared `click` dependency. No tests
+  imported either module.
 
 ### mypy strict-remediation
 
@@ -182,8 +193,10 @@ resolve correctly under the `baton_harness.vendor.symphony` namespace.
 When re-vendoring at a new upstream SHA, apply these steps in order:
 
 1. For each module in the `symphony/` package
-   (`__init__`, `cli`, `config`, `hooks`, `log`, `orchestrator`, `prompt`,
-   `state`, `tracker`, `worker`, `workspace`), fetch the new version:
+   (`__init__`, `config`, `hooks`, `orchestrator`, `prompt`,
+   `state`, `tracker`, `worker`, `workspace` — `cli` and `log` were
+   deleted as dead code by #224 and are not re-vendored), fetch the new
+   version:
    ```bash
    gh api "repos/mraza007/baton/contents/symphony/<module>.py?ref=<NEW_SHA>" \
      --jq .content | base64 -d > src/baton_harness/vendor/symphony/<module>.py
@@ -221,8 +234,8 @@ When re-vendoring at a new upstream SHA, apply these steps in order:
    - `VP-6` in `state.py` and `orchestrator.py`
    - `VP-7` in `hooks.py`
    - `VP-8` in `config.py`
-   - `relative import for vendoring` in `orchestrator.py`, `cli.py`,
-     `prompt.py`, `worker.py`
+   - `relative import for vendoring` in `orchestrator.py`, `prompt.py`,
+     `worker.py`
 6. Update the **Pinned SHA** and **Vendor date** fields at the top of this
    file.
 7. Re-run the full CI suite:
