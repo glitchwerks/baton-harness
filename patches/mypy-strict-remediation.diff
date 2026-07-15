@@ -1,3 +1,12 @@
+# NOTE (added by #224, does not modify the diff below — D3: patches/ is frozen as
+# historical record, hunks are not rewritten): the `module = "baton_harness.vendor.*"`
+# wildcard override introduced by this diff was replaced in #224 Phase 1 with an
+# explicit per-file module list in `pyproject.toml`'s `[[tool.mypy.overrides]]` block,
+# narrowed further as each phase cleans and un-excludes a file. See
+# `src/baton_harness/vendor/symphony/VENDORING.md` § "mypy strict-remediation" and
+# `docs/superpowers/plans/2026-07-14-assimilate-vendored-symphony-224.md`. Do not use
+# the wildcard shown below as a re-vendor reference — read the live `pyproject.toml`
+# instead.
 diff --git a/pyproject.toml b/pyproject.toml
 index b39b623..650c1d0 100644
 --- a/pyproject.toml
