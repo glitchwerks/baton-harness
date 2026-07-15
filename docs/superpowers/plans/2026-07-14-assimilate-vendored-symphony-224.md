@@ -41,7 +41,7 @@ independently re-measured; the implementer must run the per-file gate at each ph
 start.
 
 **Verified Phase-1 baseline (PR #259, post-deletion):** **116 ruff findings / 9 mypy
-errors** across the **8 surviving files** (`cli.py`/`log.py` deleted; the two
+errors** across the **8 files with findings** (`cli.py`/`log.py` deleted; the two
 `__init__.py` files carry no findings of their own beyond the 8 module files' counts).
 This is the number later-phase batch sizing (§ 5) is actually built against — the
 134/19 figures above are retained only as the pre-deletion historical estimate.
@@ -126,7 +126,7 @@ The dispatch brief flagged an open question: is `cli.py` dead relative to the ha
 
 **Historical, pre-deletion estimate** — the 134/19 figures below predate the
 Phase 1 `cli.py`/`log.py` deletion. See § 1 provenance note for the **verified
-Phase-1 baseline (116 ruff / 9 mypy, 8 surviving files, PR #259)**, which is the
+Phase-1 baseline (116 ruff / 9 mypy, 8 files with findings, PR #259)**, which is the
 number later-phase batch sizing (§ 5) is built against.
 
 **Ruff (134 findings, exclusions off, pre-deletion):** dominant classes —
@@ -261,7 +261,7 @@ subject to re-balancing.
 - **Re-baseline:** run the full gate with the new per-file exclusion lists and record
   the true remaining per-file finding counts (see § 6). This is the number the batch
   sizing in Phases 2–4 is built against. **Verified (PR #259): 116 ruff / 9 mypy across
-  the 8 surviving files** — see § 1 provenance note.
+  the 8 files with findings** — see § 1 provenance note.
 - Tests: `tests/vendor/` unaffected (no `cli`/`log` importers). Green expected.
 
 ### Phase 2 (PR #2) — Layer-0 leaves batch A: package `__init__`s + `config` + `tracker`
