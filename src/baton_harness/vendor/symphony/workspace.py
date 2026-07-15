@@ -1,4 +1,5 @@
 """symphony/workspace.py — Git worktree lifecycle manager."""
+
 from __future__ import annotations
 
 import asyncio
@@ -51,7 +52,9 @@ def slugify(title: str, max_len: int = 50) -> str:
 class WorkspaceManager:
     def __init__(self, project_root: str, symphony_dir: str | None = None):
         self.project_root = os.path.abspath(project_root)
-        self.symphony_dir = symphony_dir or os.path.join(self.project_root, ".symphony")
+        self.symphony_dir = symphony_dir or os.path.join(
+            self.project_root, ".symphony"
+        )
         self.worktrees_dir = os.path.join(self.symphony_dir, "worktrees")
 
     def worktree_path(self, issue_number: int) -> str:
@@ -60,7 +63,9 @@ class WorkspaceManager:
         # Safety: must be under symphony_dir
         abs_path = os.path.abspath(path)
         if not abs_path.startswith(os.path.abspath(self.symphony_dir)):
-            raise WorkspaceError("path_escape", f"Worktree path {abs_path} escapes symphony dir")
+            raise WorkspaceError(
+                "path_escape", f"Worktree path {abs_path} escapes symphony dir"
+            )
         return abs_path
 
     def branch_name(self, issue_number: int, title: str) -> str:
@@ -69,7 +74,9 @@ class WorkspaceManager:
             return f"baton/{slug}-{issue_number}"
         return f"baton/issue-{issue_number}"
 
-    async def ensure_worktree(self, issue_number: int, title: str = "") -> WorktreeResult:
+    async def ensure_worktree(
+        self, issue_number: int, title: str = ""
+    ) -> WorktreeResult:
         path = self.worktree_path(issue_number)
 
         if os.path.isdir(path):
