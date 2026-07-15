@@ -182,11 +182,22 @@ resolve correctly under the `baton_harness.vendor.symphony` namespace.
 ### mypy strict-remediation
 
 - **File:** `pyproject.toml` (`[[tool.mypy.overrides]]` block)
-- **Patch file:** `patches/mypy-strict-remediation.diff` (relative to repo root)
-- **Description:** Adds `ignore_errors = true` for `baton_harness.vendor.*`
-  so `mypy src` does not type-check the vendored third-party tree. Full
-  annotation of the vendored source is deferred. Kept as a separate patch
-  file from the behaviour patches (VP-*) per issue #42.
+- **Patch file:** `patches/mypy-strict-remediation.diff` (relative to repo root;
+  **historical** — see the note below, the diff content itself is frozen)
+- **Description (original, pre-#224):** Adds `ignore_errors = true` for the
+  `baton_harness.vendor.*` module **glob**, so `mypy src` does not type-check the
+  vendored third-party tree. Full annotation of the vendored source is deferred.
+  Kept as a separate patch file from the behaviour patches (VP-*) per issue #42.
+- **Superseded by #224 Phase 1:** the `[[tool.mypy.overrides]]` `module` key is no
+  longer the wildcard `"baton_harness.vendor.*"`. It is now an **explicit list** of
+  the surviving vendored modules (currently `baton_harness.vendor`,
+  `baton_harness.vendor.symphony`, and one entry per surviving `.py` file — see
+  `pyproject.toml`'s `[[tool.mypy.overrides]]` block for the live list), narrowed one
+  file at a time as each module is cleaned and un-excluded (§ Re-vendor checklist
+  below and `docs/superpowers/plans/2026-07-14-assimilate-vendored-symphony-224.md`).
+  **A future re-vendor must not restore the wildcard** — re-derive the explicit list
+  from the modules still present in `pyproject.toml` at re-vendor time, not from this
+  historical patch file.
 
 ## Re-vendor checklist
 

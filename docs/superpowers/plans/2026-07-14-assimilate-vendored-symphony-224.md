@@ -34,10 +34,17 @@ if the brief and issue have diverged.
 
 The **finding counts** (134 ruff / 19 mypy) come from the router's Explore map, which
 measured them with the exclusions forced off *globally* (before the dead-code deletion
-in Phase 1). They are **estimates for sizing, not a budget** — re-baseline after each
-phase (see § 6). This planning session had no Python/ruff/mypy execution capability
-(sub-agent, no Bash tool), so per-file counts were not independently re-measured; the
-implementer must run the per-file gate at each phase start.
+in Phase 1). They are **historical, pre-deletion estimates for sizing, not a budget**
+— re-baseline after each phase (see § 6). This planning session had no Python/ruff/mypy
+execution capability (sub-agent, no Bash tool), so per-file counts were not
+independently re-measured; the implementer must run the per-file gate at each phase
+start.
+
+**Verified Phase-1 baseline (PR #259, post-deletion):** **116 ruff findings / 9 mypy
+errors** across the **8 surviving files** (`cli.py`/`log.py` deleted; the two
+`__init__.py` files carry no findings of their own beyond the 8 module files' counts).
+This is the number later-phase batch sizing (§ 5) is actually built against — the
+134/19 figures above are retained only as the pre-deletion historical estimate.
 
 ---
 
@@ -62,7 +69,9 @@ exclusions. **No `ci.yml` change is required.**
 
 This is milestone **1.0 release gate** work — not urgent-blocking — so a moderate,
 multi-PR phased plan (keeping each PR reviewable and CI green throughout) is the
-appropriate shape, not a single mega-PR.
+appropriate shape, not a single mega-PR. **Six PRs total** — Phases 1, 2, 3, 3b, 4, 5
+(§ 5) — with **Phase 3b a standalone PR**, not a sub-phase folded into Phase 3's count;
+see § 7's issue-decomposition bullet for the one-tracking-issue-per-PR mapping.
 
 ---
 
@@ -114,6 +123,11 @@ The dispatch brief flagged an open question: is `cli.py` dead relative to the ha
 ---
 
 ## 3. Finding inventory (from Explore map — treat as estimate)
+
+**Historical, pre-deletion estimate** — the 134/19 figures below predate the
+Phase 1 `cli.py`/`log.py` deletion. See § 1 provenance note for the **verified
+Phase-1 baseline (116 ruff / 9 mypy, 8 surviving files, PR #259)**, which is the
+number later-phase batch sizing (§ 5) is built against.
 
 **Ruff (134 findings, exclusions off, pre-deletion):** dominant classes —
 `E501` line-too-long (56), `D101`/`D102` undocumented public class/method (17 each),
@@ -199,6 +213,13 @@ cleanup PR touches an annotated import (Phase 2 onward).
 
 ## 5. Phased PR plan
 
+**Six PRs total: Phases 1, 2, 3, 3b, 4, 5.** Phase 3b (§ below) is a standalone PR
+split out of what would otherwise be Phase 3's Layer-1 modules — not a sub-step folded
+into Phase 3's own PR — because `worker.py` needs to be isolated for security-focused
+review (project-reviewer finding; see Phase 3b's rationale). Any reference elsewhere in
+this plan (or in this PR's description) to "five phases" / "four phases remaining after
+Phase 1" is stale against this six-PR decomposition.
+
 Batch sizes below are **provisional** — the implementer must run the per-file gate at
 each phase start (see § 6) and re-balance so each PR stays reviewable, **except**
 `worker.py` (Phase 3b) and `orchestrator.py` (Phase 4), which are fixed as their own
@@ -239,7 +260,8 @@ subject to re-balancing.
   so the convention is settled before Phase 2 needs it.
 - **Re-baseline:** run the full gate with the new per-file exclusion lists and record
   the true remaining per-file finding counts (see § 6). This is the number the batch
-  sizing in Phases 2–4 is built against.
+  sizing in Phases 2–4 is built against. **Verified (PR #259): 116 ruff / 9 mypy across
+  the 8 surviving files** — see § 1 provenance note.
 - Tests: `tests/vendor/` unaffected (no `cli`/`log` importers). Green expected.
 
 ### Phase 2 (PR #2) — Layer-0 leaves batch A: package `__init__`s + `config` + `tracker`
@@ -279,11 +301,12 @@ Clean the Layer-1 modules: `prompt.py` (→ depends on the now-clean `tracker`) 
 — not bundled with Phase 3 or gated on batch size. Rationale (per project-reviewer):
 `worker.py` contains VP-4's `_MERGE_DENY_TOOLS` (`worker.py:15,82`), an active
 merge-prevention control per `VENDORING.md:74-90` — not historical code — so it needs
-isolated, security-focused reviewability rather than being folded into a larger leaves
-batch. Bundle `prompt.py` alongside it since both are Layer 1 and both are now
-un-blocked by Phase 2/3's leaf cleanup. Apply the VP-marker reflow convention (§ 4) to
-`worker.py:11`'s trailing mechanical marker and `prompt.py:8`'s trailing mechanical
-marker if `ruff format` pushes either past the line limit. Commit A/B/C; remove both
+to be isolated for security-focused reviewability rather than being folded into a
+larger leaves batch. Bundle `prompt.py` alongside it since both are Layer 1 and both
+are now un-blocked by Phase 2/3's leaf cleanup. Apply the VP-marker reflow convention
+(§ 4) to `worker.py:11`'s trailing mechanical marker and `prompt.py:8`'s trailing
+mechanical marker if `ruff format` pushes either past the line limit. Commit A/B/C;
+remove both
 files from both exclusion lists.
 
 ### Phase 4 (PR #4) — `orchestrator.py` solo
@@ -346,10 +369,20 @@ Windows host). Two robust options, in preference order:
    reports nothing (excluded), fall back to option 2.
 2. **Drop-and-revert (always works, mirrors the real gate):** temporarily remove the
    file from the `exclude`/override lists in the working tree, run the standard gate
-   below, read the count, then `git restore pyproject.toml`. This is exactly what each
+   below, read the count, then `git restore pyproject.toml`. This is what each
    cleanup PR does permanently, so it measures the true number.
 
+   > ⚠️ **Caveat: `git restore pyproject.toml` discards ALL uncommitted edits in that
+   > file, not just the temporary exclusion-list change.** If `pyproject.toml` has any
+   > other pending edit (e.g. a dependency bump being staged in the same working
+   > session), `git restore` silently drops it too. Use a temporary copy
+   > (`cp pyproject.toml pyproject.toml.bak` before editing, `cp pyproject.toml.bak
+   > pyproject.toml` after) or a path-scoped stash (`git stash push --
+   > pyproject.toml`, then `git stash pop` after measuring) instead, and explicitly
+   > reapply any other pending `pyproject.toml` edits afterward.
+
 Full gate (must be green before every PR merges — mirrors `ci.yml`):
+
 ```bash
 .venv/Scripts/python.exe -m ruff check .
 .venv/Scripts/python.exe -m ruff format --check .
