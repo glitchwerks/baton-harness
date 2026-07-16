@@ -263,12 +263,19 @@ class OrchestratorState:
                 data = json.load(f)  # VENDOR-PATCH VP-6: load()
         except FileNotFoundError:  # VENDOR-PATCH VP-6: missing file → no-op
             return  # VENDOR-PATCH VP-6: missing file → no-op
-        except (json.JSONDecodeError, OSError) as exc:  # VENDOR-PATCH VP-6
+        except (
+            json.JSONDecodeError,
+            OSError,
+            UnicodeDecodeError,
+        ) as exc:  # VENDOR-PATCH VP-6
             log.warning(  # VENDOR-PATCH VP-6: corruption fallback
                 "state.json is malformed or unreadable — starting fresh: %s",
                 exc,
             )
             # VENDOR-PATCH VP-6: corruption fallback — state stays empty
+            self.running.clear()
+            self.retry_queue.clear()
+            self.claimed.clear()
             return
 
         for entry in data.get("running", []):  # VENDOR-PATCH VP-6: load()
