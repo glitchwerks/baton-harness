@@ -276,6 +276,7 @@ class OrchestratorState:
             self.running.clear()
             self.retry_queue.clear()
             self.claimed.clear()
+            self.completed.clear()
             return
 
         for entry in data.get("running", []):  # VENDOR-PATCH VP-6: load()

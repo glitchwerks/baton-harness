@@ -106,6 +106,8 @@ class WorkspaceManager:
                 None to default to ``<project_root>/.symphony``.
         """
         self.project_root = os.path.abspath(project_root)
+        # VENDOR-PATCH VP-9: normalize caller-provided symphony_dir to an
+        # absolute path.
         self.symphony_dir = os.path.abspath(
             symphony_dir or os.path.join(self.project_root, ".symphony")
         )

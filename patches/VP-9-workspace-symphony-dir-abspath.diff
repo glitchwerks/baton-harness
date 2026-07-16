@@ -1,0 +1,14 @@
+diff --git a/src/baton_harness/vendor/symphony/workspace.py b/src/baton_harness/vendor/symphony/workspace.py
+index 7ec7e15..d9c2115 100644
+--- a/src/baton_harness/vendor/symphony/workspace.py
++++ b/src/baton_harness/vendor/symphony/workspace.py
+@@ -106,8 +106,8 @@ class WorkspaceManager:
+                 None to default to ``<project_root>/.symphony``.
+         """
+         self.project_root = os.path.abspath(project_root)
+-        self.symphony_dir = symphony_dir or os.path.join(
+-            self.project_root, ".symphony"
++        self.symphony_dir = os.path.abspath(
++            symphony_dir or os.path.join(self.project_root, ".symphony")
+         )
+         self.worktrees_dir = os.path.join(self.symphony_dir, "worktrees")

@@ -158,6 +158,22 @@ orchestration path.
   `chain/daemon.py`, not part of the vendored tree). Marker:
   `# VENDOR-PATCH VP-8: ...`.
 
+### VP-9 — `WorkspaceManager.__init__` normalizes `symphony_dir` to an absolute path
+
+- **File:** `workspace.py`
+- **Patch file:** `patches/VP-9-workspace-symphony-dir-abspath.diff` (relative to repo root)
+- **Description:** `WorkspaceManager.__init__` now wraps the computed
+  `symphony_dir` (whether caller-supplied or defaulted to
+  `<project_root>/.symphony`) in `os.path.abspath(...)`, matching
+  `project_root`'s existing `os.path.abspath` normalization on the
+  preceding line. Previously a caller-supplied relative `symphony_dir`
+  could leave `self.symphony_dir` relative, which the `worktree_path`
+  escape check (`abs_path.startswith(os.path.abspath(self.symphony_dir))`)
+  then resolved relative to the process's current working directory
+  rather than the intended project root — a latent gap in that safety
+  check. Addresses a CodeRabbit CHANGES_REQUESTED finding on PR #261.
+  Marker: `# VENDOR-PATCH VP-9: normalize caller-provided symphony_dir to an absolute path.`
+
 ### Vendoring-mechanics patches (not VP patches; no separate diff files)
 
 These are **structural edits required for re-packaging** — they change
@@ -227,6 +243,7 @@ When re-vendoring at a new upstream SHA, apply these steps in order:
    git apply patches/VP-6-state-load-on-startup.diff
    git apply patches/VP-7-hooks-non-login-shell.diff
    git apply patches/VP-8-required-checks-config.diff
+   git apply patches/VP-9-workspace-symphony-dir-abspath.diff
    ```
 4. Re-apply the relative-import vendoring-mechanics patches manually (they
    are not in a diff file because they only depend on the module names, which
@@ -245,6 +262,7 @@ When re-vendoring at a new upstream SHA, apply these steps in order:
    - `VP-6` in `state.py` and `orchestrator.py`
    - `VP-7` in `hooks.py`
    - `VP-8` in `config.py`
+   - `VP-9` in `workspace.py`
    - `relative import for vendoring` in `orchestrator.py`, `prompt.py`,
      `worker.py`
 6. Update the **Pinned SHA** and **Vendor date** fields at the top of this
