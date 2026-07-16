@@ -67,12 +67,9 @@ target-version = "py310"
 # incrementally, so this is an explicit per-file list rather than a
 # single "src/baton_harness/vendor" directory entry.
 exclude = [
-    "src/baton_harness/vendor/symphony/hooks.py",
     "src/baton_harness/vendor/symphony/orchestrator.py",
     "src/baton_harness/vendor/symphony/prompt.py",
-    "src/baton_harness/vendor/symphony/state.py",
     "src/baton_harness/vendor/symphony/worker.py",
-    "src/baton_harness/vendor/symphony/workspace.py",
 ]
 
 [tool.ruff.lint]
@@ -116,12 +113,9 @@ show_error_codes = true
 # patches VP-1, VP-2, etc.).
 [[tool.mypy.overrides]]
 module = [
-    "baton_harness.vendor.symphony.hooks",
     "baton_harness.vendor.symphony.orchestrator",
     "baton_harness.vendor.symphony.prompt",
-    "baton_harness.vendor.symphony.state",
     "baton_harness.vendor.symphony.worker",
-    "baton_harness.vendor.symphony.workspace",
 ]
 ignore_errors = true
 

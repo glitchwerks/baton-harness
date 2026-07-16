@@ -1,4 +1,5 @@
 """symphony/hooks.py — Shell hook executor with timeout."""
+
 from __future__ import annotations
 
 import asyncio
@@ -13,7 +14,8 @@ async def run_hook(
     script: str | None,
     cwd: str,
     timeout_ms: int = 60000,
-    env: dict[str, str] | None = None,  # VENDOR-PATCH VP-1: run_hook env= threading (merged into os.environ)
+    # VENDOR-PATCH VP-1: run_hook env= threading (merged into os.environ)
+    env: dict[str, str] | None = None,
 ) -> bool:
     """Run a shell hook script. Returns True on success, False on failure."""
     if not script or not script.strip():
@@ -33,17 +35,24 @@ async def run_hook(
         # script, which can clobber daemon-injected env vars (e.g. GH_TOKEN)
         # ahead of the hook ever reading them (issue #215).
         proc = await asyncio.create_subprocess_exec(
-            "bash", "-c", script,
+            "bash",
+            "-c",
+            script,
             cwd=cwd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=merged_env,  # VENDOR-PATCH VP-1: pass merged env
         )
         timeout_s = max(timeout_ms / 1000, 1)
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(), timeout=timeout_s
+        )
 
         if proc.returncode != 0:
-            log.error(f"hook:{name} failed (rc={proc.returncode}): {stderr.decode()[:500]}")
+            log.error(
+                f"hook:{name} failed (rc={proc.returncode}): "
+                f"{stderr.decode()[:500]}"
+            )
             return False
 
         log.info(f"hook:{name} completed")
