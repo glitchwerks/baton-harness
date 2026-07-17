@@ -56,7 +56,7 @@ excluded from both linters: `pyproject.toml:66-68` excludes
 `ignore_errors = true` for the `baton_harness.vendor.*` mypy module glob. The
 project has since declared itself the de facto maintainer of this source
 (`CLAUDE.md § Upstream dependency`; `VENDORING.md:11-18` rationale) — it is vendored,
-not tracked upstream, and Baton bugs are fixed here directly (VP-1..VP-8, per
+not tracked upstream, and Baton bugs are fixed here directly (VP-1..VP-9, per
 `VENDORING.md:28-159`).
 
 The goal of #224 is to **finish assimilating the tree as owned code**: remove the
@@ -149,7 +149,7 @@ convention google (`pyproject.toml:70-88`).
 > ✅ **Decision D2 — RATIFIED by user, 2026-07-14: write real google-style docstrings**
 > for the ~44 `D101`/`D102`/`D107` findings, not per-line suppressions. This is
 > ownership-consistent ("lint it as owned code") and this code is actively patched
-> (VP-1..VP-8), so the docstrings pay for themselves in maintainability — it makes the
+> (VP-1..VP-9), so the docstrings pay for themselves in maintainability — it makes the
 > code genuinely owned, not just quieted. No suppression fallback needed.
 
 ---
@@ -284,8 +284,8 @@ it is done before `prompt` consumes it in Phase 3b.)
 ### Phase 3 (PR #3) — Layer-0 leaves batch B: `state`, `hooks`, `workspace`
 
 Clean the remaining Layer-0 leaves only: `state.py`, `hooks.py`, `workspace.py`.
-`hooks.py` carries VP-1/VP-7 and `state.py` carries VP-6 (`workspace.py` carries no
-VP-N behavioral marker) — **retain all `# VENDOR-PATCH` comments** (acceptance
+`hooks.py` carries VP-1/VP-7, `state.py` carries VP-6, and `workspace.py` carries
+VP-9 — **retain all `# VENDOR-PATCH` comments** (acceptance
 criterion); annotating around them is fine. Commit A/B/C per § 4; remove these three
 files from both exclusion lists.
 
@@ -327,7 +327,7 @@ remove the last entries from both exclusion lists.
 - **`VENDORING.md`:** retire the "Re-vendor checklist" section (`VENDORING.md:180-235`);
   rewrite the file as a **provenance record** — upstream repo/SHA/date/license
   (`VENDORING.md:1-9`), the applied-patch list retained as **historical annotations**
-  (VP-1..VP-8, `VENDORING.md:28-159`), an explicit note that `cli.py`/`log.py` were
+  (VP-1..VP-9, `VENDORING.md:28-159`), an explicit note that `cli.py`/`log.py` were
   **deleted as dead code** (so the record matches the tree), and a note that #224
   assimilated the tree as owned code, **superseding the mypy-strict deferral**
   documented at `VENDORING.md:171-178`. State the new policy: changes to the tree no
@@ -395,7 +395,7 @@ Acceptance-criteria checklist (verify at Phase 5 close):
       all findings fixed or per-line suppressed with justification (per D2).
 - [ ] `VENDORING.md` re-vendor checklist retired; file is a provenance record.
 - [ ] `# VENDOR-PATCH` markers retained per the two-ledger tracking in § 8 (both
-      counts scoped to `*.py`) — behavioral VP-1..VP-8 markers flat-invariant at 55 at
+      counts scoped to `*.py`) — behavioral VP-1..VP-9 markers flat-invariant at 56 at
       every PR; mechanical "relative import for vendoring" markers flat-invariant at 9
       from Phase 1 onward (13 before Phase 1). No new `patches/` diffs required for
       future changes (policy stated in `VENDORING.md`).
@@ -445,9 +445,9 @@ user, 2026-07-14** and Phase 1 is unblocked. One item remains genuinely open.
   and would inflate an unscoped count, and it's also rewritten in Phases 1 and 5, so an
   unscoped count wouldn't even be stable. Counts verified this session against `main` @
   `30a3afe`:
-  - **Ledger A — behavioral `VP-1`..`VP-8` markers**
+  - **Ledger A — behavioral `VP-1`..`VP-9` markers**
     (`grep -rn --include=*.py "VENDOR-PATCH VP-[0-9]" src/baton_harness/vendor/symphony`):
-    **55, invariant at every PR from before Phase 1 through Phase 5.** `cli.py`/`log.py`
+    **56, invariant at every PR from before Phase 1 through Phase 5.** `cli.py`/`log.py`
     carry zero behavioral markers, so deleting them in Phase 1 does not move this
     number — zero loss tolerated, ever.
   - **Ledger B — mechanical "relative import for vendoring" markers**
@@ -456,13 +456,13 @@ user, 2026-07-14** and Phase 1 is unblocked. One item remains genuinely open.
     only decrease the plan allows). Invariant at 9 for every PR from Phase 1 through
     Phase 5; a drop below 9 after Phase 1 is a real loss, not an expected deletion.
   Run both greps before and after every PR and confirm each ledger equals its expected
-  flat total for that stage (13/55 pre-Phase-1; 9/55 for every PR Phase 1 onward). For
+  flat total for that stage (13/56 pre-Phase-1; 9/56 for every PR Phase 1 onward). For
   context on *which* file carries which markers — informational only, not part of the
   acceptance number, and provisional since batch composition may shift (e.g. the
   `config.py` split note in Phase 2): `state.py` carries 34× VP-6, `orchestrator.py`
   13× VP-2/VP-3/VP-5/VP-6, `hooks.py` 4× VP-1/VP-7, `worker.py` 2× VP-4, `config.py`
-  2× VP-8; mechanically, `orchestrator.py` carries 7, `worker.py` and `prompt.py` 1
-  each (post-Phase-1).
+  2× VP-8, `workspace.py` 1× VP-9; mechanically, `orchestrator.py` carries 7,
+  `worker.py` and `prompt.py` 1 each (post-Phase-1).
 - **Behavioral no-op:** this is a lint/type/docs assimilation — no runtime behavior
   should change. The `tests/vendor/` regression suite is the guardrail; it must stay
   green at every phase. If a "fix" (e.g. a `B904` raise-from, an annotation-driven
@@ -486,9 +486,9 @@ All 4 are worked into the sections above; this is a pointer index, not a duplica
    merge-prevention control, not historical code) — Phase 3 split into Phase 3
    (leaves only) + Phase 3b (`prompt.py` + `worker.py`), § 5; batch-sizing intro in § 5
    updated to exempt these two phases from re-balancing.
-3. **VP-marker ledger tracked as two separate counts** (behavioral VP-1..VP-8 vs.
+3. **VP-marker ledger tracked as two separate counts** (behavioral VP-1..VP-9 vs.
    mechanical "relative import for vendoring") — § 8, with the acceptance-criteria
-   checklist in § 6 updated to name both as flat invariants (55 / 9), not a single
+   checklist in § 6 updated to name both as flat invariants (56 / 9), not a single
    combined or per-phase-growing number.
 4. **`config.py` is not a cheap leaf** (`yaml.safe_load()` returns `Any`, triggering
    `warn_return_any` on every function that returns a parsed value) — noted inline in
