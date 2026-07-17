@@ -1,15 +1,29 @@
 """symphony/prompt.py — Jinja2 prompt template renderer."""
+
 from __future__ import annotations
 
 from dataclasses import asdict
 
-from jinja2 import Environment, StrictUndefined, TemplateSyntaxError, UndefinedError
+from jinja2 import (
+    Environment,
+    StrictUndefined,
+    TemplateSyntaxError,
+    UndefinedError,
+)
 
 from .tracker import Issue  # VENDOR-PATCH: relative import for vendoring
 
 
 class PromptError(Exception):
-    def __init__(self, code: str, message: str):
+    """Raised for prompt template parsing/rendering failures."""
+
+    def __init__(self, code: str, message: str) -> None:
+        """Initialize the error with a machine-readable code and message.
+
+        Args:
+            code: Short machine-readable error code.
+            message: Human-readable error message.
+        """
         self.code = code
         super().__init__(f"{code}: {message}")
 
@@ -29,7 +43,7 @@ def render_prompt(
     try:
         template = _env.from_string(template_str)
     except TemplateSyntaxError as e:
-        raise PromptError("template_parse_error", str(e))
+        raise PromptError("template_parse_error", str(e)) from e
 
     try:
         return template.render(
@@ -37,4 +51,4 @@ def render_prompt(
             attempt=attempt,
         )
     except UndefinedError as e:
-        raise PromptError("template_render_error", str(e))
+        raise PromptError("template_render_error", str(e)) from e
