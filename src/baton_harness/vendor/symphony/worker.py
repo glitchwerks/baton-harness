@@ -1,4 +1,5 @@
 """symphony/worker.py — Claude Code CLI subprocess runner."""
+
 from __future__ import annotations
 
 import asyncio
@@ -8,7 +9,9 @@ import os
 import tempfile
 from dataclasses import dataclass
 
-from .config import WorkflowConfig  # VENDOR-PATCH: relative import for vendoring
+from .config import (
+    WorkflowConfig,
+)  # VENDOR-PATCH: relative import for vendoring
 
 log = logging.getLogger("symphony")
 
@@ -68,8 +71,10 @@ class Worker:
         """Build the claude CLI argument list."""
         args = [
             self.config.agent_command,
-            "-p", prompt,
-            "--output-format", "json",
+            "-p",
+            prompt,
+            "--output-format",
+            "json",
         ]
 
         if self.config.permission_mode:

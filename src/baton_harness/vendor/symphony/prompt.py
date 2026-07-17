@@ -1,9 +1,15 @@
 """symphony/prompt.py — Jinja2 prompt template renderer."""
+
 from __future__ import annotations
 
 from dataclasses import asdict
 
-from jinja2 import Environment, StrictUndefined, TemplateSyntaxError, UndefinedError
+from jinja2 import (
+    Environment,
+    StrictUndefined,
+    TemplateSyntaxError,
+    UndefinedError,
+)
 
 from .tracker import Issue  # VENDOR-PATCH: relative import for vendoring
 
