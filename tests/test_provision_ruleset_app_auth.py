@@ -70,6 +70,7 @@ Coverage:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -94,6 +95,19 @@ _BASH_BIN_DIR = str(Path(_BASH).parent) if Path(_BASH).exists() else ""
 # plain substring containment without false positives.
 _FAKE_JWT = "fake-jwt-abc123-issue200"
 _FAKE_TOKEN = "fake-install-token-xyz789-issue200"
+
+
+def _fingerprint(value: str) -> str:
+    """Mirror tests/fixtures/fake_gh/gh's `_fingerprint()` helper.
+
+    First 12 hex chars of sha256(value), or "" for an empty value.
+    Lets tests assert which credential (JWT vs installation token)
+    was used as an env_gh_token/env_github_token bearer without the
+    raw secret ever appearing in the JSONL call log.
+    """
+    if not value:
+        return ""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +174,8 @@ def _invoke(
     env = {
         k: v
         for k, v in os.environ.items()
-        if not (
+        if k not in ("GH_TOKEN", "GITHUB_TOKEN")
+        and not (
             exclude_bws_env and k in ("BWS_PEM_SECRET_ID", "BWS_ACCESS_TOKEN")
         )
     }
@@ -277,8 +292,9 @@ def _credential_blob(record: dict) -> str:  # type: ignore[type-arg]
     The script may pass a bearer credential to ``gh api`` via an
     ``-H "Authorization: ..."`` header, via ``GH_TOKEN``, or via
     ``GITHUB_TOKEN`` — this helper is agnostic to which mechanism the
-    implementation chooses, so tests can assert on credential VALUE
-    without pinning a specific passing mechanism.
+    implementation chooses. The env_gh_token/env_github_token fields
+    contain fingerprints rather than raw values, so tests can assert
+    on credential identity without pinning a specific passing mechanism.
 
     Args:
         record: A single call record from ``_calls``.
@@ -334,11 +350,11 @@ def test_jwt_used_for_app_preflight_and_token_used_for_repo_calls(
     app_calls = [c for c in calls if c["endpoint"] == "get_app"]
     assert len(app_calls) == 1, f"expected exactly 1 GET /app call; {calls}"
     app_cred = _credential_blob(app_calls[0])
-    assert _FAKE_JWT in app_cred, (
+    assert _fingerprint(_FAKE_JWT) in app_cred, (
         f"GET /app call must carry the App JWT as its bearer credential; "
         f"observed credential fields: {app_calls[0]!r}"
     )
-    assert _FAKE_TOKEN not in app_cred, (
+    assert _fingerprint(_FAKE_TOKEN) not in app_cred, (
         f"GET /app call must NOT carry the installation token; "
         f"observed credential fields: {app_calls[0]!r}"
     )
@@ -350,12 +366,12 @@ def test_jwt_used_for_app_preflight_and_token_used_for_repo_calls(
     )
     for call in other_calls:
         cred = _credential_blob(call)
-        assert _FAKE_TOKEN in cred, (
+        assert _fingerprint(_FAKE_TOKEN) in cred, (
             f"call to endpoint {call['endpoint']!r} (url={call['url']!r}) "
             f"must carry the installation token as its bearer credential; "
             f"observed credential fields: {call!r}"
         )
-        assert _FAKE_JWT not in cred, (
+        assert _fingerprint(_FAKE_JWT) not in cred, (
             f"call to endpoint {call['endpoint']!r} (url={call['url']!r}) "
             f"must NOT carry the App JWT; observed credential fields: "
             f"{call!r}"
@@ -482,11 +498,11 @@ def test_jwt_and_token_values_never_appear_in_script_output(
 
     calls = _calls(log)
     all_credentials = " ".join(_credential_blob(c) for c in calls)
-    assert _FAKE_JWT in all_credentials, (
+    assert _fingerprint(_FAKE_JWT) in all_credentials, (
         "expected the JWT override to actually be used as a bearer "
         f"credential somewhere in the run; calls={calls!r}"
     )
-    assert _FAKE_TOKEN in all_credentials, (
+    assert _fingerprint(_FAKE_TOKEN) in all_credentials, (
         "expected the installation-token override to actually be used "
         f"as a bearer credential somewhere in the run; calls={calls!r}"
     )

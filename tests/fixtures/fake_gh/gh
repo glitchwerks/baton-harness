@@ -83,10 +83,10 @@
 # the caller used for that specific invocation:
 #   auth_header      — the full value of a `-H`/`--header` arg beginning
 #                       with "Authorization:" (case-insensitive), or "".
-#   env_gh_token      — the value of $GH_TOKEN in the shim's environment
-#                       at call time, or "".
-#   env_github_token  — the value of $GITHUB_TOKEN in the shim's
-#                       environment at call time, or "".
+#   env_gh_token      — the first 12 hex chars of sha256($GH_TOKEN) in
+#                       the shim's environment at call time, or "".
+#   env_github_token  — the first 12 hex chars of sha256($GITHUB_TOKEN)
+#                       in the shim's environment at call time, or "".
 # These are purely observational (additive fields on the existing JSONL
 # shape) so pre-#200 tests reading only "method"/"url"/etc. are
 # unaffected.
@@ -204,6 +204,20 @@ _json_escape() {
         | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g; s/\r/\\r/g' \
         | sed ':a;N;$!ba;s/\n/\\n/g'
 }
+_fingerprint() {
+    # Non-reversible fingerprint for the env_gh_token/env_github_token
+    # call-log fields: first 12 hex chars of sha256(value), or ""
+    # for an empty value. Lets tests assert WHICH credential (JWT vs
+    # installation token) was used as a bearer without the raw
+    # secret ever landing in the JSONL log (issue #200 CodeRabbit
+    # review).
+    local _val="$1"
+    if [[ -z "${_val}" ]]; then
+        printf ''
+        return
+    fi
+    printf '%s' "${_val}" | sha256sum | cut -c1-12
+}
 _record="$(printf '{"method":"%s","url":"%s","endpoint":"%s","ruleset_id":"%s","ruleset_name":"%s","body":"%s","auth_header":"%s","env_gh_token":"%s","env_github_token":"%s"}' \
     "$(_json_escape "${_method}")" \
     "$(_json_escape "${_url}")" \
@@ -212,8 +226,8 @@ _record="$(printf '{"method":"%s","url":"%s","endpoint":"%s","ruleset_id":"%s","
     "$(_json_escape "${_ruleset_name}")" \
     "$(_json_escape "${_body:-}")" \
     "$(_json_escape "${_auth_header}")" \
-    "$(_json_escape "${GH_TOKEN:-}")" \
-    "$(_json_escape "${GITHUB_TOKEN:-}")")"
+    "$(_json_escape "$(_fingerprint "${GH_TOKEN:-}")")" \
+    "$(_json_escape "$(_fingerprint "${GITHUB_TOKEN:-}")")")"
 _log "${_record}"
 
 # Serve canned responses.
