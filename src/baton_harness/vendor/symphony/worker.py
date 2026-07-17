@@ -8,6 +8,7 @@ import logging
 import os
 import tempfile
 from dataclasses import dataclass
+from typing import Any
 
 from .config import (
     WorkflowConfig,
@@ -27,13 +28,32 @@ _MERGE_DENY_TOOLS = [
 
 
 class WorkerError(Exception):
-    def __init__(self, code: str, message: str):
+    """Raised for Claude Code CLI subprocess failures."""
+
+    def __init__(self, code: str, message: str) -> None:
+        """Initialize the error with a machine-readable code and message.
+
+        Args:
+            code: Short machine-readable error code.
+            message: Human-readable error message.
+        """
         self.code = code
         super().__init__(f"{code}: {message}")
 
 
 @dataclass
 class WorkerResult:
+    """Outcome of a single Claude Code CLI subprocess turn.
+
+    Attributes:
+        success: Whether the turn completed successfully.
+        output: The turn's textual output (the parsed `result` field
+            when JSON output was produced, else raw stdout).
+        error: Error message, if the turn failed.
+        exit_code: The subprocess exit code, or a sentinel (e.g. -1)
+            for timeout/not-found failures.
+    """
+
     success: bool
     output: str
     error: str | None = None
@@ -41,10 +61,20 @@ class WorkerResult:
 
 
 class Worker:
-    def __init__(self, config: WorkflowConfig):
+    """Runs Claude Code CLI turns as subprocesses for a single issue."""
+
+    def __init__(self, config: WorkflowConfig) -> None:
+        """Initialize the worker with the workflow's typed config.
+
+        Args:
+            config: The parsed WorkflowConfig driving this worker's
+                CLI invocations.
+        """
         self.config = config
 
-    def _build_mcp_config(self, issue_skills: list[str]) -> dict | None:
+    def _build_mcp_config(
+        self, issue_skills: list[str]
+    ) -> dict[str, Any] | None:
         """Build MCP config dict from workflow config and issue skills."""
         servers = {}
         for mcp in self.config.mcp_servers:
@@ -163,7 +193,7 @@ class Worker:
                     success=False,
                     output=output_text,
                     error=stderr_str or f"Exit code {proc.returncode}",
-                    exit_code=proc.returncode,
+                    exit_code=proc.returncode or 1,
                 )
 
             return WorkerResult(
