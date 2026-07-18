@@ -568,6 +568,22 @@ class TestLoadNonObjectJsonRoot:
 
         assert state.claimed == set()
 
+    def test_load_non_object_root_clears_existing_state(
+        self, tmp_path: Path
+    ) -> None:
+        """load() on a JSON array root clears all existing state."""
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps([]), encoding="utf-8")
+
+        state = _populated_state()
+        state.completed.add(99)
+        state.load(str(state_path))
+
+        assert state.running == {}
+        assert state.retry_queue == {}
+        assert state.claimed == set()
+        assert state.completed == set()
+
 
 # ---------------------------------------------------------------------------
 # 4. persist() atomicity sentinel: original file intact after mid-write crash
