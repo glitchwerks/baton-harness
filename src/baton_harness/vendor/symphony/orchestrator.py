@@ -341,7 +341,6 @@ class Orchestrator:
                             "git",
                             "status",
                             "--porcelain",
-                            "--untracked-files=no",
                         ],
                         cwd=wt.path,
                     )
