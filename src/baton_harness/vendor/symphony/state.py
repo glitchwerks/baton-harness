@@ -279,31 +279,62 @@ class OrchestratorState:
             self.completed.clear()
             return
 
-        for entry in data.get("running", []):  # VENDOR-PATCH VP-6: load()
-            issue_st = IssueState(  # VENDOR-PATCH VP-6: rebuild IssueState
-                issue_number=entry["issue_number"],
-                identifier=entry["identifier"],
-                title=entry["title"],
-                state=entry["state"],
-                turn=entry["turn"],
-                max_turns=entry["max_turns"],
-                started_at=entry["started_at"],
-                last_event=entry.get("last_event"),
-                # last_event_at intentionally omitted from persist() output;
-                # defaults to None per IssueState field default.  # VP-6
-                error=entry.get("error"),
-            )
-            self.running[issue_st.issue_number] = issue_st  # VENDOR-PATCH VP-6
+        if not isinstance(data, dict):  # VENDOR-PATCH VP-6
+            log.warning(  # VENDOR-PATCH VP-6: non-object root fallback
+                "state.json root is not a JSON object -- "  # VENDOR-PATCH VP-6
+                "starting fresh: got %s",  # VENDOR-PATCH VP-6
+                type(data).__name__,  # VENDOR-PATCH VP-6
+            )  # VENDOR-PATCH VP-6: non-object root fallback
+            self.running.clear()  # VENDOR-PATCH VP-6: corruption fallback
+            self.retry_queue.clear()  # VENDOR-PATCH VP-6: corruption fallback
+            self.claimed.clear()  # VENDOR-PATCH VP-6: corruption fallback
+            self.completed.clear()  # VENDOR-PATCH VP-6: corruption fallback
+            return  # VENDOR-PATCH VP-6: corruption fallback
 
-        for entry in data.get("retrying", []):  # VENDOR-PATCH VP-6: load()
-            retry = RetryEntry(  # VENDOR-PATCH VP-6: rebuild RetryEntry
-                issue_number=entry["issue_number"],
-                identifier=entry["identifier"],
-                attempt=entry["attempt"],
-                due_at=entry["due_at"],
-                error=entry.get("error"),
-            )
-            self.retry_queue[retry.issue_number] = retry  # VENDOR-PATCH VP-6
+        temp_running: dict[int, IssueState] = {}  # VENDOR-PATCH VP-6
+        temp_retry_queue: dict[int, RetryEntry] = {}  # VENDOR-PATCH VP-6
+        temp_claimed: set[int] = set()  # VENDOR-PATCH VP-6
+        try:  # VENDOR-PATCH VP-6: reject malformed records atomically
+            for entry in data.get("running", []):  # VENDOR-PATCH VP-6: load()
+                issue = IssueState(  # VENDOR-PATCH VP-6: rebuild IssueState
+                    issue_number=entry["issue_number"],  # VENDOR-PATCH VP-6
+                    identifier=entry["identifier"],  # VENDOR-PATCH VP-6
+                    title=entry["title"],  # VENDOR-PATCH VP-6
+                    state=entry["state"],  # VENDOR-PATCH VP-6
+                    turn=entry["turn"],  # VENDOR-PATCH VP-6
+                    max_turns=entry["max_turns"],  # VENDOR-PATCH VP-6
+                    started_at=entry["started_at"],  # VENDOR-PATCH VP-6
+                    last_event=entry.get("last_event"),  # VENDOR-PATCH VP-6
+                    # last_event_at is not persisted and defaults to None.
+                    # VENDOR-PATCH VP-6
+                    error=entry.get("error"),  # VENDOR-PATCH VP-6
+                )
+                temp_running[issue.issue_number] = issue  # VENDOR-PATCH VP-6
 
-        for num in data.get("claimed", []):  # VENDOR-PATCH VP-6: load claimed
-            self.claimed.add(int(num))  # VENDOR-PATCH VP-6: load claimed
+            for entry in data.get("retrying", []):  # VENDOR-PATCH VP-6: load()
+                item = RetryEntry(  # VENDOR-PATCH VP-6: rebuild RetryEntry
+                    issue_number=entry["issue_number"],  # VENDOR-PATCH VP-6
+                    identifier=entry["identifier"],  # VENDOR-PATCH VP-6
+                    attempt=entry["attempt"],  # VENDOR-PATCH VP-6
+                    due_at=entry["due_at"],  # VENDOR-PATCH VP-6
+                    error=entry.get("error"),  # VENDOR-PATCH VP-6
+                )
+                temp_retry_queue[item.issue_number] = item  # VENDOR-PATCH VP-6
+
+            for num in data.get("claimed", []):  # VENDOR-PATCH VP-6
+                temp_claimed.add(int(num))  # VENDOR-PATCH VP-6: load claimed
+        except (  # VENDOR-PATCH VP-6: malformed-record fallback
+            KeyError,  # VENDOR-PATCH VP-6
+            OverflowError,  # VENDOR-PATCH VP-6
+            TypeError,  # VENDOR-PATCH VP-6
+            ValueError,  # VENDOR-PATCH VP-6
+        ) as exc:  # VENDOR-PATCH VP-6: malformed-record fallback
+            log.warning(  # VENDOR-PATCH VP-6: malformed-record fallback
+                "state.json has a malformed record — starting fresh: %s",
+                exc,
+            )
+            return  # VENDOR-PATCH VP-6: discard temporary reconstruction
+
+        self.running = temp_running  # VENDOR-PATCH VP-6: commit
+        self.retry_queue = temp_retry_queue  # VENDOR-PATCH VP-6: commit
+        self.claimed = temp_claimed  # VENDOR-PATCH VP-6: commit

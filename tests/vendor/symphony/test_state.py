@@ -111,6 +111,88 @@ def _make_retry_entry(
     )
 
 
+def _valid_running_dict(
+    issue_number: int = 1,
+    identifier: str | None = None,
+    title: str = "Some issue",
+    state: str = "open",
+    turn: int = 0,
+    max_turns: int = 8,
+    started_at: float = _SENTINEL_STARTED_AT,
+    last_event: str | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    """Return a well-formed raw JSON dict for a `running` list entry.
+
+    Mirrors the exact key set persist() writes for an IssueState, so it can
+    be embedded directly into a hand-built state.json payload for load()
+    schema tests.
+
+    Args:
+        issue_number: GitHub issue number.
+        identifier: Repo-scoped identifier string; defaults to a value
+            derived from issue_number when None.
+        title: Issue title.
+        state: Issue state string (e.g. "open").
+        turn: Current turn index.
+        max_turns: Maximum allowed turns.
+        started_at: Unix timestamp when processing started.
+        last_event: Description of the last event.
+        error: Error string if the last turn failed.
+
+    Returns:
+        A dict matching the JSON shape persist() writes for one running
+        entry.
+    """
+    if identifier is None:
+        identifier = f"owner/repo#{issue_number}"
+    return {
+        "issue_number": issue_number,
+        "identifier": identifier,
+        "title": title,
+        "state": state,
+        "turn": turn,
+        "max_turns": max_turns,
+        "started_at": started_at,
+        "last_event": last_event,
+        "error": error,
+    }
+
+
+def _valid_retrying_dict(
+    issue_number: int = 7,
+    identifier: str | None = None,
+    attempt: int = 1,
+    due_at: float = _SENTINEL_DUE_AT,
+    error: str | None = None,
+) -> dict[str, Any]:
+    """Return a well-formed raw JSON dict for a `retrying` list entry.
+
+    Mirrors the exact key set persist() writes for a RetryEntry.
+
+    Args:
+        issue_number: GitHub issue number.
+        identifier: Repo-scoped identifier string; defaults to a value
+            derived from issue_number when None.
+        attempt: Retry attempt count.
+        due_at: Unix timestamp when this retry becomes eligible.
+        error: Error string from the previous attempt.
+
+    Returns:
+        A dict matching the JSON shape persist() writes for one retrying
+        entry.
+    """
+    if identifier is None:
+        identifier = f"owner/repo#{issue_number}"
+    return {
+        "issue_number": issue_number,
+        "identifier": identifier,
+        "attempt": attempt,
+        "due_at": due_at,
+        "error": error,
+    }
+
+
 def _populated_state() -> OrchestratorState:
     """Return an OrchestratorState with running, retry_queue, and claimed set.
 
@@ -432,6 +514,75 @@ class TestLoadMalformedJson:
             "malformed JSON, but none were emitted. "
             "Operators need a signal to diagnose corruption."
         )
+
+
+# ---------------------------------------------------------------------------
+# 3a. load() on a non-object JSON root: no exception, fresh state
+# ---------------------------------------------------------------------------
+
+
+class TestLoadNonObjectJsonRoot:
+    """load() on a non-object JSON root does not raise and resets state."""
+
+    def test_load_non_object_root_does_not_raise(self, tmp_path: Path) -> None:
+        """load() on a JSON array root must not raise any exception."""
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps([]), encoding="utf-8")
+
+        state = OrchestratorState(max_concurrent=3)
+        state.load(str(state_path))
+
+    def test_load_non_object_root_running_stays_empty(
+        self, tmp_path: Path
+    ) -> None:
+        """Running is empty after load() on a JSON array root."""
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps([]), encoding="utf-8")
+
+        state = OrchestratorState(max_concurrent=3)
+        state.load(str(state_path))
+
+        assert state.running == {}
+
+    def test_load_non_object_root_retry_queue_stays_empty(
+        self, tmp_path: Path
+    ) -> None:
+        """retry_queue is empty after load() on a JSON array root."""
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps([]), encoding="utf-8")
+
+        state = OrchestratorState(max_concurrent=3)
+        state.load(str(state_path))
+
+        assert state.retry_queue == {}
+
+    def test_load_non_object_root_claimed_stays_empty(
+        self, tmp_path: Path
+    ) -> None:
+        """Claimed is empty after load() on a JSON array root."""
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps([]), encoding="utf-8")
+
+        state = OrchestratorState(max_concurrent=3)
+        state.load(str(state_path))
+
+        assert state.claimed == set()
+
+    def test_load_non_object_root_clears_existing_state(
+        self, tmp_path: Path
+    ) -> None:
+        """load() on a JSON array root clears all existing state."""
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps([]), encoding="utf-8")
+
+        state = _populated_state()
+        state.completed.add(99)
+        state.load(str(state_path))
+
+        assert state.running == {}
+        assert state.retry_queue == {}
+        assert state.claimed == set()
+        assert state.completed == set()
 
 
 # ---------------------------------------------------------------------------
@@ -777,3 +928,392 @@ class TestLastEventAtHandling:
             "does not serialize it. If the implementation adds last_event_at "
             "to persist(), change this assertion to check the exact value."
         )
+
+
+# ---------------------------------------------------------------------------
+# 10. load() on malformed schema in `running`: no uncaught exception (#262)
+# ---------------------------------------------------------------------------
+
+
+class TestLoadMalformedRunningEntrySchema:
+    """A `running` entry missing a required key must not crash load().
+
+    Today, ``entry["issue_number"]`` (and similar direct subscripts) inside
+    the running-reconstruction loop raise an uncaught KeyError that is not
+    covered by the ``except (json.JSONDecodeError, OSError,
+    UnicodeDecodeError)`` clause, so it propagates out of load() entirely.
+    Per #262, a malformed schema must be handled the same way as a JSON
+    parse failure: no exception, clean empty state.
+    """
+
+    def test_does_not_raise(self, tmp_path: Path) -> None:
+        """load() must not raise on a running entry missing issue_number."""
+        malformed = _valid_running_dict(issue_number=1)
+        del malformed["issue_number"]
+        payload: dict[str, Any] = {
+            "running": [malformed],
+            "retrying": [],
+            "claimed": [],
+            "completed_count": 0,
+        }
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        state = OrchestratorState(max_concurrent=3)
+        # Must not raise -- currently raises an uncaught KeyError.
+        state.load(str(state_path))
+
+    def test_running_stays_empty(self, tmp_path: Path) -> None:
+        """Running dict is empty after load() on a malformed running entry."""
+        malformed = _valid_running_dict(issue_number=1)
+        del malformed["issue_number"]
+        payload: dict[str, Any] = {
+            "running": [malformed],
+            "retrying": [],
+            "claimed": [],
+            "completed_count": 0,
+        }
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        state = OrchestratorState(max_concurrent=3)
+        state.load(str(state_path))
+
+        assert state.running == {}
+
+    def test_retry_queue_stays_empty(self, tmp_path: Path) -> None:
+        """retry_queue is empty after load() on a malformed running entry."""
+        malformed = _valid_running_dict(issue_number=1)
+        del malformed["issue_number"]
+        payload: dict[str, Any] = {
+            "running": [malformed],
+            "retrying": [],
+            "claimed": [],
+            "completed_count": 0,
+        }
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        state = OrchestratorState(max_concurrent=3)
+        state.load(str(state_path))
+
+        assert state.retry_queue == {}
+
+    def test_claimed_stays_empty(self, tmp_path: Path) -> None:
+        """Claimed set is empty after load() on a malformed running entry."""
+        malformed = _valid_running_dict(issue_number=1)
+        del malformed["issue_number"]
+        payload: dict[str, Any] = {
+            "running": [malformed],
+            "retrying": [],
+            "claimed": [],
+            "completed_count": 0,
+        }
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        state = OrchestratorState(max_concurrent=3)
+        state.load(str(state_path))
+
+        assert state.claimed == set()
+
+    def test_preexisting_state_survives_failure(self, tmp_path: Path) -> None:
+        """Malformed running data preserves all pre-existing state."""
+        malformed = _valid_running_dict(issue_number=1)
+        del malformed["issue_number"]
+        payload: dict[str, Any] = {
+            "running": [malformed],
+            "retrying": [],
+            "claimed": [],
+            "completed_count": 0,
+        }
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        state = OrchestratorState(max_concurrent=3)
+        expected_running = _make_issue_state()
+        expected_retry = _make_retry_entry()
+        state.add_running(expected_running.issue_number, expected_running)
+        state.retry_queue[expected_retry.issue_number] = expected_retry
+        state.claimed.add(expected_retry.issue_number)
+
+        state.load(str(state_path))
+
+        assert state.running == {42: expected_running}
+        assert state.retry_queue == {7: expected_retry}
+        assert state.claimed == {42, 7}
+
+
+# ---------------------------------------------------------------------------
+# 11. load() is transactional: no partial mutation on running failure (#262)
+# ---------------------------------------------------------------------------
+
+
+class TestLoadNoPartialMutationOnRunningSchemaFailure:
+    """The first valid `running` entry must not survive a later failure.
+
+    Today the running loop mutates ``self.running`` in place, one entry at
+    a time, as it iterates -- so a failure on the second entry leaves the
+    first entry's mutation already applied. Per #262, load() must be
+    transactional: either fully loaded or cleanly empty, never
+    half-populated.
+    """
+
+    def test_does_not_raise(self, tmp_path: Path) -> None:
+        """load() must not raise when the second running entry is malformed."""
+        valid_entry = _valid_running_dict(issue_number=1)
+        malformed_entry = _valid_running_dict(issue_number=2)
+        del malformed_entry["issue_number"]
+        payload: dict[str, Any] = {
+            "running": [valid_entry, malformed_entry],
+            "retrying": [],
+            "claimed": [],
+            "completed_count": 0,
+        }
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        state = OrchestratorState(max_concurrent=3)
+        # Must not raise -- currently raises an uncaught KeyError.
+        state.load(str(state_path))
+
+    def test_first_valid_entry_does_not_survive(self, tmp_path: Path) -> None:
+        """The first, well-formed running entry must not survive.
+
+        A later entry in the same list fails to parse. This is the
+        transactional guarantee: partial success is not success. Today
+        this fails because issue 1 is inserted into self.running before
+        the second entry raises.
+        """
+        valid_entry = _valid_running_dict(issue_number=1)
+        malformed_entry = _valid_running_dict(issue_number=2)
+        del malformed_entry["issue_number"]
+        payload: dict[str, Any] = {
+            "running": [valid_entry, malformed_entry],
+            "retrying": [],
+            "claimed": [],
+            "completed_count": 0,
+        }
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        state = OrchestratorState(max_concurrent=3)
+        state.load(str(state_path))
+
+        assert state.running == {}, (
+            "self.running must be empty when any entry in the running "
+            "list fails to parse -- the first, valid entry must not "
+            f"survive as a partial mutation. Got: {state.running!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 12. load() malformed `retrying` entry spans transactionality across
+#     collections (#262)
+# ---------------------------------------------------------------------------
+
+
+class TestLoadMalformedRetryingEntrySchema:
+    """A malformed `retrying` entry must not crash load().
+
+    Even though the running loop runs (and would succeed) before the
+    retrying loop hits the malformed entry, a failure anywhere in load()
+    must roll back to a fully empty state across ALL collections -- not
+    just the collection where the failure occurred.
+    """
+
+    def _payload(self) -> dict[str, Any]:
+        """Build a payload with a valid running entry, malformed retrying.
+
+        The retrying entry is missing issue_number.
+
+        Returns:
+            A JSON-serializable dict for state.json.
+        """
+        valid_running = _valid_running_dict(issue_number=1)
+        malformed_retrying = _valid_retrying_dict(issue_number=7)
+        del malformed_retrying["issue_number"]
+        return {
+            "running": [valid_running],
+            "retrying": [malformed_retrying],
+            "claimed": [],
+            "completed_count": 0,
+        }
+
+    def test_does_not_raise(self, tmp_path: Path) -> None:
+        """load() must not raise when a retrying entry is malformed."""
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps(self._payload()), encoding="utf-8")
+
+        state = OrchestratorState(max_concurrent=3)
+        # Must not raise -- currently raises an uncaught KeyError.
+        state.load(str(state_path))
+
+    def test_running_stays_empty(self, tmp_path: Path) -> None:
+        """The valid running entry must not survive a retrying failure."""
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps(self._payload()), encoding="utf-8")
+
+        state = OrchestratorState(max_concurrent=3)
+        state.load(str(state_path))
+
+        assert state.running == {}, (
+            "self.running must be empty when the retrying list fails to "
+            "parse, even though the running entry itself was well-formed. "
+            f"Got: {state.running!r}"
+        )
+
+    def test_retry_queue_stays_empty(self, tmp_path: Path) -> None:
+        """retry_queue is empty after load() on a malformed retrying entry."""
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps(self._payload()), encoding="utf-8")
+
+        state = OrchestratorState(max_concurrent=3)
+        state.load(str(state_path))
+
+        assert state.retry_queue == {}
+
+    def test_claimed_stays_empty(self, tmp_path: Path) -> None:
+        """Claimed set is empty after load() on a malformed retrying entry."""
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps(self._payload()), encoding="utf-8")
+
+        state = OrchestratorState(max_concurrent=3)
+        state.load(str(state_path))
+
+        assert state.claimed == set()
+
+    def test_preexisting_state_survives_failure(self, tmp_path: Path) -> None:
+        """Malformed retrying data preserves all pre-existing state."""
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps(self._payload()), encoding="utf-8")
+
+        state = OrchestratorState(max_concurrent=3)
+        expected_running = _make_issue_state(
+            issue_number=99,
+            identifier="owner/repo#99",
+        )
+        expected_retry = _make_retry_entry(
+            issue_number=88,
+            identifier="owner/repo#88",
+        )
+        state.add_running(expected_running.issue_number, expected_running)
+        state.retry_queue[expected_retry.issue_number] = expected_retry
+        state.claimed.add(expected_retry.issue_number)
+
+        state.load(str(state_path))
+
+        assert state.running == {99: expected_running}
+        assert state.retry_queue == {88: expected_retry}
+        assert state.claimed == {99, 88}
+
+
+# ---------------------------------------------------------------------------
+# 13. load() malformed `claimed` entry (wrong type) doesn't crash (#262)
+# ---------------------------------------------------------------------------
+
+
+class TestLoadMalformedClaimedEntryType:
+    """A `claimed` entry that fails int() conversion must not crash load().
+
+    Today ``int(num)`` on a non-numeric claimed value raises an uncaught
+    ValueError/TypeError. Per #262 this must degrade gracefully to a clean
+    empty state, and transactionality spans to the other collections too.
+    """
+
+    def _payload(self) -> dict[str, Any]:
+        """Build a payload with a valid running entry, unparseable claimed.
+
+        The claimed list contains one value that cannot be coerced to int.
+
+        Returns:
+            A JSON-serializable dict for state.json.
+        """
+        valid_running = _valid_running_dict(issue_number=1)
+        return {
+            "running": [valid_running],
+            "retrying": [],
+            "claimed": [{"not": "a number"}],
+            "completed_count": 0,
+        }
+
+    def test_does_not_raise(self, tmp_path: Path) -> None:
+        """load() must not raise when a claimed entry is the wrong type."""
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps(self._payload()), encoding="utf-8")
+
+        state = OrchestratorState(max_concurrent=3)
+        # Must not raise -- currently raises an uncaught TypeError.
+        state.load(str(state_path))
+
+    def test_claimed_stays_empty(self, tmp_path: Path) -> None:
+        """Claimed set is empty after load() on a malformed claimed entry."""
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps(self._payload()), encoding="utf-8")
+
+        state = OrchestratorState(max_concurrent=3)
+        state.load(str(state_path))
+
+        assert state.claimed == set()
+
+    def test_running_stays_empty(self, tmp_path: Path) -> None:
+        """The valid running entry must not survive a claimed-side failure."""
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps(self._payload()), encoding="utf-8")
+
+        state = OrchestratorState(max_concurrent=3)
+        state.load(str(state_path))
+
+        assert state.running == {}, (
+            "self.running must be empty when the claimed list fails to "
+            "parse, even though the running entry itself was well-formed. "
+            f"Got: {state.running!r}"
+        )
+
+    def test_preexisting_state_survives_failure(self, tmp_path: Path) -> None:
+        """Malformed claimed data preserves all pre-existing state."""
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps(self._payload()), encoding="utf-8")
+
+        state = OrchestratorState(max_concurrent=3)
+        expected_running = _make_issue_state(
+            issue_number=99,
+            identifier="owner/repo#99",
+        )
+        expected_retry = _make_retry_entry(
+            issue_number=88,
+            identifier="owner/repo#88",
+        )
+        state.add_running(expected_running.issue_number, expected_running)
+        state.retry_queue[expected_retry.issue_number] = expected_retry
+        state.claimed.add(expected_retry.issue_number)
+
+        state.load(str(state_path))
+
+        assert state.running == {99: expected_running}
+        assert state.retry_queue == {88: expected_retry}
+        assert state.claimed == {99, 88}
+
+    def test_claimed_numeric_overflow_preserves_state(
+        self, tmp_path: Path
+    ) -> None:
+        """An overflowing claimed number preserves pre-existing state."""
+        payload: dict[str, Any] = {
+            "running": [],
+            "retrying": [],
+            "claimed": [1e309],
+            "completed_count": 0,
+        }
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        state = _populated_state()
+        expected_running = dict(state.running)
+        expected_retry_queue = dict(state.retry_queue)
+        expected_claimed = set(state.claimed)
+
+        state.load(str(state_path))
+
+        assert state.running == expected_running
+        assert state.retry_queue == expected_retry_queue
+        assert state.claimed == expected_claimed
