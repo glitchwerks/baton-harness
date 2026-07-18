@@ -96,7 +96,7 @@ class Orchestrator:
         )
         self.workspace = WorkspaceManager(project_root=project_root)
         self.worker = Worker(config)
-        self._running_tasks: dict[int, asyncio.Task] = {}
+        self._running_tasks: dict[int, asyncio.Task[str]] = {}
         self._stop_event = asyncio.Event()
         # VENDOR-PATCH VP-3: per-turn progress callback (issue #33)
         # Optional callable(issue_number, turn) injected by the daemon.
@@ -131,7 +131,9 @@ class Orchestrator:
 
         log.info(f'START #{issue.number} "{issue.title}"')
 
-    def _on_worker_done(self, issue_number: int, task: asyncio.Task) -> None:
+    def _on_worker_done(
+        self, issue_number: int, task: asyncio.Task[str]
+    ) -> None:
         self._running_tasks.pop(issue_number, None)
         entry = self.state.remove_running(issue_number)
 
@@ -169,7 +171,7 @@ class Orchestrator:
         self.state.persist(self.state_path)
 
     def _backoff_delay(self, attempt: int) -> int:
-        delay = min(
+        delay: int = min(
             10000 * (2 ** (attempt - 1)), self.config.max_retry_backoff_ms
         )
         return delay
