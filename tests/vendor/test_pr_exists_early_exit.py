@@ -1143,9 +1143,13 @@ def test_git_status_includes_untracked_files() -> None:
         for call in mock_run_cmd.call_args_list
     ]
     status_args = next(
-        args
-        for args in called_args
-        if "status" in args and "--porcelain" in args
+        (args for args in called_args
+         if "status" in args and "--porcelain" in args),
+        None,
+    )
+    assert status_args is not None, (
+        "Expected a 'git status --porcelain' call; "
+        f"got: {called_args!r}"
     )
     assert "--untracked-files=no" not in status_args
 
