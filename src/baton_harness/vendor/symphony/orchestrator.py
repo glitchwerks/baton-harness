@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import json  # VENDOR-PATCH VP-2: needed for exclude_labels re-check label parse
+
+# VENDOR-PATCH VP-2: needed for exclude_labels re-check label parse
+import json
 import logging
 
 from .config import (
@@ -18,29 +20,67 @@ from .state import (
     IssueState,
     OrchestratorState,
 )  # VENDOR-PATCH: relative import for vendoring
+
+# VENDOR-PATCH: relative import for vendoring; run_gh added for VP-2
+# exclude_labels re-check
 from .tracker import (
     GitHubTracker,
     Issue,
     parse_issue_skills,
     run_gh,
-)  # VENDOR-PATCH: relative import for vendoring; run_gh added for VP-2 exclude_labels re-check
+)
 from .worker import Worker  # VENDOR-PATCH: relative import for vendoring
+
+# VENDOR-PATCH: relative import for vendoring; run_cmd added for VP-5
+# worktree-clean gate
 from .workspace import (
     WorkspaceManager,
     run_cmd,
-)  # VENDOR-PATCH: relative import for vendoring; run_cmd added for VP-5 worktree-clean gate
+)
 
 log = logging.getLogger("symphony")
 
 
 class Orchestrator:
+    """Main event loop: poll GitHub issues, dispatch workers, reconcile.
+
+    Owns the poll → dispatch → reconcile → retry cycle (`_tick`) and the
+    per-issue multi-turn worker loop (`_run_worker`). State is persisted
+    to disk on every tick so a restart resumes in-flight and queued work.
+
+    Attributes:
+        config: The active workflow configuration (hot-reloadable via
+            `workflow_path`).
+        project_root: Filesystem root the git worktrees are created under.
+        state_path: Path `OrchestratorState` is loaded from and persisted to.
+        workflow_path: Optional path to re-read `config` from on every tick;
+            `None` disables hot reload.
+        state: In-memory `OrchestratorState` tracking running/retrying/
+            claimed issues.
+        tracker: `GitHubTracker` used to poll issues and check PR state.
+        workspace: `WorkspaceManager` that creates/cleans up git worktrees.
+        worker: `Worker` that runs a single Claude turn.
+        progress_cb: Optional `callable(issue_number, turn)` invoked after
+            each turn starts; injected by the daemon for progress reporting.
+    """
+
     def __init__(
         self,
         config: WorkflowConfig,
         project_root: str,
         state_path: str,
         workflow_path: str | None = None,
-    ):
+    ) -> None:
+        """Initialize the orchestrator and restore persisted state.
+
+        Args:
+            config: The workflow configuration to run with.
+            project_root: Filesystem root the git worktrees are created
+                under.
+            state_path: Path to load/persist `OrchestratorState` from/to.
+            workflow_path: Optional path to hot-reload `config` from on
+                every tick. Defaults to `None` (no hot reload).
+        """
         self.config = config
         self.project_root = project_root
         self.state_path = state_path
@@ -170,11 +210,12 @@ class Orchestrator:
         pr_detected = False
         for turn in range(1, self.config.max_turns + 1):
             # Update state
-            # VENDOR-PATCH VP-2: guard already present — confirmed in vendored
-            # source.  This ``if issue.number in self.state.running:`` check
-            # prevents a stale state.json from causing a KeyError on the turn
-            # mutation (CONCERN-4).  No additional guard is needed; the existing
-            # check satisfies the VP-2 running[N] guard requirement.
+            # VENDOR-PATCH VP-2: guard already present — confirmed in
+            # vendored source.  This ``if issue.number in
+            # self.state.running:`` check prevents a stale state.json
+            # from causing a KeyError on the turn mutation (CONCERN-4).
+            # No additional guard is needed; the existing check
+            # satisfies the VP-2 running[N] guard requirement.
             if issue.number in self.state.running:
                 self.state.running[issue.number].turn = turn
 
@@ -185,9 +226,12 @@ class Orchestrator:
                 )
             else:
                 prompt = (
-                    f"Continue working on issue #{issue.number}: {issue.title}. "
-                    f"Check what's been done so far and continue if there's more to do. "
-                    f"If the work is complete, commit, push, and create a PR."
+                    f"Continue working on issue #{issue.number}: "
+                    f"{issue.title}. "
+                    f"Check what's been done so far and continue if "
+                    f"there's more to do. "
+                    f"If the work is complete, commit, push, and "
+                    f"create a PR."
                 )
 
             log.info(
@@ -242,10 +286,11 @@ class Orchestrator:
                 )
                 break
 
-            # VENDOR-PATCH VP-2: re-check exclude_labels after fetch_issue_state.
-            # If any exclude label (e.g. "blocked") is now present, terminate the
-            # turn loop immediately — making a mid-run block terminal and closing
-            # the #23 root cause (external Baton never re-checked between turns).
+            # VENDOR-PATCH VP-2: re-check exclude_labels after
+            # fetch_issue_state. If any exclude label (e.g. "blocked")
+            # is now present, terminate the turn loop immediately —
+            # making a mid-run block terminal and closing the #23 root
+            # cause (external Baton never re-checked between turns).
             if self.tracker.exclude_labels:
                 try:
                     label_output = await run_gh(
@@ -302,9 +347,9 @@ class Orchestrator:
                     )
                     if status.strip():
                         log.info(
-                            f"PR_DIRTY #{issue.number} — PR exists but worktree"
-                            f" has uncommitted changes at turn {turn};"
-                            f" continuing"
+                            f"PR_DIRTY #{issue.number} — PR exists but"
+                            f" worktree has uncommitted changes at"
+                            f" turn {turn}; continuing"
                         )
                     else:
                         ahead = await run_cmd(
@@ -443,8 +488,8 @@ class Orchestrator:
                 self.state.max_concurrent = self.config.max_concurrent
                 self.tracker.labels = self.config.tracker_labels
                 self.tracker.exclude_labels = [
-                    l.lower()
-                    for l in (self.config.tracker_exclude_labels or [])
+                    label.lower()
+                    for label in (self.config.tracker_exclude_labels or [])
                 ]
                 self.tracker.assignee = self.config.tracker_assignee
             except Exception as e:
@@ -462,7 +507,8 @@ class Orchestrator:
         log.info(
             f"POLL  Found {len(candidates)} issues "
             f"({len(eligible)} eligible, "
-            f"{self.state.running_count}/{self.state.max_concurrent} slots used)"
+            f"{self.state.running_count}/{self.state.max_concurrent}"
+            f" slots used)"
         )
 
         # 5. Dispatch
@@ -476,7 +522,8 @@ class Orchestrator:
     async def run(self) -> None:
         """Main loop."""
         log.info(
-            f"Baton starting — polling every {self.config.poll_interval_ms}ms, "
+            f"Baton starting — polling every"
+            f" {self.config.poll_interval_ms}ms, "
             f"max {self.config.max_concurrent} concurrent"
         )
 
@@ -506,4 +553,5 @@ class Orchestrator:
         log.info("Baton stopped")
 
     def stop(self) -> None:
+        """Signal `run` to exit after the current tick completes."""
         self._stop_event.set()
