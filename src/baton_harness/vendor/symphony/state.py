@@ -279,6 +279,18 @@ class OrchestratorState:
             self.completed.clear()
             return
 
+        if not isinstance(data, dict):  # VENDOR-PATCH VP-6
+            log.warning(  # VENDOR-PATCH VP-6: non-object root fallback
+                "state.json root is not a JSON object -- "  # VENDOR-PATCH VP-6
+                "starting fresh: got %s",  # VENDOR-PATCH VP-6
+                type(data).__name__,  # VENDOR-PATCH VP-6
+            )  # VENDOR-PATCH VP-6: non-object root fallback
+            self.running.clear()  # VENDOR-PATCH VP-6: corruption fallback
+            self.retry_queue.clear()  # VENDOR-PATCH VP-6: corruption fallback
+            self.claimed.clear()  # VENDOR-PATCH VP-6: corruption fallback
+            self.completed.clear()  # VENDOR-PATCH VP-6: corruption fallback
+            return  # VENDOR-PATCH VP-6: corruption fallback
+
         temp_running: dict[int, IssueState] = {}  # VENDOR-PATCH VP-6
         temp_retry_queue: dict[int, RetryEntry] = {}  # VENDOR-PATCH VP-6
         temp_claimed: set[int] = set()  # VENDOR-PATCH VP-6
@@ -311,7 +323,12 @@ class OrchestratorState:
 
             for num in data.get("claimed", []):  # VENDOR-PATCH VP-6
                 temp_claimed.add(int(num))  # VENDOR-PATCH VP-6: load claimed
-        except (KeyError, TypeError, ValueError) as exc:  # VENDOR-PATCH VP-6
+        except (  # VENDOR-PATCH VP-6: malformed-record fallback
+            KeyError,  # VENDOR-PATCH VP-6
+            OverflowError,  # VENDOR-PATCH VP-6
+            TypeError,  # VENDOR-PATCH VP-6
+            ValueError,  # VENDOR-PATCH VP-6
+        ) as exc:  # VENDOR-PATCH VP-6: malformed-record fallback
             log.warning(  # VENDOR-PATCH VP-6: malformed-record fallback
                 "state.json has a malformed record — starting fresh: %s",
                 exc,

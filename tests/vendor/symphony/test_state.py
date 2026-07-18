@@ -517,6 +517,59 @@ class TestLoadMalformedJson:
 
 
 # ---------------------------------------------------------------------------
+# 3a. load() on a non-object JSON root: no exception, fresh state
+# ---------------------------------------------------------------------------
+
+
+class TestLoadNonObjectJsonRoot:
+    """load() on a non-object JSON root does not raise and resets state."""
+
+    def test_load_non_object_root_does_not_raise(self, tmp_path: Path) -> None:
+        """load() on a JSON array root must not raise any exception."""
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps([]), encoding="utf-8")
+
+        state = OrchestratorState(max_concurrent=3)
+        state.load(str(state_path))
+
+    def test_load_non_object_root_running_stays_empty(
+        self, tmp_path: Path
+    ) -> None:
+        """Running is empty after load() on a JSON array root."""
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps([]), encoding="utf-8")
+
+        state = OrchestratorState(max_concurrent=3)
+        state.load(str(state_path))
+
+        assert state.running == {}
+
+    def test_load_non_object_root_retry_queue_stays_empty(
+        self, tmp_path: Path
+    ) -> None:
+        """retry_queue is empty after load() on a JSON array root."""
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps([]), encoding="utf-8")
+
+        state = OrchestratorState(max_concurrent=3)
+        state.load(str(state_path))
+
+        assert state.retry_queue == {}
+
+    def test_load_non_object_root_claimed_stays_empty(
+        self, tmp_path: Path
+    ) -> None:
+        """Claimed is empty after load() on a JSON array root."""
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps([]), encoding="utf-8")
+
+        state = OrchestratorState(max_concurrent=3)
+        state.load(str(state_path))
+
+        assert state.claimed == set()
+
+
+# ---------------------------------------------------------------------------
 # 4. persist() atomicity sentinel: original file intact after mid-write crash
 # ---------------------------------------------------------------------------
 
@@ -948,6 +1001,32 @@ class TestLoadMalformedRunningEntrySchema:
 
         assert state.claimed == set()
 
+    def test_preexisting_state_survives_failure(self, tmp_path: Path) -> None:
+        """Malformed running data preserves all pre-existing state."""
+        malformed = _valid_running_dict(issue_number=1)
+        del malformed["issue_number"]
+        payload: dict[str, Any] = {
+            "running": [malformed],
+            "retrying": [],
+            "claimed": [],
+            "completed_count": 0,
+        }
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        state = OrchestratorState(max_concurrent=3)
+        expected_running = _make_issue_state()
+        expected_retry = _make_retry_entry()
+        state.add_running(expected_running.issue_number, expected_running)
+        state.retry_queue[expected_retry.issue_number] = expected_retry
+        state.claimed.add(expected_retry.issue_number)
+
+        state.load(str(state_path))
+
+        assert state.running == {42: expected_running}
+        assert state.retry_queue == {7: expected_retry}
+        assert state.claimed == {42, 7}
+
 
 # ---------------------------------------------------------------------------
 # 11. load() is transactional: no partial mutation on running failure (#262)
@@ -1088,6 +1167,30 @@ class TestLoadMalformedRetryingEntrySchema:
 
         assert state.claimed == set()
 
+    def test_preexisting_state_survives_failure(self, tmp_path: Path) -> None:
+        """Malformed retrying data preserves all pre-existing state."""
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps(self._payload()), encoding="utf-8")
+
+        state = OrchestratorState(max_concurrent=3)
+        expected_running = _make_issue_state(
+            issue_number=99,
+            identifier="owner/repo#99",
+        )
+        expected_retry = _make_retry_entry(
+            issue_number=88,
+            identifier="owner/repo#88",
+        )
+        state.add_running(expected_running.issue_number, expected_running)
+        state.retry_queue[expected_retry.issue_number] = expected_retry
+        state.claimed.add(expected_retry.issue_number)
+
+        state.load(str(state_path))
+
+        assert state.running == {99: expected_running}
+        assert state.retry_queue == {88: expected_retry}
+        assert state.claimed == {99, 88}
+
 
 # ---------------------------------------------------------------------------
 # 13. load() malformed `claimed` entry (wrong type) doesn't crash (#262)
@@ -1150,3 +1253,51 @@ class TestLoadMalformedClaimedEntryType:
             "parse, even though the running entry itself was well-formed. "
             f"Got: {state.running!r}"
         )
+
+    def test_preexisting_state_survives_failure(self, tmp_path: Path) -> None:
+        """Malformed claimed data preserves all pre-existing state."""
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps(self._payload()), encoding="utf-8")
+
+        state = OrchestratorState(max_concurrent=3)
+        expected_running = _make_issue_state(
+            issue_number=99,
+            identifier="owner/repo#99",
+        )
+        expected_retry = _make_retry_entry(
+            issue_number=88,
+            identifier="owner/repo#88",
+        )
+        state.add_running(expected_running.issue_number, expected_running)
+        state.retry_queue[expected_retry.issue_number] = expected_retry
+        state.claimed.add(expected_retry.issue_number)
+
+        state.load(str(state_path))
+
+        assert state.running == {99: expected_running}
+        assert state.retry_queue == {88: expected_retry}
+        assert state.claimed == {99, 88}
+
+    def test_claimed_numeric_overflow_preserves_state(
+        self, tmp_path: Path
+    ) -> None:
+        """An overflowing claimed number preserves pre-existing state."""
+        payload: dict[str, Any] = {
+            "running": [],
+            "retrying": [],
+            "claimed": [1e309],
+            "completed_count": 0,
+        }
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        state = _populated_state()
+        expected_running = dict(state.running)
+        expected_retry_queue = dict(state.retry_queue)
+        expected_claimed = set(state.claimed)
+
+        state.load(str(state_path))
+
+        assert state.running == expected_running
+        assert state.retry_queue == expected_retry_queue
+        assert state.claimed == expected_claimed
