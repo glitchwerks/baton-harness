@@ -6,8 +6,8 @@ immediately (revised VP-5 behaviour).
 
 Revised contract (Codex P2): the mid-loop early-exit fires only when BOTH
 (a) ``check_pr_exists(issue.number)`` is True AND (b) the worktree is clean
-— i.e. ``await run_cmd(["git", "status", "--porcelain",
-"--untracked-files=no"], cwd=wt.path)`` returns empty after ``.strip()``.
+— i.e. ``await run_cmd(["git", "status", "--porcelain"], cwd=wt.path)``
+returns empty after ``.strip()``.
 If a PR exists but the worktree is dirty, the loop does NOT break; it
 continues so a later turn can commit.  The whole check remains best-effort
 (any exception → swallow → continue, no early-exit).
@@ -1073,6 +1073,89 @@ def test_clean_worktree_early_exits() -> None:
         ), f"Expected a git-status --porcelain call; got: {called_args!r}"
 
 
+def test_git_status_includes_untracked_files() -> None:
+    """The mid-loop dirty check must include untracked files."""
+    orch = _make_orch(max_turns=1)
+    issue = _fake_issue(number=10)
+
+    fake_wt = MagicMock()
+    fake_wt.created_now = False
+    fake_wt.path = "/fake/wt/10"
+
+    fake_turn_result = MagicMock()
+    fake_turn_result.success = True
+    fake_turn_result.error = None
+
+    async def fake_fetch_issue_state(num: int) -> str:
+        return "open"
+
+    async def fake_run_gh(args: list[str]) -> str:
+        return json.dumps({"labels": []})
+
+    async def fake_run_hook(  # noqa: ANN401
+        name: str, script: object, **kwargs: object
+    ) -> bool:
+        return True
+
+    with (
+        patch.object(
+            orch.workspace,
+            "ensure_worktree",
+            new_callable=AsyncMock,
+            return_value=fake_wt,
+        ),
+        patch.object(
+            orch.worker,
+            "run_turn",
+            new_callable=AsyncMock,
+            return_value=fake_turn_result,
+        ),
+        patch.object(
+            orch.tracker,
+            "fetch_issue_state",
+            side_effect=fake_fetch_issue_state,
+        ),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.run_hook",
+            side_effect=fake_run_hook,
+        ),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.run_gh",
+            side_effect=fake_run_gh,
+        ),
+        patch.object(
+            orch.tracker,
+            "check_pr_exists",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch(
+            _ORCHESTRATOR_RUN_CMD,
+            new_callable=AsyncMock,
+            return_value="",
+            create=True,
+        ) as mock_run_cmd,
+    ):
+        asyncio.run(orch._run_worker(issue))
+
+    called_args = [
+        call.args[0] if call.args else call.kwargs.get("args", [])
+        for call in mock_run_cmd.call_args_list
+    ]
+    status_args = next(
+        (
+            args
+            for args in called_args
+            if "status" in args and "--porcelain" in args
+        ),
+        None,
+    )
+    assert status_args is not None, (
+        f"Expected a 'git status --porcelain' call; got: {called_args!r}"
+    )
+    assert "--untracked-files=no" not in status_args
+
+
 # ---------------------------------------------------------------------------
 # VP-5 best-effort: run_cmd failure swallowed, run continues conservatively
 # ---------------------------------------------------------------------------
@@ -1194,7 +1277,7 @@ def test_clean_but_unpushed_commits_does_not_early_exit() -> None:
 
     Codex P2 gate condition: the mid-loop break requires THREE conditions:
       1. ``check_pr_exists`` returns True.
-      2. ``git status --porcelain --untracked-files=no`` output is empty
+      2. ``git status --porcelain`` output is empty
          (worktree is clean — no uncommitted changes).
       3. ``git rev-list --count @{upstream}..HEAD`` returns ``"0"`` (branch
          is NOT ahead of remote — no unpushed commits).

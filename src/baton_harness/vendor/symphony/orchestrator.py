@@ -1,35 +1,94 @@
 """symphony/orchestrator.py — Main event loop: poll, dispatch, reconcile."""
+
 from __future__ import annotations
 
 import asyncio
-import json  # VENDOR-PATCH VP-2: needed for exclude_labels re-check label parse
+
+# VENDOR-PATCH VP-2: needed for exclude_labels re-check label parse
+import json
 import logging
 
-from .config import WorkflowConfig, load_workflow  # VENDOR-PATCH: relative import for vendoring
+from .config import (
+    WorkflowConfig,
+    load_workflow,
+)  # VENDOR-PATCH: relative import for vendoring
 from .hooks import run_hook  # VENDOR-PATCH: relative import for vendoring
-from .prompt import render_prompt  # VENDOR-PATCH: relative import for vendoring
-from .state import IssueState, OrchestratorState  # VENDOR-PATCH: relative import for vendoring
-from .tracker import GitHubTracker, Issue, parse_issue_skills, run_gh  # VENDOR-PATCH: relative import for vendoring; run_gh added for VP-2 exclude_labels re-check
+from .prompt import (
+    render_prompt,
+)  # VENDOR-PATCH: relative import for vendoring
+from .state import (
+    IssueState,
+    OrchestratorState,
+)  # VENDOR-PATCH: relative import for vendoring
+
+# VENDOR-PATCH: relative import for vendoring; run_gh added for VP-2
+# exclude_labels re-check
+from .tracker import (
+    GitHubTracker,
+    Issue,
+    parse_issue_skills,
+    run_gh,
+)
 from .worker import Worker  # VENDOR-PATCH: relative import for vendoring
-from .workspace import WorkspaceManager, run_cmd  # VENDOR-PATCH: relative import for vendoring; run_cmd added for VP-5 worktree-clean gate
+
+# VENDOR-PATCH: relative import for vendoring; run_cmd added for VP-5
+# worktree-clean gate
+from .workspace import (
+    WorkspaceManager,
+    run_cmd,
+)
 
 log = logging.getLogger("symphony")
 
 
 class Orchestrator:
+    """Main event loop: poll GitHub issues, dispatch workers, reconcile.
+
+    Owns the poll → dispatch → reconcile → retry cycle (`_tick`) and the
+    per-issue multi-turn worker loop (`_run_worker`). State is persisted
+    to disk on every tick so a restart resumes in-flight and queued work.
+
+    Attributes:
+        config: The active workflow configuration (hot-reloadable via
+            `workflow_path`).
+        project_root: Filesystem root the git worktrees are created under.
+        state_path: Path `OrchestratorState` is loaded from and persisted to.
+        workflow_path: Optional path to re-read `config` from on every tick;
+            `None` disables hot reload.
+        state: In-memory `OrchestratorState` tracking running/retrying/
+            claimed issues.
+        tracker: `GitHubTracker` used to poll issues and check PR state.
+        workspace: `WorkspaceManager` that creates/cleans up git worktrees.
+        worker: `Worker` that runs a single Claude turn.
+        progress_cb: Optional `callable(issue_number, turn)` invoked after
+            each turn starts; injected by the daemon for progress reporting.
+    """
+
     def __init__(
         self,
         config: WorkflowConfig,
         project_root: str,
         state_path: str,
         workflow_path: str | None = None,
-    ):
+    ) -> None:
+        """Initialize the orchestrator and restore persisted state.
+
+        Args:
+            config: The workflow configuration to run with.
+            project_root: Filesystem root the git worktrees are created
+                under.
+            state_path: Path to load/persist `OrchestratorState` from/to.
+            workflow_path: Optional path to hot-reload `config` from on
+                every tick. Defaults to `None` (no hot reload).
+        """
         self.config = config
         self.project_root = project_root
         self.state_path = state_path
         self.workflow_path = workflow_path
         self.state = OrchestratorState(max_concurrent=config.max_concurrent)
-        self.state.load(state_path)  # VENDOR-PATCH VP-6: transparent restore on startup
+        self.state.load(
+            state_path
+        )  # VENDOR-PATCH VP-6: transparent restore on startup
         self.tracker = GitHubTracker(
             labels=config.tracker_labels,
             exclude_labels=config.tracker_exclude_labels,
@@ -37,12 +96,14 @@ class Orchestrator:
         )
         self.workspace = WorkspaceManager(project_root=project_root)
         self.worker = Worker(config)
-        self._running_tasks: dict[int, asyncio.Task] = {}
+        self._running_tasks: dict[int, asyncio.Task[str]] = {}
         self._stop_event = asyncio.Event()
         # VENDOR-PATCH VP-3: per-turn progress callback (issue #33)
         # Optional callable(issue_number, turn) injected by the daemon.
         # Attribute injection — zero changes to any existing method signature.
-        self.progress_cb = None  # VENDOR-PATCH VP-3: per-turn progress callback (issue #33)
+        self.progress_cb = (
+            None  # VENDOR-PATCH VP-3: per-turn progress callback (issue #33)
+        )
 
     def _should_dispatch(self, issue: Issue) -> bool:
         if self.state.is_claimed(issue.number):
@@ -52,22 +113,27 @@ class Orchestrator:
         return True
 
     async def _dispatch(self, issue: Issue) -> None:
-        self.state.add_running(issue.number, IssueState(
-            issue_number=issue.number,
-            identifier=str(issue.number),
-            title=issue.title,
-            state=issue.state,
-            turn=1,
-            max_turns=self.config.max_turns,
-        ))
+        self.state.add_running(
+            issue.number,
+            IssueState(
+                issue_number=issue.number,
+                identifier=str(issue.number),
+                title=issue.title,
+                state=issue.state,
+                turn=1,
+                max_turns=self.config.max_turns,
+            ),
+        )
 
         task = asyncio.create_task(self._run_worker(issue))
         self._running_tasks[issue.number] = task
         task.add_done_callback(lambda t: self._on_worker_done(issue.number, t))
 
-        log.info(f"START #{issue.number} \"{issue.title}\"")
+        log.info(f'START #{issue.number} "{issue.title}"')
 
-    def _on_worker_done(self, issue_number: int, task: asyncio.Task) -> None:
+    def _on_worker_done(
+        self, issue_number: int, task: asyncio.Task[str]
+    ) -> None:
         self._running_tasks.pop(issue_number, None)
         entry = self.state.remove_running(issue_number)
 
@@ -81,8 +147,10 @@ class Orchestrator:
             attempt = entry.turn if entry else 1
             delay = self._backoff_delay(attempt)
             self.state.schedule_retry(
-                issue_number, attempt=attempt,
-                error=str(exc), delay_ms=delay,
+                issue_number,
+                attempt=attempt,
+                error=str(exc),
+                delay_ms=delay,
             )
         else:
             result = task.result()
@@ -94,7 +162,8 @@ class Orchestrator:
             else:
                 # No PR yet — schedule continuation retry
                 self.state.schedule_retry(
-                    issue_number, attempt=1,
+                    issue_number,
+                    attempt=1,
                     delay_ms=1000,
                 )
                 log.info(f"DONE #{issue_number} — no PR yet, will retry")
@@ -102,26 +171,34 @@ class Orchestrator:
         self.state.persist(self.state_path)
 
     def _backoff_delay(self, attempt: int) -> int:
-        delay = min(10000 * (2 ** (attempt - 1)), self.config.max_retry_backoff_ms)
+        delay: int = min(
+            10000 * (2 ** (attempt - 1)), self.config.max_retry_backoff_ms
+        )
         return delay
 
     async def _run_worker(self, issue: Issue) -> str:
         # 1. Ensure worktree
-        wt = await self.workspace.ensure_worktree(issue.number, title=issue.title)
+        wt = await self.workspace.ensure_worktree(
+            issue.number, title=issue.title
+        )
 
         # 2. Run after_create hook if new
         if wt.created_now:
             ok = await run_hook(
-                "after_create", self.config.hook_after_create,
-                cwd=wt.path, timeout_ms=self.config.hook_timeout_ms,
+                "after_create",
+                self.config.hook_after_create,
+                cwd=wt.path,
+                timeout_ms=self.config.hook_timeout_ms,
             )
             if not ok:
                 raise RuntimeError("after_create hook failed")
 
         # 3. Run before_run hook
         ok = await run_hook(
-            "before_run", self.config.hook_before_run,
-            cwd=wt.path, timeout_ms=self.config.hook_timeout_ms,
+            "before_run",
+            self.config.hook_before_run,
+            cwd=wt.path,
+            timeout_ms=self.config.hook_timeout_ms,
         )
         if not ok:
             raise RuntimeError("before_run hook failed")
@@ -135,30 +212,40 @@ class Orchestrator:
         pr_detected = False
         for turn in range(1, self.config.max_turns + 1):
             # Update state
-            # VENDOR-PATCH VP-2: guard already present — confirmed in vendored
-            # source.  This ``if issue.number in self.state.running:`` check
-            # prevents a stale state.json from causing a KeyError on the turn
-            # mutation (CONCERN-4).  No additional guard is needed; the existing
-            # check satisfies the VP-2 running[N] guard requirement.
+            # VENDOR-PATCH VP-2: guard already present — confirmed in
+            # vendored source.  This ``if issue.number in
+            # self.state.running:`` check prevents a stale state.json
+            # from causing a KeyError on the turn mutation (CONCERN-4).
+            # No additional guard is needed; the existing check
+            # satisfies the VP-2 running[N] guard requirement.
             if issue.number in self.state.running:
                 self.state.running[issue.number].turn = turn
 
             # Render prompt
             if turn == 1:
-                prompt = render_prompt(self.config.prompt_template, issue, attempt=None)
+                prompt = render_prompt(
+                    self.config.prompt_template, issue, attempt=None
+                )
             else:
                 prompt = (
-                    f"Continue working on issue #{issue.number}: {issue.title}. "
-                    f"Check what's been done so far and continue if there's more to do. "
-                    f"If the work is complete, commit, push, and create a PR."
+                    f"Continue working on issue #{issue.number}: "
+                    f"{issue.title}. "
+                    f"Check what's been done so far and continue if "
+                    f"there's more to do. "
+                    f"If the work is complete, commit, push, and "
+                    f"create a PR."
                 )
 
-            log.info(f"RUN  #{issue.number} turn {turn}/{self.config.max_turns}")
+            log.info(
+                f"RUN  #{issue.number} turn {turn}/{self.config.max_turns}"
+            )
 
             # VENDOR-PATCH VP-3: per-turn progress callback (issue #33)
             # Best-effort: a callback exception is logged and swallowed so
             # it can never crash the worker run.
-            if self.progress_cb is not None:  # VENDOR-PATCH VP-3: per-turn progress callback (issue #33)
+            if (
+                self.progress_cb is not None
+            ):  # VENDOR-PATCH VP-3: per-turn progress callback (issue #33)
                 try:
                     self.progress_cb(issue.number, turn)
                 except Exception:
@@ -180,31 +267,43 @@ class Orchestrator:
                 log.error(f"FAIL #{issue.number} turn {turn}: {result.error}")
                 # Run after_run hook (best effort)
                 await run_hook(
-                    "after_run", self.config.hook_after_run,
-                    cwd=wt.path, timeout_ms=self.config.hook_timeout_ms,
+                    "after_run",
+                    self.config.hook_after_run,
+                    cwd=wt.path,
+                    timeout_ms=self.config.hook_timeout_ms,
                 )
                 raise RuntimeError(result.error or "Claude turn failed")
 
             # Check issue state
             try:
-                current_state = await self.tracker.fetch_issue_state(issue.number)
+                current_state = await self.tracker.fetch_issue_state(
+                    issue.number
+                )
             except Exception:
                 break
 
             if current_state != "open":
-                log.info(f"CLOSE #{issue.number} — issue is now {current_state}")
+                log.info(
+                    f"CLOSE #{issue.number} — issue is now {current_state}"
+                )
                 break
 
-            # VENDOR-PATCH VP-2: re-check exclude_labels after fetch_issue_state.
-            # If any exclude label (e.g. "blocked") is now present, terminate the
-            # turn loop immediately — making a mid-run block terminal and closing
-            # the #23 root cause (external Baton never re-checked between turns).
+            # VENDOR-PATCH VP-2: re-check exclude_labels after
+            # fetch_issue_state. If any exclude label (e.g. "blocked")
+            # is now present, terminate the turn loop immediately —
+            # making a mid-run block terminal and closing the #23 root
+            # cause (external Baton never re-checked between turns).
             if self.tracker.exclude_labels:
                 try:
-                    label_output = await run_gh([
-                        "issue", "view", str(issue.number),
-                        "--json", "labels",
-                    ])
+                    label_output = await run_gh(
+                        [
+                            "issue",
+                            "view",
+                            str(issue.number),
+                            "--json",
+                            "labels",
+                        ]
+                    )
                     label_data = json.loads(label_output)
                     current_labels = {
                         lbl["name"].lower()
@@ -240,18 +339,27 @@ class Orchestrator:
                     # looping so a later turn commits/pushes — the PR alone is
                     # not a "done" signal.
                     status = await run_cmd(
-                        ["git", "status", "--porcelain", "--untracked-files=no"],
+                        [
+                            "git",
+                            "status",
+                            "--porcelain",
+                        ],
                         cwd=wt.path,
                     )
                     if status.strip():
                         log.info(
-                            f"PR_DIRTY #{issue.number} — PR exists but worktree"
-                            f" has uncommitted changes at turn {turn};"
-                            f" continuing"
+                            f"PR_DIRTY #{issue.number} — PR exists but"
+                            f" worktree has uncommitted changes at"
+                            f" turn {turn}; continuing"
                         )
                     else:
                         ahead = await run_cmd(
-                            ["git", "rev-list", "--count", "@{upstream}..HEAD"],
+                            [
+                                "git",
+                                "rev-list",
+                                "--count",
+                                "@{upstream}..HEAD",
+                            ],
                             cwd=wt.path,
                         )
                         if ahead.strip() in ("", "0"):
@@ -260,7 +368,9 @@ class Orchestrator:
                                 f" mid-loop at turn {turn} with clean, pushed"
                                 f" worktree; exiting"
                             )
-                            pr_detected = True  # VENDOR-PATCH VP-5: latch before break
+                            pr_detected = (
+                                True  # VENDOR-PATCH VP-5: latch before break
+                            )
                             break
                         log.info(
                             f"PR_UNPUSHED #{issue.number} — PR exists but"
@@ -275,8 +385,10 @@ class Orchestrator:
 
         # Run after_run hook
         await run_hook(
-            "after_run", self.config.hook_after_run,
-            cwd=wt.path, timeout_ms=self.config.hook_timeout_ms,
+            "after_run",
+            self.config.hook_after_run,
+            cwd=wt.path,
+            timeout_ms=self.config.hook_timeout_ms,
         )
 
         # Check if a PR was created — signals work is complete.
@@ -338,7 +450,8 @@ class Orchestrator:
                 candidates = await self.tracker.fetch_candidates()
             except Exception:
                 self.state.schedule_retry(
-                    num, attempt=entry.attempt + 1,
+                    num,
+                    attempt=entry.attempt + 1,
                     error="retry poll failed",
                     delay_ms=self._backoff_delay(entry.attempt + 1),
                 )
@@ -352,7 +465,8 @@ class Orchestrator:
 
             if self.state.available_slots <= 0:
                 self.state.schedule_retry(
-                    num, attempt=entry.attempt + 1,
+                    num,
+                    attempt=entry.attempt + 1,
                     error="no available slots",
                     delay_ms=self._backoff_delay(entry.attempt + 1),
                 )
@@ -375,7 +489,8 @@ class Orchestrator:
                 self.state.max_concurrent = self.config.max_concurrent
                 self.tracker.labels = self.config.tracker_labels
                 self.tracker.exclude_labels = [
-                    l.lower() for l in (self.config.tracker_exclude_labels or [])
+                    label.lower()
+                    for label in (self.config.tracker_exclude_labels or [])
                 ]
                 self.tracker.assignee = self.config.tracker_assignee
             except Exception as e:
@@ -393,7 +508,8 @@ class Orchestrator:
         log.info(
             f"POLL  Found {len(candidates)} issues "
             f"({len(eligible)} eligible, "
-            f"{self.state.running_count}/{self.state.max_concurrent} slots used)"
+            f"{self.state.running_count}/{self.state.max_concurrent}"
+            f" slots used)"
         )
 
         # 5. Dispatch
@@ -407,7 +523,8 @@ class Orchestrator:
     async def run(self) -> None:
         """Main loop."""
         log.info(
-            f"Baton starting — polling every {self.config.poll_interval_ms}ms, "
+            f"Baton starting — polling every"
+            f" {self.config.poll_interval_ms}ms, "
             f"max {self.config.max_concurrent} concurrent"
         )
 
@@ -430,9 +547,12 @@ class Orchestrator:
         for task in self._running_tasks.values():
             task.cancel()
         if self._running_tasks:
-            await asyncio.gather(*self._running_tasks.values(), return_exceptions=True)
+            await asyncio.gather(
+                *self._running_tasks.values(), return_exceptions=True
+            )
 
         log.info("Baton stopped")
 
     def stop(self) -> None:
+        """Signal `run` to exit after the current tick completes."""
         self._stop_event.set()
