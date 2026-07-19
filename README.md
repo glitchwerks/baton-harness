@@ -154,8 +154,8 @@ pushing:
 .venv/bin/python        -m pytest               # macOS/Linux
 ```
 
-Note: `src/baton_harness/vendor/symphony/` is **not** excluded from these checks. Issue
-#224 assimilated the vendored symphony tree as owned code — it is linted and type-checked
+Note: `src/baton_harness/vendor/symphony/` is **not** excluded from these checks. Issue `#224`
+assimilated the vendored symphony tree as owned code — it is linted and type-checked
 (`strict = true`) identically to the rest of `src/baton_harness/`. `patches/` and
 `src/baton_harness/vendor/symphony/VENDORING.md` hold a historical record of the tree's
 provenance and pre-#224 patches, not an active exclusion or re-vendor procedure.
