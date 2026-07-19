@@ -27,8 +27,10 @@ without path gymnastics.
 The orchestration engine (`symphony`) is vendored into the package rather than installed
 as an external dependency. Upstream `mraza007/baton` is dormant (3 commits, no releases,
 no external PRs ever merged). The harness is the de facto maintainer of the vendored
-source; Baton bugs are fixed directly in `src/baton_harness/vendor/symphony/` and
-recorded as patches in `patches/`.
+source; `src/baton_harness/vendor/symphony/` is linted and type-checked as owned code
+(issue #224) and Baton bugs are fixed directly in it, the same as any other module.
+`patches/` holds a frozen historical record of pre-#224 patches; it is not required for
+new changes.
 
 ## Integration model [implemented]
 
@@ -64,10 +66,10 @@ baton-harness/
 │   ├── provision-ruleset.sh     # create/repair the two branch-protection rulesets (required before first run)
 │   ├── verify-recovery.sh       # exercise the five startup-reconciliation gates against a live sandbox
 │   └── probe-merge-denial.sh    # assert all merge-bypass vectors are denied against a live sandbox PR
-├── patches/                     # vendor patches (diff format, # VENDOR-PATCH markers)
+├── patches/                     # frozen historical record of pre-#224 vendor patches (not required for new changes — see patches/README.md)
 │   ├── VP-1-run-hook-env.diff   # thread env= through run_hook (before_run base-ref fix)
 │   ├── VP-2-exclude-labels-recheck.diff  # mid-turn blocked check — makes block terminal
-│   └── mypy-strict-remediation.diff      # type annotation fixes in vendored source
+│   └── mypy-strict-remediation.diff      # superseded by #224; original vendor-wide mypy exclusion
 ├── scripts/
 │   └── pilot-dry-run.sh         # manual dry-run helper (development use)
 ├── src/
@@ -90,7 +92,7 @@ baton-harness/
 │       │   └── gh_deps.py       # GitHub dependency API (blocked_by edges)
 │       └── vendor/              # vendored symphony orchestrator (mraza007/baton)
 │           └── symphony/
-│               ├── VENDORING.md # re-vendor checklist and patch record
+│               ├── VENDORING.md # provenance record: upstream SHA, license, historical patch annotations
 │               └── ...          # orchestrator.py, worker.py, hooks.py, etc.
 ├── tests/                       # pytest suite
 │   ├── test_smoke.py
@@ -152,9 +154,11 @@ pushing:
 .venv/bin/python        -m pytest               # macOS/Linux
 ```
 
-Note: ruff and mypy exclude `src/baton_harness/vendor/` — the vendored symphony source is
-not owned by this project and is not linted or strictly typed. Vendor patches are tracked
-in `patches/` and `src/baton_harness/vendor/symphony/VENDORING.md`.
+Note: `src/baton_harness/vendor/symphony/` is **not** excluded from these checks. Issue `#224`
+assimilated the vendored symphony tree as owned code — it is linted and type-checked
+(`strict = true`) identically to the rest of `src/baton_harness/`. `patches/` and
+`src/baton_harness/vendor/symphony/VENDORING.md` hold a historical record of the tree's
+provenance and pre-#224 patches, not an active exclusion or re-vendor procedure.
 
 ### Hook entry-point convention
 

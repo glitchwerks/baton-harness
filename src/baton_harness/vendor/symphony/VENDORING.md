@@ -1,5 +1,10 @@
 # Vendored symphony package
 
+**This file is a provenance record**, not an active procedure. It documents
+where the vendored `symphony` tree came from, what was patched and why
+(historically), and what changed during the #224 assimilation. It is not a
+re-vendor runbook — see "Policy: no active re-vendor procedure" below.
+
 ## Upstream
 
 - **Repository:** https://github.com/mraza007/baton
@@ -25,7 +30,15 @@ been applied (see below).  `bin/run.sh` has been deleted; `bin/run-daemon.sh`
 is the new launcher.  The external `baton` dependency is no longer the active
 orchestration path.
 
-## Applied patches
+## Applied patches (historical annotations)
+
+The entries below document what each patch changed in the vendored source and
+why, at the time it was applied. As of issue #224, `src/baton_harness/vendor/symphony/`
+is linted and type-checked as owned code — see "Policy: no active re-vendor
+procedure" below — so these are a historical record of past changes, not a
+description of an ongoing patch-and-track workflow. The corresponding diff
+files remain in `patches/` (frozen, per Decision D3 — see `patches/README.md`)
+as evidence of what each entry describes.
 
 ### VP-1 — `run_hook` gains `env=` parameter
 
@@ -195,83 +208,54 @@ resolve correctly under the `baton_harness.vendor.symphony` namespace.
   `cli.py` also removed the undeclared `click` dependency. No tests
   imported either module.
 
-### mypy strict-remediation
+### mypy strict-remediation — superseded by #224
 
-- **File:** `pyproject.toml` (`[[tool.mypy.overrides]]` block)
+- **File (historical):** `pyproject.toml` (`[[tool.mypy.overrides]]` block —
+  this block **no longer exists** in `pyproject.toml`, see below)
 - **Patch file:** `patches/mypy-strict-remediation.diff` (relative to repo root;
-  **historical** — see the note below, the diff content itself is frozen)
-- **Description (original, pre-#224):** Adds `ignore_errors = true` for the
-  `baton_harness.vendor.*` module **glob**, so `mypy src` does not type-check the
-  vendored third-party tree. Full annotation of the vendored source is deferred.
-  Kept as a separate patch file from the behaviour patches (VP-*) per issue #42.
-- **Superseded by #224 Phase 1:** the `[[tool.mypy.overrides]]` `module` key is no
-  longer the wildcard `"baton_harness.vendor.*"`. It is now an **explicit list** of
-  the surviving vendored modules (currently `baton_harness.vendor`,
-  `baton_harness.vendor.symphony`, and one entry per surviving `.py` file — see
-  `pyproject.toml`'s `[[tool.mypy.overrides]]` block for the live list), narrowed one
-  file at a time as each module is cleaned and un-excluded (§ Re-vendor checklist
-  below and `docs/superpowers/plans/2026-07-14-assimilate-vendored-symphony-224.md`).
-  **A future re-vendor must not restore the wildcard** — re-derive the explicit list
-  from the modules still present in `pyproject.toml` at re-vendor time, not from this
-  historical patch file.
+  **historical and frozen** — the diff content documents a state that no
+  longer exists; do not re-apply it)
+- **Description (original, pre-#224):** Added `ignore_errors = true` for the
+  `baton_harness.vendor.*` module **glob**, so `mypy src` did not type-check
+  the vendored third-party tree. Full annotation of the vendored source was
+  deferred. Kept as a separate patch file from the behaviour patches (VP-*)
+  per issue #42.
+- **Superseded by #224:** the deferral is over. Issue #224 assimilated the
+  entire vendored tree as owned code — every module is now fully annotated
+  and type-checked under `strict = true`. The `[[tool.mypy.overrides]]` block
+  described above (first narrowed to an explicit per-module list during #224
+  Phase 1–4, then emptied as each module was cleaned) has been **removed
+  outright** from `pyproject.toml`; there is no vendor-specific mypy override
+  of any kind left. `mypy src` type-checks `src/baton_harness/vendor/symphony/`
+  under the same `[tool.mypy]` config as the rest of the package. **A future
+  re-vendor must not reintroduce a vendor override** — see "Policy" below.
 
-## Re-vendor checklist
+## Policy: no active re-vendor procedure
 
-When re-vendoring at a new upstream SHA, apply these steps in order:
+As of issue #224, `src/baton_harness/vendor/symphony/` is linted (`ruff
+check`, `ruff format --check`) and type-checked (`mypy src`, `strict = true`)
+as owned code, identically to the rest of `src/baton_harness/`. The ruff
+`exclude` entry and the mypy `[[tool.mypy.overrides]]` block that used to
+carve this tree out were removed from `pyproject.toml` during #224.
 
-1. For each module in the `symphony/` package
-   (`__init__`, `config`, `hooks`, `orchestrator`, `prompt`,
-   `state`, `tracker`, `worker`, `workspace` — `cli` and `log` were
-   deleted as dead code by #224 and are not re-vendored), fetch the new
-   version:
-   ```bash
-   gh api "repos/mraza007/baton/contents/symphony/<module>.py?ref=<NEW_SHA>" \
-     --jq .content | base64 -d > src/baton_harness/vendor/symphony/<module>.py
-   ```
-2. Fetch the upstream `LICENSE`:
-   ```bash
-   gh api "repos/mraza007/baton/contents/LICENSE?ref=<NEW_SHA>" \
-     --jq .content | base64 -d > src/baton_harness/vendor/symphony/LICENSE
-   ```
-3. Re-apply each patch from `patches/` using `git apply` or `patch -p1`:
-   ```bash
-   git apply patches/VP-1-run-hook-env.diff
-   git apply patches/VP-2-exclude-labels-recheck.diff
-   git apply patches/VP-3-progress-callback.diff
-   git apply patches/VP-4-worker-disallow-merge.diff
-   git apply patches/VP-5-pr-exists-early-exit.diff
-   git apply patches/VP-6-state-load-on-startup.diff
-   git apply patches/VP-7-hooks-non-login-shell.diff
-   git apply patches/VP-8-required-checks-config.diff
-   git apply patches/VP-9-workspace-symphony-dir-abspath.diff
-   ```
-4. Re-apply the relative-import vendoring-mechanics patches manually (they
-   are not in a diff file because they only depend on the module names, which
-   are stable). See the "Vendoring-mechanics patches" section above for the
-   full list of files and markers.
-5. Confirm every `# VENDOR-PATCH` marker landed:
-   ```bash
-   grep -rn "VENDOR-PATCH" src/baton_harness/vendor/
-   ```
-   Expected output must include at minimum:
-   - `VP-1` in `hooks.py`
-   - `VP-2` in `orchestrator.py`
-   - `VP-3` in `orchestrator.py`
-   - `VP-4` in `worker.py`
-   - `VP-5` in `orchestrator.py`
-   - `VP-6` in `state.py` and `orchestrator.py`
-   - `VP-7` in `hooks.py`
-   - `VP-8` in `config.py`
-   - `VP-9` in `workspace.py`
-   - `relative import for vendoring` in `orchestrator.py`, `prompt.py`,
-     `worker.py`
-6. Update the **Pinned SHA** and **Vendor date** fields at the top of this
-   file.
-7. Re-run the full CI suite:
-   ```bash
-   .venv/Scripts/python.exe -m ruff check .
-   .venv/Scripts/python.exe -m ruff format --check .
-   .venv/Scripts/python.exe -m mypy src
-   .venv/Scripts/python.exe -m pytest -q
-   ```
-   All checks must be green before the re-vendor is considered complete.
+Consequences for future changes to this tree:
+
+- **No `patches/*.diff` file is required** for new changes to
+  `src/baton_harness/vendor/symphony/`. Fix bugs, add features, or refactor
+  directly, exactly as you would in any other owned module — normal code
+  review is the record, not a diff artifact. (`patches/` itself is frozen as
+  a historical record of the pre-#224 patches — see `patches/README.md` —
+  not deleted, but also not a destination for new files.)
+- **`# VENDOR-PATCH` markers already in the source are retained** as
+  historical annotations of what was patched and why before #224; they are
+  not removed and new changes are not required to add new markers in this
+  style.
+- **There is no re-vendor procedure to follow.** The "Applied patches"
+  section above is retained as a historical record of what was changed
+  relative to the pinned upstream SHA, for anyone who wants to understand the
+  tree's history or, in the unlikely event of a future re-vendor from a new
+  upstream SHA, wants a starting reference for what behavioral changes this
+  fork carries. It is not a maintained runbook and should not be treated as
+  one — if a re-vendor is ever undertaken, re-derive the approach from the
+  current state of the tree and this history, and update the **Pinned SHA**
+  and **Vendor date** fields above accordingly.
