@@ -60,11 +60,6 @@ packages = ["src/baton_harness"]
 [tool.ruff]
 line-length = 79
 target-version = "py310"
-# The vendored symphony tree has been fully assimilated as owned code
-# (#224) as of Phase 4 (see docs/superpowers/plans/2026-07-14-assimilate-
-# vendored-symphony-224.md). This list is now empty; Phase 5 removes it
-# entirely.
-exclude = []
 
 [tool.ruff.lint]
 select = [
@@ -98,16 +93,6 @@ strict = true
 warn_unused_ignores = true
 warn_return_any = true
 show_error_codes = true
-
-# mypy: the vendored symphony tree has been fully assimilated as owned
-# code (#224) as of Phase 4 (see docs/superpowers/plans/2026-07-14-
-# assimilate-vendored-symphony-224.md). This module list is now empty;
-# Phase 5 removes the override block entirely. Recorded as
-# patches/mypy-strict-remediation.diff (kept separate from the behaviour
-# patches VP-1, VP-2, etc.).
-[[tool.mypy.overrides]]
-module = []
-ignore_errors = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
