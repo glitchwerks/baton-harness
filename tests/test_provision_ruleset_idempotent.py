@@ -28,20 +28,21 @@ Six cases:
 6. Admin-bypass actor_id logging: script logs the resolved actor_id
    before any writes so an operator can verify before enforcement.
 
-Issue #199 — soften the App-ID preflight for PAT auth:
+Issue #199 — soften the App-ID preflight for PAT auth (superseded by #200):
 
   GET /app is App-JWT-only. A PAT-authenticated gh gets a 401/non-zero
-  exit rather than a body to compare .id against. Three more cases
-  (below the six above) cover the softened contract:
+  exit rather than a body to compare .id against. Issue #200 supersedes
+  that PAT-only contract for case 7:
 
-7. Non-App auth (gh api app exits non-zero) -> preflight must NOT
-   exit 2; it must warn on stderr that the App-ID/Installation-ID
-   cross-check is being skipped (naming the "administration: write"
-   PAT permission the skip relies on), then proceed to the write
-   phase.
+7. Confirmed 401 from gh api app -> now hard-fails with exit 1 and
+   zero writes, identically to cases 10/11. Issue #200's durable fix
+   always mints a real App JWT for GET /app, removing the PAT-only path
+   that issue #199 softened; the former case-7 test is repurposed and
+   renamed accordingly.
 7b. (CodeRabbit follow-up) gh api app exits 0 but the body has no
-    .id -> must be treated identically to case 7 (warn + skip +
-    proceed), not as a mismatch.
+    .id -> must warn and skip the App-ID cross-check, then proceed
+    to writes (the same warn+skip+proceed contract case 7 used before
+    issue #200's durable fix), not be treated as a mismatch.
 8. App-authed but mismatched .id -> still hard-fails (regression
    guard; the soften must not weaken this).
 9. App-authed with matching .id -> still proceeds (regression guard).
@@ -57,7 +58,8 @@ exit from `gh api app` must hard-fail before any ruleset write.
 
 10. Non-auth gh api app failure (e.g. HTTP 503) -> must hard-fail
     (non-zero exit, distinct from the exit-2 mismatch code, zero
-    writes), NOT skip-and-proceed like case 7.
+    writes), NOT skip-and-proceed (the behavior case 7 had before
+    issue #200's durable fix).
 
 CodeRabbit review of PR #201 (commit 6e9287a) flagged the case-10 fix
 as still too broad: it discriminates "confirmed 401" from other
@@ -71,8 +73,8 @@ may soften; a bare `401` substring elsewhere in stderr must hard-fail.
 
 11. Stray "401" substring in non-auth gh api app stderr (e.g. inside a
     correlation id, no "HTTP 401" present) -> must hard-fail exactly
-    like case 10 (exit 1, zero writes), NOT skip-and-proceed like
-    case 7.
+    like case 10 (exit 1, zero writes), NOT skip-and-proceed (the
+    behavior case 7 had before issue #200's durable fix).
 
 Issue #202 — the fake gh shim diverged from real gh in two ways that let
 this suite pass against a script that fails in production:
@@ -264,6 +266,15 @@ def _invoke(
         "BH_ADMIN_ROLE_ID": admin_role_id,
         "BH_FAKE_GH_LOG": str(log_path),
         "BH_FAKE_GH_CANNED_DIR": str(canned_state_dir),
+        # #200: the script now unconditionally obtains App-auth credentials
+        # before any gh call. These two overrides stand in for the real
+        # `python -m baton_harness.chain.app_auth {jwt|token}` invocation so
+        # this suite's 21 pre-existing cases keep exercising the ruleset
+        # write/idempotency behavior without needing real BWS_* secrets.
+        "BH_APP_AUTH_JWT_CMD": ("printf %s fake-jwt-for-idempotency-tests"),
+        "BH_APP_AUTH_TOKEN_CMD": (
+            "printf %s fake-install-token-for-idempotency-tests"
+        ),
     }
     proc = subprocess.run(
         [_BASH, str(SCRIPT)],
@@ -862,106 +873,58 @@ def test_pagination_absent_on_all_pages_triggers_post(
 # Issue #199: soften the App-ID preflight under PAT auth
 # ---------------------------------------------------------------------------
 #
-# GET /app is App-JWT-only. When gh is authenticated with a PAT (the
-# documented "administration:write" path), that endpoint 401s and gh
-# exits non-zero — it never returns a body to compare .id against.
-# Case 7 asserts the preflight must soften to a skip-with-warning in
-# that situation rather than hard-failing. Cases 8-9 are regression
-# guards proving the soften does not weaken the App-authed paths.
+# GET /app is App-JWT-only. Issue #200 now guarantees that the script
+# supplies a freshly-minted App JWT, so case 7 asserts that a confirmed
+# 401 hard-fails. Cases 8-9 remain regression guards for the successful
+# App-authenticated response paths.
 
 
-def test_non_app_auth_skips_appid_check_and_proceeds_to_writes(
-    tmp_path: Path,
-) -> None:
-    """Case 7: gh api app exits non-zero (PAT auth) -> warn+skip, proceed.
+def test_confirmed_401_hard_fails(tmp_path: Path) -> None:
+    """Case 7: a confirmed 401 from GET /app hard-fails with zero writes.
 
-    Simulates a PAT-authenticated gh hitting the App-JWT-only GET /app
-    endpoint: the fake gh exits non-zero with a 401-style stderr message
-    instead of returning an id. The script must NOT treat this as a
-    preflight failure (must not exit 2, must not abort before writing).
-    Instead it must:
-      (a) print a warning to stderr explaining the App-ID vs
-          Installation-ID cross-check is being skipped because gh is
-          not App-authenticated, naming the `administration: write`
-          PAT permission the documented path relies on instead
-          (CodeRabbit follow-up: an operator reading the warning must
-          be told which permission makes the skip safe), and
-      (b) proceed past the preflight into the ruleset-write phase, as
-          proven by the empty-state LIST triggering the normal 2-POST
-          create path (same observable write shape as case 1).
+    Issue #199 softened this failure because there was no way to
+    guarantee an App JWT was available for GET /app under PAT auth.
+    Issue #200's durable fix removed that gap: the script always mints
+    and supplies a real App JWT now, so a confirmed 401 means that JWT
+    itself is unusable and must hard-fail exactly like cases 10/11.
     """
     canned = tmp_path / "canned"
     canned.mkdir()
-    # Empty LIST -> if the script reaches the write phase, it creates
-    # both rulesets. Zero writes would mean the script aborted early.
+    # Empty LIST -> if the script incorrectly soften-and-proceeds, it
+    # would create both rulesets here.
     (canned / "list.body").write_text("[]", encoding="utf-8")
 
     rc, stdout, stderr, log = _invoke(
         tmp_path, canned, app_authenticated=False, return_stderr=True
     )
 
-    assert rc == 0, (
-        f"non-App auth must not hard-fail the preflight (soften per "
-        f"#199); got rc={rc}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    assert rc != 0, (
+        f"a confirmed 401 from GET /app must hard-fail, not exit 0; "
+        f"stdout:\n{stdout}\nstderr:\n{stderr}"
+    )
+    assert rc != 2, (
+        f"a confirmed 401 from GET /app must use a code distinct from "
+        f"the exit-2 App-ID-mismatch path; got rc={rc}"
+    )
+    assert rc == 1, (
+        f"expected exit 1 for a confirmed 401 from GET /app; got "
+        f"rc={rc}\nstdout:\n{stdout}\nstderr:\n{stderr}"
     )
 
-    # (a) A warning explaining the cross-check was skipped must be on
-    # stderr. Wording is the implementation's choice; the warning must
-    # at minimum name the check being skipped (App ID) and say it was
-    # skipped, without claiming success ("preflight OK") or emitting
-    # the hard-fail banner used for a genuine mismatch (case 8).
+    assert _writes(_calls(log)) == [], (
+        "a confirmed 401 from GET /app must write zero ruleset "
+        "mutations — an unusable App JWT must never reach the write phase"
+    )
+
     stderr_lower = stderr.lower()
-    assert "skip" in stderr_lower, (
-        f"expected a 'skip' warning on stderr when gh is not "
-        f"App-authenticated; stderr was:\n{stderr}"
-    )
-    assert "app" in stderr_lower and "id" in stderr_lower, (
-        f"expected the skip warning to reference the App-ID check; "
+    assert "app" in stderr_lower, (
+        f"expected stderr to reference the failed GET /app call; "
         f"stderr was:\n{stderr}"
     )
-    assert "preflight failure" not in stderr_lower, (
-        f"non-App auth must not be reported as a preflight failure; "
+    assert "skip" not in stderr_lower, (
+        "a confirmed 401 must not be reported as a skip; "
         f"stderr was:\n{stderr}"
     )
-    # CodeRabbit follow-up (#199): the skip warning must hint at the
-    # PAT permission that makes skipping the cross-check safe, so an
-    # operator reading it knows what to grant instead of guessing.
-    assert "administration: write" in stderr_lower or (
-        "administration" in stderr_lower and "write" in stderr_lower
-    ), (
-        f"expected the skip warning to mention the 'administration: "
-        f"write' PAT permission; stderr was:\n{stderr}"
-    )
-
-    # (b) Execution proceeded past the preflight to the write phase.
-    writes = _writes(_calls(log))
-    assert len(writes) == 2, (
-        f"expected the script to proceed to create both rulesets after "
-        f"skipping the App-ID check, got writes={writes}"
-    )
-    assert {c["ruleset_name"] for c in writes} == {
-        "harness-main-no-merge",
-        "harness-feature-daemon-only",
-    }
-
-    # (d) Secret hygiene: no token/JWT-shaped material in any observed
-    # output. Nothing in this test setup carries a real credential, so
-    # this is a standing regression guard against accidentally echoing
-    # auth material when reporting the skip.
-    combined = stdout + stderr
-    for leaked_marker in (
-        "Bearer ",
-        "ghp_",
-        "gho_",
-        "github_pat_",
-        "ghs_",
-        "ghu_",
-        "ghr_",
-    ):
-        assert leaked_marker not in combined, (
-            f"possible credential material leaked in output: "
-            f"{leaked_marker!r} found"
-        )
 
 
 def test_app_authed_empty_or_missing_id_skips_and_proceeds(

@@ -22,6 +22,9 @@
 #   BH_ADMIN_ROLE_ID                 Numeric RepositoryRole id for admin
 #                                    bypass on main. Default: 5 (community-
 #                                    cited; not officially documented).
+#   BH_APP_AUTH_JWT_CMD              Command that prints the App JWT.
+#   BH_APP_AUTH_TOKEN_CMD            Command that prints the installation
+#                                    token.
 #
 # Exit codes:
 #   0  success — rulesets match or were brought into agreement
@@ -96,6 +99,25 @@ ADMIN_ROLE_ID="${BH_ADMIN_ROLE_ID:-5}"
 # ---------------------------------------------------------------------------
 unset PYTHONHOME PYTHONPATH 2>/dev/null || true
 
+# Acquire the App JWT before making any GitHub API call. The command override
+# is a test/operator seam; production falls back to the app_auth module.
+if [[ -n "${BH_APP_AUTH_JWT_CMD:-}" ]]; then
+    # Trusted operator/test-only override; never wire to untrusted input.
+    if ! _APP_JWT="$(eval "${BH_APP_AUTH_JWT_CMD}")"; then
+        echo "provision-ruleset: could not obtain the App JWT." >&2
+        exit 2
+    fi
+else
+    if ! _APP_JWT="$("${_PYTHON}" -m baton_harness.chain.app_auth jwt)"; then
+        echo "provision-ruleset: could not obtain the App JWT." >&2
+        exit 2
+    fi
+fi
+if [[ -z "${_APP_JWT}" ]]; then
+    echo "provision-ruleset: could not obtain the App JWT (empty output)." >&2
+    exit 2
+fi
+
 # ---------------------------------------------------------------------------
 # Preflight: cross-check BH_GITHUB_APP_ID against GET /app (B3).
 # Parse the JSON response with Python so this works with both real gh
@@ -106,26 +128,14 @@ _warn_skip_appid_check() {
 }
 
 _app_stderr_file="$(mktemp)"
-if ! _app_response="$(gh api app 2>"${_app_stderr_file}")"; then
+if ! _app_response="$(GH_TOKEN="${_APP_JWT}" gh api app 2>"${_app_stderr_file}")"; then
     _app_stderr="$(cat "${_app_stderr_file}" 2>/dev/null || true)"
     rm -f "${_app_stderr_file}"
-    if [[ "${_app_stderr}" == *"HTTP 401"* ]]; then
-        # Accepted residual risk for issue #199:
-        # On the PAT path, this GET /app App-ID cross-check is skipped, so a
-        # mistaken BH_GITHUB_APP_ID (for example, an Installation ID pasted by
-        # accident) is not caught here and would flow into
-        # bypass_actors[].actor_id in the later ruleset writes.
-        # This trade-off is accepted to support PAT auth for issue #199.
-        # Durable fix: self-contained in-script App-JWT auth so GET /app can
-        # run under any caller, tracked in issue #200.
-        _warn_skip_appid_check
-    else
-        echo "provision-ruleset: PREFLIGHT FAILURE — GET /app failed for a non-auth reason; cannot confirm BH_GITHUB_APP_ID." >&2
-        if [[ -n "${_app_stderr}" ]]; then
-            echo "  ${_app_stderr}" >&2
-        fi
-        exit 1
+    echo "provision-ruleset: PREFLIGHT FAILURE — GET /app failed; cannot confirm BH_GITHUB_APP_ID. A freshly-minted App JWT is always used for this call, so any failure means that credential is unusable." >&2
+    if [[ -n "${_app_stderr}" ]]; then
+        echo "  ${_app_stderr}" >&2
     fi
+    exit 1
 else
     rm -f "${_app_stderr_file}"
     _live_app_id="$(
@@ -147,6 +157,25 @@ else
     fi
 fi
 
+# Acquire the installation token only after the App-ID preflight. All
+# repository- and organization-scoped calls below use this credential.
+if [[ -n "${BH_APP_AUTH_TOKEN_CMD:-}" ]]; then
+    # Trusted operator/test-only override; never wire to untrusted input.
+    if ! _INSTALL_TOKEN="$(eval "${BH_APP_AUTH_TOKEN_CMD}")"; then
+        echo "provision-ruleset: could not obtain the installation token." >&2
+        exit 2
+    fi
+else
+    if ! _INSTALL_TOKEN="$("${_PYTHON}" -m baton_harness.chain.app_auth token)"; then
+        echo "provision-ruleset: could not obtain the installation token." >&2
+        exit 2
+    fi
+fi
+if [[ -z "${_INSTALL_TOKEN}" ]]; then
+    echo "provision-ruleset: could not obtain the installation token (empty output)." >&2
+    exit 2
+fi
+
 # ---------------------------------------------------------------------------
 # Preflight: validate the admin-role assumption before writing rulesets.
 # 1. The repo must currently report at least one admin collaborator.
@@ -154,7 +183,7 @@ fi
 # 3. Non-default overrides must be validated against the org custom roles API.
 # ---------------------------------------------------------------------------
 _admin_collaborators_json="$(
-    gh api "repos/${REPO_SLUG}/collaborators?permission=admin"
+    GH_TOKEN="${_INSTALL_TOKEN}" gh api "repos/${REPO_SLUG}/collaborators?permission=admin"
 )"
 _admin_count="$(
     printf '%s' "${_admin_collaborators_json}" \
@@ -178,7 +207,7 @@ fi
 if [[ "${ADMIN_ROLE_ID}" != "5" ]]; then
     _custom_roles_err="$(mktemp)"
     if _custom_roles_json="$(
-        gh api "orgs/${BH_REPO_OWNER}/custom-repository-roles" 2>"${_custom_roles_err}"
+        GH_TOKEN="${_INSTALL_TOKEN}" gh api "orgs/${BH_REPO_OWNER}/custom-repository-roles" 2>"${_custom_roles_err}"
     )"; then
         _custom_role_match="$(
             printf '%s' "${_custom_roles_json}" \
@@ -285,7 +314,7 @@ _lookup_id() {
     # ONE FLAT array — NOT a list-of-lists. (--slurp is a jq flag, not a
     # `gh api` flag; real gh rejects it outright, so it must not be passed
     # here — issue #202, Bug 1.)
-    if ! list_json="$(gh api --paginate "repos/${REPO_SLUG}/rulesets" 2>"${list_err}")"; then
+    if ! list_json="$(GH_TOKEN="${_INSTALL_TOKEN}" gh api --paginate "repos/${REPO_SLUG}/rulesets" 2>"${list_err}")"; then
         echo "provision-ruleset: FAILURE — GET /repos/${REPO_SLUG}/rulesets (LIST) failed; refusing to treat this as absent:" >&2
         cat "${list_err}" >&2
         rm -f "${list_err}"
@@ -328,7 +357,7 @@ _apply_ruleset() {
 
     if [[ -z "${existing_id}" ]]; then
         echo "provision-ruleset: ${name} absent — POST-ing"
-        printf '%s' "${desired}" | gh api \
+        printf '%s' "${desired}" | GH_TOKEN="${_INSTALL_TOKEN}" gh api \
             --method POST \
             "repos/${REPO_SLUG}/rulesets" \
             --input -
@@ -336,7 +365,7 @@ _apply_ruleset() {
     fi
 
     local current_body
-    current_body="$(gh api "repos/${REPO_SLUG}/rulesets/${existing_id}")"
+    current_body="$(GH_TOKEN="${_INSTALL_TOKEN}" gh api "repos/${REPO_SLUG}/rulesets/${existing_id}")"
 
     # Compare structural keys only; exit 0 means no drift.
     if "${_PYTHON}" -c "
@@ -351,7 +380,7 @@ sys.exit(0 if all(desired.get(k) == current.get(k) for k in keys) else 1)
     fi
 
     echo "provision-ruleset: ${name} drift detected (id=${existing_id}) — PUT-ing"
-    printf '%s' "${desired}" | gh api \
+    printf '%s' "${desired}" | GH_TOKEN="${_INSTALL_TOKEN}" gh api \
         --method PUT \
         "repos/${REPO_SLUG}/rulesets/${existing_id}" \
         --input -
@@ -398,11 +427,11 @@ _capture_baseline() {
     fi
 
     local main_body feat_body
-    if ! main_body="$(gh api "repos/${REPO_SLUG}/rulesets/${main_id}")"; then
+    if ! main_body="$(GH_TOKEN="${_INSTALL_TOKEN}" gh api "repos/${REPO_SLUG}/rulesets/${main_id}")"; then
         echo "provision-ruleset: WARNING — could not fetch ruleset harness-main-no-merge body for baseline capture; skipping." >&2
         return 0
     fi
-    if ! feat_body="$(gh api "repos/${REPO_SLUG}/rulesets/${feat_id}")"; then
+    if ! feat_body="$(GH_TOKEN="${_INSTALL_TOKEN}" gh api "repos/${REPO_SLUG}/rulesets/${feat_id}")"; then
         echo "provision-ruleset: WARNING — could not fetch ruleset harness-feature-daemon-only body for baseline capture; skipping." >&2
         return 0
     fi

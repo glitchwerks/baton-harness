@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -36,6 +37,8 @@ from collections.abc import Callable
 from typing import Any, Protocol, runtime_checkable
 
 import jwt
+
+import baton_harness.chain.bws_client as bws_client
 
 
 class AppAuthError(RuntimeError):
@@ -584,3 +587,100 @@ def _github_http_post(
         return parsed
 
     raise AssertionError("_github_http_post exhausted without returning")
+
+
+def main(argv: list[str]) -> int:
+    """Mint a GitHub App JWT or installation token for shell callers.
+
+    Args:
+        argv: Command-line arguments excluding the module name. The sole
+            argument must be ``jwt`` or ``token``.
+
+    Returns:
+        Zero on success, or a non-zero status after writing a safe error
+        message to stderr.
+    """
+    if len(argv) != 1 or argv[0] not in {"jwt", "token"}:
+        print("app_auth: usage: app_auth.py {jwt|token}", file=sys.stderr)
+        return 2
+
+    mode = argv[0]
+    required_vars = [
+        "BH_GITHUB_APP_ID",
+        "BWS_PEM_SECRET_ID",
+        "BWS_ACCESS_TOKEN",
+    ]
+    if mode == "token":
+        required_vars.append("BH_GITHUB_APP_INSTALLATION_ID")
+
+    missing_vars = [name for name in required_vars if not os.environ.get(name)]
+    if missing_vars:
+        print(
+            "app_auth: missing required environment variable(s): "
+            + ", ".join(missing_vars),
+            file=sys.stderr,
+        )
+        return 2
+
+    app_id = os.environ["BH_GITHUB_APP_ID"]
+    secret_id = os.environ["BWS_PEM_SECRET_ID"]
+    access_token = os.environ["BWS_ACCESS_TOKEN"]
+
+    installation_id: int | None = None
+    if mode == "token":
+        try:
+            installation_id = int(os.environ["BH_GITHUB_APP_INSTALLATION_ID"])
+        except ValueError:
+            print(
+                "app_auth: BH_GITHUB_APP_INSTALLATION_ID must be an integer",
+                file=sys.stderr,
+            )
+            return 2
+
+    try:
+        private_key_pem = bws_client.fetch_secret(
+            secret_id,
+            access_token=access_token,
+        )
+    except bws_client.BwsClientError:
+        print("app_auth: failed to fetch private key", file=sys.stderr)
+        return 1
+    except Exception:
+        print("app_auth: failed to fetch private key", file=sys.stderr)
+        return 1
+
+    if mode == "jwt":
+        try:
+            app_jwt = build_app_jwt(
+                app_id,
+                private_key_pem,
+                now=int(time.time()),
+            )
+        except Exception:
+            print(
+                "app_auth: failed to sign App JWT "
+                "(invalid private key material)",
+                file=sys.stderr,
+            )
+            return 1
+        print(app_jwt)
+        return 0
+
+    assert installation_id is not None  # noqa: S101 - narrowed by mode
+    try:
+        token, _expires_at = mint_installation_token(
+            app_id,
+            private_key_pem,
+            installation_id,
+            http_post=_github_http_post,
+            now=int(time.time()),
+        )
+    except Exception:
+        print("app_auth: failed to mint installation token", file=sys.stderr)
+        return 1
+    print(token)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
