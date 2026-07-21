@@ -34,6 +34,7 @@ import subprocess
 from pathlib import Path
 
 from baton_harness.chain.identity import Identity, env_for
+from baton_harness.chain.subproc import run_cmd
 
 # Conservative pattern for a valid git ref component used as a branch slug.
 # Allows alphanumerics, dots, hyphens, and forward-slashes (for sub-paths).
@@ -65,12 +66,12 @@ def _run(
         A ``subprocess.CompletedProcess`` with captured stdout/stderr.
         Callers inspect ``returncode`` themselves.
     """
-    return subprocess.run(
+    return run_cmd(
         cmd,
-        capture_output=True,
+        capture=True,
         text=True,
-        encoding="utf-8",
         env=env if env is not None else env_for(Identity.WORKER),
+        check=False,
     )
 
 

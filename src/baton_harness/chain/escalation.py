@@ -28,6 +28,7 @@ from baton_harness.chain.app_auth import (
     gh_env,
 )
 from baton_harness.chain.runlog import RunLog
+from baton_harness.chain.subproc import run_cmd
 
 _log = logging.getLogger(__name__)
 
@@ -59,13 +60,7 @@ def _run(
         A ``subprocess.CompletedProcess`` with captured stdout/stderr.
         Callers inspect ``returncode`` themselves.
     """
-    return subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        env=env,
-    )
+    return run_cmd(cmd, capture=True, text=True, env=env, check=False)
 
 
 # ---------------------------------------------------------------------------

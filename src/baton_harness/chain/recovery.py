@@ -59,6 +59,7 @@ from baton_harness.chain.app_auth import (
     gh_env,
 )
 from baton_harness.chain.escalation import alert
+from baton_harness.chain.subproc import run_cmd
 
 if TYPE_CHECKING:
     from baton_harness.chain.runlog import RunLog
@@ -93,13 +94,7 @@ def _run(
         A ``subprocess.CompletedProcess`` with captured stdout/stderr.
         Callers inspect ``returncode`` themselves.
     """
-    return subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        env=env,
-    )
+    return run_cmd(cmd, capture=True, text=True, env=env, check=False)
 
 
 # ---------------------------------------------------------------------------
