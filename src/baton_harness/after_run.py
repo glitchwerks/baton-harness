@@ -96,6 +96,7 @@ from baton_harness.chain.labels import (
     LABEL_AGENT_READY,
     LABEL_BLOCKED,
 )
+from baton_harness.chain.subproc import run_cmd
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -188,12 +189,7 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
         The process is allowed to exit with any code; callers inspect
         ``returncode`` themselves.
     """
-    return subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
+    return run_cmd(cmd, check=False)
 
 
 # ---------------------------------------------------------------------------

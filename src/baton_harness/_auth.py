@@ -57,6 +57,8 @@ import subprocess
 import time
 from collections.abc import Callable
 
+from baton_harness.chain.subproc import run_cmd
+
 
 class TokenValidationError(Exception):
     """Raised when the GitHub token fails the pre-flight validation gate.
@@ -133,12 +135,7 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
         ``returncode`` set.  The process may exit with any code; callers
         inspect ``returncode`` themselves.
     """
-    return subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
+    return run_cmd(cmd, check=False)
 
 
 def _read_token() -> str:

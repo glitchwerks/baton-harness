@@ -60,6 +60,7 @@ from pathlib import Path
 from typing import cast
 
 from baton_harness.chain.identity import Identity, env_for
+from baton_harness.chain.subproc import run_cmd
 
 _log = logging.getLogger(__name__)
 
@@ -282,12 +283,10 @@ def _default_runner(args: list[str]) -> subprocess.CompletedProcess[str]:
     Returns:
         CompletedProcess with captured stdout/stderr, UTF-8 decoded.
     """
-    return subprocess.run(
+    return run_cmd(
         ["gh", *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
         env=env_for(Identity.WORKER),
+        check=False,
     )
 
 
