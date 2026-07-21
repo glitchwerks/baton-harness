@@ -22,9 +22,16 @@ def _auto_patch_reconcile_startup() -> None:  # type: ignore[return]
     Tests that DO exercise reconcile_startup (test_reconcile.py and the two
     #40 daemon tests) override this fixture with their own explicit patches,
     which take precedence as the innermost patch in the mock stack.
+
+    Patch-target note (#277, Phase 6e): ``run_daemon`` moved to
+    ``daemon/poll.py`` and imports ``reconcile_startup`` directly from
+    ``baton_harness.chain.reconcile`` rather than reaching it via a live
+    ``_daemon_mod`` lookup (RATIFIED explicit multi-target patching, plan
+    §6 Q6 -- see poll.py's module docstring). The patch target below is
+    repointed to that binding's actual location accordingly.
     """
     with patch(
-        "baton_harness.chain.daemon.reconcile_startup",
+        "baton_harness.chain.daemon.poll.reconcile_startup",
         new=AsyncMock(return_value=None),
     ):
         yield

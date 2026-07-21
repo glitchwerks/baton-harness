@@ -40,8 +40,9 @@ _log = logging.getLogger("baton_harness.chain.daemon")
 # (issue #225) Guard for the required_checks fallback warning -- fires
 # at most once per ``run_daemon`` invocation (reset at the top of
 # run_daemon, via ``_gh_api_helpers_mod._required_checks_warned`` since
-# the reset lives in ``daemon/__init__.py`` while this guard's owning
-# function lives here), not once per merge/work-unit within that run.
+# the reset lives in ``daemon/poll.py`` (#277, Phase 6e) while this
+# guard's owning function lives here), not once per merge/work-unit
+# within that run.
 _required_checks_warned = False
 
 
