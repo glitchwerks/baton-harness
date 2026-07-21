@@ -359,7 +359,13 @@ def test_probe_pushes_using_worker_identity_via_run_seam(
         )
 
     with (
-        patch.object(daemon_mod, "env_for", side_effect=_spy_env_for),
+        # env_for is bound locally inside daemon.push_probe (#273, Phase
+        # 6a step 2) -- patching daemon_mod.env_for would not affect
+        # this submodule's own import-time binding, so patch it where
+        # it's actually looked up.
+        patch.object(
+            daemon_mod.push_probe, "env_for", side_effect=_spy_env_for
+        ),
         patch.object(daemon_mod, "_run", side_effect=_spy_run),
         patch.object(
             daemon_mod, "_authed_git_push", side_effect=_forbidden_authed_push
