@@ -115,6 +115,15 @@ def _auto_patch_push_probe_daemon(
     directly to pin its own internals (only patching the lower-level
     ``_run`` seam) — those tests need the REAL function, not this
     autouse's mock, so this fixture is a no-op for that module.
+
+    Patch-target note (#273, Phase 6a): ``_probe_worker_push_denied`` and
+    ``ProbeResult`` now live in ``daemon/push_probe.py``, re-exported by
+    ``daemon/__init__.py``. This fixture's patch target
+    (``baton_harness.chain.daemon._probe_worker_push_denied``) still
+    works unmodified because its only production caller,
+    ``_should_launch_worker``, remains defined in ``daemon/__init__.py``
+    and resolves the name via its own module globals — the same dict
+    entry this patch sets. Verified against the full suite post-split.
     """
     if request.module.__name__.endswith(".test_daemon_push_probe"):
         yield
