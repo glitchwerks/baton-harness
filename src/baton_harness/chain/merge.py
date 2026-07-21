@@ -21,7 +21,8 @@ Required-check set (C-I2 finding):
 
     Operators may override this default via a ``required_checks:`` list
     in ``config/WORKFLOW.md`` (issue #225 / VENDOR-PATCH VP-8); see
-    ``chain.daemon._effective_required_checks``, which resolves the
+    ``chain.daemon.gh_api_helpers._effective_required_checks`` (moved
+    from ``chain.daemon`` by #274, Phase 6b), which resolves the
     configured override and falls back to this module's
     ``REQUIRED_CHECKS`` (with a one-time warning) when unset.
 
@@ -108,9 +109,10 @@ _log = logging.getLogger(__name__)
 # Hardcoded fallback default matching the three checks confirmed from
 # .github/workflows/ci.yml.  Operators override it via a
 # `required_checks:` list in config/WORKFLOW.md (issue #225 / VP-8); see
-# chain.daemon._effective_required_checks, which resolves the configured
-# override and falls back to this constant (with a one-time warning) when
-# unset.
+# chain.daemon.gh_api_helpers._effective_required_checks (moved from
+# chain.daemon by #274, Phase 6b), which resolves the configured
+# override and falls back to this constant (with a one-time warning)
+# when unset.
 # ---------------------------------------------------------------------------
 
 REQUIRED_CHECKS: list[str] = [
