@@ -79,8 +79,8 @@ from baton_harness.vendor.symphony.orchestrator import Orchestrator
 _log = logging.getLogger("baton_harness.chain.daemon")
 
 # Default poll configuration for the CI gate (overridable by caller).
-# Also imported by daemon/__init__.py for run_daemon's own signature
-# defaults -- this module is the sole definition site.
+# Also imported by daemon/poll.py (#277, Phase 6e) for run_daemon's own
+# signature defaults -- this module is the sole definition site.
 _DEFAULT_CI_POLL_INTERVAL: float = 10.0
 _DEFAULT_CI_TIMEOUT: float = 1800.0
 

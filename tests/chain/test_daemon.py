@@ -6216,7 +6216,7 @@ def test_run_daemon_calls_reconcile_startup_exactly_once() -> None:
         ),
         patch("baton_harness.chain.daemon.alert", return_value=True),
         patch(
-            "baton_harness.chain.daemon.reconcile_startup",
+            "baton_harness.chain.daemon.poll.reconcile_startup",
             side_effect=fake_reconcile_startup,
         ),
     ):
@@ -6315,7 +6315,7 @@ def test_run_daemon_reconcile_startup_called_before_heartbeat_thread() -> None:
         ),
         patch("baton_harness.chain.daemon.alert", return_value=True),
         patch(
-            "baton_harness.chain.daemon.reconcile_startup",
+            "baton_harness.chain.daemon.poll.reconcile_startup",
             side_effect=fake_reconcile_startup,
         ),
         patch("threading.Thread", _SpyThread),
@@ -6431,7 +6431,7 @@ def test_run_daemon_registers_sigterm_handler_on_startup() -> None:
         ),
         patch("baton_harness.chain.daemon.alert", return_value=True),
         patch(
-            "baton_harness.chain.daemon.reconcile_startup",
+            "baton_harness.chain.daemon.poll.reconcile_startup",
             side_effect=lambda *a, **kw: None,
         ),
     ):
@@ -6541,7 +6541,7 @@ def test_sigterm_handler_clears_marker_on_invocation(
         ),
         patch("baton_harness.chain.daemon.alert", return_value=True),
         patch(
-            "baton_harness.chain.daemon.reconcile_startup",
+            "baton_harness.chain.daemon.poll.reconcile_startup",
             side_effect=lambda *a, **kw: None,
         ),
     ):
@@ -9397,7 +9397,7 @@ class TestRunDaemonThreadsTokenIntoReconcileStartup:
 
         with (
             patch(
-                "baton_harness.chain.daemon.reconcile_startup",
+                "baton_harness.chain.daemon.poll.reconcile_startup",
                 side_effect=_spy_reconcile,
             ),
             patch.object(

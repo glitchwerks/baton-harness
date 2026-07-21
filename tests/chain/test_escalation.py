@@ -888,11 +888,22 @@ class TestAlertThreadsInstallationToken:
             #
             # If _do_merge is not directly callable, we fall back to
             # asserting the contract via the AST: look for alert( callsites
-            # in daemon.py and verify they pass installation_token.
+            # and verify they pass installation_token.
+            #
+            # Patch-target note (#277, Phase 6e): the three alert() sites
+            # this scan has always covered (run_daemon's tick-failure
+            # handler and _poll_and_run's two callsites) moved from
+            # daemon/__init__.py to daemon/poll.py verbatim (still
+            # threading installation_token= unchanged) -- inspecting
+            # `poll` here instead of `daemon_mod` keeps the exact same
+            # coverage set at its new home, matching the reconcile_startup
+            # patch-target migration elsewhere in this sub-PR.
             import ast
             import inspect
 
-            daemon_src = inspect.getsource(daemon_mod)
+            from baton_harness.chain.daemon import poll
+
+            daemon_src = inspect.getsource(poll)
             tree = ast.parse(daemon_src)
 
             # Find all Call nodes where func.attr == "alert" or
@@ -908,7 +919,7 @@ class TestAlertThreadsInstallationToken:
                         alert_call_nodes.append(node)
 
             assert alert_call_nodes, (
-                "daemon.py must contain at least one alert() call"
+                "daemon/poll.py must contain at least one alert() call"
             )
 
             # Every alert() callsite that is in the merge-outcome path
@@ -931,7 +942,7 @@ class TestAlertThreadsInstallationToken:
                     )
 
             assert not callsites_missing_token, (
-                "All daemon.py alert() callsites must pass "
+                "All daemon/poll.py alert() callsites must pass "
                 "installation_token=... kwarg; missing at: "
                 f"{callsites_missing_token}"
             )
