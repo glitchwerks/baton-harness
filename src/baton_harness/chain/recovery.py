@@ -59,7 +59,6 @@ from baton_harness.chain.app_auth import (
     gh_env,
 )
 from baton_harness.chain.escalation import alert
-from baton_harness.chain.subproc import run_cmd
 
 # Imported under its original private name (#272): tests both patch
 # "baton_harness.chain.recovery._fetch_labels" by dotted path and import
@@ -69,6 +68,7 @@ from baton_harness.chain.subproc import run_cmd
 from baton_harness.chain.label_ops import (
     fetch_recovery_labels as _fetch_labels,
 )
+from baton_harness.chain.subproc import run_cmd
 
 if TYPE_CHECKING:
     from baton_harness.chain.runlog import RunLog
