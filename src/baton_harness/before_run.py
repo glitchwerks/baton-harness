@@ -43,6 +43,7 @@ import sys
 
 from baton_harness._auth import TokenValidationError, validate_github_token
 from baton_harness._cli import err, log, resolve_issue_number
+from baton_harness.chain.subproc import run_cmd
 
 #: Environment variable controlling the rebase target.  Set by the daemon
 #: to ``feature/<slug>`` for milestone work units; defaults to
@@ -72,11 +73,7 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
         The :class:`subprocess.CompletedProcess` result with ``returncode``
         populated and ``.stdout`` always ``None`` (streaming, not captured).
     """
-    return subprocess.run(
-        cmd,
-        encoding="utf-8",
-        check=False,
-    )
+    return run_cmd(cmd, capture=False, check=False)
 
 
 def _run_capture(cmd: list[str]) -> subprocess.CompletedProcess[str]:

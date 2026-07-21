@@ -40,6 +40,7 @@ from baton_harness._cli import (
     log,
     resolve_issue_number,
 )
+from baton_harness.chain.subproc import run_cmd
 
 #: Short name used in log/err prefixes.
 _HOOK = "after-create"
@@ -59,11 +60,7 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
         The :class:`subprocess.CompletedProcess` result with ``returncode``
         populated.
     """
-    return subprocess.run(
-        cmd,
-        encoding="utf-8",
-        check=False,
-    )
+    return run_cmd(cmd, capture=False, check=False)
 
 
 def _install_npm(issue: int, cwd: Path) -> int:
