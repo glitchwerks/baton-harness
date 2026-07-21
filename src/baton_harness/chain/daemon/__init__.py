@@ -48,14 +48,19 @@ import signal
 import subprocess
 import sys
 import threading
-from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from baton_harness.chain import branches
-from baton_harness.chain import recovery as _recovery_mod
-from baton_harness.chain.alert_post import post_slack_alert
+
+# post_slack_alert: `as post_slack_alert` self-reexport (#275, Phase 6c)
+# so mypy --strict's no_implicit_reexport treats
+# `_daemon_mod.post_slack_alert` (launch_gate.py's patch-safe lookup of
+# this name) as an explicit export rather than flagging attr-defined.
+from baton_harness.chain.alert_post import (
+    post_slack_alert as post_slack_alert,
+)
 from baton_harness.chain.app_auth import (
     InstallationTokenSource,
     gh_env,
@@ -71,7 +76,13 @@ from baton_harness.chain.gh_deps import (
     fetch_blocked_by,
 )
 from baton_harness.chain.heartbeat import LivenessState, run_heartbeat_loop
-from baton_harness.chain.identity import Identity, env_for
+
+# Identity: `as Identity` self-reexport (#275, Phase 6c). Not called
+# directly from this module any more (its only prior use, inside
+# _build_preflight_runner, now lives in launch_gate.py), but
+# test_daemon_push_probe.py accesses `daemon_mod.Identity.WORKER`
+# directly (not via patch), so the import must stay here.
+from baton_harness.chain.identity import Identity as Identity
 
 # Imported under its original private name (#272): dozens of existing
 # tests patch "baton_harness.chain.daemon._fetch_issue_labels" by dotted
@@ -104,18 +115,25 @@ from baton_harness.chain.obs_config import ObsConfig, load_obs_config
 from baton_harness.chain.reconcile import (
     reconcile_startup as reconcile_startup,
 )
-from baton_harness.chain.recovery import RecoveryResult, scan_orphan_worktrees
+from baton_harness.chain.recovery import scan_orphan_worktrees
 from baton_harness.chain.redispatch import RedispatchTally
 from baton_harness.chain.registry import RepoConfig
 from baton_harness.chain.ruleset_status import (
-    RulesetCheckResult,
-    RulesetStatus,
-    check_ruleset_signals,
-    # Not called from this module (#206 hard swap moved the gate to
-    # check_ruleset_signals in _should_launch_worker) -- stays bound at
-    # module scope so tests can patch.object(daemon,
+    # Neither symbol is called directly from this module any more
+    # (#275, Phase 6c) -- check_ruleset_signals's only caller,
+    # _should_launch_worker, now lives in launch_gate.py and reaches it
+    # via _daemon_mod.check_ruleset_signals(...), a live attribute
+    # lookup on THIS module -- so the import must stay here (as an
+    # explicit `as` self-reexport, mypy --strict no_implicit_reexport)
+    # as the binding that lookup resolves and that existing tests patch
+    # (patch.object(daemon_mod, "check_ruleset_signals", ...)).
+    # ruleset_is_provisioned stays bound at module scope for the same
+    # patch-target reason: tests use patch.object(daemon,
     # "ruleset_is_provisioned", ...) as a regression guard proving the
     # gate never reintroduces the old call site.
+    check_ruleset_signals as check_ruleset_signals,
+)
+from baton_harness.chain.ruleset_status import (
     ruleset_is_provisioned,  # noqa: F401
 )
 from baton_harness.chain.runlog import RunLog
@@ -149,16 +167,59 @@ from .gh_api_helpers import (
     _slugify,
 )
 
+# launch_gate.py cluster (#275, Phase 6c): re-exported so
+# `baton_harness.chain.daemon._should_launch_worker` /
+# `._build_preflight_runner` / `._resolve_app_id` / `._launch_one_issue` /
+# `.reconstruct` keep resolving for this module's own remaining callers
+# (_run_work_unit calls `_resolve_app_id`, `_launch_one_issue`, and
+# `reconstruct` by bare name -- all three stay valid because
+# `_run_work_unit` itself still lives in THIS module, so its bare-name
+# lookups resolve via this module's own globals, which these re-exports
+# populate) and for tests that access/patch them via the package path.
+# `_should_launch_worker` and `_build_preflight_runner` have no
+# remaining in-module caller: `_launch_one_issue` (their only caller)
+# now lives in launch_gate.py alongside them and reaches both via
+# `_daemon_mod.X(...)`, a live attribute lookup on THIS module, so
+# existing tests that patch.object(daemon_mod, "_should_launch_worker"
+# | "_build_preflight_runner", ...) while driving through
+# `daemon_mod._launch_one_issue` keep intercepting correctly.
+from .launch_gate import (
+    _build_preflight_runner as _build_preflight_runner,
+)
+from .launch_gate import (
+    _launch_one_issue,
+    _resolve_app_id,
+    reconstruct,
+)
+from .launch_gate import (
+    _should_launch_worker as _should_launch_worker,
+)
+
 # push_probe.py cluster (#273, Phase 6a step 2): re-exported so
 # `baton_harness.chain.daemon.ProbeResult` / `.ProbeDenialReason` /
 # `._authed_git_push` / `._probe_worker_push_denied` keep resolving for
-# this module's own callers (_should_launch_worker, _run_work_unit) and
-# for tests that access them via the package path.
+# this module's own remaining caller (_run_work_unit, for
+# `_authed_git_push`) and for tests that access them via the package
+# path. `ProbeResult`, `ProbeDenialReason`, and `_probe_worker_push_denied`
+# have no remaining in-module caller as of #275 (Phase 6c) --
+# `_should_launch_worker` (their only prior caller here) now lives in
+# launch_gate.py and reaches `_probe_worker_push_denied` via
+# `_daemon_mod._probe_worker_push_denied(...)`, a live attribute lookup
+# on THIS module -- so all three use an explicit `as` self-reexport
+# (mypy --strict no_implicit_reexport) to stay valid patch/getattr
+# targets (`daemon_mod.ProbeResult`, `patch.object(daemon_mod,
+# "_probe_worker_push_denied", ...)`).
 from .push_probe import (
-    ProbeDenialReason,
-    ProbeResult,
+    ProbeDenialReason as ProbeDenialReason,
+)
+from .push_probe import (
+    ProbeResult as ProbeResult,
+)
+from .push_probe import (
     _authed_git_push,
-    _probe_worker_push_denied,
+)
+from .push_probe import (
+    _probe_worker_push_denied as _probe_worker_push_denied,
 )
 
 _log = logging.getLogger(__name__)
@@ -171,474 +232,14 @@ _log = logging.getLogger(__name__)
 _DISPATCH_EXCLUDE_LABELS: frozenset[str] = frozenset({LABEL_BLOCKED})
 
 
-_GENERIC_CHECKS_DETAIL = (
-    "harness-main-no-merge, harness-feature-daemon-only "
-    "(ruleset check returned no detail)"
-)
-
-#: Timeout (seconds) applied to the comparator's gh runner (built by
-#: `_build_preflight_runner`) so a stalled `gh api` ruleset call cannot
-#: hang daemon launch indefinitely (CodeRabbit PR #253 round 2, finding
-#: #5). The comparator is diagnostic-only (#223 demotion) -- a timeout
-#: here degrades to an ERROR result rather than blocking launch.
-_COMPARATOR_TIMEOUT_SECONDS: float = 30.0
-
-# ProbeDenialReason and ProbeResult now live in push_probe.py (#273,
-# Phase 6a step 2) and are re-exported above so this module's own call
-# sites and existing tests keep resolving them via the package path.
-
-
-class _NonGitRepoRootSentinel:
-    """Marks the resolved ``repo_root`` as not a git worktree.
-
-    Distinct from the legacy default (``None``), which means "no probe
-    context is active — a direct caller of ``_should_launch_worker``";
-    see ``_active_probe_repo_root`` below.
-    """
-
-
-#: Sentinel value for ``_active_probe_repo_root`` when `_launch_one_issue`
-#: resolves a ``repo_root`` with no ``.git`` entry (CodeRabbit PR #253
-#: finding C10). Distinct from the legacy ``None`` default so
-#: `_should_launch_worker` can fail closed on it WITHOUT invoking the
-#: behavioral probe (there is no git worktree to push from), while
-#: direct callers of `_should_launch_worker` (bypassing
-#: `_launch_one_issue` entirely) still see the legacy ``None`` and keep
-#: the comparator-only gate.
-_NON_GIT_REPO_ROOT = _NonGitRepoRootSentinel()
-
-# Serial-launch probe context for issue #223. `_launch_one_issue` sets this
-# around its call to `_should_launch_worker`, then resets it in a `finally`
-# block so direct callers of `_should_launch_worker` keep the legacy path.
-_active_probe_repo_root: Path | _NonGitRepoRootSentinel | None = None
-
-
-def _should_launch_worker(
-    issue_number: int,
-    owner: str,
-    repo: str,
-    *,
-    app_id: str,
-    runner: Callable[[list[str]], subprocess.CompletedProcess[str]],
-    obs: ObsConfig,
-) -> bool:
-    """Per-launch branch-protection preflight gate.
-
-    Calls ``check_ruleset_signals`` (#206 hard swap — the App-token-safe
-    replacement for ``ruleset_is_provisioned``, which a GitHub App
-    installation token cannot use safely because it can't read
-    ``bypass_actors``) and returns ``True`` only when the returned
-    ``RulesetCheckResult.status`` is ``RulesetStatus.MATCH``.  On any
-    non-MATCH result (``DRIFT``, ``ABSENT``, ``ERROR``, or
-    ``NOT_PROVISIONED``) the worker launch is refused (returns
-    ``False``) and a Slack alert is sent to ``obs.heartbeat_ping_url``
-    if configured.  ``NOT_PROVISIONED`` (no pinned baseline) fails
-    closed exactly like the other non-MATCH statuses — a missing
-    baseline must never be treated as safe-by-default.
-
-    The alert's failed-checks text is built directly from the single
-    ``RulesetCheckResult`` already returned by ``check_ruleset_signals``
-    — this function never calls it a second time to re-derive detail.
-
-    Failure-isolation: if ``post_slack_alert`` raises despite its
-    no-raise contract, the exception is caught and logged; the refusal
-    still fires.
-
-    Args:
-        issue_number: Issue number about to be dispatched (for log context).
-        owner: Repository owner (org or user login).
-        repo: Repository name.
-        app_id: Numeric GitHub App ID (string form) for placeholder
-            substitution in the feature ruleset.
-        runner: gh runner callable for the ruleset inspector.
-        obs: Observability config; ``obs.heartbeat_ping_url`` is used as
-            the Slack webhook target.
-
-    Returns:
-        ``True`` when the preflight passes (MATCH); ``False`` otherwise.
-    """
-    try:
-        result = check_ruleset_signals(
-            owner, repo, app_id=app_id, runner=runner
-        )
-    except subprocess.TimeoutExpired as exc:
-        # CodeRabbit PR #253 round 2, finding #5: even with a bound
-        # timeout on the runner (see _build_preflight_runner), a
-        # TimeoutExpired that still escapes check_ruleset_signals must
-        # not propagate out of the launch decision -- the comparator is
-        # diagnostic-only (#223 demotion), so its own failure degrades
-        # to an ERROR result and the existing non-MATCH refusal path
-        # below handles the rest (fail-closed, alert still attempted).
-        _log.warning(
-            "daemon: check_ruleset_signals raised TimeoutExpired for "
-            "issue #%d; degrading to ERROR (comparator is "
-            "diagnostic-only): %s",
-            issue_number,
-            exc,
-        )
-        result = RulesetCheckResult(
-            status=RulesetStatus.ERROR,
-            detail=f"comparator check_ruleset_signals timed out: {exc}",
-        )
-
-    # Snapshot the module-level probe context into a local so mypy can
-    # narrow it (Path vs the non-git sentinel vs the legacy None) across
-    # the two checks below without losing the narrowing to a call in
-    # between.
-    active_repo_root = _active_probe_repo_root
-
-    if isinstance(active_repo_root, _NonGitRepoRootSentinel):
-        # CodeRabbit PR #253 finding C10: a resolved repo_root with no
-        # `.git` entry means the decisive behavioral probe cannot run at
-        # all — refuse outright rather than falling through to the
-        # comparator-only gate below, where a bare MATCH would otherwise
-        # authorize launch with no behavioral check.
-        _log.warning(
-            "daemon: repo_root for issue #%d is not a git worktree; "
-            "the behavioral push-denial probe cannot run — refusing "
-            "launch (comparator=%s)",
-            issue_number,
-            result.status.name,
-        )
-        checks_detail = result.detail or _GENERIC_CHECKS_DETAIL
-        message = (
-            "baton-harness refusing to launch worker — "
-            "repo_root is not a git worktree; the decisive push-denial "
-            "probe cannot run. Will NOT run in dangerous mode. "
-            f"Comparator status: {result.status.name}. "
-            f"Failed checks: {checks_detail}."
-        )
-        if obs.heartbeat_ping_url is None:
-            _log.warning(
-                "daemon: no heartbeat_ping_url configured; "
-                "Slack preflight alert not sent for issue #%d",
-                issue_number,
-            )
-        else:
-            try:
-                post_slack_alert(obs.heartbeat_ping_url, message)
-            except Exception:  # noqa: BLE001
-                _log.warning(
-                    "daemon: post_slack_alert raised despite no-raise "
-                    "contract (issue #%d); swallowing",
-                    issue_number,
-                )
-        return False
-
-    if active_repo_root is not None:
-        if result.status is not RulesetStatus.MATCH:
-            _log.warning(
-                "daemon: comparator reported %s for issue #%d; "
-                "treating as diagnostic-only while push probe decides",
-                result.status.name,
-                issue_number,
-            )
-
-        try:
-            probe_result = _probe_worker_push_denied(active_repo_root)
-        except Exception as exc:  # noqa: BLE001
-            _log.warning(
-                "daemon: push-denial probe raised for issue #%d; "
-                "failing closed: %s",
-                issue_number,
-                exc,
-            )
-            probe_result = ProbeResult(
-                denied=False,
-                reason=ProbeDenialReason.TRANSPORT_ERROR,
-                detail=f"push-denial probe raised unexpectedly: {exc}",
-            )
-
-        if probe_result.denied:
-            return True
-
-        checks_detail = result.detail or _GENERIC_CHECKS_DETAIL
-        reason_text = probe_result.detail or (
-            probe_result.reason.name
-            if probe_result.reason is not None
-            else "UNKNOWN"
-        )
-        message = (
-            "baton-harness refusing to launch worker — "
-            "push-denial probe did not confirm denial "
-            f"(reason={reason_text}; comparator={result.status.name}). "
-            "Will NOT run in dangerous mode. "
-            f"Failed checks: {checks_detail}."
-        )
-
-        if obs.heartbeat_ping_url is None:
-            _log.warning(
-                "daemon: no heartbeat_ping_url configured; "
-                "Slack preflight alert not sent for issue #%d",
-                issue_number,
-            )
-        else:
-            try:
-                post_slack_alert(obs.heartbeat_ping_url, message)
-            except Exception:  # noqa: BLE001
-                _log.warning(
-                    "daemon: post_slack_alert raised despite no-raise "
-                    "contract (issue #%d); swallowing",
-                    issue_number,
-                )
-        return False
-
-    if result.status is RulesetStatus.MATCH:
-        return True
-
-    checks_detail = result.detail or _GENERIC_CHECKS_DETAIL
-
-    message = (
-        "baton-harness refusing to launch worker — "
-        "main branch protection missing/misconfigured. "
-        "Will NOT run in dangerous mode. "
-        f"Failed checks: {checks_detail}."
-    )
-
-    _log.warning(
-        "daemon: preflight refused issue #%d — %s (%s)",
-        issue_number,
-        result.status.name,
-        checks_detail,
-    )
-
-    if obs.heartbeat_ping_url is None:
-        _log.warning(
-            "daemon: no heartbeat_ping_url configured; "
-            "Slack preflight alert not sent for issue #%d",
-            issue_number,
-        )
-    else:
-        try:
-            post_slack_alert(obs.heartbeat_ping_url, message)
-        except Exception:  # noqa: BLE001
-            _log.warning(
-                "daemon: post_slack_alert raised despite no-raise "
-                "contract (issue #%d); swallowing",
-                issue_number,
-            )
-
-    return False
-
-
-def _build_preflight_runner(
-    installation_token: InstallationTokenSource,
-) -> Callable[[list[str]], subprocess.CompletedProcess[str]]:
-    """Build a gh runner with the correct auth environment for preflight.
-
-    Uses ``chain.app_auth.gh_env(installation_token)`` when an
-    installation token is provided; otherwise falls back to the worker
-    identity environment from ``env_for(Identity.WORKER)``. Passes
-    ``env=...`` to ``subprocess.run`` so ``gh`` authenticates with the
-    intended per-call identity. This matches the pattern used by
-    ``gh_deps``, ``escalation``, ``merge``, and ``recovery`` elsewhere
-    in ``chain/``.
-
-    Without this, a bare ``subprocess.run(["gh", ...])`` passes no env
-    override, so ruleset ``gh api`` calls authenticate via ambient
-    credentials.  In deployments without an ambient ``GH_TOKEN``, every
-    launch is refused with ``RulesetStatus.ERROR``.
-
-    The returned runner also bounds its ``subprocess.run`` call with
-    ``timeout=_COMPARATOR_TIMEOUT_SECONDS`` (CodeRabbit PR #253 round 2,
-    finding #5) so a stalled ``gh api`` call cannot hang daemon launch
-    indefinitely; a resulting ``subprocess.TimeoutExpired`` degrades to
-    an ``ERROR`` result rather than propagating (see
-    ``check_ruleset_signals`` and ``_should_launch_worker``).
-
-    Args:
-        installation_token: GitHub App installation access token
-            (``ghs_`` prefix, or a refreshable token-source object) to
-            inject as ``GH_TOKEN`` / ``GITHUB_TOKEN`` in the subprocess
-            environment via ``gh_env``.
-
-    Returns:
-        A callable that accepts a list of gh args and returns a
-        ``CompletedProcess[str]`` with ``env`` set to the resolved App
-        token environment when ``installation_token`` is truthy, or to
-        ``env_for(Identity.WORKER)`` when it is falsy or absent.
-    """
-    _env = (
-        gh_env(installation_token)
-        if installation_token
-        else env_for(Identity.WORKER)
-    )
-
-    def _runner(
-        args: list[str],
-    ) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            ["gh", *args],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            env=_env,
-            timeout=_COMPARATOR_TIMEOUT_SECONDS,
-        )
-
-    return _runner
-
-
-def _resolve_app_id() -> str | None:
-    """Resolve the GitHub App ID from the environment.
-
-    Reads ``BH_GITHUB_APP_ID`` from the environment.  Returns ``None``
-    (fail-closed) if the variable is absent or empty, logging a critical
-    message so operators are informed.
-
-    Returns:
-        The App ID string if available; ``None`` otherwise.
-    """
-    try:
-        app_id = os.environ["BH_GITHUB_APP_ID"]
-    except KeyError:
-        _log.critical(
-            "daemon: BH_GITHUB_APP_ID is not set; "
-            "refusing to launch worker (fail-closed)"
-        )
-        return None
-    if not app_id:
-        _log.critical(
-            "daemon: BH_GITHUB_APP_ID is empty; "
-            "refusing to launch worker (fail-closed)"
-        )
-        return None
-    return app_id
-
-
-async def _launch_one_issue(
-    orch: Orchestrator,
-    issue_obj: object,
-    owner: str,
-    repo: str,
-    app_id: str,
-    installation_token: InstallationTokenSource,
-    obs: ObsConfig,
-    *,
-    repo_root: Path | None = None,
-) -> str | None:
-    """Preflight + launch helper extracted from the daemon's launch loop.
-
-    Builds a token-authenticated gh runner via
-    ``_build_preflight_runner(installation_token)`` so that ruleset ``gh
-    api`` calls authenticate as the harness App rather than relying on
-    ambient credentials (P1 fix).
-
-    On preflight refusal, restores the ``agent-ready`` label so the issue
-    remains visible to future poll ticks and posts a blocking comment via
-    ``alert(severity="critical")`` (P2a fix).
-
-    Returns the worker result string ("pr_created" / "no_pr" / etc.) on
-    success; returns ``None`` when preflight refuses (parked).
-
-    Args:
-        orch: The Orchestrator instance to dispatch the worker through.
-        issue_obj: Issue object with a ``.number`` attribute.
-        owner: Repository owner (org or user login).
-        repo: Repository name.
-        app_id: Numeric GitHub App ID (string form) for ruleset checks.
-        installation_token: GitHub App installation access token
-            (``ghs_`` prefix).  Used to build the preflight runner so
-            ruleset checks authenticate as the App, not ambient env.
-        obs: Observability config for preflight alert routing.
-        repo_root: Repository root used by the decisive worker-identity
-            push probe. Defaults to ``Path.cwd()`` when omitted. When an
-            explicit path is supplied but does not point at a git
-            worktree (no ``.git`` entry), the decisive push probe
-            cannot run at all — launch is refused outright (fail
-            closed) rather than falling back to the comparator-only
-            gate (CodeRabbit PR #253 finding C10).
-
-    Returns:
-        The worker result string on success, or ``None`` when preflight
-        refuses the launch.
-    """
-    global _active_probe_repo_root
-
-    issue_number: int = issue_obj.number  # type: ignore[attr-defined]
-    resolved_repo_root = repo_root or Path.cwd()
-    has_git_dir = (resolved_repo_root / ".git").exists()
-
-    preflight_runner = _build_preflight_runner(installation_token)
-    _active_probe_repo_root = (
-        resolved_repo_root if has_git_dir else _NON_GIT_REPO_ROOT
-    )
-    try:
-        preflight = _should_launch_worker(
-            issue_number,
-            owner,
-            repo,
-            app_id=app_id,
-            runner=preflight_runner,
-            obs=obs,
-        )
-    finally:
-        _active_probe_repo_root = None
-    if not preflight:
-        # P2a: restore agent-ready so the issue stays visible to future
-        # poll ticks (protection may be restored later).
-        _label_edit(
-            owner,
-            repo,
-            issue_number,
-            add=["agent-ready"],
-            remove=["agent-in-progress"],
-            installation_token=installation_token,
-        )
-        # Post a blocking comment so operators know why the worker was
-        # refused.
-        alert(
-            owner,
-            repo,
-            issue_number,
-            "preflight refused — branch protection missing or "
-            "misconfigured; worker not launched",
-            severity="critical",
-            installation_token=installation_token,
-        )
-        return None
-    return await orch._run_worker(issue_obj)  # type: ignore[arg-type]
-
-
-def reconstruct(
-    repo_root: Path,
-    owner: str,
-    repo: str,
-    branch_name: str,
-    membership: frozenset[int],
-    *,
-    installation_token: InstallationTokenSource = "",
-) -> RecoveryResult:
-    """Thin dispatch wrapper for ``recovery.reconstruct``.
-
-    Delegates to ``_recovery_mod.reconstruct`` via a module-level
-    attribute lookup so that tests can patch either this symbol
-    (``"baton_harness.chain.daemon.reconstruct"``) or the upstream
-    symbol (``"baton_harness.chain.recovery.reconstruct"``) and both
-    will affect the call site.
-
-    Args:
-        repo_root: Absolute ``Path`` to the repository root.
-        owner: GitHub repository owner.
-        repo: GitHub repository name.
-        branch_name: Feature branch name (``"feature/<slug>"``).
-        membership: Set of issue numbers in the work unit.
-        installation_token: Optional GitHub App installation access token
-            (``ghs_`` prefix).  Forwarded to ``recovery.reconstruct`` for
-            env-discipline gh calls.
-
-    Returns:
-        A ``RecoveryResult`` describing the daemon's prior state for
-        this work unit.
-    """
-    return _recovery_mod.reconstruct(
-        repo_root,
-        owner,
-        repo,
-        branch_name,
-        membership,
-        installation_token=installation_token,
-    )
+# _GENERIC_CHECKS_DETAIL, _COMPARATOR_TIMEOUT_SECONDS,
+# _NonGitRepoRootSentinel, _NON_GIT_REPO_ROOT, _active_probe_repo_root,
+# _should_launch_worker, _build_preflight_runner, _resolve_app_id,
+# _launch_one_issue, and reconstruct now live in launch_gate.py (#275,
+# Phase 6c) and are re-exported above so this module's own remaining
+# callers (_run_work_unit, for `_resolve_app_id` / `_launch_one_issue` /
+# `reconstruct`) and existing tests keep resolving/patching them via the
+# package path.
 
 
 # Default poll configuration for the CI gate (overridable by caller).
@@ -724,8 +325,9 @@ def _run_gh(
 
 # _authed_git_push, _attempt_probe_ref_cleanup, and _probe_worker_push_denied
 # now live in push_probe.py (#273, Phase 6a step 2) and are re-exported
-# above so this module's own call sites (_should_launch_worker,
-# _run_work_unit) keep resolving them via the package path.
+# above so this module's own call site (_run_work_unit) and
+# launch_gate.py's _should_launch_worker (via _daemon_mod, #275, Phase
+# 6c) keep resolving them via the package path.
 
 
 # ---------------------------------------------------------------------------
