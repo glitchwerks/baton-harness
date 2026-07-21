@@ -45,6 +45,7 @@ import pytest
 import baton_harness.chain.daemon as daemon_mod
 from baton_harness.chain.daemon import run_daemon
 from baton_harness.chain.heartbeat import LivenessState
+from baton_harness.chain.label_ops import fetch_daemon_labels
 from baton_harness.chain.merge import MergeOutcome
 from baton_harness.chain.obs_config import ObsConfig
 from baton_harness.chain.recovery import RecoveryResult
@@ -5602,7 +5603,7 @@ def test_fetch_issue_labels_returns_none_on_failure() -> None:
             args=[], returncode=1, stdout="", stderr="gh error"
         ),
     ):
-        result_a = daemon_mod._fetch_issue_labels("owner", "repo", 10)
+        result_a = fetch_daemon_labels("owner", "repo", 10)
 
     assert result_a is None, (
         "_fetch_issue_labels must return None when the gh call fails"
@@ -5617,7 +5618,7 @@ def test_fetch_issue_labels_returns_none_on_failure() -> None:
             args=[], returncode=0, stdout="not valid json {{", stderr=""
         ),
     ):
-        result_b = daemon_mod._fetch_issue_labels("owner", "repo", 10)
+        result_b = fetch_daemon_labels("owner", "repo", 10)
 
     assert result_b is None, (
         "_fetch_issue_labels must return None when gh stdout is not valid"
@@ -5635,7 +5636,7 @@ def test_fetch_issue_labels_returns_none_on_failure() -> None:
             args=[], returncode=0, stdout=empty_labels_json, stderr=""
         ),
     ):
-        result_c = daemon_mod._fetch_issue_labels("owner", "repo", 10)
+        result_c = fetch_daemon_labels("owner", "repo", 10)
 
     assert result_c == set(), (
         "_fetch_issue_labels must return set() (not None) when gh returns"

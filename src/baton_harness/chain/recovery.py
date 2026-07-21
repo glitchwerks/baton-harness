@@ -60,6 +60,15 @@ from baton_harness.chain.app_auth import (
 )
 from baton_harness.chain.escalation import alert
 
+# Imported under its original private name (#272): tests both patch
+# "baton_harness.chain.recovery._fetch_labels" by dotted path and import
+# it directly by name, and reconstruct() below still calls the bare name
+# ``_fetch_labels(...)`` — both keep working unmodified against the
+# relocated implementation in label_ops.py.
+from baton_harness.chain.label_ops import (
+    fetch_recovery_labels as _fetch_labels,
+)
+
 if TYPE_CHECKING:
     from baton_harness.chain.runlog import RunLog
 
@@ -203,61 +212,6 @@ def _fetch_provenance_merges(repo_root: Path, feature_branch: str) -> set[int]:
                         line,
                     )
     return found
-
-
-def _fetch_labels(
-    owner: str,
-    repo: str,
-    issue: int,
-    *,
-    installation_token: InstallationTokenSource = "",
-) -> set[str]:
-    """Fetch the current labels for an issue (lowercase).
-
-    Calls ``gh issue view <N> --json labels`` and returns a set of
-    lowercase label names.
-
-    Args:
-        owner: The GitHub repository owner.
-        repo: The repository name.
-        issue: The issue number.
-        installation_token: Optional GitHub App installation access token
-            (``ghs_`` prefix).  When non-empty, the ``gh`` subprocess uses
-            a per-call env copy with ``GH_TOKEN`` overridden —
-            ``os.environ`` is never mutated.
-
-    Returns:
-        A set of lowercase label name strings.  Returns an empty set on
-        error (best-effort; a failed label fetch is not fatal for recovery).
-    """
-    env = gh_env(installation_token) if installation_token else None
-    proc = _run(
-        [
-            "gh",
-            "issue",
-            "view",
-            str(issue),
-            "--repo",
-            f"{owner}/{repo}",
-            "--json",
-            "labels",
-        ],
-        env=env,
-    )
-    if proc.returncode != 0:
-        _log.debug(
-            "recovery: gh issue view failed for #%d (exit %d): %s",
-            issue,
-            proc.returncode,
-            proc.stderr,
-        )
-        return set()
-    try:
-        data = json.loads(proc.stdout)
-        return {lbl["name"].lower() for lbl in data.get("labels", [])}
-    except (json.JSONDecodeError, KeyError, TypeError) as exc:
-        _log.debug("recovery: label parse error for #%d: %s", issue, exc)
-        return set()
 
 
 def _fetch_open_prs(

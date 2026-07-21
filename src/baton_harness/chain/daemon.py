@@ -70,6 +70,15 @@ from baton_harness.chain.gh_deps import (
 )
 from baton_harness.chain.heartbeat import LivenessState, run_heartbeat_loop
 from baton_harness.chain.identity import Identity, env_for
+
+# Imported under its original private name (#272): dozens of existing
+# tests patch "baton_harness.chain.daemon._fetch_issue_labels" by dotted
+# path, and this module's own call sites below still call the bare name
+# ``_fetch_issue_labels(...)`` — both keep working unmodified against the
+# relocated implementation in label_ops.py.
+from baton_harness.chain.label_ops import (
+    fetch_daemon_labels as _fetch_issue_labels,
+)
 from baton_harness.chain.labels import (
     LABEL_AGENT_READY,
     LABEL_BLOCKED,
@@ -1179,64 +1188,6 @@ def _find_issue_pr(
             return head, sha
 
     return None, None
-
-
-def _fetch_issue_labels(
-    owner: str,
-    repo: str,
-    issue: int,
-    *,
-    installation_token: InstallationTokenSource = "",
-) -> set[str] | None:
-    """Fetch current labels for an issue (lowercase).
-
-    Returns ``None`` on any fetch failure so callers can distinguish
-    an unreadable state from a genuinely empty label set.  This mirrors
-    the sentinel pattern used by ``after_run._current_labels`` (#32).
-
-    On a ``gh`` call failure (``returncode != 0``) the issue may still
-    carry ``blocked`` or other state labels that we cannot see — returning
-    ``None`` forces the caller to handle the unknown state conservatively
-    rather than treating it as zero-state and triggering convergence.
-
-    Args:
-        owner: The GitHub repository owner.
-        repo: The repository name.
-        issue: The issue number.
-        installation_token: Optional GitHub App installation access token.
-            When non-empty, overrides ``GH_TOKEN`` in the subprocess env
-            via a per-call copy — ``os.environ`` is never mutated.
-
-    Returns:
-        A ``set[str]`` of lowercase label name strings when the fetch
-        succeeds (possibly empty — a genuine empty set is distinct from
-        failure).  ``None`` when the ``gh`` call returns a non-zero exit
-        code or when the response cannot be parsed (``JSONDecodeError``,
-        ``KeyError``, or ``TypeError``).  Callers must guard on ``None``
-        and must NOT attempt single-state convergence on an unknown state
-        (Codex P1 #3, PR #95).
-    """
-    _gh_call_env = gh_env(installation_token) if installation_token else None
-    proc = _run_gh(
-        [
-            "gh",
-            "issue",
-            "view",
-            str(issue),
-            "--repo",
-            f"{owner}/{repo}",
-            "--json",
-            "labels",
-        ],
-        _gh_call_env,
-    )
-    if proc.returncode != 0:
-        return None
-    try:
-        data = json.loads(proc.stdout)
-        return {lbl["name"].lower() for lbl in data.get("labels", [])}
-    except (json.JSONDecodeError, KeyError, TypeError):
-        return None
 
 
 def _fetch_issue_obj(
