@@ -765,9 +765,24 @@ validates the pattern. **`merge.py` carries a coupling constraint** — see §5.
   (`ruleset_status`, `merge`, `recovery`, `after_run`, `heartbeat`) be tracked
   as child issues now, or deferred until the `daemon.py` split lands and
   validates the approach?
-- **Q5 — Phase 3 (`gh_api` wrapper) — in or out?** It is the lowest-certainty
-  extraction (diffuse, varied call sites). Include it, or drop it and let the
-  daemon split proceed on `subproc` alone?
+- **Q5 — RESOLVED 2026-07-21, no longer open.** Was: "Phase 3 (`gh_api`
+  wrapper) — in or out?" The user initially said **in** (tracked as issue
+  #271). A follow-up call-site survey of every `gh api` invocation in
+  `src/baton_harness/` (see #271 for the full inventory) found no clean
+  extraction target: `_auth.py`, `chain/gh_deps.py`, and `chain/merge.py` are
+  each guarded by an existing `mock.patch.object(<mod>, "_run", ...)` test
+  seam (10+ patch sites in some files), so adopting a shared `gh_api.py`
+  wrapper there means bypassing or rewriting that seam — a test-behavior
+  change, not a mechanical extraction; `chain/sandbox_config.py` and
+  `chain/ruleset_status.py` are already dependency-injected (`run=`/`runner=`
+  params) with no JSON-decode or error-shape duplication left to centralize.
+  The one site with genuine duplication worth extracting
+  (`gh_deps._paginate`) would still require repointing `test_gh_deps.py` off
+  its `_run` mock. Shipping `gh_api.py` unused would be dead code, failing
+  `simplicity-first` and this plan's own non-goal against speculative
+  abstractions (§5). Presented with this finding, the user chose **won't-do**
+  over forcing either the seam-bypass or a `gh_deps`-only path. **Final
+  decision: won't-do, closed as #271.** No further action needed.
 - **Q6 — RESOLVED 2026-07-21, no longer open.** Was: "Phase 6 patch-lookup
   fix: façade wrappers or multi-target patching?" Every Phase-6 sub-PR must
   fix the `mock.patch` lookup problem (see §4 Phase 6) by either (a) keeping
