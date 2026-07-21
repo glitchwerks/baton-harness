@@ -50,6 +50,7 @@ from baton_harness.chain.app_auth import (
     InstallationTokenSource,
     gh_env,
 )
+from baton_harness.chain.subproc import run_cmd
 
 # ---------------------------------------------------------------------------
 # Subprocess helper (the sole I/O seam; patch this in tests)
@@ -79,13 +80,7 @@ def _run(
         A ``subprocess.CompletedProcess`` with captured stdout/stderr.
         Callers inspect ``returncode`` themselves.
     """
-    return subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        env=env,
-    )
+    return run_cmd(cmd, capture=True, text=True, env=env, check=False)
 
 
 # ---------------------------------------------------------------------------

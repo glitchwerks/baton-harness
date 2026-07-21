@@ -111,6 +111,7 @@ from baton_harness.chain.ruleset_status import (
 )
 from baton_harness.chain.runlog import RunLog
 from baton_harness.chain.scheduler import IssueScheduler
+from baton_harness.chain.subproc import run_cmd
 from baton_harness.vendor.symphony.config import WorkflowConfig
 from baton_harness.vendor.symphony.orchestrator import Orchestrator
 from baton_harness.vendor.symphony.tracker import Issue
@@ -682,13 +683,13 @@ def _run(
         A ``subprocess.CompletedProcess`` with captured stdout/stderr.
         Callers inspect ``returncode`` themselves.
     """
-    return subprocess.run(
+    return run_cmd(
         cmd,
-        capture_output=True,
+        capture=True,
         text=True,
-        encoding="utf-8",
         env=env,
         timeout=timeout,
+        check=False,
     )
 
 
