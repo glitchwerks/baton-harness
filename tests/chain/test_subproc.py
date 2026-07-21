@@ -24,7 +24,6 @@ import sys
 from typing import Any
 
 import pytest
-from baton_harness.chain.subproc import run_cmd
 
 import baton_harness.chain.branches as branches_mod
 import baton_harness.chain.daemon as daemon_mod
@@ -32,6 +31,7 @@ import baton_harness.chain.escalation as escalation_mod
 import baton_harness.chain.gh_deps as gh_deps_mod
 import baton_harness.chain.merge as merge_mod
 import baton_harness.chain.recovery as recovery_mod
+from baton_harness.chain.subproc import run_cmd
 
 # ---------------------------------------------------------------------------
 # Helpers
