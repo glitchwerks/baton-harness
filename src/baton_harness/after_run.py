@@ -81,6 +81,16 @@ from pathlib import Path
 
 from baton_harness._cli import err, log, resolve_issue_number
 from baton_harness.chain.escalation import alert
+
+# Imported under its original private name (#272): tests both monkeypatch
+# "baton_harness.after_run._current_labels" wholesale and import it
+# directly by name, and _reconcile_labels below still calls the bare name
+# ``_current_labels(...)`` — both keep working unmodified against the
+# relocated implementation in label_ops.py (see the ``alert`` bare-name
+# import note above for the same pattern).
+from baton_harness.chain.label_ops import (
+    fetch_after_run_labels as _current_labels,
+)
 from baton_harness.chain.labels import (
     LABEL_AGENT_DONE,
     LABEL_AGENT_READY,
@@ -352,53 +362,6 @@ def _classify() -> RunOutcome:
 # ---------------------------------------------------------------------------
 # Label reconciliation
 # ---------------------------------------------------------------------------
-
-
-def _current_labels(issue: int) -> list[str] | None:
-    """Fetch the current label names for a GitHub issue.
-
-    Parses ``gh issue view --json labels`` output with ``json.loads`` (never
-    grepped — addresses the H1 root-cause pattern).
-
-    MAJOR 2 (#32): failure is signalled distinctly from "no labels".  A
-    non-zero returncode or a ``json.JSONDecodeError`` returns ``None`` (not
-    ``[]``) so that ``_reconcile_labels`` can detect the failure and abort
-    with zero label mutations, preserving the single-state invariant.
-    Returning ``[]`` would have been misread as "issue has no labels" and
-    allowed mutations to proceed against an unknown label state.
-
-    Args:
-        issue: GitHub issue number whose labels are fetched.
-
-    Returns:
-        A list of label name strings currently on the issue, or ``None``
-        if the ``gh`` call failed or returned non-JSON output (signals
-        fetch failure, distinct from an empty label list).
-    """
-    result = _run(["gh", "issue", "view", str(issue), "--json", "labels"])
-
-    if result.returncode != 0:
-        err(
-            _HOOK,
-            issue,
-            f"gh issue view failed (returncode={result.returncode}); "
-            f"stderr: {result.stderr.strip()!r} — aborting label "
-            "reconciliation to preserve single-state invariant.",
-        )
-        return None
-
-    try:
-        data: dict[str, list[dict[str, str]]] = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        err(
-            _HOOK,
-            issue,
-            "gh issue view returned non-JSON stdout; aborting label "
-            "reconciliation to preserve single-state invariant.",
-        )
-        return None
-
-    return [lbl["name"] for lbl in data.get("labels", [])]
 
 
 def _reconcile_labels(issue: int, outcome: RunOutcome) -> int:
