@@ -22,6 +22,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -259,8 +260,60 @@ def main(argv: list[str] | None = None) -> int:
             " Defaults to the value in WORKFLOW.md."
         ),
     )
+    parser.add_argument(
+        "--doctor",
+        action="store_true",
+        help="Run standalone preflight checks and exit.",
+    )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Exit nonzero when doctor finds a critical failure.",
+    )
 
     args = parser.parse_args(argv)
+
+    if args.doctor:
+        from baton_harness.chain import bws_client, doctor
+
+        def run_command(
+            cmd: list[str],
+        ) -> subprocess.CompletedProcess[str]:
+            """Run a doctor probe and capture its UTF-8 output."""
+            return subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                env=env_for(Identity.WORKER),
+            )
+
+        ctx = doctor.DoctorContext(
+            project_root=os.environ.get("BH_PROJECT_ROOT", ""),
+            home_dir=os.path.expanduser("~"),
+            env=dict(os.environ),
+            which=shutil.which,
+            runner=run_command,
+            run=run_command,
+            fetch_secret=bws_client.fetch_secret,
+        )
+        results = doctor.run_report(ctx)
+        for result in results:
+            print(f"[{result.status.name}] {result.title}")
+            if result.status in {
+                doctor.CheckStatus.FAIL,
+                doctor.CheckStatus.WARN,
+            }:
+                print(f"       detail: {result.detail}")
+                print(f"       fix:    {result.fix}")
+
+        if args.strict and any(
+            result.severity is doctor.Severity.CRITICAL
+            and result.status is doctor.CheckStatus.FAIL
+            for result in results
+        ):
+            return 1
+        return 0
 
     # Resolve workflow path to ABSOLUTE before any chdir so the path
     # survives a working-directory change later in this function.
@@ -357,6 +410,35 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
+
+    # Hard-gate on CRITICAL preflight checks before any secret is
+    # bootstrapped.  ``doctor.run_gate`` raises ``SystemExit(1)`` itself
+    # on the first CRITICAL FAIL, so a failure here aborts startup before
+    # bootstrap_secrets()/run_daemon() are ever reached (#193 Phase 3).
+    from baton_harness.chain import bws_client, doctor
+
+    def _doctor_run_command(
+        cmd: list[str],
+    ) -> subprocess.CompletedProcess[str]:
+        """Run a doctor probe and capture its UTF-8 output."""
+        return subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=env_for(Identity.WORKER),
+        )
+
+    gate_ctx = doctor.DoctorContext(
+        project_root=os.environ.get("BH_PROJECT_ROOT", ""),
+        home_dir=os.path.expanduser("~"),
+        env=dict(os.environ),
+        which=shutil.which,
+        runner=_doctor_run_command,
+        run=_doctor_run_command,
+        fetch_secret=bws_client.fetch_secret,
+    )
+    doctor.run_gate(gate_ctx, doctor.Phase.PRE_BOOTSTRAP)
 
     # Bootstrap GitHub App installation token (slice 3a).
     # Must run AFTER chdir so the managed repo is the process cwd.
