@@ -1,4 +1,9 @@
-"""Unit tests for the Phase 2 ``--doctor``/``--strict`` CLI wiring (#193).
+"""Unit tests for the Phase 2/3 CLI doctor wiring (#193).
+
+Phase 2 (``--doctor``/``--strict`` standalone report mode) and Phase 3
+(the ``run_gate(ctx, PRE_BOOTSTRAP)`` hard gate wired into the normal
+daemon-startup path) both live in this file per the plan's section 15
+task breakdown, which assigns ``test_cli_doctor_gate.py`` to both phases.
 
 Covers the plan's Mode 1 (standalone doctor) contract
 (``docs/superpowers/plans/2026-07-01-preflight-doctor-193.md``, section 7,
@@ -39,7 +44,40 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from baton_harness.chain.cli import main
-from baton_harness.chain.doctor import CheckResult, CheckStatus, Severity
+from baton_harness.chain.doctor import (
+    CheckResult,
+    CheckStatus,
+    Phase,
+    Severity,
+)
+
+# ---------------------------------------------------------------------------
+# Autouse fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _auto_patch_pre_bootstrap_gate() -> Iterator[None]:
+    """No-op ``doctor.run_gate`` for tests that don't exercise it directly.
+
+    Once Phase 3 wires ``doctor.run_gate(ctx, Phase.PRE_BOOTSTRAP)`` into
+    the normal daemon-startup path, any ``--once``/daemon-path test in
+    this file that doesn't stub the gate would hit the real
+    implementation and fail on the CRITICAL PRE_BOOTSTRAP checks (no
+    ``bws`` on PATH, no ``.bh/config.env``, etc. in the test
+    environment) -- mirroring the rationale behind
+    ``chain/conftest.py``'s ``_auto_patch_reconcile_startup`` fixture,
+    but scoped to this file only: ``test_doctor.py`` calls
+    ``doctor.run_gate`` directly and needs the real implementation, so
+    this must NOT move into the shared ``chain/conftest.py`` autouse set.
+
+    Tests that DO exercise the gate (``TestPreBootstrapDoctorGate``)
+    override this fixture with their own explicit ``patch(...)`` inside
+    a ``with`` block, which takes precedence as the innermost patch.
+    """
+    with patch("baton_harness.chain.doctor.run_gate", return_value=None):
+        yield
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -356,3 +394,247 @@ def test_no_doctor_flag_runs_daemon_path_and_never_calls_run_report() -> None:
     assert result == 0, f"Expected exit 0, got {result}"
     assert called_kwargs.get("once") is True
     run_report_mock.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 (#193): run_gate(ctx, PRE_BOOTSTRAP) wired into the normal
+# (non-``--doctor``) daemon-startup path
+# ---------------------------------------------------------------------------
+
+
+def _run_main_allow_system_exit(*args: str) -> int:
+    """Run ``main`` and normalize either a return or a ``SystemExit`` to int.
+
+    ``doctor.run_gate`` raises ``SystemExit(1)`` directly on its own
+    documented contract (``doctor.py``: "Raises: SystemExit: With code 1
+    on the first critical failed check."). The plan's Phase 3 bullet says
+    ``cli.main`` "exits 1" on a CRITICAL doctor failure without
+    prescribing whether that means letting the ``SystemExit`` propagate
+    out of ``main`` unmodified (the most direct wiring: just call
+    ``run_gate`` inline) or catching it and returning ``1`` (mirroring
+    the ``except Exception as exc: return 1`` shape used by the
+    neighboring tripwire/bootstrap blocks). Both are valid readings of
+    "exits 1"; this helper normalizes so the test pins the *outcome*
+    (process would exit non-zero) rather than the implementation's
+    control-flow shape.
+
+    Args:
+        *args: Command-line arguments to pass to ``main``.
+
+    Returns:
+        The integer exit code, whether returned directly or raised via
+        ``SystemExit``.
+    """
+    try:
+        return main(list(args))
+    except SystemExit as exc:
+        code = exc.code
+        if code is None:
+            return 0
+        if isinstance(code, int):
+            return code
+        return 1
+
+
+def _assert_run_gate_called_with_pre_bootstrap(gate_mock: MagicMock) -> None:
+    """Assert ``run_gate`` was invoked once, with ``Phase.PRE_BOOTSTRAP``.
+
+    Tolerates either a positional (``run_gate(ctx, Phase.PRE_BOOTSTRAP)``)
+    or keyword (``run_gate(ctx, phase=Phase.PRE_BOOTSTRAP)``) call shape,
+    so the test pins the observable phase argument, not the call
+    convention the implementer chooses.
+
+    Args:
+        gate_mock: The mock standing in for ``doctor.run_gate``.
+    """
+    gate_mock.assert_called_once()
+    call = gate_mock.call_args
+    phase_arg = call.kwargs.get("phase")
+    if phase_arg is None and len(call.args) >= 2:
+        phase_arg = call.args[1]
+    assert phase_arg is Phase.PRE_BOOTSTRAP, (
+        "run_gate must be called with phase=Phase.PRE_BOOTSTRAP in the"
+        f" normal daemon-startup path, got {phase_arg!r} (call={call!r})"
+    )
+
+
+class TestPreBootstrapDoctorGate:
+    """Phase 3 (#193): the Phase-A hard gate in the normal startup path.
+
+    Covers the plan's Phase 3 bullet (section 15) and section 8's Phase A
+    integration point: ``cli.main`` must call
+    ``doctor.run_gate(ctx, Phase.PRE_BOOTSTRAP)`` after the
+    force-pr-not-merge tripwire self-test and before ``bootstrap_secrets``
+    -- mirroring the call-order/short-circuit test style already
+    established for the tripwire in
+    ``TestForcePrNotMergeStartupSelfTest`` (test_cli.py).
+
+    Patch-target note: mirrors this file's existing ``--doctor`` tests --
+    ``doctor.run_gate`` is patched at its defining module
+    (``baton_harness.chain.doctor.run_gate``), on the assumption
+    ``cli.py`` calls it as ``doctor.run_gate(...)`` after a
+    ``from baton_harness.chain import doctor`` import (the same
+    dotted-module-call idiom already used for the ``--doctor`` branch and
+    for ``sandbox_config``, cli.py:277,339). If the implementation
+    instead imports the bare name (``from baton_harness.chain.doctor
+    import run_gate``), this patch target will need to move to
+    ``baton_harness.chain.cli.run_gate`` -- flagged in the return
+    summary.
+    """
+
+    def test_gate_runs_after_tripwire_and_before_bootstrap_on_pass(
+        self,
+    ) -> None:
+        """A passing gate lets startup reach run_daemon unimpeded.
+
+        A passing gate runs between the tripwire and bootstrap, then
+        execution continues through to ``run_daemon`` unimpeded.
+        Combines the call-order assertion with a happy-path continuation
+        check (mirrors ``test_main_runs_tripwire_self_test_before_
+        bootstrap`` in test_cli.py) so a bug that wires the gate in but
+        accidentally always short-circuits afterward is also caught.
+        """
+        call_order: list[str] = []
+
+        fake_repo_cfg = MagicMock()
+
+        def fake_self_test() -> None:
+            call_order.append("self-test")
+
+        def fake_run_gate(*args: object, **kwargs: object) -> None:
+            call_order.append("gate")
+
+        def fake_bootstrap(**kwargs: object) -> str:
+            call_order.append("bootstrap")
+            return "ghs_TESTTOKEN_sentinel"
+
+        async def fake_run_daemon(*args: object, **kwargs: object) -> None:
+            call_order.append("run-daemon")
+
+        with (
+            patch(
+                "baton_harness.chain.cli.load_workflow",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "baton_harness.chain.cli.load_registry",
+                return_value=[fake_repo_cfg],
+            ),
+            patch("baton_harness.chain.cli.os.chdir"),
+            patch(
+                "baton_harness.chain.cli.os.path.isdir",
+                return_value=True,
+            ),
+            patch(
+                "baton_harness.chain.cli._assert_force_pr_not_merge_tripwire",
+                side_effect=fake_self_test,
+            ),
+            patch(
+                "baton_harness.chain.doctor.run_gate",
+                side_effect=fake_run_gate,
+            ) as gate_mock,
+            patch(
+                "baton_harness.chain.cli.bootstrap_secrets",
+                side_effect=fake_bootstrap,
+            ),
+            patch("baton_harness.chain.cli.validate_daemon_token"),
+            patch(
+                "baton_harness.chain.cli.run_daemon",
+                side_effect=fake_run_daemon,
+            ),
+        ):
+            result = _run_main_allow_system_exit("--once")
+
+        assert result == 0, (
+            f"Expected exit 0 on an all-pass gate, got {result}"
+        )
+
+        _assert_run_gate_called_with_pre_bootstrap(gate_mock)
+
+        assert call_order.index("self-test") < call_order.index("gate"), (
+            "the PRE_BOOTSTRAP doctor gate must run after the"
+            f" force-pr-not-merge self-test; got {call_order!r}"
+        )
+        assert call_order.index("gate") < call_order.index("bootstrap"), (
+            "the PRE_BOOTSTRAP doctor gate must run before"
+            f" bootstrap_secrets; got {call_order!r}"
+        )
+        assert "run-daemon" in call_order, (
+            "a passing gate must not prevent startup from reaching"
+            f" run_daemon; got {call_order!r}"
+        )
+
+    def test_critical_gate_failure_stops_before_bootstrap_and_run_daemon(
+        self,
+    ) -> None:
+        """A CRITICAL gate failure stops startup before bootstrap/run_daemon.
+
+        ``run_gate`` raising ``SystemExit(1)`` stops startup before
+        ``bootstrap_secrets``/``run_daemon`` and the overall exit is
+        non-zero. Simulates the CRITICAL fail via ``run_gate``'s own documented
+        contract (raises ``SystemExit(1)``) rather than constructing a
+        real failing ``DoctorContext`` -- ``run_gate``'s check-selection
+        and short-circuit behavior are already exhaustively covered by
+        ``test_doctor.py``; this suite only needs to prove ``cli.main``
+        is wired to react correctly to that contract.
+        """
+        bootstrap_called = False
+        run_daemon_called = False
+
+        fake_repo_cfg = MagicMock()
+
+        def fake_bootstrap(**kwargs: object) -> str:
+            nonlocal bootstrap_called
+            bootstrap_called = True
+            return "ghs_TESTTOKEN_sentinel"
+
+        async def fake_run_daemon(*args: object, **kwargs: object) -> None:
+            nonlocal run_daemon_called
+            run_daemon_called = True
+
+        with (
+            patch(
+                "baton_harness.chain.cli.load_workflow",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "baton_harness.chain.cli.load_registry",
+                return_value=[fake_repo_cfg],
+            ),
+            patch("baton_harness.chain.cli.os.chdir"),
+            patch(
+                "baton_harness.chain.cli.os.path.isdir",
+                return_value=True,
+            ),
+            patch(
+                "baton_harness.chain.cli._assert_force_pr_not_merge_tripwire",
+            ),
+            patch(
+                "baton_harness.chain.doctor.run_gate",
+                side_effect=SystemExit(1),
+            ) as gate_mock,
+            patch(
+                "baton_harness.chain.cli.bootstrap_secrets",
+                side_effect=fake_bootstrap,
+            ),
+            patch("baton_harness.chain.cli.validate_daemon_token"),
+            patch(
+                "baton_harness.chain.cli.run_daemon",
+                side_effect=fake_run_daemon,
+            ),
+        ):
+            result = _run_main_allow_system_exit("--once")
+
+        assert result == 1, (
+            "a CRITICAL PRE_BOOTSTRAP doctor failure must produce a"
+            f" non-zero (1) exit, got {result}"
+        )
+        _assert_run_gate_called_with_pre_bootstrap(gate_mock)
+        assert not bootstrap_called, (
+            "bootstrap_secrets must not run after a CRITICAL PRE_BOOTSTRAP"
+            " doctor gate failure"
+        )
+        assert not run_daemon_called, (
+            "run_daemon must not run after a CRITICAL PRE_BOOTSTRAP doctor"
+            " gate failure"
+        )

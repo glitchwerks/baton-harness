@@ -411,6 +411,35 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
+    # Hard-gate on CRITICAL preflight checks before any secret is
+    # bootstrapped.  ``doctor.run_gate`` raises ``SystemExit(1)`` itself
+    # on the first CRITICAL FAIL, so a failure here aborts startup before
+    # bootstrap_secrets()/run_daemon() are ever reached (#193 Phase 3).
+    from baton_harness.chain import bws_client, doctor
+
+    def _doctor_run_command(
+        cmd: list[str],
+    ) -> subprocess.CompletedProcess[str]:
+        """Run a doctor probe and capture its UTF-8 output."""
+        return subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=env_for(Identity.WORKER),
+        )
+
+    gate_ctx = doctor.DoctorContext(
+        project_root=os.environ.get("BH_PROJECT_ROOT", ""),
+        home_dir=os.path.expanduser("~"),
+        env=dict(os.environ),
+        which=shutil.which,
+        runner=_doctor_run_command,
+        run=_doctor_run_command,
+        fetch_secret=bws_client.fetch_secret,
+    )
+    doctor.run_gate(gate_ctx, doctor.Phase.PRE_BOOTSTRAP)
+
     # Bootstrap GitHub App installation token (slice 3a).
     # Must run AFTER chdir so the managed repo is the process cwd.
     # BWS_ACCESS_TOKEN is popped from os.environ by bootstrap_secrets
