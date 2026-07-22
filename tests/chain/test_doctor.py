@@ -71,6 +71,8 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+
+from baton_harness.chain import doctor
 from baton_harness.chain.doctor import (
     CheckResult,
     CheckStatus,
@@ -78,8 +80,6 @@ from baton_harness.chain.doctor import (
     Phase,
     Severity,
 )
-
-from baton_harness.chain import doctor
 
 # ---------------------------------------------------------------------------
 # Helpers
