@@ -26,6 +26,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from baton_harness.chain.doctor import Phase
+
 # ---------------------------------------------------------------------------
 # Module under test — does not exist yet; tests MUST fail red until
 # reconcile.py is implemented.
@@ -144,6 +146,47 @@ def _patch_git_credential_helper(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "baton_harness.chain.reconcile._get_git_credential_helpers",
         lambda: ["!fake credential helper for tests"],
+    )
+
+
+@pytest.fixture(autouse=True)
+def _patch_doctor_run_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No-op the POST_BOOTSTRAP doctor gate for tests that don't test it.
+
+    Phase 4 (#193) wires ``doctor.run_gate(ctx, Phase.POST_BOOTSTRAP)``
+    into ``reconcile_startup``, between the native G3d block and G2.
+    Once wired, any test in this file that doesn't stub the gate would
+    hit the real ruleset/label/repo-admin checks (no ruleset provisioned,
+    no reachable label list, etc. in the test environment) and fail --
+    mirroring the rationale behind ``test_cli_doctor_gate.py``'s
+    ``_auto_patch_pre_bootstrap_gate`` fixture (same repo, same Phase-3
+    precedent), but scoped to this file. ``test_doctor.py`` calls
+    ``doctor.run_gate`` directly and needs the real implementation, so
+    this must NOT move to a shared ``conftest.py``.
+
+    Patched at ``doctor.run_gate``'s own defining module
+    (``baton_harness.chain.doctor.run_gate``), mirroring the dotted-
+    module-call idiom already established by ``test_cli_doctor_gate.py``
+    for the Phase-3 wiring. If ``reconcile.py`` instead binds the bare
+    name (``from baton_harness.chain.doctor import run_gate``), this
+    patch target -- and the equivalent fixture in
+    ``test_reconcile_oauth_cred.py`` / ``test_reconcile_git_credential_
+    helper.py`` -- will need to move to
+    ``baton_harness.chain.reconcile.run_gate``; flagged in the return
+    summary.
+
+    Tests that specifically exercise the POST_BOOTSTRAP gate
+    (``TestPostBootstrapDoctorGate``) override this fixture with their
+    own ``patch(...)`` inside a ``with`` block, which wins as the
+    innermost patch (same precedent as ``_patch_oauth_cred_path``'s
+    per-test override at line ~1360).
+
+    Args:
+        monkeypatch: Pytest monkeypatch fixture for attribute patching.
+    """
+    monkeypatch.setattr(
+        "baton_harness.chain.doctor.run_gate",
+        lambda *args, **kwargs: None,
     )
 
 
@@ -1559,3 +1602,345 @@ class TestReconcileStartupAlertsThreadToken:
                 "G2 alert() call must forward installation_token= to "
                 f"alert(); expected {_token!r}, got {got!r}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 (#193): doctor.run_gate(ctx, Phase.POST_BOOTSTRAP) wired into
+# reconcile_startup, after the native G3a/b/c/d block and before G2.
+# ---------------------------------------------------------------------------
+
+
+def _assert_run_gate_called_with_post_bootstrap(gate_mock: MagicMock) -> None:
+    """Assert ``run_gate`` was invoked once, with ``Phase.POST_BOOTSTRAP``.
+
+    Tolerates either a positional (``run_gate(ctx, Phase.POST_BOOTSTRAP)``)
+    or keyword (``run_gate(ctx, phase=Phase.POST_BOOTSTRAP)``) call shape,
+    mirroring ``test_cli_doctor_gate.py``'s
+    ``_assert_run_gate_called_with_pre_bootstrap`` helper for the Phase-3
+    gate, so this test pins the observable phase argument, not the call
+    convention the implementer chooses.
+
+    Args:
+        gate_mock: The mock standing in for ``doctor.run_gate``.
+    """
+    gate_mock.assert_called_once()
+    call = gate_mock.call_args
+    phase_arg = call.kwargs.get("phase")
+    if phase_arg is None and len(call.args) >= 2:
+        phase_arg = call.args[1]
+    assert phase_arg is Phase.POST_BOOTSTRAP, (
+        "run_gate must be called with phase=Phase.POST_BOOTSTRAP from "
+        f"reconcile_startup, got {phase_arg!r} (call={call!r})"
+    )
+
+
+def _extract_ctx_from_gate_call(call: Any) -> Any:  # noqa: ANN401
+    """Return the ``DoctorContext`` positional/keyword arg of a gate call.
+
+    Args:
+        call: A ``unittest.mock.call`` object captured from a patched
+            ``doctor.run_gate``.
+
+    Returns:
+        The ``ctx`` argument, however it was passed.
+    """
+    ctx = call.kwargs.get("ctx")
+    if ctx is None and call.args:
+        ctx = call.args[0]
+    return ctx
+
+
+class TestPostBootstrapDoctorGate:
+    """Phase 4 (#193): the Phase-B hard gate folded into reconcile_startup.
+
+    Covers the plan's section 8 Phase B bullet and section 4's placement
+    rationale: ``reconcile_startup`` must call ``doctor.run_gate(ctx,
+    Phase.POST_BOOTSTRAP)`` strictly AFTER the native G3a/b/c/d credential
+    block and strictly BEFORE G2 (the ungraceful-prior-exit marker check)
+    -- never as ``reconcile_startup``'s first step, so
+    ``bin/verify-recovery.sh``'s G3a/G3b stderr greps are never
+    suppressed by a ruleset/label failure short-circuiting first.
+
+    Patch-target note: mirrors ``test_cli_doctor_gate.py``'s Phase-3
+    precedent -- ``doctor.run_gate`` is patched at its defining module
+    (``baton_harness.chain.doctor.run_gate``), on the assumption
+    ``reconcile.py`` calls it as ``doctor.run_gate(...)`` after a
+    ``from baton_harness.chain import doctor`` import. If the
+    implementation instead imports the bare name, this patch target (and
+    the ``_patch_doctor_run_gate`` autouse fixture above) will need to
+    move to ``baton_harness.chain.reconcile.run_gate`` -- flagged in the
+    return summary.
+    """
+
+    def test_gate_called_with_post_bootstrap_phase(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """reconcile_startup calls the gate with Phase.POST_BOOTSTRAP."""
+        reconcile = _import_reconcile()
+
+        monkeypatch.setenv("GH_TOKEN", _INSTALLATION_TOKEN)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        obs = _make_obs(tmp_path)
+        repo_cfgs = [_make_repo_cfg(tmp_path)]
+
+        with (
+            patch(
+                "baton_harness.chain.reconcile.validate_daemon_token",
+                return_value=None,
+            ),
+            patch("baton_harness.chain.reconcile.alert", return_value=True),
+            patch(
+                "baton_harness.chain.reconcile._list_claude_procs",
+                return_value=[],
+            ),
+            patch(
+                "baton_harness.chain.doctor.run_gate",
+                return_value=None,
+            ) as gate_mock,
+        ):
+            asyncio.run(
+                reconcile.reconcile_startup(repo_cfgs, obs, runlog=None)
+            )
+
+        _assert_run_gate_called_with_post_bootstrap(gate_mock)
+
+    def test_gate_ctx_carries_reconcile_startups_installation_token(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The DoctorContext passed to the gate threads installation_token.
+
+        Section 3/4: the minted App token is threaded by value into
+        ``DoctorContext.installation_token`` -- never read from
+        ``os.environ``.
+        """
+        reconcile = _import_reconcile()
+
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        token = "ghs_POST_BOOTSTRAP_GATE_TEST_TOKEN_xxxxxxxxxxxxxxxxx"
+        obs = _make_obs(tmp_path)
+        repo_cfgs = [_make_repo_cfg(tmp_path)]
+
+        with (
+            patch(
+                "baton_harness.chain.reconcile.validate_daemon_token",
+                return_value=None,
+            ),
+            patch("baton_harness.chain.reconcile.alert", return_value=True),
+            patch(
+                "baton_harness.chain.reconcile._list_claude_procs",
+                return_value=[],
+            ),
+            patch(
+                "baton_harness.chain.doctor.run_gate",
+                return_value=None,
+            ) as gate_mock,
+        ):
+            asyncio.run(
+                reconcile.reconcile_startup(
+                    repo_cfgs,
+                    obs,
+                    runlog=None,
+                    installation_token=token,
+                )
+            )
+
+        gate_mock.assert_called_once()
+        ctx = _extract_ctx_from_gate_call(gate_mock.call_args)
+        assert ctx is not None, "run_gate must be called with a DoctorContext"
+        assert getattr(ctx, "installation_token", None) == token, (
+            "DoctorContext.installation_token must carry "
+            "reconcile_startup's own installation_token parameter (by "
+            f"value); got {ctx!r}"
+        )
+
+    def test_gate_not_invoked_when_g3a_token_check_fails(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A G3a (token) failure halts before the POST_BOOTSTRAP gate runs.
+
+        Pins the "not reconcile_startup's first step" placement invariant
+        (plan section 4/8): the native G3 credential gates must fire and
+        halt BEFORE run_gate(POST_BOOTSTRAP) is ever reached, so a
+        misconfigured-ruleset repo can never suppress the G3a/G3b alert
+        text ``bin/verify-recovery.sh`` greps for.
+
+        NOTE: this assertion passes vacuously today (the gate isn't wired
+        in at all yet, so it is trivially "not invoked" for any input);
+        it becomes a real green-phase regression guard once Phase 4 wires
+        the gate in. It is not counted as a red-confirming test on its
+        own -- see the return summary.
+        """
+        reconcile = _import_reconcile()
+        from baton_harness._auth import TokenValidationError  # noqa: PLC0415
+
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        obs = _make_obs(tmp_path)
+        repo_cfgs = [_make_repo_cfg(tmp_path)]
+
+        with (
+            patch(
+                "baton_harness.chain.reconcile.validate_daemon_token",
+                side_effect=TokenValidationError("no token found"),
+            ),
+            patch("baton_harness.chain.reconcile.alert", return_value=True),
+            patch(
+                "baton_harness.chain.doctor.run_gate",
+                return_value=None,
+            ) as gate_mock,
+        ):
+            with pytest.raises(SystemExit):
+                asyncio.run(
+                    reconcile.reconcile_startup(repo_cfgs, obs, runlog=None)
+                )
+
+        gate_mock.assert_not_called()
+
+    def test_gate_runs_after_full_g3_block_and_before_g2(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Gate call order: G3a -> G3d -> POST_BOOTSTRAP gate -> G2 -> G1.
+
+        The load-bearing placement test (plan section 4/8): asserts the
+        gate runs strictly after the native G3a (token) and G3d (git
+        credential helper) checks, and strictly before G2 writes the
+        ``daemon.alive`` marker. Proven via a call-order list plus an
+        in-gate assertion that the marker does not exist yet (rather than
+        only checking call order), so a bug that reorders the *marker
+        write* relative to the gate -- without touching mock call order
+        -- would still be caught.
+        """
+        reconcile = _import_reconcile()
+
+        monkeypatch.setenv("GH_TOKEN", _INSTALLATION_TOKEN)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        call_order: list[str] = []
+        obs = _make_obs(tmp_path)
+        repo_cfgs = [_make_repo_cfg(tmp_path)]
+        marker = tmp_path / ".baton-harness" / "daemon.alive"
+
+        def _fake_validate(token: str) -> None:
+            call_order.append("g3a")
+
+        def _fake_git_helpers() -> list[str]:
+            call_order.append("g3d")
+            return ["!fake credential helper for tests"]
+
+        def _fake_gate(*args: object, **kwargs: object) -> None:
+            call_order.append("gate")
+            assert not marker.exists(), (
+                "POST_BOOTSTRAP gate ran AFTER G2 already wrote the "
+                "daemon.alive marker -- it must run strictly BEFORE G2"
+            )
+
+        def _fake_list_procs() -> list[int]:
+            call_order.append("g1")
+            return []
+
+        with (
+            patch(
+                "baton_harness.chain.reconcile.validate_daemon_token",
+                side_effect=_fake_validate,
+            ),
+            patch(
+                "baton_harness.chain.reconcile._get_git_credential_helpers",
+                side_effect=_fake_git_helpers,
+            ),
+            patch("baton_harness.chain.reconcile.alert", return_value=True),
+            patch(
+                "baton_harness.chain.doctor.run_gate",
+                side_effect=_fake_gate,
+            ) as gate_mock,
+            patch(
+                "baton_harness.chain.reconcile._list_claude_procs",
+                side_effect=_fake_list_procs,
+            ),
+        ):
+            asyncio.run(
+                reconcile.reconcile_startup(repo_cfgs, obs, runlog=None)
+            )
+
+        gate_mock.assert_called_once()
+        assert marker.exists(), (
+            "G2 must still run (and create the marker) after the gate"
+        )
+        assert call_order == ["g3a", "g3d", "gate", "g1"], (
+            "expected order G3a -> G3d -> POST_BOOTSTRAP gate -> G2 "
+            "(marker write, asserted separately above) -> G1; got "
+            f"{call_order!r}"
+        )
+
+    def test_critical_gate_failure_alerts_and_exits_1(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A CRITICAL POST_BOOTSTRAP gate failure alerts then exits 1.
+
+        Section 8: "A CRITICAL FAIL emits alert(..., severity='critical')
+        then sys.exit(1), matching the existing G3a/b/c/d fatal pattern."
+        Simulates the CRITICAL fail via ``run_gate``'s own documented
+        contract (raises ``SystemExit(1)``) rather than constructing a
+        real failing ``DoctorContext`` -- ``run_gate``'s own
+        check-selection/short-circuit behavior is already exhaustively
+        covered by ``test_doctor.py``; this test only proves
+        ``reconcile_startup`` reacts to that contract by emitting its own
+        repo-level critical alert (mirroring G3a-d) before the process
+        exits non-zero. Only ``severity`` is asserted on the alert call,
+        never message text (the exact wording is an implementation
+        choice).
+        """
+        reconcile = _import_reconcile()
+
+        monkeypatch.setenv("GH_TOKEN", _INSTALLATION_TOKEN)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        obs = _make_obs(tmp_path)
+        repo_cfgs = [_make_repo_cfg(tmp_path)]
+
+        mock_alert = MagicMock(return_value=True)
+
+        with (
+            patch(
+                "baton_harness.chain.reconcile.validate_daemon_token",
+                return_value=None,
+            ),
+            patch("baton_harness.chain.reconcile.alert", mock_alert),
+            patch(
+                "baton_harness.chain.doctor.run_gate",
+                side_effect=SystemExit(1),
+            ) as gate_mock,
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                asyncio.run(
+                    reconcile.reconcile_startup(repo_cfgs, obs, runlog=None)
+                )
+
+        assert exc_info.value.code != 0, (
+            "reconcile_startup must exit non-zero when the POST_BOOTSTRAP "
+            "gate reports a CRITICAL failure"
+        )
+        gate_mock.assert_called_once()
+        assert mock_alert.called, (
+            "alert() must be called (mirrors the G3a-d fatal pattern) "
+            "when the POST_BOOTSTRAP gate CRITICAL-fails"
+        )
+        _, kwargs = mock_alert.call_args
+        assert kwargs.get("severity") == "critical", (
+            f"Expected severity='critical', got {kwargs!r}"
+        )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
@@ -9,6 +10,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
+
+from baton_harness.chain import ruleset_status
 
 RunFn = Callable[..., subprocess.CompletedProcess[str]]
 FetchSecretFn = Callable[..., str]
@@ -683,6 +686,215 @@ def _check_git_credential_helper(ctx: DoctorContext) -> CheckResult:
     )
 
 
+def _check_ruleset(
+    ctx: DoctorContext, check_id: str, title: str
+) -> CheckResult:
+    """Check that both required repository rulesets match their definitions.
+
+    Args:
+        ctx: Injected doctor context.
+        check_id: Catalog identifier for the ruleset result.
+        title: Human-readable check title.
+
+    Returns:
+        PASS when both rulesets match, otherwise FAIL.
+    """
+    fix = "Run bin/provision-ruleset.sh to provision the required rulesets."
+    owner = ctx.env["BH_REPO_OWNER"]
+    repo = ctx.env["BH_REPO_NAME"]
+    app_id = ctx.env["BH_GITHUB_APP_ID"]
+
+    def _run_gh(args: list[str]) -> subprocess.CompletedProcess[str]:
+        return ctx.runner(["gh", *args])
+
+    status = ruleset_status.ruleset_is_provisioned(
+        owner,
+        repo,
+        app_id=app_id,
+        runner=_run_gh,
+    )
+    if status is ruleset_status.RulesetStatus.MATCH:
+        return _result(
+            check_id,
+            title,
+            Severity.CRITICAL,
+            CheckStatus.PASS,
+            "Both required repository rulesets match their definitions.",
+            fix,
+        )
+    return _result(
+        check_id,
+        title,
+        Severity.CRITICAL,
+        CheckStatus.FAIL,
+        f"Required repository rulesets could not be verified ({status.name}).",
+        fix,
+    )
+
+
+def _check_ruleset_main(ctx: DoctorContext) -> CheckResult:
+    """Check the combined ruleset verdict under the main-ruleset ID."""
+    return _check_ruleset(
+        ctx, "RULESET_MAIN", "Main branch ruleset provisioned"
+    )
+
+
+def _check_ruleset_feature(ctx: DoctorContext) -> CheckResult:
+    """Check the combined ruleset verdict under the feature-ruleset ID."""
+    return _check_ruleset(
+        ctx,
+        "RULESET_FEATURE",
+        "Feature branch ruleset provisioned",
+    )
+
+
+def _check_labels_present(ctx: DoctorContext) -> CheckResult:
+    """Check that all labels required by the harness are present."""
+    title = "Required repository labels present"
+    fix = "Create every required harness label in the target repository."
+    required = {
+        "agent-ready",
+        "agent-done",
+        "blocked",
+        "agent-in-progress",
+        "agent-merged",
+    }
+    owner = ctx.env["BH_REPO_OWNER"]
+    repo = ctx.env["BH_REPO_NAME"]
+    result = ctx.runner(
+        [
+            "gh",
+            "label",
+            "list",
+            "-R",
+            f"{owner}/{repo}",
+            "--json",
+            "name",
+            "--jq",
+            ".[].name",
+        ]
+    )
+    if result.returncode != 0:
+        return _result(
+            "LABELS_PRESENT",
+            title,
+            Severity.CRITICAL,
+            CheckStatus.FAIL,
+            "The repository label list could not be retrieved.",
+            fix,
+        )
+
+    present = {
+        line.strip() for line in result.stdout.splitlines() if line.strip()
+    }
+    missing = sorted(required - present)
+    if missing:
+        return _result(
+            "LABELS_PRESENT",
+            title,
+            Severity.CRITICAL,
+            CheckStatus.FAIL,
+            f"Missing required labels: {', '.join(missing)}.",
+            fix,
+        )
+    return _result(
+        "LABELS_PRESENT",
+        title,
+        Severity.CRITICAL,
+        CheckStatus.PASS,
+        "All required harness labels are present.",
+        fix,
+    )
+
+
+def _check_gh_repo_admin(ctx: DoctorContext) -> CheckResult:
+    """Report whether the repository has an admin collaborator."""
+    title = "Repository admin collaborator present"
+    fix = "Ensure the repository has at least one admin collaborator."
+    owner = ctx.env["BH_REPO_OWNER"]
+    repo = ctx.env["BH_REPO_NAME"]
+    try:
+        result = ctx.runner(
+            [
+                "gh",
+                "api",
+                f"repos/{owner}/{repo}/collaborators?permission=admin",
+            ]
+        )
+        if result.returncode != 0:
+            raise RuntimeError("gh api returned a non-zero exit status")
+        collaborators = json.loads(result.stdout)
+        if not isinstance(collaborators, list):
+            raise TypeError("gh api response was not an array")
+        has_admin = any(
+            isinstance(item, dict)
+            and (
+                item.get("role_name") == "admin"
+                or (
+                    isinstance(item.get("permissions"), dict)
+                    and bool(item["permissions"].get("admin"))
+                )
+            )
+            for item in collaborators
+        )
+    except Exception:  # noqa: BLE001
+        return _result(
+            "GH_REPO_ADMIN",
+            title,
+            Severity.WARNING,
+            CheckStatus.WARN,
+            "Repository admin collaborators could not be verified.",
+            fix,
+        )
+
+    if has_admin:
+        status = CheckStatus.PASS
+        detail = "At least one repository admin collaborator is present."
+    else:
+        status = CheckStatus.WARN
+        detail = "No repository admin collaborator was found."
+    return _result(
+        "GH_REPO_ADMIN", title, Severity.WARNING, status, detail, fix
+    )
+
+
+def _check_gh_auth(ctx: DoctorContext) -> CheckResult:
+    """Check standalone GitHub CLI authentication status."""
+    title = "GitHub CLI authentication valid"
+    fix = "Run `gh auth login` to authenticate the GitHub CLI."
+    result = ctx.runner(["gh", "auth", "status"])
+    if result.returncode == 0:
+        status = CheckStatus.PASS
+        detail = "GitHub CLI authentication is valid."
+    else:
+        status = CheckStatus.FAIL
+        detail = "GitHub CLI authentication is invalid."
+    return _result("GH_AUTH", title, Severity.CRITICAL, status, detail, fix)
+
+
+def _check_oauth_volume(ctx: DoctorContext) -> CheckResult:
+    """Check that the Claude OAuth credential file can be opened."""
+    title = "Claude OAuth credential file readable"
+    fix = "Mount a readable Claude OAuth credential file before startup."
+    path = Path(ctx.home_dir) / ".claude" / ".credentials.json"
+    try:
+        with open(path):  # noqa: PTH123
+            pass
+        status = CheckStatus.PASS
+        detail = "The Claude OAuth credential file is present and readable."
+    except OSError:
+        status = CheckStatus.WARN
+        detail = "The Claude OAuth credential file is absent or unreadable."
+    return _result(
+        "CRED_OAUTH_VOLUME",
+        title,
+        Severity.WARNING,
+        status,
+        detail,
+        fix,
+    )
+
+
 CATALOG: list[Check] = [
     Check(
         "CLI_GH",
@@ -809,6 +1021,60 @@ CATALOG: list[Check] = [
         True,
         "Run `gh auth setup-git` to configure a credential helper.",
         _check_git_credential_helper,
+    ),
+    Check(
+        "RULESET_MAIN",
+        "Main branch ruleset provisioned",
+        Severity.CRITICAL,
+        Phase.POST_BOOTSTRAP,
+        False,
+        "Run bin/provision-ruleset.sh to provision the required rulesets.",
+        _check_ruleset_main,
+    ),
+    Check(
+        "RULESET_FEATURE",
+        "Feature branch ruleset provisioned",
+        Severity.CRITICAL,
+        Phase.POST_BOOTSTRAP,
+        False,
+        "Run bin/provision-ruleset.sh to provision the required rulesets.",
+        _check_ruleset_feature,
+    ),
+    Check(
+        "LABELS_PRESENT",
+        "Required repository labels present",
+        Severity.CRITICAL,
+        Phase.POST_BOOTSTRAP,
+        False,
+        "Create every required harness label in the target repository.",
+        _check_labels_present,
+    ),
+    Check(
+        "GH_REPO_ADMIN",
+        "Repository admin collaborator present",
+        Severity.WARNING,
+        Phase.POST_BOOTSTRAP,
+        False,
+        "Ensure the repository has at least one admin collaborator.",
+        _check_gh_repo_admin,
+    ),
+    Check(
+        "GH_AUTH",
+        "GitHub CLI authentication valid",
+        Severity.CRITICAL,
+        Phase.POST_BOOTSTRAP,
+        True,
+        "Run `gh auth login` to authenticate the GitHub CLI.",
+        _check_gh_auth,
+    ),
+    Check(
+        "CRED_OAUTH_VOLUME",
+        "Claude OAuth credential file readable",
+        Severity.WARNING,
+        Phase.POST_BOOTSTRAP,
+        True,
+        "Mount a readable Claude OAuth credential file before startup.",
+        _check_oauth_volume,
     ),
 ]
 

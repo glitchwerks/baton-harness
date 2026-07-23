@@ -744,6 +744,38 @@ class TestReconcileUsesDaemonValidator:
             lambda: ["!fake credential helper for tests"],
         )
 
+    @pytest.fixture(autouse=True)
+    def _patch_doctor_run_gate(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """No-op the POST_BOOTSTRAP doctor gate for this class (#193).
+
+        Phase 4 (#193) wires ``doctor.run_gate(ctx, Phase.POST_BOOTSTRAP)``
+        into ``reconcile_startup``, between the native G3d block and G2.
+        These two tests drive ``reconcile_startup`` end-to-end and
+        pre-date that gate; without this stub they would hit the real
+        ruleset/label/repo-admin checks (no ruleset provisioned, no
+        network/GitHub access in this test environment) and fail --
+        mirroring the ``_patch_doctor_run_gate`` fixture already
+        established in ``tests/chain/test_reconcile.py`` (and its
+        siblings for the other reconcile test files), scoped here to
+        this class since no other class in this module calls
+        ``reconcile_startup``.
+
+        Patched at ``doctor.run_gate``'s own defining module
+        (``baton_harness.chain.doctor.run_gate``), mirroring the
+        dotted-module-call idiom used by the sibling fixtures.
+
+        Args:
+            monkeypatch: Pytest monkeypatch fixture for attribute
+                patching.
+        """
+        monkeypatch.setattr(
+            "baton_harness.chain.doctor.run_gate",
+            lambda *args, **kwargs: None,
+        )
+
     def test_reconcile_startup_calls_validate_daemon_token(
         self,
         tmp_path: Path,
