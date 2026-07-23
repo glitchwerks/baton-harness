@@ -291,6 +291,7 @@ async def reconcile_startup(
             capture_output=True,
             text=True,
             encoding="utf-8",
+            timeout=30,
             env=env_for(
                 Identity.WORKER,
                 installation_token=installation_token,
