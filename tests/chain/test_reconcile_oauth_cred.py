@@ -82,6 +82,33 @@ def _make_repo_cfg(tmp_path: Path) -> Any:  # noqa: ANN401
     )
 
 
+@pytest.fixture(autouse=True)
+def _patch_doctor_run_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No-op the POST_BOOTSTRAP doctor gate for every test in this file.
+
+    Phase 4 (#193) wires ``doctor.run_gate(ctx, Phase.POST_BOOTSTRAP)``
+    into ``reconcile_startup``, after the native G3d block and before G2.
+    This file's tests call ``reconcile.reconcile_startup(...)`` directly
+    and pre-date that gate; without this stub they would hit the real
+    ruleset/label/repo-admin checks (unreachable in this test
+    environment) once Phase 4 lands, breaking every G3c test in this
+    file. Dedicated POST_BOOTSTRAP gate tests live in
+    ``test_reconcile.py::TestPostBootstrapDoctorGate``, not here.
+
+    Patched at ``doctor.run_gate``'s own defining module, matching
+    ``test_reconcile.py``'s identical fixture -- see that fixture's
+    docstring for the dotted-import assumption and its fallback patch
+    target.
+
+    Args:
+        monkeypatch: Pytest monkeypatch fixture for attribute patching.
+    """
+    monkeypatch.setattr(
+        "baton_harness.chain.doctor.run_gate",
+        lambda *args, **kwargs: None,
+    )
+
+
 def _patch_passing_prereqs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

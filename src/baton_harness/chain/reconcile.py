@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -41,11 +42,13 @@ from baton_harness._auth import (
     validate_daemon_token,
     validate_github_token,  # noqa: F401 — kept for test patch target
 )
+from baton_harness.chain import bws_client, doctor
 from baton_harness.chain.app_auth import (
     InstallationTokenSource,
     resolve_installation_token,
 )
 from baton_harness.chain.escalation import alert
+from baton_harness.chain.identity import Identity, env_for
 
 if TYPE_CHECKING:
     from baton_harness.chain.obs_config import ObsConfig  # noqa: F401
@@ -273,6 +276,50 @@ async def reconcile_startup(
             "globally) — `git push` will fail with 'Password "
             "authentication is not supported' even though a GitHub "
             "token is present. Fix: run `gh auth setup-git`.",
+            severity="critical",
+            runlog=runlog,
+            installation_token=installation_token,
+        )
+        sys.exit(1)
+
+    def _doctor_run_command(
+        cmd: list[str],
+    ) -> subprocess.CompletedProcess[str]:
+        """Run a doctor probe as the worker identity."""
+        return subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=env_for(
+                Identity.WORKER,
+                installation_token=installation_token,
+            ),
+        )
+
+    doctor_installation_token = (
+        installation_token
+        if isinstance(installation_token, str)
+        else resolve_installation_token(installation_token)
+    )
+    gate_ctx = doctor.DoctorContext(
+        project_root=str(project_root),
+        home_dir=os.path.expanduser("~"),
+        env=dict(os.environ),
+        which=shutil.which,
+        runner=_doctor_run_command,
+        run=_doctor_run_command,
+        fetch_secret=bws_client.fetch_secret,
+        installation_token=doctor_installation_token,
+    )
+    try:
+        doctor.run_gate(gate_ctx, doctor.Phase.POST_BOOTSTRAP)
+    except SystemExit:
+        alert(
+            owner,
+            repo,
+            None,
+            "Post-bootstrap doctor gate failed a critical readiness check.",
             severity="critical",
             runlog=runlog,
             installation_token=installation_token,
