@@ -1787,3 +1787,192 @@ class TestCredOauthVolume:
         """
         check = _get_check("CRED_OAUTH_VOLUME")
         assert check.severity == Severity.WARNING
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 (#193): opt-in ``--check-vault`` live bws PEM dry-run (D2,
+# section 11).
+#
+# check_id added this phase: VAULT_PEM_DRYRUN -- deliberately NOT part of
+# ``CATALOG``.
+#
+# Design notes / assumptions made by this file (no implementation existed
+# to consult; flagged here and repeated in the return summary):
+#
+# - VAULT_PEM_DRYRUN is opt-in and standalone-only (plan section 11 /
+#   D2): it must never run as part of ``run_report`` or ``run_gate``, so
+#   this file assumes it is NOT registered in ``CATALOG``. It is instead
+#   assumed to be exposed as a module-level ``Check`` instance,
+#   ``doctor.VAULT_PEM_DRYRUN_CHECK`` -- built the same way as every
+#   ``CATALOG`` row (same ``Check`` dataclass, same ``fn: CheckFn``
+#   shape) but deliberately left out of the ``CATALOG`` list, so the
+#   (out-of-scope-for-this-phase) ``--check-vault`` CLI wiring can invoke
+#   it through the existing generic ``run_report``/exception-synthesis
+#   machinery for free.
+# - The secret ID (``BWS_PEM_SECRET_ID``) and access token
+#   (``BWS_ACCESS_TOKEN``) are assumed to be sourced the same way the
+#   existing Phase-1 checks source them -- ``BWS_PEM_SECRET_ID`` from
+#   ``{project_root}/.bh/config.env`` (mirrors ``CFG_REQUIRED_KEYS``) and
+#   ``BWS_ACCESS_TOKEN`` from ``ctx.env`` (mirrors
+#   ``ENV_BWS_ACCESS_TOKEN``). The fixture below sets the secret ID in
+#   BOTH places so these tests are satisfiable regardless of which single
+#   source a correct implementation reads it from.
+# - Severity is deliberately NOT pinned to CRITICAL or WARNING: the
+#   plan's own catalog table (section 6) leaves that cell as "opt-in,
+#   standalone only" rather than a severity value, since a check excluded
+#   from every gate never has its ``.severity`` consulted for a
+#   pass/fail decision. Tests reference ``VAULT_PEM_DRYRUN_CHECK.severity``
+#   symbolically only.
+# - The fetch-failure test assumes ``ctx.fetch_secret`` exceptions
+#   propagate out of the check uncaught (mirrors most ``CATALOG`` checks
+#   -- only the ones with check-specific subprocess handling, e.g.
+#   ``FORCE_PR_TRIPWIRE``, catch internally), so the generic section-3
+#   synthesis (``CheckResult(status=FAIL, severity=check.severity,
+#   detail=repr(exc), fix=check.fix)``) applies verbatim. This is
+#   exercised through ``doctor._run_check`` directly (NOT
+#   ``run_report``/``run_gate``, which would contradict
+#   ``test_is_excluded_from_the_catalog`` above) -- the assumed
+#   ``--check-vault`` CLI wiring calls ``_run_check`` on
+#   ``VAULT_PEM_DRYRUN_CHECK`` the same way the catalog runners do for
+#   every other check. If a correct implementation instead catches
+#   internally with a custom message, this ONE test needs to relax its
+#   ``detail`` assertion -- not a shared matrix.
+# - Every fixture below routes through ``_make_ctx``'s default
+#   ``which``/``runner``/``run`` stubs (which raise ``AssertionError`` if
+#   invoked), so a correct implementation that bypasses the injected
+#   ``fetch_secret`` seam to shell out to ``bws`` directly is caught by
+#   every test in this section, not just a dedicated one.
+# ---------------------------------------------------------------------------
+
+_FAKE_PEM_VALUE = "fake-vault-secret-value-9f8e7d6c5b4a"
+
+_VAULT_SECRET_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+
+def _make_vault_ctx(
+    project_root: Path,
+    fetch_secret: Callable[..., str],
+) -> DoctorContext:
+    """Build a ``DoctorContext`` wired for the VAULT_PEM_DRYRUN check.
+
+    Writes ``BWS_PEM_SECRET_ID`` into ``.bh/config.env`` and sets only
+    ``BWS_ACCESS_TOKEN`` on ``ctx.env``, pinning the config file as the
+    sole source of the secret ID.
+
+    Args:
+        project_root: Directory to write ``.bh/config.env`` under.
+        fetch_secret: Fake ``fetch_secret`` seam to install.
+
+    Returns:
+        A fully-populated ``DoctorContext``.
+    """
+    _write_config_env(project_root, _VALID_CONFIG_ENV)
+    return _make_ctx(
+        project_root=str(project_root),
+        env={
+            "BWS_ACCESS_TOKEN": _FAKE_BWS_TOKEN,
+        },
+        fetch_secret=fetch_secret,
+    )
+
+
+class TestVaultPemDryrun:
+    """Opt-in ``--check-vault`` live bws PEM dry-run (VAULT_PEM_DRYRUN)."""
+
+    def test_is_excluded_from_the_catalog(self) -> None:
+        """VAULT_PEM_DRYRUN must never auto-run (plan section 11 / D2)."""
+        catalog_ids = {c.check_id for c in doctor.CATALOG}
+        assert "VAULT_PEM_DRYRUN" not in catalog_ids, (
+            "VAULT_PEM_DRYRUN is opt-in/standalone-only per plan section "
+            "11 and decision D2 -- it must be excluded from CATALOG so "
+            "run_report/run_gate never trigger a live bws fetch"
+        )
+
+    def test_check_exposes_required_static_metadata(self) -> None:
+        """The standalone Check has the same metadata shape as CATALOG rows."""
+        check = doctor.VAULT_PEM_DRYRUN_CHECK
+        assert check.check_id == "VAULT_PEM_DRYRUN"
+        assert isinstance(check.title, str) and check.title
+        assert isinstance(check.severity, Severity)
+        assert check.phase == Phase.POST_BOOTSTRAP, (
+            "plan section 6 lists VAULT_PEM_DRYRUN under phase B"
+        )
+        assert check.daemon_native is False
+        assert isinstance(check.fix, str) and check.fix
+
+    def test_passes_when_secret_fetch_succeeds_and_is_non_empty(
+        self, tmp_path: Path
+    ) -> None:
+        """A non-empty fetch PASSes (section 11: non-empty check only)."""
+
+        def _fake_fetch_secret(*args: object, **kwargs: object) -> str:
+            assert args == (_VAULT_SECRET_ID,)
+            assert kwargs == {"access_token": _FAKE_BWS_TOKEN}
+            return _FAKE_PEM_VALUE
+
+        ctx = _make_vault_ctx(tmp_path, _fake_fetch_secret)
+
+        result = doctor.VAULT_PEM_DRYRUN_CHECK(ctx)
+
+        assert result.check_id == "VAULT_PEM_DRYRUN"
+        assert result.status == CheckStatus.PASS
+
+    def test_never_leaks_the_fetched_secret_value(
+        self, tmp_path: Path
+    ) -> None:
+        """The fetched PEM value never appears in any CheckResult field."""
+
+        def _fake_fetch_secret(*args: object, **kwargs: object) -> str:
+            assert args == (_VAULT_SECRET_ID,)
+            assert kwargs == {"access_token": _FAKE_BWS_TOKEN}
+            return _FAKE_PEM_VALUE
+
+        ctx = _make_vault_ctx(tmp_path, _fake_fetch_secret)
+
+        result = doctor.VAULT_PEM_DRYRUN_CHECK(ctx)
+
+        _assert_no_secret_leak(result, _FAKE_PEM_VALUE)
+
+    def test_fails_when_fetched_secret_is_empty(self, tmp_path: Path) -> None:
+        """An empty fetched value FAILs (section 11: non-empty check)."""
+
+        def _fake_fetch_secret(*args: object, **kwargs: object) -> str:
+            assert args == (_VAULT_SECRET_ID,)
+            assert kwargs == {"access_token": _FAKE_BWS_TOKEN}
+            return ""
+
+        ctx = _make_vault_ctx(tmp_path, _fake_fetch_secret)
+
+        result = doctor.VAULT_PEM_DRYRUN_CHECK(ctx)
+
+        assert result.status == CheckStatus.FAIL
+
+    def test_fetch_failure_is_synthesized_as_fail_per_exception_contract(
+        self, tmp_path: Path
+    ) -> None:
+        """A raising fetch_secret becomes FAIL per the section-3 contract.
+
+        VAULT_PEM_DRYRUN is excluded from ``CATALOG`` (D2), so it is
+        never reached via ``run_report``/``run_gate`` -- the assumed
+        invocation path is the (out-of-scope-for-this-phase)
+        ``--check-vault`` CLI flag calling ``doctor._run_check`` directly
+        on ``VAULT_PEM_DRYRUN_CHECK``, the same generic wrapper the
+        catalog runners use for every other check's section-3 synthesis
+        (mirrors ``test_run_report_catches_raising_check_and_synthesizes_
+        fail`` above, but through ``_run_check`` instead of
+        ``run_report`` so this test does not contradict
+        ``test_is_excluded_from_the_catalog``).
+        """
+
+        def _raising_fetch_secret(*args: object, **kwargs: object) -> str:
+            raise RuntimeError("bws exited non-zero")
+
+        ctx = _make_vault_ctx(tmp_path, _raising_fetch_secret)
+        check = doctor.VAULT_PEM_DRYRUN_CHECK
+
+        result = doctor._run_check(check, ctx)
+
+        assert result.status == CheckStatus.FAIL
+        assert result.severity == check.severity
+        assert result.detail == "RuntimeError('bws exited non-zero')"
+        assert result.fix == check.fix

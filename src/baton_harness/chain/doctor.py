@@ -895,6 +895,60 @@ def _check_oauth_volume(ctx: DoctorContext) -> CheckResult:
     )
 
 
+def _check_vault_dryrun(ctx: DoctorContext) -> CheckResult:
+    """Fetch the configured PEM secret and report only whether it is non-empty.
+
+    Args:
+        ctx: Injected doctor context.
+
+    Returns:
+        PASS when the fetched secret is non-empty, otherwise FAIL.
+    """
+    title = "Vault PEM secret fetch succeeds"
+    fix = (
+        "Verify BWS_PEM_SECRET_ID in .bh/config.env and set a valid "
+        "BWS_ACCESS_TOKEN."
+    )
+    config_path = Path(ctx.project_root) / ".bh" / "config.env"
+    secret_id = _parse_config(config_path).get("BWS_PEM_SECRET_ID", "")
+    access_token = ctx.env.get("BWS_ACCESS_TOKEN", "")
+    secret_value = ctx.fetch_secret(
+        secret_id,
+        access_token=access_token,
+    )
+    if secret_value:
+        status = CheckStatus.PASS
+        detail = (
+            "PEM secret fetched successfully "
+            f"({len(secret_value)} characters)."
+        )
+    else:
+        status = CheckStatus.FAIL
+        detail = "PEM secret fetch returned an empty value."
+    return _result(
+        "VAULT_PEM_DRYRUN",
+        title,
+        Severity.CRITICAL,
+        status,
+        detail,
+        fix,
+    )
+
+
+VAULT_PEM_DRYRUN_CHECK = Check(
+    "VAULT_PEM_DRYRUN",
+    "Vault PEM secret fetch succeeds",
+    Severity.CRITICAL,
+    Phase.POST_BOOTSTRAP,
+    False,
+    (
+        "Verify BWS_PEM_SECRET_ID in .bh/config.env and set a valid "
+        "BWS_ACCESS_TOKEN."
+    ),
+    _check_vault_dryrun,
+)
+
+
 CATALOG: list[Check] = [
     Check(
         "CLI_GH",
