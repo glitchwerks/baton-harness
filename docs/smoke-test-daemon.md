@@ -192,7 +192,7 @@ BWS_ACCESS_TOKEN="$(sudo cat /etc/bh-daemon/secrets.env | grep BWS_ACCESS_TOKEN 
 
 Before starting the daemon for the first time, provision the two branch-protection rulesets in the sandbox repo. The per-launch preflight gate (added in #144) calls `ruleset_is_provisioned()` before every worker dispatch and returns `RulesetStatus.ABSENT` on a fresh repo — causing every issue to be parked with "preflight refused — branch protection missing or misconfigured; worker not launched". The only way to create the rulesets is to run `bin/provision-ruleset.sh`.
 
-**Prerequisites for this step:** the GitHub App must be installed on the sandbox repo, `BH_REPO_OWNER`, `BH_REPO_NAME`, `BH_GITHUB_APP_ID`, and `BH_GITHUB_APP_INSTALLATION_ID` must be present in `${BH_PROJECT_ROOT}/.bh/config.env` (or exported in the caller's shell), and `gh` must be authenticated as the harness App (or with a PAT that has `administration: write` on the repo).
+**Prerequisites for this step:** the GitHub App must be installed on the sandbox repo, `BH_REPO_OWNER`, `BH_REPO_NAME`, `BH_GITHUB_APP_ID`, `BH_GITHUB_APP_INSTALLATION_ID`, and `BWS_PEM_SECRET_ID` must be present in `${BH_PROJECT_ROOT}/.bh/config.env` (or exported in the caller's shell), `BWS_ACCESS_TOKEN` must be exported in the caller's shell, and `gh` must be authenticated as the harness App (or with a PAT that has `administration: write` on the repo).
 
 ```bash
 bin/provision-ruleset.sh

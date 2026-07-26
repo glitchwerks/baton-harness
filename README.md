@@ -525,6 +525,11 @@ export BH_REPO_OWNER=<owner>
 export BH_REPO_NAME=<sandbox-repo>
 export BH_GITHUB_APP_ID=<numeric-from-/app>
 export BH_GITHUB_APP_INSTALLATION_ID=<numeric-from-/repos/.../installation>
+# Required: the harness App's private-key secret ID (in .bh/config.env) and
+# the Bitwarden Secrets Manager access token (exported in the shell) used to
+# fetch it — both consumed by `app_auth.py` when it mints the App JWT.
+export BWS_PEM_SECRET_ID=<bws-secret-id-for-app-private-key>
+export BWS_ACCESS_TOKEN=<bws-access-token>
 # Optional: override the RepositoryRole admin actor_id (default 5).
 # Only needed if your org has remapped role ids.
 # export BH_ADMIN_ROLE_ID=5
