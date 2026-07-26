@@ -455,6 +455,12 @@ wiring, CI-gate behaviour, and expected log output — see
 
 ### First run — quick start
 
+**Bringing up `bh-daemon` on a machine that has never run it before?** See
+[docs/new-machine-setup.md](docs/new-machine-setup.md) for the full start-to-finish
+walkthrough — prerequisites, each `bin/*.sh` step with its verification command, the
+`bh-daemon --doctor --strict` preflight, and troubleshooting. The summary below assumes
+the CLIs are already installed and is a quick reference, not a walkthrough.
+
 The four-step bringup sequence from [docs/smoke-test-daemon.md §"Fresh host bringup"](docs/smoke-test-daemon.md):
 
 ```bash
@@ -473,14 +479,20 @@ export BH_PROJECT_ROOT=<abs-path-to-local-sandbox-clone>
 bin/init-sandbox.sh
 
 # Step 3 — provision branch-protection rulesets (required before first run).
-#   Reads App IDs from ${BH_PROJECT_ROOT}/.bh/config.env.
+#   Reads App IDs from ${BH_PROJECT_ROOT}/.bh/config.env. Requires BWS_ACCESS_TOKEN
+#   already exported in this shell (it mints a GitHub App JWT via a vault fetch) —
+#   see docs/new-machine-setup.md §4 for the secure (silent-input) export pattern
+#   and for why this must come before step 4 below.
+read -r -s BWS_ACCESS_TOKEN
+export BWS_ACCESS_TOKEN
 bin/provision-ruleset.sh
 
 # Step 4 — drop the bootstrap secret and run one tick.
-echo "BWS_ACCESS_TOKEN=<token>" | sudo tee /etc/bh-daemon/secrets.env
-sudo chmod 600 /etc/bh-daemon/secrets.env
-BWS_ACCESS_TOKEN="$(sudo grep BWS_ACCESS_TOKEN /etc/bh-daemon/secrets.env | cut -d= -f2-)" \
-  bin/run-daemon.sh --once
+#   Uses the $BWS_ACCESS_TOKEN already exported in step 3 — never re-typed or echoed.
+sudo install -m 600 /dev/null /etc/bh-daemon/secrets.env
+printf 'BWS_ACCESS_TOKEN=%s\n' "$BWS_ACCESS_TOKEN" |
+  sudo tee /etc/bh-daemon/secrets.env >/dev/null
+bin/run-daemon.sh --once
 ```
 
 Step 4 above is the bounded, single-tick smoke test. For continuous operation, install the
