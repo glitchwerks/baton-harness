@@ -27,10 +27,10 @@ These are the CLIs `bin/setup-env.sh` (step 2 below) needs — some it installs 
 
 - [`uv`](https://docs.astral.sh/uv/) — not auto-installed; install it yourself first
   (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
-- `gh` (GitHub CLI), authenticated (`gh auth login`)
+- `gh` (GitHub CLI; authenticate after setup with `gh auth login`)
 - `bws` (Bitwarden Secrets CLI)
-- `claude` (Claude Code CLI), authenticated via subscription/OAuth (run `claude` once
-  interactively after install — the daemon uses OAuth, not an API key)
+- `claude` (Claude Code CLI; authenticate interactively after installation via
+  subscription/OAuth by running `claude` once — the daemon uses OAuth, not an API key)
 - `git`, configured with a user name and email
 
 **OS:** Linux or macOS with bash. (Some later-stage server scripts — `bin/verify-recovery.sh`,
