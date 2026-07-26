@@ -481,8 +481,10 @@ bin/init-sandbox.sh
 # Step 3 — provision branch-protection rulesets (required before first run).
 #   Reads App IDs from ${BH_PROJECT_ROOT}/.bh/config.env. Requires BWS_ACCESS_TOKEN
 #   already exported in this shell (it mints a GitHub App JWT via a vault fetch) —
-#   see docs/new-machine-setup.md §4 for why this must come before step 4 below.
-export BWS_ACCESS_TOKEN=<bitwarden-machine-account-token>
+#   see docs/new-machine-setup.md §4 for the secure (silent-input) export pattern
+#   and for why this must come before step 4 below.
+read -r -s BWS_ACCESS_TOKEN
+export BWS_ACCESS_TOKEN
 bin/provision-ruleset.sh
 
 # Step 4 — drop the bootstrap secret and run one tick.

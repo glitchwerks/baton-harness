@@ -55,7 +55,7 @@ stall waiting for a value only you can supply.
   `bin/verify-block-escalation.sh` — are Linux-only, but everything in this walkthrough
   runs on macOS too.)
 
-Do not proceed to step 2 without the GitHub App and its two IDs, and the PEM's Bitwarden
+Do not proceed to step 3 without the GitHub App and its two IDs, and the PEM's Bitwarden
 secret UUID in hand — step 3 (`bin/init-sandbox.sh`) prompts for them interactively and
 has no way to look them up for you.
 
@@ -158,10 +158,12 @@ needed starting with the **next** step (`bin/provision-ruleset.sh`), not just at
 launch time — that script mints a GitHub App JWT via
 `python -m baton_harness.chain.app_auth jwt`, which vault-fetches the App's PEM using
 `BWS_ACCESS_TOKEN` and `BWS_PEM_SECRET_ID` before it can call any GitHub API
-(`src/baton_harness/chain/app_auth.py`, `main()`). Export it in this shell session now:
+(`src/baton_harness/chain/app_auth.py`, `main()`). Export it in this shell session now,
+using silent input so the token never lands in your shell history:
 
 ```bash
-export BWS_ACCESS_TOKEN=<your-bitwarden-machine-account-token>
+read -r -s BWS_ACCESS_TOKEN
+export BWS_ACCESS_TOKEN
 ```
 
 **Never print, log, or commit the actual token value.** This walkthrough only checks its
@@ -248,7 +250,7 @@ Each check prints one `[STATUS] Title` line; `FAIL` and `WARN` results additiona
 `detail:` and `fix:` lines. `PASS` and `SKIP` print only the header line. A fully-passing
 run on a correctly-provisioned host looks like this:
 
-```
+```text
 [PASS] GitHub CLI available
 [PASS] Bitwarden Secrets CLI available
 [PASS] Claude CLI available
@@ -268,7 +270,7 @@ run on a correctly-provisioned host looks like this:
 A `FAIL` (here, `BWS_ACCESS_TOKEN` forgotten in a fresh shell) looks like this — the
 detail line never reports the token's value, only that it is absent:
 
-```
+```text
 [FAIL] BWS access token present
        detail: BWS_ACCESS_TOKEN is unset or empty.
        fix:    Set BWS_ACCESS_TOKEN to a non-empty access token.
@@ -349,9 +351,14 @@ Common first-run stumbling points, in the order you are likely to hit them:
 - **`bh-daemon --doctor` reports `BH_PROJECT_ROOT`/`BWS_ACCESS_TOKEN` failures on a host
   you believe is correctly set up.** `--doctor` does not source `host.env` — export both
   directly in the shell you're running `--doctor` from (see step 6).
-- **`run-daemon.sh` aborts on the label or `.gitignore` preflight.** Re-run
-  `bin/init-sandbox.sh` against the same sandbox, or fix the specific label /
-  `.gitignore` line it names by hand.
+- **`run-daemon.sh` aborts on the label or `.gitignore` preflight.** Do not re-run
+  `bin/init-sandbox.sh` to fix this — issue and milestone creation are not idempotent
+  (step 3) and re-running it against an already-provisioned sandbox creates duplicates.
+  Apply a targeted fix instead: for a missing label, the label preflight itself prints
+  the exact `gh label create` command to run (step 3 lists the five required labels); for
+  the `.gitignore` preflight, add the `.symphony/` line to the sandbox repo's `.gitignore`
+  and push it by hand (step 3, item 7). If the sandbox is broken beyond these targeted
+  fixes, provision a fresh sandbox repo instead.
 - **A tick runs but the issue parks instead of merging.** This is almost always the
   CI-gate check-name requirement — see
   [docs/smoke-test-daemon.md §"CI-gate subtlety"](smoke-test-daemon.md#ci-gate-subtlety--required-check-names).
