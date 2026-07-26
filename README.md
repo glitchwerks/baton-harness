@@ -455,6 +455,12 @@ wiring, CI-gate behaviour, and expected log output — see
 
 ### First run — quick start
 
+**Bringing up `bh-daemon` on a machine that has never run it before?** See
+[docs/new-machine-setup.md](docs/new-machine-setup.md) for the full start-to-finish
+walkthrough — prerequisites, each `bin/*.sh` step with its verification command, the
+`bh-daemon --doctor --strict` preflight, and troubleshooting. The summary below assumes
+the CLIs are already installed and is a quick reference, not a walkthrough.
+
 The four-step bringup sequence from [docs/smoke-test-daemon.md §"Fresh host bringup"](docs/smoke-test-daemon.md):
 
 ```bash
@@ -473,7 +479,10 @@ export BH_PROJECT_ROOT=<abs-path-to-local-sandbox-clone>
 bin/init-sandbox.sh
 
 # Step 3 — provision branch-protection rulesets (required before first run).
-#   Reads App IDs from ${BH_PROJECT_ROOT}/.bh/config.env.
+#   Reads App IDs from ${BH_PROJECT_ROOT}/.bh/config.env. Requires BWS_ACCESS_TOKEN
+#   already exported in this shell (it mints a GitHub App JWT via a vault fetch) —
+#   see docs/new-machine-setup.md §4 for why this must come before step 4 below.
+export BWS_ACCESS_TOKEN=<bitwarden-machine-account-token>
 bin/provision-ruleset.sh
 
 # Step 4 — drop the bootstrap secret and run one tick.
