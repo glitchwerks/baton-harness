@@ -55,7 +55,7 @@ Export the three required variables and run it:
 ```bash
 export BH_REPO_OWNER=<owner>
 export BH_REPO_NAME=<sandbox-repo>
-export BH_PROJECT_ROOT=<abs-path-to-local-sandbox-clone>   # already set if bin/setup-env.sh (docs/system-setup.md) wrote host.env
+export BH_PROJECT_ROOT=<abs-path-to-local-sandbox-clone>   # still required in this shell even if bin/setup-env.sh (docs/system-setup.md) already ran — that script only writes the value to host.env, which bin/init-sandbox.sh and bin/run-daemon.sh source internally but never export back into your shell
 bin/init-sandbox.sh
 ```
 
