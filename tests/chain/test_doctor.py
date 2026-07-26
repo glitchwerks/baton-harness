@@ -1844,11 +1844,7 @@ class TestCredOauthVolume:
 #   every test in this section, not just a dedicated one.
 # ---------------------------------------------------------------------------
 
-_FAKE_PEM_VALUE = (
-    "-----BEGIN PRIVATE KEY-----\n"
-    "FAKE-NOT-REAL-VALUE-9f8e7d6c5b4a\n"
-    "-----END PRIVATE KEY-----\n"
-)
+_FAKE_PEM_VALUE = "fake-vault-secret-value-9f8e7d6c5b4a"
 
 _VAULT_SECRET_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
@@ -1859,11 +1855,9 @@ def _make_vault_ctx(
 ) -> DoctorContext:
     """Build a ``DoctorContext`` wired for the VAULT_PEM_DRYRUN check.
 
-    Writes ``BWS_PEM_SECRET_ID`` into ``.bh/config.env`` AND sets it
-    (plus ``BWS_ACCESS_TOKEN``) on ``ctx.env``, so the fixture is
-    satisfiable regardless of which single source a correct
-    implementation reads the secret ID from (see the Phase-6
-    design-notes block above).
+    Writes ``BWS_PEM_SECRET_ID`` into ``.bh/config.env`` and sets only
+    ``BWS_ACCESS_TOKEN`` on ``ctx.env``, pinning the config file as the
+    sole source of the secret ID.
 
     Args:
         project_root: Directory to write ``.bh/config.env`` under.
@@ -1877,7 +1871,6 @@ def _make_vault_ctx(
         project_root=str(project_root),
         env={
             "BWS_ACCESS_TOKEN": _FAKE_BWS_TOKEN,
-            "BWS_PEM_SECRET_ID": _VAULT_SECRET_ID,
         },
         fetch_secret=fetch_secret,
     )
@@ -1913,6 +1906,8 @@ class TestVaultPemDryrun:
         """A non-empty fetch PASSes (section 11: non-empty check only)."""
 
         def _fake_fetch_secret(*args: object, **kwargs: object) -> str:
+            assert args == (_VAULT_SECRET_ID,)
+            assert kwargs == {"access_token": _FAKE_BWS_TOKEN}
             return _FAKE_PEM_VALUE
 
         ctx = _make_vault_ctx(tmp_path, _fake_fetch_secret)
@@ -1928,6 +1923,8 @@ class TestVaultPemDryrun:
         """The fetched PEM value never appears in any CheckResult field."""
 
         def _fake_fetch_secret(*args: object, **kwargs: object) -> str:
+            assert args == (_VAULT_SECRET_ID,)
+            assert kwargs == {"access_token": _FAKE_BWS_TOKEN}
             return _FAKE_PEM_VALUE
 
         ctx = _make_vault_ctx(tmp_path, _fake_fetch_secret)
@@ -1940,6 +1937,8 @@ class TestVaultPemDryrun:
         """An empty fetched value FAILs (section 11: non-empty check)."""
 
         def _fake_fetch_secret(*args: object, **kwargs: object) -> str:
+            assert args == (_VAULT_SECRET_ID,)
+            assert kwargs == {"access_token": _FAKE_BWS_TOKEN}
             return ""
 
         ctx = _make_vault_ctx(tmp_path, _fake_fetch_secret)

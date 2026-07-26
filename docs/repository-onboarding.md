@@ -270,11 +270,11 @@ sits relative to secret bootstrap and the native G-checks.
 
 `--check-vault` runs a single check outside the main catalog: a live `bws` fetch of the PEM
 secret named by `BWS_PEM_SECRET_ID` in `.bh/config.env`, reporting only whether the fetch
-returned a non-empty value (and, on success, its byte length) — the secret's actual content
-is never printed, whether the fetch succeeds, comes back empty, or the `bws` call itself
-fails (a bad token or an unreachable secret surfaces as a `FAIL` with the underlying error
-message — e.g. `bws` exit status and stderr — never the fetched value, which was never
-returned in that case):
+returned a non-empty value. On `PASS`, only the status and check title are printed; no size
+is reported. The secret's actual content is never printed, whether the fetch succeeds,
+comes back empty, or the `bws` call itself fails (a bad token or an unreachable secret
+surfaces as a `FAIL` with the underlying error message — e.g. `bws` exit status and stderr
+— never the fetched value, which was never returned in that case):
 
 ```bash
 export BH_PROJECT_ROOT=<abs-path-to-local-sandbox-clone>   # if not already exported
