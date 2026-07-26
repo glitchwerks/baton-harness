@@ -266,6 +266,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Run standalone preflight checks and exit.",
     )
     parser.add_argument(
+        "--check-vault",
+        action="store_true",
+        help="Run the live BWS PEM fetch check and exit.",
+    )
+    parser.add_argument(
         "--strict",
         action="store_true",
         help="Exit nonzero when doctor finds a critical failure.",
@@ -273,7 +278,7 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
-    if args.doctor:
+    if args.doctor or args.check_vault:
         from baton_harness.chain import bws_client, doctor
 
         def run_command(
@@ -297,6 +302,17 @@ def main(argv: list[str] | None = None) -> int:
             run=run_command,
             fetch_secret=bws_client.fetch_secret,
         )
+        if args.check_vault:
+            result = doctor._run_check(doctor.VAULT_PEM_DRYRUN_CHECK, ctx)
+            print(f"[{result.status.name}] {result.title}")
+            if result.status in {
+                doctor.CheckStatus.FAIL,
+                doctor.CheckStatus.WARN,
+            }:
+                print(f"       detail: {result.detail}")
+                print(f"       fix:    {result.fix}")
+            return 0 if result.status is doctor.CheckStatus.PASS else 1
+
         results = doctor.run_report(ctx)
         for result in results:
             print(f"[{result.status.name}] {result.title}")
