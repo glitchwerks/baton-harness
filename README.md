@@ -459,8 +459,9 @@ wiring, CI-gate behaviour, and expected log output — see
 [docs/system-setup.md](docs/system-setup.md) for machine-level setup (CLIs, the Python
 venv), then [docs/repository-onboarding.md](docs/repository-onboarding.md) for the
 repo/sandbox-level walkthrough — prerequisites, each `bin/*.sh` step with its verification
-command, the `bh-daemon --doctor --strict` preflight, and troubleshooting. The summary
-below assumes the CLIs are already installed and is a quick reference, not a walkthrough.
+command, the `bh-daemon --doctor --strict` preflight, the opt-in `--check-vault` live vault
+dry-run, and troubleshooting. The summary below assumes the CLIs are already installed and
+is a quick reference, not a walkthrough.
 
 The four-step bringup sequence from [docs/smoke-test-daemon.md §"Fresh host bringup"](docs/smoke-test-daemon.md):
 
