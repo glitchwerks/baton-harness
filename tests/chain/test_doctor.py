@@ -64,8 +64,10 @@ or network I/O). No pytest-asyncio (doctor.py is synchronous).
 from __future__ import annotations
 
 import dataclasses
+import json
 import subprocess
 import textwrap
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -80,6 +82,7 @@ from baton_harness.chain.doctor import (
     Phase,
     Severity,
 )
+from baton_harness.chain.ruleset_status import RulesetStatus
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1276,3 +1279,511 @@ class TestGitCredHelper:
             "any non-empty configured helper name must satisfy the "
             "check -- it must not validate against a known-program list"
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 (#193): auth-needing checks + the POST_BOOTSTRAP gate.
+#
+# check_id set added this phase: RULESET_MAIN, RULESET_FEATURE,
+# LABELS_PRESENT, GH_REPO_ADMIN, GH_AUTH, CRED_OAUTH_VOLUME.
+#
+# Design notes / ambiguities resolved by this file (flagged prominently
+# per-test rather than folded into a shared matrix, so a wrong guess is a
+# one-line router fix, not a parametrized-block break):
+#
+# - RULESET_MAIN / RULESET_FEATURE both read their verdict from the SAME
+#   ``ruleset_status.ruleset_is_provisioned(...)`` call (plan section 6:
+#   "same call evaluates both rulesets together"), patched at its own
+#   defining module (mirrors the FORCE_PR_TRIPWIRE precedent above).
+#   ERROR's mapping to FAIL is the one soft/judgment call in that trio
+#   (fail-closed default; isolated in its own test).
+# - LABELS_PRESENT / GH_REPO_ADMIN model the shell references at
+#   bin/run-daemon.sh:177-213 and bin/provision-ruleset.sh:186-202
+#   respectively, via ``ctx.runner``. Exact argv is deliberately NOT
+#   pinned -- the fake runners branch on the args actually passed so a
+#   correct implementation choosing either ``--json name`` or
+#   ``--jq '.[].name'`` output shape is satisfiable.
+# - CRED_OAUTH_VOLUME's static ``.severity`` is pinned to WARNING here,
+#   isolated in its own test: the plan table cell reads "CRITICAL
+#   (daemon) / WARN (standalone dev-box)", but daemon_native=True means
+#   run_gate filters this Check out unconditionally in BOTH phases (per
+#   the Rev-3 daemon_native note already pinned earlier in this file) --
+#   so the Check's own severity attribute is only ever consulted by the
+#   standalone run_report/--strict path, where only the dev-box ("WARN")
+#   reading can apply. Flagged in the return summary.
+# ---------------------------------------------------------------------------
+
+_PHASE_4_ENV = {
+    "BH_REPO_OWNER": "my-org",
+    "BH_REPO_NAME": "my-sandbox",
+}
+
+_EXPECTED_PHASE_4_CHECK_IDS = {
+    "RULESET_MAIN",
+    "RULESET_FEATURE",
+    "LABELS_PRESENT",
+    "GH_REPO_ADMIN",
+    "GH_AUTH",
+    "CRED_OAUTH_VOLUME",
+}
+
+
+def test_catalog_contains_all_phase_4_checks() -> None:
+    """CATALOG contains (at least) every Phase-4 check_id."""
+    catalog_ids = {c.check_id for c in doctor.CATALOG}
+    missing = _EXPECTED_PHASE_4_CHECK_IDS - catalog_ids
+    assert not missing, f"CATALOG is missing Phase-4 check ids: {missing!r}"
+
+
+@pytest.mark.parametrize(
+    "check_id, severity, daemon_native",
+    [
+        ("RULESET_MAIN", Severity.CRITICAL, False),
+        ("RULESET_FEATURE", Severity.CRITICAL, False),
+        ("LABELS_PRESENT", Severity.CRITICAL, False),
+        ("GH_REPO_ADMIN", Severity.WARNING, False),
+        ("GH_AUTH", Severity.CRITICAL, True),
+    ],
+)
+def test_phase_4_check_metadata_matches_the_plan_catalog(
+    check_id: str,
+    severity: Severity,
+    daemon_native: bool,
+) -> None:
+    """Each Phase-4 check's severity/phase/daemon_native matches section 6.
+
+    CRED_OAUTH_VOLUME is deliberately excluded from this shared matrix --
+    see its own isolated tests in ``TestCredOauthVolume`` for why its
+    severity is a judgment call rather than a certain reading.
+    """
+    check = _get_check(check_id)
+    assert check.severity == severity
+    assert check.phase == Phase.POST_BOOTSTRAP, (
+        "every Phase-4 check is authored under phase B (POST_BOOTSTRAP), "
+        "per plan section 6"
+    )
+    assert check.daemon_native is daemon_native
+
+
+def test_daemon_native_set_after_phase_4() -> None:
+    """The full daemon_native=True set matches section 3's Rev-3 note.
+
+    daemon_native = {GH_AUTH, CRED_ANTHROPIC_UNSET, CRED_OAUTH_VOLUME,
+    GIT_CRED_HELPER, FORCE_PR_TRIPWIRE} -- exactly these five, no more,
+    no fewer, once Phase 4 lands.
+    """
+    expected = {
+        "GH_AUTH",
+        "CRED_ANTHROPIC_UNSET",
+        "CRED_OAUTH_VOLUME",
+        "GIT_CRED_HELPER",
+        "FORCE_PR_TRIPWIRE",
+    }
+    actual = {c.check_id for c in doctor.CATALOG if c.daemon_native}
+    assert actual == expected, (
+        "daemon_native=True check set drifted from the plan; expected "
+        f"{expected!r}, got {actual!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# RULESET_MAIN / RULESET_FEATURE
+# ---------------------------------------------------------------------------
+
+
+class TestRulesetChecks:
+    """RULESET_MAIN / RULESET_FEATURE -- both call ruleset_is_provisioned.
+
+    Per plan section 6, "same call evaluates both rulesets together":
+    RULESET_MAIN and RULESET_FEATURE both read their PASS/FAIL from the
+    SAME ``ruleset_is_provisioned()`` verdict (it classifies both
+    rulesets in one round-trip), so both checks are exercised
+    identically here via shared parametrization.
+
+    Patch-target note: patched at ``ruleset_status``'s own defining
+    module (``baton_harness.chain.ruleset_status.ruleset_is_provisioned``),
+    mirroring the ``FORCE_PR_TRIPWIRE`` precedent above (a Check calling
+    a dotted-imported function is patched at that function's *source*
+    module, not a re-exported name on ``doctor.py``). If the
+    implementation instead does ``from baton_harness.chain.ruleset_status
+    import ruleset_is_provisioned`` (a bare name) inside ``doctor.py``,
+    this patch target will need to move to
+    ``baton_harness.chain.doctor.ruleset_is_provisioned`` -- flagged in
+    the return summary.
+
+    Every test supplies BOTH ``ctx.env`` (``BH_REPO_OWNER``/
+    ``BH_REPO_NAME``/``BH_GITHUB_APP_ID``) and an equivalent
+    ``.bh/config.env`` file so the test is satisfiable regardless of
+    which source the implementation reads owner/repo/app_id from -- the
+    plan does not specify this internal detail.
+    """
+
+    @pytest.mark.parametrize("check_id", ["RULESET_MAIN", "RULESET_FEATURE"])
+    def test_passes_on_match(self, check_id: str, tmp_path: Path) -> None:
+        """MATCH -> PASS for both checks."""
+        check = _get_check(check_id)
+        _write_config_env(tmp_path, _VALID_CONFIG_ENV)
+
+        with patch(
+            "baton_harness.chain.ruleset_status.ruleset_is_provisioned",
+            return_value=RulesetStatus.MATCH,
+        ):
+            result = check(
+                _make_ctx(
+                    project_root=str(tmp_path),
+                    env={**_PHASE_4_ENV, "BH_GITHUB_APP_ID": "12345"},
+                )
+            )
+
+        assert result.status == CheckStatus.PASS
+        assert result.severity == Severity.CRITICAL
+
+    @pytest.mark.parametrize(
+        "check_id, status",
+        [
+            ("RULESET_MAIN", RulesetStatus.DRIFT),
+            ("RULESET_MAIN", RulesetStatus.ABSENT),
+            ("RULESET_FEATURE", RulesetStatus.DRIFT),
+            ("RULESET_FEATURE", RulesetStatus.ABSENT),
+        ],
+    )
+    def test_fails_on_drift_or_absent(
+        self,
+        check_id: str,
+        status: RulesetStatus,
+        tmp_path: Path,
+    ) -> None:
+        """DRIFT and ABSENT both FAIL (CRITICAL, blocks daemon startup)."""
+        check = _get_check(check_id)
+        _write_config_env(tmp_path, _VALID_CONFIG_ENV)
+
+        with patch(
+            "baton_harness.chain.ruleset_status.ruleset_is_provisioned",
+            return_value=status,
+        ):
+            result = check(
+                _make_ctx(
+                    project_root=str(tmp_path),
+                    env={**_PHASE_4_ENV, "BH_GITHUB_APP_ID": "12345"},
+                )
+            )
+
+        assert result.status == CheckStatus.FAIL
+        assert result.severity == Severity.CRITICAL
+        assert result.detail
+
+    @pytest.mark.parametrize("check_id", ["RULESET_MAIN", "RULESET_FEATURE"])
+    def test_fails_closed_on_error(
+        self, check_id: str, tmp_path: Path
+    ) -> None:
+        """ERROR (gh call failed) fails closed -> FAIL, never silently PASS.
+
+        This is the soft/judgment-call mapping in this class: ERROR means
+        "could not verify" rather than a confirmed drift/absence, but a
+        CRITICAL readiness gate that cannot confirm the ruleset is safe
+        must not treat "unknown" as "PASS" -- fail-closed is the only
+        defensible default absent an explicit SKIP/inconclusive contract
+        in the plan. Flagged in the return summary.
+        """
+        check = _get_check(check_id)
+        _write_config_env(tmp_path, _VALID_CONFIG_ENV)
+
+        with patch(
+            "baton_harness.chain.ruleset_status.ruleset_is_provisioned",
+            return_value=RulesetStatus.ERROR,
+        ):
+            result = check(
+                _make_ctx(
+                    project_root=str(tmp_path),
+                    env={**_PHASE_4_ENV, "BH_GITHUB_APP_ID": "12345"},
+                )
+            )
+
+        assert result.status == CheckStatus.FAIL
+
+
+# ---------------------------------------------------------------------------
+# LABELS_PRESENT
+# ---------------------------------------------------------------------------
+
+_REQUIRED_LABELS = {
+    "agent-ready",
+    "agent-done",
+    "blocked",
+    "agent-in-progress",
+    "agent-merged",
+}
+
+
+def _fake_gh_label_runner(
+    present: set[str],
+) -> Callable[[list[str]], subprocess.CompletedProcess[str]]:
+    """Build a fake ``ctx.runner`` standing in for ``gh label list``.
+
+    Branches on whether ``--jq`` appears in argv (mirrors
+    ``bin/run-daemon.sh:192``'s ``--jq '.[].name'`` newline-of-bare-names
+    output) versus a plain ``--json name`` JSON-array shape, so the test
+    is satisfiable regardless of which output format the implementation
+    chooses to parse.
+
+    Args:
+        present: The set of label names the fake repo currently has.
+
+    Returns:
+        A callable matching the ``ctx.runner`` seam contract.
+    """
+
+    def _runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+        uses_jq = any("jq" in a for a in args)
+        if uses_jq:
+            stdout = "".join(f"{name}\n" for name in sorted(present))
+        else:
+            stdout = json.dumps([{"name": n} for n in sorted(present)])
+        return subprocess.CompletedProcess(
+            args=args, returncode=0, stdout=stdout, stderr=""
+        )
+
+    return _runner
+
+
+class TestLabelsPresent:
+    """5 required harness labels exist in the target repo (CRITICAL).
+
+    Modeled on ``bin/run-daemon.sh:177-213``'s
+    ``gh label list -R <slug> --json name --jq '.[].name'`` preflight.
+    """
+
+    def test_passes_when_all_five_labels_present(self) -> None:
+        """All 5 required labels present in the target repo PASSes."""
+        check = _get_check("LABELS_PRESENT")
+        runner = _fake_gh_label_runner(_REQUIRED_LABELS)
+
+        result = check(_make_ctx(env=_PHASE_4_ENV, runner=runner))
+
+        assert result.status == CheckStatus.PASS
+        assert result.severity == Severity.CRITICAL
+
+    def test_fails_and_names_each_missing_label(self) -> None:
+        """Missing labels FAIL and are named individually in the detail."""
+        check = _get_check("LABELS_PRESENT")
+        present = _REQUIRED_LABELS - {"blocked", "agent-merged"}
+        runner = _fake_gh_label_runner(present)
+
+        result = check(_make_ctx(env=_PHASE_4_ENV, runner=runner))
+
+        assert result.status == CheckStatus.FAIL
+        assert result.severity == Severity.CRITICAL
+        assert "blocked" in result.detail
+        assert "agent-merged" in result.detail
+
+    def test_fails_when_gh_cli_call_errors(self) -> None:
+        """A ``gh`` CLI failure (non-zero exit) FAILs, never crashes."""
+        check = _get_check("LABELS_PRESENT")
+
+        def _erroring_runner(
+            args: list[str],
+        ) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(
+                args=args, returncode=1, stdout="", stderr="not found"
+            )
+
+        result = check(_make_ctx(env=_PHASE_4_ENV, runner=_erroring_runner))
+
+        assert result.status == CheckStatus.FAIL
+
+
+# ---------------------------------------------------------------------------
+# GH_REPO_ADMIN
+# ---------------------------------------------------------------------------
+
+
+class TestGhRepoAdmin:
+    """actor/repo has an admin collaborator (WARNING, informational).
+
+    Modeled on ``bin/provision-ruleset.sh:186-202``'s
+    ``gh api repos/<slug>/collaborators?permission=admin`` preflight
+    (counts entries with ``role_name=="admin"`` or ``permissions.admin``).
+    """
+
+    def test_passes_when_an_admin_collaborator_exists(self) -> None:
+        """At least one admin collaborator PASSes."""
+        check = _get_check("GH_REPO_ADMIN")
+
+        def _runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+            body = json.dumps([{"login": "someone", "role_name": "admin"}])
+            return subprocess.CompletedProcess(
+                args=args, returncode=0, stdout=body, stderr=""
+            )
+
+        result = check(_make_ctx(env=_PHASE_4_ENV, runner=_runner))
+
+        assert result.status == CheckStatus.PASS
+        assert result.severity == Severity.WARNING
+
+    def test_warns_when_no_admin_collaborator_found(self) -> None:
+        """No admin collaborator found WARNs (informational, non-fatal)."""
+        check = _get_check("GH_REPO_ADMIN")
+
+        def _runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(
+                args=args, returncode=0, stdout="[]", stderr=""
+            )
+
+        result = check(_make_ctx(env=_PHASE_4_ENV, runner=_runner))
+
+        assert result.status == CheckStatus.WARN
+        assert result.severity == Severity.WARNING
+
+    def test_never_fails_when_gh_api_call_errors(self) -> None:
+        """A ``gh api`` failure degrades to WARN, never CRITICAL FAIL.
+
+        GH_REPO_ADMIN is WARNING-severity and purely informational (D6)
+        -- an inability to check admin status must not block startup.
+        """
+        check = _get_check("GH_REPO_ADMIN")
+
+        def _erroring_runner(
+            args: list[str],
+        ) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(
+                args=args, returncode=1, stdout="", stderr="error"
+            )
+
+        result = check(_make_ctx(env=_PHASE_4_ENV, runner=_erroring_runner))
+
+        assert result.status != CheckStatus.FAIL
+
+
+# ---------------------------------------------------------------------------
+# GH_AUTH (daemon_native=True)
+# ---------------------------------------------------------------------------
+
+
+class TestGhAuth:
+    """gh token valid (CRITICAL, daemon_native=True).
+
+    Standalone ``run_report`` executes this via ``ctx.runner`` (mirrors
+    ``gh auth status``); the daemon path never invokes it through
+    ``run_gate`` (``daemon_native`` filter) -- native G3a
+    (``validate_daemon_token``, reconcile.py:182-208) is the sole
+    daemon-path executor.
+    """
+
+    def test_passes_when_gh_auth_status_succeeds(self) -> None:
+        """A successful gh-auth-status probe (returncode 0) PASSes."""
+        check = _get_check("GH_AUTH")
+
+        def _runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout="",
+                stderr="Logged in to github.com account someone",
+            )
+
+        result = check(_make_ctx(runner=_runner))
+
+        assert result.status == CheckStatus.PASS
+        assert result.severity == Severity.CRITICAL
+
+    def test_fails_when_gh_auth_status_fails(self) -> None:
+        """A failing gh-auth-status probe (non-zero returncode) FAILs."""
+        check = _get_check("GH_AUTH")
+
+        def _runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=1,
+                stdout="",
+                stderr="You are not logged into any GitHub hosts",
+            )
+
+        result = check(_make_ctx(runner=_runner))
+
+        assert result.status == CheckStatus.FAIL
+        assert result.severity == Severity.CRITICAL
+
+    def test_is_daemon_native(self) -> None:
+        """GH_AUTH is daemon_native=True, phase POST_BOOTSTRAP."""
+        check = _get_check("GH_AUTH")
+        assert check.daemon_native is True
+        assert check.phase == Phase.POST_BOOTSTRAP
+
+
+# ---------------------------------------------------------------------------
+# CRED_OAUTH_VOLUME (daemon_native=True)
+# ---------------------------------------------------------------------------
+
+
+class TestCredOauthVolume:
+    """~/.claude/.credentials.json present + readable (daemon_native=True).
+
+    Mirrors native G3c (reconcile.py:230-255): presence + readability via
+    ``open()`` only -- contents are never read, decoded, or logged.
+    """
+
+    def test_passes_when_credentials_file_present_and_readable(
+        self, tmp_path: Path
+    ) -> None:
+        """Present + readable credentials file PASSes."""
+        check = _get_check("CRED_OAUTH_VOLUME")
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        (claude_dir / ".credentials.json").write_text("{}", encoding="utf-8")
+
+        result = check(_make_ctx(home_dir=str(tmp_path)))
+
+        assert result.status == CheckStatus.PASS
+
+    def test_warns_when_credentials_file_absent(self, tmp_path: Path) -> None:
+        """Absent credential file WARNs (WARNING severity -> WARN status).
+
+        Mirrors this file's established severity/status convention
+        (e.g. ``CLI_UV``): a WARNING-severity check reports ``WARN`` on
+        failure, not ``FAIL``.
+        """
+        check = _get_check("CRED_OAUTH_VOLUME")
+
+        result = check(_make_ctx(home_dir=str(tmp_path)))
+
+        assert result.status == CheckStatus.WARN
+        assert result.severity == Severity.WARNING
+
+    def test_never_reads_or_leaks_credential_contents(
+        self, tmp_path: Path
+    ) -> None:
+        """Structural-only: presence + readability, never content."""
+        check = _get_check("CRED_OAUTH_VOLUME")
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        secret_marker = "sk-ant-totally-fake-oauth-marker-9f8e7d"
+        (claude_dir / ".credentials.json").write_text(
+            secret_marker, encoding="utf-8"
+        )
+
+        result = check(_make_ctx(home_dir=str(tmp_path)))
+
+        assert result.status == CheckStatus.PASS
+        _assert_no_secret_leak(result, secret_marker)
+
+    def test_is_daemon_native(self) -> None:
+        """CRED_OAUTH_VOLUME is daemon_native=True, phase POST_BOOTSTRAP."""
+        check = _get_check("CRED_OAUTH_VOLUME")
+        assert check.daemon_native is True
+        assert check.phase == Phase.POST_BOOTSTRAP
+
+    def test_static_severity_is_warning_for_standalone_dev_box_reporting(
+        self,
+    ) -> None:
+        """Pinned WARNING -- see the module docstring's ambiguity note.
+
+        run_gate filters daemon_native=True checks in BOTH phases
+        unconditionally, so this Check's own ``.severity`` is only ever
+        consulted by the standalone ``run_report``/``--strict`` path,
+        where the dev-box ("WARN") reading is the only one that can
+        actually apply. If a correct implementation instead pins
+        CRITICAL, this ONE isolated test needs to flip -- not a shared
+        matrix.
+        """
+        check = _get_check("CRED_OAUTH_VOLUME")
+        assert check.severity == Severity.WARNING
