@@ -1,16 +1,14 @@
-# bh-daemon: new-machine setup walkthrough
+# bh-daemon: repository onboarding
 
-This is a start-to-finish walkthrough for bringing up `bh-daemon` on a machine that has
-never run it before — a fresh VM, a new laptop, or a freshly provisioned server. It
-answers "what do I run, in what order, and how do I know each step worked" for an
-operator with nothing installed yet.
+Assumes [docs/system-setup.md](system-setup.md) is already complete on this machine.
 
-This doc does not replace [docs/smoke-test-daemon.md](smoke-test-daemon.md), which is the
-authoritative runbook for the daemon's environment-variable resolution chain, the required
-GitHub App permission table, DAG dependency wiring for a multi-issue smoke test, CI-gate
-behavior, and systemd deployment. This doc gets you from a bare machine to a passing
-preflight check and a first `--once` run; it links out to `smoke-test-daemon.md` for
-anything beyond that instead of duplicating it.
+This is the second of two setup walkthroughs for bringing up `bh-daemon` on a machine that
+has never run it before. This doc covers **repo/sandbox-level** setup: provisioning a
+throwaway sandbox repository, exporting the Bitwarden access token, provisioning
+branch-protection rulesets, running the daemon's preflight check, and the first `--once`
+run. See [docs/system-setup.md](system-setup.md) for how this doc relates to
+[docs/smoke-test-daemon.md](smoke-test-daemon.md), the authoritative runbook this doc links
+out to rather than duplicating.
 
 **Read the safety warning before running anything below.** `bh-daemon` spawns real
 `claude -p --dangerously-skip-permissions` processes that write code, commit, push
@@ -20,19 +18,10 @@ throwaway sandbox repository — never a real project. See
 
 ## 1. Prerequisites — have these in hand before you start
 
-Some of these can be created automatically by the scripts below (marked "auto"); the rest
-you must obtain from GitHub or Bitwarden yourself before you begin, or a later step will
-stall waiting for a value only you can supply.
-
-**Software (auto-installable on Linux/macOS by `bin/setup-env.sh`, see step 2):**
-
-- [`uv`](https://docs.astral.sh/uv/) — not auto-installed; install it yourself first
-  (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
-- `gh` (GitHub CLI), authenticated (`gh auth login`)
-- `bws` (Bitwarden Secrets CLI)
-- `claude` (Claude Code CLI), authenticated via subscription/OAuth (run `claude` once
-  interactively after install — the daemon uses OAuth, not an API key)
-- `git`, configured with a user name and email
+Some of these can be created automatically by the scripts below; the rest you must obtain
+from GitHub or Bitwarden yourself before you begin, or a later step will stall waiting for
+a value only you can supply. (For the machine-level CLI prerequisites — `uv`, `gh`, `bws`,
+`claude`, `git` — see [docs/system-setup.md §1](system-setup.md).)
 
 **Accounts and values you must obtain yourself (no script creates these):**
 
@@ -51,58 +40,12 @@ stall waiting for a value only you can supply.
 - A **Bitwarden Secrets Manager machine-account access token** (`BWS_ACCESS_TOKEN`). This
   is the one secret you personally carry and export — it is never stored in any file this
   walkthrough writes to the repo or to `.bh/config.env`.
-- **OS:** Linux or macOS with bash. (Some later-stage server scripts — `bin/verify-recovery.sh`,
-  `bin/verify-block-escalation.sh` — are Linux-only, but everything in this walkthrough
-  runs on macOS too.)
 
-Do not proceed to step 3 without the GitHub App and its two IDs, and the PEM's Bitwarden
-secret UUID in hand — step 3 (`bin/init-sandbox.sh`) prompts for them interactively and
+Do not proceed to step 2 without the GitHub App and its two IDs, and the PEM's Bitwarden
+secret UUID in hand — step 2 (`bin/init-sandbox.sh`) prompts for them interactively and
 has no way to look them up for you.
 
-## 2. `bin/setup-env.sh` — Python environment and CLI checks
-
-From the harness repo root:
-
-```bash
-bin/setup-env.sh
-```
-
-What it does, in order:
-
-1. Checks `uv` is on `PATH` (fails with an install hint if not — this is the one tool it
-   does not offer to auto-install)
-2. Checks `bws`, `gh`, and `claude` are on `PATH`; in an interactive terminal on
-   Linux/macOS it offers to auto-install each (pinned, checksum-verified versions for
-   `bws`/`gh`; the official installer for `claude`) to `~/.local/bin`. In a non-interactive
-   context (or with `BH_SETUP_NO_PROMPT=1`), it exits 1 with a link to the manual install
-   page instead of silently reaching the network.
-3. Creates `.venv` (skipped if already present — safe to re-run)
-4. Installs the package with dev extras: `uv pip install -e ".[dev]"`
-5. Verifies `bh-daemon` is reachable inside the venv
-6. Prints the venv-activation hint
-7. In an interactive terminal, prompts for `BH_PROJECT_ROOT` (the absolute path to your
-   local sandbox clone) and writes it to `~/.config/baton-harness/host.env` (mode 600) —
-   `bin/run-daemon.sh` sources this automatically on every later launch
-8. Checks whether `BWS_ACCESS_TOKEN` is already set and prints a non-fatal notice if not
-   (this script never needs it — only later steps do)
-
-**Verify it worked:**
-
-```bash
-# bh-daemon is on PATH inside the venv
-.venv/Scripts/bh-daemon --help   # Windows Git Bash
-.venv/bin/bh-daemon --help       # macOS/Linux
-
-# host.env was written (only if you answered the prompt)
-cat ~/.config/baton-harness/host.env
-```
-
-If `gh`, `bws`, or `claude` were auto-installed to `~/.local/bin` and are not yet visible
-to `command -v`, add `export PATH="$HOME/.local/bin:$PATH"` to your shell rc and re-run.
-After installing `gh` or `claude`, authenticate them separately (`gh auth login`; run
-`claude` once interactively) — `setup-env.sh` only installs the binaries, not credentials.
-
-## 3. `bin/init-sandbox.sh` — provision the sandbox repo
+## 2. `bin/init-sandbox.sh` — provision the sandbox repo
 
 This writes to a **live GitHub repository** — labels, issues, a pushed CI workflow file,
 and a `.gitignore` entry. Point it only at the throwaway sandbox repo from step 1.
@@ -112,7 +55,7 @@ Export the three required variables and run it:
 ```bash
 export BH_REPO_OWNER=<owner>
 export BH_REPO_NAME=<sandbox-repo>
-export BH_PROJECT_ROOT=<abs-path-to-local-sandbox-clone>   # already set if step 2 wrote host.env
+export BH_PROJECT_ROOT=<abs-path-to-local-sandbox-clone>   # still required in this shell even if bin/setup-env.sh (docs/system-setup.md) already ran — that script only writes the value to host.env, which bin/init-sandbox.sh and bin/run-daemon.sh source internally but never export back into your shell
 bin/init-sandbox.sh
 ```
 
@@ -151,7 +94,7 @@ cat "${BH_PROJECT_ROOT}/.bh/config.env"
 You should see `BH_REPO_OWNER`, `BH_REPO_NAME`, `BH_GITHUB_APP_ID`,
 `BH_GITHUB_APP_INSTALLATION_ID`, and the `BWS_*_SECRET_ID` UUIDs you supplied.
 
-## 4. `BWS_ACCESS_TOKEN` — export it now, before provisioning rulesets
+## 3. `BWS_ACCESS_TOKEN` — export it now, before provisioning rulesets
 
 `BWS_ACCESS_TOKEN` is the single operator-supplied Bitwarden machine-account token. It is
 needed starting with the **next** step (`bin/provision-ruleset.sh`), not just at daemon
@@ -168,20 +111,20 @@ export BWS_ACCESS_TOKEN
 
 **Never print, log, or commit the actual token value.** This walkthrough only checks its
 *presence* and *shape* (non-empty), never its content — the same discipline `bh-daemon
---doctor` follows (see step 6).
+--doctor` follows (see step 5).
 
 For a first interactive run, exporting it in the shell is sufficient — it stays in this
-session's environment through steps 5–7. For a persistent/server deployment, drop it in a
+session's environment through steps 4–6. For a persistent/server deployment, drop it in a
 root-readable-only file instead of a shell export; see
 [docs/smoke-test-daemon.md §"systemd unit (recommended)"](smoke-test-daemon.md#systemd-unit-recommended)
 for the canonical `/etc/bh-daemon/secrets.env` (mode `600`) pattern, or
 `bin/install-daemon-service.sh` to write it for you.
 
-## 5. `bin/provision-ruleset.sh` — branch-protection rulesets
+## 4. `bin/provision-ruleset.sh` — branch-protection rulesets
 
-Requires `BWS_ACCESS_TOKEN` exported (step 4) and `BH_GITHUB_APP_ID` /
+Requires `BWS_ACCESS_TOKEN` exported (step 3) and `BH_GITHUB_APP_ID` /
 `BH_GITHUB_APP_INSTALLATION_ID` available — either already in `.bh/config.env` (written
-by step 3) or exported directly.
+by step 2) or exported directly.
 
 ```bash
 bin/provision-ruleset.sh
@@ -189,7 +132,7 @@ bin/provision-ruleset.sh
 
 What it does:
 
-1. Mints a GitHub App JWT (needs `BWS_ACCESS_TOKEN` + `BWS_PEM_SECRET_ID`, per step 4)
+1. Mints a GitHub App JWT (needs `BWS_ACCESS_TOKEN` + `BWS_PEM_SECRET_ID`, per step 3)
 2. Cross-checks `BH_GITHUB_APP_ID` against a live `GET /app` call — aborts if it doesn't
    match (a common mistake here is pasting the *installation* ID where the *App* ID goes)
 3. Mints an installation token and validates the repo reports at least one admin
@@ -222,7 +165,7 @@ confirm the baseline file exists:
 cat "${BH_PROJECT_ROOT}/.bh/ruleset-baseline.json"
 ```
 
-## 6. `bh-daemon --doctor` / `--strict` — preflight before the first real run
+## 5. `bh-daemon --doctor` / `--strict` — preflight before the first real run
 
 `bh-daemon --doctor` runs the full preflight check catalog and exits without starting the
 poll loop. **It reads only the ambient shell environment** — it does not source
@@ -286,14 +229,14 @@ credential helper. It never inspects or prints secret *values* — only presence
 byte length where a length is diagnostic (as in the `BWS_ACCESS_TOKEN` example above).
 
 The CRITICAL, non-`daemon_native` subset of this same catalog runs automatically as a hard
-gate at every real daemon startup, before any secret is bootstrapped (see step 7) —
+gate at every real daemon startup, before any secret is bootstrapped (see step 6) —
 `--doctor` lets you run the *full* catalog standalone, ahead of time, without also trying
 to bootstrap secrets or start polling. Three checks (`CRED_ANTHROPIC_UNSET`,
 `FORCE_PR_TRIPWIRE`, `GIT_CRED_HELPER`) are marked `daemon_native` in the catalog and are
 covered by other native daemon startup code instead of the gate, so `--doctor` is the only
 way to see their `[STATUS]` output ahead of a real run.
 
-## 7. First daemon run — `bin/run-daemon.sh`
+## 6. First daemon run — `bin/run-daemon.sh`
 
 With the sandbox provisioned, rulesets in place, and doctor passing, run one bounded tick:
 
@@ -306,13 +249,13 @@ bin/run-daemon.sh --once
 before ever invoking `bh-daemon`:
 
 1. **Label preflight** — confirms all five required labels exist in the target repo
-   (created by step 3); aborts with the exact `gh label create` fix commands if not.
+   (created by step 2); aborts with the exact `gh label create` fix commands if not.
 2. **`.symphony/`-gitignore preflight** — confirms the exact `.symphony/` line is present
-   in the target repo's `.gitignore` (seeded by step 3); aborts with "this repo is not
+   in the target repo's `.gitignore` (seeded by step 2); aborts with "this repo is not
    ready for harness work" if not.
 
 It then `cd`s into `BH_PROJECT_ROOT` and execs `bh-daemon`, which runs the CRITICAL,
-non-`daemon_native` subset of the step-6 doctor catalog as a hard gate
+non-`daemon_native` subset of the step-5 doctor catalog as a hard gate
 (`doctor.run_gate`, `PRE_BOOTSTRAP` phase) before bootstrapping any secret. A failing
 check here prints `Preflight check <ID> failed: <detail> Fix: <fix>` to stderr and aborts
 before any git or GitHub Actions work begins. `--once` runs exactly one poll-dispatch tick
@@ -326,13 +269,13 @@ trigger issues, see
 operation on a server (systemd unit, tmux/nohup), see
 [docs/smoke-test-daemon.md §"Running on a Linux server"](smoke-test-daemon.md#running-on-a-linux-server).
 
-## 8. Troubleshooting
+## 7. Troubleshooting
 
 Start with the failing step's own output — every script in this walkthrough prints an
 `error:` (or `provision-ruleset:` / `baton-harness:`-prefixed) line with a specific fix
 when a preflight fails, rather than a bare stack trace. If the failure is inside the
 daemon's startup preflight rather than one of the `bin/*.sh` scripts, `bh-daemon --doctor`
-(step 6) will name the exact check that fails, with a secret-safe `detail:` explaining
+(step 5) will name the exact check that fails, with a secret-safe `detail:` explaining
 what it saw and a `fix:` explaining what to do about it — run it again after any fix to
 confirm.
 
@@ -343,21 +286,21 @@ Common first-run stumbling points, in the order you are likely to hit them:
   App ID, installation ID, and three Bitwarden UUIDs without prompting — run it in an
   interactive terminal.
 - **`provision-ruleset.sh` fails at the JWT-minting step.** `BWS_ACCESS_TOKEN` is not
-  exported in this shell (step 4), or `BWS_PEM_SECRET_ID` in `.bh/config.env` does not
+  exported in this shell (step 3), or `BWS_PEM_SECRET_ID` in `.bh/config.env` does not
   point at a real Bitwarden secret.
 - **`provision-ruleset.sh` aborts with an App-ID mismatch.** You pasted the installation
-  ID where the App ID goes (or vice versa) into `.bh/config.env` during step 3. Fetch both
+  ID where the App ID goes (or vice versa) into `.bh/config.env` during step 2. Fetch both
   again per the step-1 commands and correct the file.
 - **`bh-daemon --doctor` reports `BH_PROJECT_ROOT`/`BWS_ACCESS_TOKEN` failures on a host
   you believe is correctly set up.** `--doctor` does not source `host.env` — export both
-  directly in the shell you're running `--doctor` from (see step 6).
+  directly in the shell you're running `--doctor` from (see step 5).
 - **`run-daemon.sh` aborts on the label or `.gitignore` preflight.** Do not re-run
   `bin/init-sandbox.sh` to fix this — issue and milestone creation are not idempotent
-  (step 3) and re-running it against an already-provisioned sandbox creates duplicates.
+  (step 2) and re-running it against an already-provisioned sandbox creates duplicates.
   Apply a targeted fix instead: for a missing label, the label preflight itself prints
-  the exact `gh label create` command to run (step 3 lists the five required labels); for
+  the exact `gh label create` command to run (step 2 lists the five required labels); for
   the `.gitignore` preflight, add the `.symphony/` line to the sandbox repo's `.gitignore`
-  and push it by hand (step 3, item 7). If the sandbox is broken beyond these targeted
+  and push it by hand (step 2, item 7). If the sandbox is broken beyond these targeted
   fixes, provision a fresh sandbox repo instead.
 - **A tick runs but the issue parks instead of merging.** This is almost always the
   CI-gate check-name requirement — see

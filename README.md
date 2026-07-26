@@ -456,10 +456,11 @@ wiring, CI-gate behaviour, and expected log output — see
 ### First run — quick start
 
 **Bringing up `bh-daemon` on a machine that has never run it before?** See
-[docs/new-machine-setup.md](docs/new-machine-setup.md) for the full start-to-finish
-walkthrough — prerequisites, each `bin/*.sh` step with its verification command, the
-`bh-daemon --doctor --strict` preflight, and troubleshooting. The summary below assumes
-the CLIs are already installed and is a quick reference, not a walkthrough.
+[docs/system-setup.md](docs/system-setup.md) for machine-level setup (CLIs, the Python
+venv), then [docs/repository-onboarding.md](docs/repository-onboarding.md) for the
+repo/sandbox-level walkthrough — prerequisites, each `bin/*.sh` step with its verification
+command, the `bh-daemon --doctor --strict` preflight, and troubleshooting. The summary
+below assumes the CLIs are already installed and is a quick reference, not a walkthrough.
 
 The four-step bringup sequence from [docs/smoke-test-daemon.md §"Fresh host bringup"](docs/smoke-test-daemon.md):
 
@@ -481,7 +482,7 @@ bin/init-sandbox.sh
 # Step 3 — provision branch-protection rulesets (required before first run).
 #   Reads App IDs from ${BH_PROJECT_ROOT}/.bh/config.env. Requires BWS_ACCESS_TOKEN
 #   already exported in this shell (it mints a GitHub App JWT via a vault fetch) —
-#   see docs/new-machine-setup.md §4 for the secure (silent-input) export pattern
+#   see docs/repository-onboarding.md §3 for the secure (silent-input) export pattern
 #   and for why this must come before step 4 below.
 read -r -s BWS_ACCESS_TOKEN
 export BWS_ACCESS_TOKEN
