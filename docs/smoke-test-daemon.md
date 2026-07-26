@@ -177,13 +177,22 @@ export BH_REPO_NAME=<repo>
 export BH_PROJECT_ROOT=<abs-path-to-local-sandbox-clone>
 bin/init-sandbox.sh
 
-# 3. Drop the single bootstrap secret in a root-readable-only file.
-echo "BWS_ACCESS_TOKEN=<token>" | sudo tee /etc/bh-daemon/secrets.env
-sudo chmod 600 /etc/bh-daemon/secrets.env
+# 3. Provision branch-protection rulesets (required before first run).
+#    bin/provision-ruleset.sh mints a GitHub App JWT via a vault fetch, which
+#    hard-requires BWS_ACCESS_TOKEN before any GitHub API call — export it now,
+#    using silent input so the token never lands in shell history, before
+#    running the script.
+read -r -s BWS_ACCESS_TOKEN
+export BWS_ACCESS_TOKEN
+bin/provision-ruleset.sh
 
-# 4. Run one poll tick to confirm everything starts cleanly.
-BWS_ACCESS_TOKEN="$(sudo cat /etc/bh-daemon/secrets.env | grep BWS_ACCESS_TOKEN | cut -d= -f2-)" \
-  bin/run-daemon.sh --once
+# 4. Drop the bootstrap secret in a root-readable-only file and run one
+#    poll tick to confirm everything starts cleanly. Reuses the
+#    $BWS_ACCESS_TOKEN already exported in step 3 — never re-typed or echoed.
+sudo install -m 600 /dev/null /etc/bh-daemon/secrets.env
+printf 'BWS_ACCESS_TOKEN=%s\n' "$BWS_ACCESS_TOKEN" |
+  sudo tee /etc/bh-daemon/secrets.env >/dev/null
+bin/run-daemon.sh --once
 ```
 
 ---
