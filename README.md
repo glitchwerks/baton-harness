@@ -488,10 +488,11 @@ export BWS_ACCESS_TOKEN
 bin/provision-ruleset.sh
 
 # Step 4 — drop the bootstrap secret and run one tick.
-echo "BWS_ACCESS_TOKEN=<token>" | sudo tee /etc/bh-daemon/secrets.env
-sudo chmod 600 /etc/bh-daemon/secrets.env
-BWS_ACCESS_TOKEN="$(sudo grep BWS_ACCESS_TOKEN /etc/bh-daemon/secrets.env | cut -d= -f2-)" \
-  bin/run-daemon.sh --once
+#   Uses the $BWS_ACCESS_TOKEN already exported in step 3 — never re-typed or echoed.
+sudo install -m 600 /dev/null /etc/bh-daemon/secrets.env
+printf 'BWS_ACCESS_TOKEN=%s\n' "$BWS_ACCESS_TOKEN" |
+  sudo tee /etc/bh-daemon/secrets.env >/dev/null
+bin/run-daemon.sh --once
 ```
 
 Step 4 above is the bounded, single-tick smoke test. For continuous operation, install the
