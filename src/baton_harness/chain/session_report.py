@@ -346,7 +346,12 @@ class SessionReport:
 
         Args:
             started_at: Caller-supplied tick start timestamp.
+
+        Raises:
+            RuntimeError: If a tick is already active.
         """
+        if self._active_tick_started_at is not None:
+            raise RuntimeError("cannot begin a tick while one is active")
         self._active_tick_started_at = started_at
 
     def end_tick(
@@ -455,6 +460,7 @@ class SessionReport:
         Args:
             path: Destination JSON path.
         """
+        temporary: Path | None = None
         try:
             destination = Path(path)
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -468,6 +474,8 @@ class SessionReport:
                 str(path),
                 exc,
             )
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
     def _get_issue(self, number: int) -> IssueRecord:
         """Return an issue record, creating it when necessary."""

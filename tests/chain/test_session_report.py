@@ -59,6 +59,8 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 import baton_harness.chain.session_report as session_report_mod
 from baton_harness.chain.session_report import SessionReport
 
@@ -455,6 +457,20 @@ def test_begin_tick_end_tick_appends_ordered_tick_records() -> None:
     ]
 
 
+def test_begin_tick_raises_when_a_tick_is_already_active() -> None:
+    """begin_tick rejects replacing an active tick's start timestamp."""
+    report = _new_report()
+    report.begin_tick(started_at="T1")
+
+    with pytest.raises(
+        RuntimeError, match="cannot begin a tick while one is active"
+    ):
+        report.begin_tick(started_at="T2")
+
+    report.end_tick(issues_processed=[], ended_at="T3")
+    assert report.to_dict()["ticks"][0]["started_at"] == "T1"
+
+
 # ---------------------------------------------------------------------------
 # set_exit_reason
 # ---------------------------------------------------------------------------
@@ -511,6 +527,25 @@ def test_write_to_missing_parent_directory_does_not_raise(
 
     # Must not raise — mirrors runlog.py:117-142's never-raise contract.
     report.write(nested_path)
+    assert nested_path.exists()
+
+
+def test_write_failed_replace_removes_temporary_file(
+    tmp_path: Path,
+) -> None:
+    """write() swallows replace failure and removes its temporary file."""
+    report = _new_report()
+    nested_path = tmp_path / "nested" / "deep" / "session-report.json"
+    temporary_path = Path(f"{nested_path}.tmp.{os.getpid()}")
+    assert not nested_path.parent.exists()
+
+    with patch.object(
+        session_report_mod.os, "replace", side_effect=OSError("boom")
+    ):
+        report.write(nested_path)
+
+    assert not temporary_path.exists()
+    assert not nested_path.exists()
 
 
 # ---------------------------------------------------------------------------
