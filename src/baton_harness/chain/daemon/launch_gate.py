@@ -43,6 +43,7 @@ import logging
 import os
 import subprocess
 from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
 
 import baton_harness.chain.daemon as _daemon_mod
@@ -55,6 +56,7 @@ from baton_harness.chain.ruleset_status import (
     RulesetCheckResult,
     RulesetStatus,
 )
+from baton_harness.chain.session_report import SessionReport
 from baton_harness.vendor.symphony.orchestrator import Orchestrator
 
 from .push_probe import ProbeDenialReason, ProbeResult
@@ -408,6 +410,7 @@ async def _launch_one_issue(
     obs: ObsConfig,
     *,
     repo_root: Path | None = None,
+    report: SessionReport | None = None,
 ) -> str | None:
     """Preflight + launch helper extracted from the daemon's launch loop.
 
@@ -440,6 +443,8 @@ async def _launch_one_issue(
             cannot run at all — launch is refused outright (fail
             closed) rather than falling back to the comparator-only
             gate (CodeRabbit PR #253 finding C10).
+        report: Optional session report receiving pickup and escalation
+            events.
 
     Returns:
         The worker result string on success, or ``None`` when preflight
@@ -476,6 +481,7 @@ async def _launch_one_issue(
             add=["agent-ready"],
             remove=["agent-in-progress"],
             installation_token=installation_token,
+            report=report,
         )
         # Post a blocking comment so operators know why the worker was
         # refused.
@@ -488,7 +494,25 @@ async def _launch_one_issue(
             severity="critical",
             installation_token=installation_token,
         )
+        if report is not None:
+            report.record_escalation(
+                issue_number,
+                kind="block",
+                severity="critical",
+                detail=(
+                    "preflight refused — branch protection missing or "
+                    "misconfigured; worker not launched"
+                ),
+                ts=datetime.now(timezone.utc).isoformat(),
+            )
         return None
+    if report is not None:
+        report.record_pickup(
+            issue_number,
+            repo=f"{owner}/{repo}",
+            title=issue_obj.title,  # type: ignore[attr-defined]
+            picked_up_at=datetime.now(timezone.utc).isoformat(),
+        )
     return await orch._run_worker(issue_obj)  # type: ignore[arg-type]
 
 

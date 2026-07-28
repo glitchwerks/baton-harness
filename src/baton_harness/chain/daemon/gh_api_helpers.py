@@ -310,7 +310,7 @@ def _run_ci_gate(
     ci_timeout: float,
     required_checks: list[str] | None = None,
     installation_token: InstallationTokenSource = "",
-) -> None:
+) -> MergeOutcome:
     """Run the CI gate and apply the merge/park terminal for one issue.
 
     Shared entry point for both the normal ``pr_created`` path and the
@@ -357,6 +357,9 @@ def _run_ci_gate(
             issue #225.
         installation_token: Optional GitHub App installation access token
             (``ghs_`` prefix).  Threaded to ``_label_edit`` calls.
+
+    Returns:
+        The merge outcome applied to the issue.
     """
     try:
         outcome = _daemon_mod.merge_issue_branch(
@@ -399,7 +402,8 @@ def _run_ci_gate(
             runlog=runlog,
             installation_token=installation_token,
         )
-        return
+        # No dedicated outcome represents an exception from the gate.
+        return MergeOutcome.CI_FAILED
 
     if outcome == MergeOutcome.MERGED:
         # merge_issue_branch already added agent-merged + marker.
@@ -444,6 +448,7 @@ def _run_ci_gate(
             runlog=runlog,
             installation_token=installation_token,
         )
+    return outcome
 
 
 def _open_pr(
@@ -454,7 +459,7 @@ def _open_pr(
     body: str,
     *,
     installation_token: InstallationTokenSource = "",
-) -> None:
+) -> str | None:
     """Open a ready-for-review PR from ``branch_name`` → main.
 
     The daemon NEVER merges to main — this function only creates a PR.
@@ -468,6 +473,9 @@ def _open_pr(
         installation_token: Optional GitHub App installation access token.
             When non-empty, overrides ``GH_TOKEN`` in the subprocess env
             via a per-call copy — ``os.environ`` is never mutated.
+
+    Returns:
+        The created pull request URL, or ``None`` when stdout is empty.
     """
     _gh_call_env = gh_env(installation_token) if installation_token else None
     proc = _daemon_mod._run_gh(
@@ -504,3 +512,4 @@ def _open_pr(
             )
     else:
         _log.info("daemon: PR opened for %r → main", branch_name)
+    return proc.stdout.strip() or None

@@ -69,6 +69,7 @@ from baton_harness.chain.redispatch import RedispatchTally
 from baton_harness.chain.registry import RepoConfig
 from baton_harness.chain.runlog import RunLog
 from baton_harness.chain.scheduler import IssueScheduler
+from baton_harness.chain.session_report import SessionReport
 from baton_harness.vendor.symphony.config import WorkflowConfig
 from baton_harness.vendor.symphony.orchestrator import Orchestrator
 
@@ -163,6 +164,7 @@ def _complete_work_unit(
     merged_issues: list[int],
     parked_reasons: dict[int, str],
     installation_token: InstallationTokenSource,
+    report: SessionReport | None = None,
 ) -> None:
     """Push the feature branch and open the work unit's ready-for-review PR.
 
@@ -185,6 +187,7 @@ def _complete_work_unit(
         installation_token: Optional GitHub App installation access token
             (``ghs_`` prefix). Forwarded to the completion push and PR
             creation for env-discipline gh calls.
+        report: Optional session report receiving pull request records.
     """
     # Push the feature branch.
     push_proc = _daemon_mod._authed_git_push(
@@ -243,7 +246,7 @@ def _complete_work_unit(
             len(parked_reasons),
         )
     else:
-        _daemon_mod._open_pr(
+        _pr_url = _daemon_mod._open_pr(
             owner,
             repo,
             branch_name,
@@ -251,6 +254,14 @@ def _complete_work_unit(
             pr_body,
             installation_token=installation_token,
         )
+        if report is not None and _pr_url is not None:
+            _opened_at = datetime.now(timezone.utc).isoformat()
+            for _merged_n in merged_issues:
+                report.record_pr(
+                    _merged_n,
+                    url=_pr_url,
+                    opened_at=_opened_at,
+                )
 
 
 async def _run_work_unit(  # noqa: C901 (acceptable complexity)
@@ -268,6 +279,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
     liveness_state: LivenessState | None = None,
     obs: ObsConfig | None = None,
     installation_token: InstallationTokenSource = "",
+    report: SessionReport | None = None,
 ) -> None:
     """Run one work unit (one DAG) to completion.
 
@@ -305,327 +317,722 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
             (``ghs_`` prefix).  When non-empty, all ``gh`` subprocess
             calls use a per-call env copy with ``GH_TOKEN`` overridden —
             ``os.environ`` is never mutated.
+        report: Optional session report receiving work-unit activity.
     """
     owner = repo_cfg.owner
     repo = repo_cfg.repo
     repo_root = repo_cfg.project_root
-
-    # (issue #225) Resolve the merge gate's required-check set once for
-    # this work unit -- config override, or the hardcoded default (with
-    # a one-time warning); see _effective_required_checks.
-    required_checks = _daemon_mod._effective_required_checks(config)
-
-    # FIX 1: default agent_ready_issues to membership when caller did not
-    # supply it (un-milestoned N=1 unit where membership IS the ready set).
-    if agent_ready_issues is None:
-        agent_ready_issues = membership
-
-    # --- Step 0: build the DAG and prepare the scheduler. ---
-    blocked_by: dict[int, list[int]] = {}
-    for m in membership:
-        blocked_by[m] = _daemon_mod.fetch_blocked_by(
-            owner, repo, m, installation_token=installation_token
-        )
-
-    dag = build_dag(membership, blocked_by)
-    sched = IssueScheduler(dag.graph)
-    try:
-        sched.prepare()
-    except Exception as exc:
-        # FIX 4: CycleError is a recoverable escalated condition — warning,
-        # not error.
-        _log.warning(
-            "daemon: CycleError in work unit %r: %s; skipping", slug, exc
-        )
-        _daemon_mod.alert(
-            owner,
-            repo,
-            next(iter(membership)),
-            f"Cyclic dependency detected in work unit '{slug}': {exc}",
-            severity="warn",
-            kind="block",
-            runlog=runlog,
-            installation_token=installation_token,
-        )
-        return
-
-    # --- Step 1: create or resume the feature branch. ---
-    recovery_result = _setup_feature_branch(
-        repo_root, owner, repo, branch_name, membership, installation_token
-    )
-
-    # --- Step 2: per-DAG serial loop. ---
     merged_issues: list[int] = []
     parked_reasons: dict[int, str] = {}
 
-    pending: list[int] = []
-    seen: set[int] = set()
+    try:
+        # (issue #225) Resolve the merge gate's required-check set once for
+        # this work unit -- config override, or the hardcoded default (with
+        # a one-time warning); see _effective_required_checks.
+        required_checks = _daemon_mod._effective_required_checks(config)
 
-    # Orchestrator instance (one per work unit).
-    state_path = str(repo_root / ".symphony" / "state.json")
-    orch = Orchestrator(
-        config=config,
-        project_root=str(repo_root),
-        state_path=state_path,
-    )
+        # FIX 1: default agent_ready_issues to membership when caller did not
+        # supply it (un-milestoned N=1 unit where membership IS the ready set).
+        if agent_ready_issues is None:
+            agent_ready_issues = membership
 
-    # P2 (#33): inject progress callback so per-turn liveness can detect a
-    # hung worker.  The callback is best-effort: a callback exception is
-    # logged and swallowed inside the vendored VP-3 guard and never crashes
-    # the worker run.  last_progress_at is initialised by the FIRST call
-    # at turn-loop entry — NOT before await orch._run_worker (IS-1).
-    if liveness_state is not None:
-        _ls_ref = liveness_state  # capture for closure
-
-        def _progress_cb(
-            issue_number: int,  # noqa: ARG001
-            turn: int,  # noqa: ARG001
-        ) -> None:
-            """Update last_progress_at on each turn-loop entry."""
-            _ls_ref.note_progress(datetime.now(timezone.utc))
-
-        orch.progress_cb = _progress_cb  # type: ignore[assignment]
-
-    # FIX 4: set BH_VENV once before the loop.  If it is already set by
-    # the launcher, leave it; if unset, derive from the running interpreter
-    # so hooks can self-activate the venv.
-    if not os.environ.get("BH_VENV"):
-        # sys.executable is e.g. /path/to/.venv/Scripts/python.exe;
-        # the venv root is one level above the bin/Scripts dir.
-        venv_root = str(
-            __import__("pathlib").Path(sys.executable).parent.parent
-        )
-        os.environ["BH_VENV"] = venv_root
-
-    while sched.is_active():
-        for n in sched.get_ready():
-            if n not in seen:
-                seen.add(n)
-                pending.append(n)
-
-        # Remove parked from pending.
-        pending = [n for n in pending if n not in sched.parked]
-
-        if not pending:
-            break  # Fully parked or nothing ready.
-
-        # FIX 1: partition pending into actionable and non-actionable.
-        # "Actionable" = recovery-case OR currently carries agent-ready.
-        # "Non-actionable" = full milestone member that has NOT been
-        # greenlit yet (agent-ready not set by human).  Non-actionable
-        # issues are skipped silently — they will be picked up in a
-        # future poll tick once the human adds agent-ready.
-        recovery_actionable = {
-            m
-            for m in pending
-            if m in recovery_result.done
-            or m in recovery_result.parked_seed
-            or m in recovery_result.ci_gate_reentry
-            or m in recovery_result.redispatch
-        }
-        dispatch_actionable = {m for m in pending if m in agent_ready_issues}
-        actionable = recovery_actionable | dispatch_actionable
-
-        if not actionable:
-            # Only un-greenlit milestone members remain in the frontier.
-            # Exit the work unit cleanly (open the PR below) without
-            # escalating.  The outer poll loop will re-trigger this milestone
-            # on the next tick once the human labels more issues agent-ready.
-            _log.info(
-                "daemon: work unit %r: frontier has only un-greenlit members"
-                " %s; exiting cleanly to wait for human greenlight",
-                slug,
-                sorted(pending),
+        # --- Step 0: build the DAG and prepare the scheduler. ---
+        blocked_by: dict[int, list[int]] = {}
+        for m in membership:
+            blocked_by[m] = _daemon_mod.fetch_blocked_by(
+                owner, repo, m, installation_token=installation_token
             )
-            break
 
-        n = pending.pop(0)  # Serial: exactly one issue at a time.
-
-        # FIX 1: if this issue is non-actionable, skip it (leave it
-        # undispatched so the loop can continue processing actionable siblings
-        # that were also in the pending list).
-        if n not in actionable:
-            _log.debug(
-                "daemon: #%d not yet agent-ready; skipping this pass", n
+        dag = build_dag(membership, blocked_by)
+        sched = IssueScheduler(dag.graph)
+        try:
+            sched.prepare()
+        except Exception as exc:
+            # FIX 4: CycleError is a recoverable escalated condition — warning,
+            # not error.
+            _log.warning(
+                "daemon: CycleError in work unit %r: %s; skipping", slug, exc
             )
-            continue
-
-        # --- Recovery seeding. ---
-        if n in recovery_result.done:
-            sched.mark_done(n)
-            merged_issues.append(n)
-            continue
-
-        if n in recovery_result.parked_seed:
-            _daemon_mod._label_edit(
+            _daemon_mod.alert(
                 owner,
                 repo,
-                n,
-                remove=["agent-in-progress"],
+                next(iter(membership)),
+                f"Cyclic dependency detected in work unit '{slug}': {exc}",
+                severity="warn",
+                kind="block",
+                runlog=runlog,
                 installation_token=installation_token,
             )
-            sched.mark_parked(n)
-            parked_reasons[n] = "blocked (recovery)"
-            continue
-
-        if n in recovery_result.ci_gate_reentry:
-            # Rule 3a: re-enter CI gate without _run_worker.
-            issue_branch, pr_head_sha = _daemon_mod._find_issue_pr(
-                owner,
-                repo,
-                n,
-                installation_token=installation_token,
-            )
-            if issue_branch is None or pr_head_sha is None:
-                _log.warning(
-                    "daemon: ci_gate_reentry for #%d but no open PR found;"
-                    " parking",
-                    n,
+            if report is not None:
+                report.record_escalation(
+                    next(iter(membership)),
+                    kind="block",
+                    severity="warn",
+                    detail=(
+                        f"Cyclic dependency detected in work unit "
+                        f"'{slug}': {exc}"
+                    ),
+                    ts=datetime.now(timezone.utc).isoformat(),
                 )
+            return
+
+        # --- Step 1: create or resume the feature branch. ---
+        recovery_result = _setup_feature_branch(
+            repo_root, owner, repo, branch_name, membership, installation_token
+        )
+
+        # --- Step 2: per-DAG serial loop. ---
+        pending: list[int] = []
+        seen: set[int] = set()
+
+        # Orchestrator instance (one per work unit).
+        state_path = str(repo_root / ".symphony" / "state.json")
+        orch = Orchestrator(
+            config=config,
+            project_root=str(repo_root),
+            state_path=state_path,
+        )
+
+        # P2 (#33): inject progress callback so per-turn liveness can detect a
+        # hung worker.  The callback is best-effort: a callback exception is
+        # logged and swallowed inside the vendored VP-3 guard and never crashes
+        # the worker run.  last_progress_at is initialised by the FIRST call
+        # at turn-loop entry — NOT before await orch._run_worker (IS-1).
+        if liveness_state is not None:
+            _ls_ref = liveness_state  # capture for closure
+
+            def _progress_cb(
+                issue_number: int,  # noqa: ARG001
+                turn: int,  # noqa: ARG001
+            ) -> None:
+                """Update last_progress_at on each turn-loop entry."""
+                _ls_ref.note_progress(datetime.now(timezone.utc))
+
+            orch.progress_cb = _progress_cb  # type: ignore[assignment]
+
+        # FIX 4: set BH_VENV once before the loop.  If it is already set by
+        # the launcher, leave it; if unset, derive from the running interpreter
+        # so hooks can self-activate the venv.
+        if not os.environ.get("BH_VENV"):
+            # sys.executable is e.g. /path/to/.venv/Scripts/python.exe;
+            # the venv root is one level above the bin/Scripts dir.
+            venv_root = str(
+                __import__("pathlib").Path(sys.executable).parent.parent
+            )
+            os.environ["BH_VENV"] = venv_root
+
+        while sched.is_active():
+            for n in sched.get_ready():
+                if n not in seen:
+                    seen.add(n)
+                    pending.append(n)
+
+            # Remove parked from pending.
+            pending = [n for n in pending if n not in sched.parked]
+
+            if not pending:
+                break  # Fully parked or nothing ready.
+
+            # FIX 1: partition pending into actionable and non-actionable.
+            # "Actionable" = recovery-case OR currently carries agent-ready.
+            # "Non-actionable" = full milestone member that has NOT been
+            # greenlit yet (agent-ready not set by human).  Non-actionable
+            # issues are skipped silently — they will be picked up in a
+            # future poll tick once the human adds agent-ready.
+            recovery_actionable = {
+                m
+                for m in pending
+                if m in recovery_result.done
+                or m in recovery_result.parked_seed
+                or m in recovery_result.ci_gate_reentry
+                or m in recovery_result.redispatch
+            }
+            dispatch_actionable = {
+                m for m in pending if m in agent_ready_issues
+            }
+            actionable = recovery_actionable | dispatch_actionable
+
+            if not actionable:
+                # Only un-greenlit milestone members remain in the frontier.
+                # Exit the work unit cleanly (open the PR below) without
+                # escalating.  The outer poll loop will re-trigger this
+                # milestone on the next tick once the human labels more
+                # issues agent-ready.
+                _log.info(
+                    "daemon: work unit %r: frontier has only "
+                    "un-greenlit members"
+                    " %s; exiting cleanly to wait for human greenlight",
+                    slug,
+                    sorted(pending),
+                )
+                break
+
+            n = pending.pop(0)  # Serial: exactly one issue at a time.
+
+            # FIX 1: if this issue is non-actionable, skip it (leave it
+            # undispatched so the loop can continue processing actionable
+            # siblings that were also in the pending list).
+            if n not in actionable:
+                _log.debug(
+                    "daemon: #%d not yet agent-ready; skipping this pass", n
+                )
+                continue
+
+            # --- Recovery seeding. ---
+            if n in recovery_result.done:
+                sched.mark_done(n)
+                merged_issues.append(n)
+                continue
+
+            if n in recovery_result.parked_seed:
                 _daemon_mod._label_edit(
                     owner,
                     repo,
                     n,
                     remove=["agent-in-progress"],
                     installation_token=installation_token,
+                    report=report,
                 )
                 sched.mark_parked(n)
-                parked_reasons[n] = "ci_gate_reentry: no open PR"
+                parked_reasons[n] = "blocked (recovery)"
+                continue
+
+            if n in recovery_result.ci_gate_reentry:
+                # Rule 3a: re-enter CI gate without _run_worker.
+                issue_branch, pr_head_sha = _daemon_mod._find_issue_pr(
+                    owner,
+                    repo,
+                    n,
+                    installation_token=installation_token,
+                )
+                if issue_branch is None or pr_head_sha is None:
+                    _log.warning(
+                        "daemon: ci_gate_reentry for #%d but no open PR found;"
+                        " parking",
+                        n,
+                    )
+                    _daemon_mod._label_edit(
+                        owner,
+                        repo,
+                        n,
+                        remove=["agent-in-progress"],
+                        installation_token=installation_token,
+                        report=report,
+                    )
+                    sched.mark_parked(n)
+                    parked_reasons[n] = "ci_gate_reentry: no open PR"
+                    _daemon_mod.alert(
+                        owner,
+                        repo,
+                        n,
+                        f"Issue #{n} needs CI-gate re-entry but has no "
+                        "open PR.",
+                        severity="critical",
+                        kind="debug",
+                        runlog=runlog,
+                        installation_token=installation_token,
+                    )
+                    if report is not None:
+                        report.record_escalation(
+                            n,
+                            kind="debug",
+                            severity="critical",
+                            detail=(
+                                f"Issue #{n} needs CI-gate re-entry but has "
+                                "no "
+                                "open PR."
+                            ),
+                            ts=datetime.now(timezone.utc).isoformat(),
+                        )
+                    continue
+
+                # Liveness tracking: mark in-progress so heartbeat_monitor
+                # can detect a stall during the CI poll (which may block up
+                # to ci_timeout=1800s).  worker_active=False: no worker turns
+                # occur during a CI gate wait, so the progress predicate must
+                # NOT fire here (IS-1).
+                if liveness_state is not None:
+                    liveness_state.mark_in_progress(
+                        owner,
+                        repo,
+                        n,
+                        datetime.now(timezone.utc),
+                        worker_active=False,
+                    )
+
+                # FIX 2: wrap merge_issue_branch in a per-issue try/except so a
+                # transient git/gh error parks this issue but does not kill the
+                # daemon.
+                try:
+                    outcome = _daemon_mod.merge_issue_branch(
+                        repo_root=repo_root,
+                        owner=owner,
+                        repo=repo,
+                        issue=n,
+                        pr_head_sha=pr_head_sha,
+                        issue_branch=issue_branch,
+                        feature_branch=branch_name,
+                        poll_interval=ci_poll_interval,
+                        timeout=ci_timeout,
+                        required=required_checks,
+                        installation_token=installation_token,
+                    )
+                except Exception as exc:
+                    _log.error(
+                        "daemon: merge_issue_branch raised for #%d (ci_gate"
+                        "_reentry): %s; parking",
+                        n,
+                        exc,
+                    )
+                    _daemon_mod._label_edit(
+                        owner,
+                        repo,
+                        n,
+                        remove=["agent-in-progress"],
+                        installation_token=installation_token,
+                        report=report,
+                    )
+                    if liveness_state is not None:
+                        liveness_state.clear()
+                    sched.mark_parked(n)
+                    parked_reasons[n] = f"merge exception (ci_gate): {exc}"
+                    _daemon_mod.alert(
+                        owner,
+                        repo,
+                        n,
+                        f"Issue #{n} merge failed (ci_gate_reentry): {exc}",
+                        severity="warn",
+                        kind="debug",
+                        runlog=runlog,
+                        installation_token=installation_token,
+                    )
+                    if report is not None:
+                        report.record_escalation(
+                            n,
+                            kind="debug",
+                            severity="warn",
+                            detail=(
+                                f"Issue #{n} merge failed "
+                                f"(ci_gate_reentry): {exc}"
+                            ),
+                            ts=datetime.now(timezone.utc).isoformat(),
+                        )
+                    continue
+
+                if outcome == MergeOutcome.MERGED:
+                    _daemon_mod._label_edit(
+                        owner,
+                        repo,
+                        n,
+                        remove=["agent-in-progress", "agent-done"],
+                        installation_token=installation_token,
+                        report=report,
+                    )
+                    if liveness_state is not None:
+                        liveness_state.clear()
+                    sched.mark_done(n)
+                    merged_issues.append(n)
+                else:
+                    _daemon_mod._label_edit(
+                        owner,
+                        repo,
+                        n,
+                        remove=["agent-in-progress"],
+                        installation_token=installation_token,
+                        report=report,
+                    )
+                    if liveness_state is not None:
+                        liveness_state.clear()
+                    sched.mark_parked(n)
+                    parked_reasons[n] = f"ci_gate_reentry: {outcome.name}"
+                    _daemon_mod.alert(
+                        owner,
+                        repo,
+                        n,
+                        f"Issue #{n} CI-gate re-entry failed: {outcome.name}",
+                        severity="critical",
+                        kind="debug",
+                        runlog=runlog,
+                        installation_token=installation_token,
+                    )
+                    if report is not None:
+                        report.record_escalation(
+                            n,
+                            kind="debug",
+                            severity="critical",
+                            detail=(
+                                f"Issue #{n} CI-gate re-entry failed: "
+                                f"{outcome.name}"
+                            ),
+                            ts=datetime.now(timezone.utc).isoformat(),
+                        )
+                continue
+
+            # --- Fresh dispatch (or 3b redispatch). ---
+            if n in recovery_result.redispatch:
+                # Re-dispatch loop detection (#77): record this attempt and
+                # check whether it breaches the configured threshold.
+                if tally is not None and tally.record_and_check(n):
+                    # Threshold breached — park the issue without dispatching.
+                    _log.warning(
+                        "daemon: redispatch loop detected for #%d; parking",
+                        n,
+                    )
+                    detail = (
+                        f"Issue #{n} hit the re-dispatch loop threshold "
+                        f"(window={tally.window_ticks} ticks, "
+                        f"max={tally.max_count}). "
+                        "Parking to prevent infinite crash-restart cycle."
+                    )
+                    if runlog is not None:
+                        try:
+                            runlog.emit(
+                                {
+                                    "ts": datetime.now(
+                                        timezone.utc
+                                    ).isoformat(),
+                                    "event": "redispatch_loop",
+                                    "issue": n,
+                                    "outcome": None,
+                                    "severity": "critical",
+                                    "detail": detail,
+                                    "tick_id": None,
+                                }
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
+                    _daemon_mod.alert(
+                        owner,
+                        repo,
+                        n,
+                        f"Issue #{n} hit the re-dispatch loop threshold"
+                        " — parked to prevent infinite crash-restart cycle.",
+                        severity="critical",
+                        kind="block",
+                        runlog=runlog,
+                        installation_token=installation_token,
+                    )
+                    if report is not None:
+                        report.record_escalation(
+                            n,
+                            kind="block",
+                            severity="critical",
+                            detail=(
+                                f"Issue #{n} hit the re-dispatch loop "
+                                "threshold — parked to prevent infinite "
+                                "crash-restart cycle."
+                            ),
+                            ts=datetime.now(timezone.utc).isoformat(),
+                        )
+                    _daemon_mod._label_edit(
+                        owner,
+                        repo,
+                        n,
+                        remove=["agent-in-progress"],
+                        installation_token=installation_token,
+                        report=report,
+                    )
+                    sched.mark_parked(n)
+                    parked_reasons[n] = "redispatch loop"
+                    continue
+
+                # Clear orphan agent-in-progress before re-dispatch (C1).
+                _daemon_mod._label_edit(
+                    owner,
+                    repo,
+                    n,
+                    remove=["agent-in-progress"],
+                    installation_token=installation_token,
+                    report=report,
+                )
+                _log.info(
+                    "daemon: cleared orphan agent-in-progress for #%d", n
+                )
+
+            # Fail-closed blocked-gate (#128 P2a): re-read live labels
+            # immediately before dispatch.  If the fetch fails (None), we
+            # cannot confirm the issue is unblocked — skip it this cycle
+            # conservatively rather than risk dispatching a blocked issue.
+            # Distinct from the post-run None guard (L~1087): that guard
+            # fires *after* the worker; this one fires *before*, so the
+            # worker is never called.  Self-heals on the next poll tick.
+            _pre_dispatch_labels = _daemon_mod._fetch_issue_labels(
+                owner,
+                repo,
+                n,
+                installation_token=installation_token,
+            )
+            if _pre_dispatch_labels is None:
+                _log.info(
+                    "daemon: #%d label fetch failed before dispatch;"
+                    " skipping this poll cycle (fail-closed, #128 P2a)",
+                    n,
+                )
                 _daemon_mod.alert(
                     owner,
                     repo,
                     n,
-                    f"Issue #{n} needs CI-gate re-entry but has no open PR.",
+                    (
+                        f"Issue #{n} labels unreadable before dispatch;"
+                        " skipping this poll cycle."
+                    ),
                     severity="critical",
-                    kind="debug",
+                    kind="block",
                     runlog=runlog,
                     installation_token=installation_token,
                 )
+                if report is not None:
+                    report.record_escalation(
+                        n,
+                        kind="block",
+                        severity="critical",
+                        detail=(
+                            f"Issue #{n} labels unreadable before dispatch;"
+                            " skipping this poll cycle."
+                        ),
+                        ts=datetime.now(timezone.utc).isoformat(),
+                    )
+                _daemon_mod._label_edit(
+                    owner,
+                    repo,
+                    n,
+                    remove=["agent-in-progress"],
+                    installation_token=installation_token,
+                    report=report,
+                )
+                if liveness_state is not None:
+                    liveness_state.clear()
+                sched.mark_parked(n)
+                parked_reasons[n] = "label fetch failed pre-dispatch"
                 continue
 
-            # Liveness tracking: mark in-progress so heartbeat_monitor
-            # can detect a stall during the CI poll (which may block up
-            # to ci_timeout=1800s).  worker_active=False: no worker turns
-            # occur during a CI gate wait, so the progress predicate must
-            # NOT fire here (IS-1).
+            # Checkout feature branch (HEAD = feature branch, §3.4).
+            branches.checkout_feature_branch(repo_root, slug)
+            # Record cut-point (§3.7).
+            cut_point = branches.record_cut_point(repo_root, slug)
+
+            # Label transition: remove agent-ready, add agent-in-progress (C1).
+            _daemon_mod._label_edit(
+                owner,
+                repo,
+                n,
+                add=["agent-in-progress"],
+                remove=["agent-ready"],
+                installation_token=installation_token,
+                report=report,
+            )
+            # Liveness tracking: record that this issue is now in-progress so
+            # heartbeat_monitor can detect a stall.  worker_active=True enables
+            # the per-turn progress-stall predicate (P2 / IS-1).
             if liveness_state is not None:
                 liveness_state.mark_in_progress(
                     owner,
                     repo,
                     n,
                     datetime.now(timezone.utc),
-                    worker_active=False,
+                    worker_active=True,
                 )
 
-            # FIX 2: wrap merge_issue_branch in a per-issue try/except so a
-            # transient git/gh error parks this issue but does not kill the
-            # daemon.
-            try:
-                outcome = _daemon_mod.merge_issue_branch(
-                    repo_root=repo_root,
-                    owner=owner,
-                    repo=repo,
-                    issue=n,
-                    pr_head_sha=pr_head_sha,
-                    issue_branch=issue_branch,
-                    feature_branch=branch_name,
-                    poll_interval=ci_poll_interval,
-                    timeout=ci_timeout,
-                    required=required_checks,
-                    installation_token=installation_token,
-                )
-            except Exception as exc:
-                _log.error(
-                    "daemon: merge_issue_branch raised for #%d (ci_gate"
-                    "_reentry): %s; parking",
-                    n,
-                    exc,
-                )
+            # Thread cut-point base to hooks via env (VP-1 wiring).
+            os.environ["CHAIN_BASE_BRANCH"] = cut_point
+            # Thread feature branch name to agent env so WORKFLOW.md step 4 can
+            # use --base "$BH_FEATURE_BRANCH" in gh pr create (issue #67).
+            os.environ["BH_FEATURE_BRANCH"] = branch_name
+
+            # Fetch the Issue object.
+            issue_obj = _daemon_mod._fetch_issue_obj(
+                owner, repo, n, installation_token=installation_token
+            )
+            if issue_obj is None:
+                _log.error("daemon: could not fetch issue #%d; parking", n)
                 _daemon_mod._label_edit(
                     owner,
                     repo,
                     n,
                     remove=["agent-in-progress"],
                     installation_token=installation_token,
+                    report=report,
                 )
                 if liveness_state is not None:
                     liveness_state.clear()
                 sched.mark_parked(n)
-                parked_reasons[n] = f"merge exception (ci_gate): {exc}"
+                parked_reasons[n] = "issue fetch failed"
                 _daemon_mod.alert(
                     owner,
                     repo,
                     n,
-                    f"Issue #{n} merge failed (ci_gate_reentry): {exc}",
+                    f"Issue #{n} could not be fetched; worker not dispatched.",
                     severity="warn",
                     kind="debug",
                     runlog=runlog,
                     installation_token=installation_token,
                 )
+                if report is not None:
+                    report.record_escalation(
+                        n,
+                        kind="debug",
+                        severity="warn",
+                        detail=(
+                            f"Issue #{n} could not be fetched; "
+                            "worker not dispatched."
+                        ),
+                        ts=datetime.now(timezone.utc).isoformat(),
+                    )
                 continue
 
-            if outcome == MergeOutcome.MERGED:
-                _daemon_mod._label_edit(
-                    owner,
-                    repo,
+            # Dispatch the worker.
+            # Emit dispatch event (best-effort; never raises into the loop).
+            if runlog is not None:
+                try:
+                    runlog.emit(
+                        {
+                            "ts": datetime.now(timezone.utc).isoformat(),
+                            "event": "dispatch",
+                            "issue": n,
+                            "outcome": None,
+                            "severity": "info",
+                            "detail": f"dispatching worker for issue #{n}",
+                            "tick_id": None,
+                        }
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+            # Branch-protection preflight: resolve app_id and obs before
+            # launch. Both are required; either missing → fail-closed
+            # (park + continue).
+            _app_id = _daemon_mod._resolve_app_id()
+            if _app_id is None or obs is None:
+                _log.critical(
+                    "daemon: preflight cannot run for #%d — "
+                    "app_id=%r, obs=%s; refusing to launch (fail-closed)",
                     n,
-                    remove=["agent-in-progress", "agent-done"],
-                    installation_token=installation_token,
+                    _app_id,
+                    "set" if obs is not None else "None",
                 )
-                if liveness_state is not None:
-                    liveness_state.clear()
-                sched.mark_done(n)
-                merged_issues.append(n)
-            else:
                 _daemon_mod._label_edit(
                     owner,
                     repo,
                     n,
                     remove=["agent-in-progress"],
                     installation_token=installation_token,
+                    report=report,
                 )
                 if liveness_state is not None:
                     liveness_state.clear()
                 sched.mark_parked(n)
-                parked_reasons[n] = f"ci_gate_reentry: {outcome.name}"
+                parked_reasons[n] = "preflight refused"
+                continue
+            try:
+                worker_result = await _daemon_mod._launch_one_issue(
+                    orch,
+                    issue_obj,
+                    owner,
+                    repo,
+                    _app_id,
+                    installation_token,
+                    obs,
+                    repo_root=repo_root,
+                    report=report,
+                )
+            except Exception as exc:
+                _log.error("daemon: _run_worker raised for #%d: %s", n, exc)
+                _daemon_mod._label_edit(
+                    owner,
+                    repo,
+                    n,
+                    remove=["agent-in-progress"],
+                    installation_token=installation_token,
+                    report=report,
+                )
+                if liveness_state is not None:
+                    liveness_state.clear()
+                sched.mark_parked(n)
+                parked_reasons[n] = f"worker exception: {exc}"
                 _daemon_mod.alert(
                     owner,
                     repo,
                     n,
-                    f"Issue #{n} CI-gate re-entry failed: {outcome.name}",
-                    severity="critical",
+                    f"Issue #{n} worker raised an exception: {exc}",
+                    severity="warn",
                     kind="debug",
                     runlog=runlog,
                     installation_token=installation_token,
                 )
-            continue
+                if report is not None:
+                    report.record_escalation(
+                        n,
+                        kind="debug",
+                        severity="warn",
+                        detail=f"Issue #{n} worker raised an exception: {exc}",
+                        ts=datetime.now(timezone.utc).isoformat(),
+                    )
+                continue
 
-        # --- Fresh dispatch (or 3b redispatch). ---
-        if n in recovery_result.redispatch:
-            # Re-dispatch loop detection (#77): record this attempt and
-            # check whether it breaches the configured threshold.
-            if tally is not None and tally.record_and_check(n):
-                # Threshold breached — park the issue without dispatching.
-                _log.warning(
-                    "daemon: redispatch loop detected for #%d; parking",
+            # Preflight refused: _launch_one_issue returns None when
+            # _should_launch_worker denies launch.  Park + continue.
+            if worker_result is None:
+                _log.warning("daemon: preflight refused issue #%d; parking", n)
+                # Labels (restore agent-ready, remove agent-in-progress) are
+                # handled inside _launch_one_issue's refusal branch — outer
+                # loop only needs to park the scheduler state.
+                if liveness_state is not None:
+                    liveness_state.clear()
+                sched.mark_parked(n)
+                parked_reasons[n] = "preflight refused"
+                continue
+
+            # Emit outcome event (best-effort; never raises into the loop).
+            if runlog is not None:
+                try:
+                    runlog.emit(
+                        {
+                            "ts": datetime.now(timezone.utc).isoformat(),
+                            "event": "outcome",
+                            "issue": n,
+                            "outcome": str(worker_result),
+                            "severity": "info",
+                            "detail": (
+                                f"worker for issue #{n} returned "
+                                f"{worker_result!r}"
+                            ),
+                            "tick_id": None,
+                        }
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+
+            # Re-read labels after _run_worker (after_run may have set
+            # blocked).
+            post_labels = _daemon_mod._fetch_issue_labels(
+                owner,
+                repo,
+                n,
+                installation_token=installation_token,
+            )
+
+            # Guard: None sentinel means the gh call failed or stdout was
+            # unparsable.  The single-state invariant CANNOT be verified and
+            # convergence MUST NOT fire on an unknown state (Codex P1 #3,
+            # PR #95).  Take the conservative path: park + alert.
+            if post_labels is None:
+                _log.error(
+                    "daemon: label fetch failed for #%d"
+                    " (gh error / unparsable); parking conservatively",
                     n,
-                )
-                detail = (
-                    f"Issue #{n} hit the re-dispatch loop threshold "
-                    f"(window={tally.window_ticks} ticks, "
-                    f"max={tally.max_count}). "
-                    "Parking to prevent infinite crash-restart cycle."
                 )
                 if runlog is not None:
                     try:
                         runlog.emit(
                             {
                                 "ts": datetime.now(timezone.utc).isoformat(),
-                                "event": "redispatch_loop",
+                                "event": "label_fetch_failed",
                                 "issue": n,
                                 "outcome": None,
                                 "severity": "critical",
-                                "detail": detail,
+                                "detail": (
+                                    f"Issue #{n} labels unreadable;"
+                                    " cannot verify single-state invariant"
+                                ),
                                 "tick_id": None,
                             }
                         )
@@ -635,552 +1042,374 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                     owner,
                     repo,
                     n,
-                    f"Issue #{n} hit the re-dispatch loop threshold"
-                    " — parked to prevent infinite crash-restart cycle.",
+                    (
+                        f"Issue #{n} labels unreadable; cannot verify"
+                        " single-state invariant — parking."
+                    ),
                     severity="critical",
                     kind="block",
                     runlog=runlog,
                     installation_token=installation_token,
                 )
-                _daemon_mod._label_edit(
-                    owner,
-                    repo,
-                    n,
-                    remove=["agent-in-progress"],
-                    installation_token=installation_token,
-                )
-                sched.mark_parked(n)
-                parked_reasons[n] = "redispatch loop"
-                continue
-
-            # Clear orphan agent-in-progress before re-dispatch (C1).
-            _daemon_mod._label_edit(
-                owner,
-                repo,
-                n,
-                remove=["agent-in-progress"],
-                installation_token=installation_token,
-            )
-            _log.info("daemon: cleared orphan agent-in-progress for #%d", n)
-
-        # Fail-closed blocked-gate (#128 P2a): re-read live labels
-        # immediately before dispatch.  If the fetch fails (None), we
-        # cannot confirm the issue is unblocked — skip it this cycle
-        # conservatively rather than risk dispatching a blocked issue.
-        # Distinct from the post-run None guard (L~1087): that guard
-        # fires *after* the worker; this one fires *before*, so the
-        # worker is never called.  Self-heals on the next poll tick.
-        _pre_dispatch_labels = _daemon_mod._fetch_issue_labels(
-            owner,
-            repo,
-            n,
-            installation_token=installation_token,
-        )
-        if _pre_dispatch_labels is None:
-            _log.info(
-                "daemon: #%d label fetch failed before dispatch;"
-                " skipping this poll cycle (fail-closed, #128 P2a)",
-                n,
-            )
-            _daemon_mod.alert(
-                owner,
-                repo,
-                n,
-                (
-                    f"Issue #{n} labels unreadable before dispatch;"
-                    " skipping this poll cycle."
-                ),
-                severity="critical",
-                kind="block",
-                runlog=runlog,
-                installation_token=installation_token,
-            )
-            _daemon_mod._label_edit(
-                owner,
-                repo,
-                n,
-                remove=["agent-in-progress"],
-                installation_token=installation_token,
-            )
-            if liveness_state is not None:
-                liveness_state.clear()
-            sched.mark_parked(n)
-            parked_reasons[n] = "label fetch failed pre-dispatch"
-            continue
-
-        # Checkout feature branch (HEAD = feature branch, §3.4).
-        branches.checkout_feature_branch(repo_root, slug)
-        # Record cut-point (§3.7).
-        cut_point = branches.record_cut_point(repo_root, slug)
-
-        # Label transition: remove agent-ready, add agent-in-progress (C1).
-        _daemon_mod._label_edit(
-            owner,
-            repo,
-            n,
-            add=["agent-in-progress"],
-            remove=["agent-ready"],
-            installation_token=installation_token,
-        )
-        # Liveness tracking: record that this issue is now in-progress so
-        # heartbeat_monitor can detect a stall.  worker_active=True enables
-        # the per-turn progress-stall predicate (P2 / IS-1).
-        if liveness_state is not None:
-            liveness_state.mark_in_progress(
-                owner,
-                repo,
-                n,
-                datetime.now(timezone.utc),
-                worker_active=True,
-            )
-
-        # Thread cut-point base to hooks via env (VP-1 wiring).
-        os.environ["CHAIN_BASE_BRANCH"] = cut_point
-        # Thread feature branch name to agent env so WORKFLOW.md step 4 can
-        # use --base "$BH_FEATURE_BRANCH" in gh pr create (issue #67).
-        os.environ["BH_FEATURE_BRANCH"] = branch_name
-
-        # Fetch the Issue object.
-        issue_obj = _daemon_mod._fetch_issue_obj(
-            owner, repo, n, installation_token=installation_token
-        )
-        if issue_obj is None:
-            _log.error("daemon: could not fetch issue #%d; parking", n)
-            _daemon_mod._label_edit(
-                owner,
-                repo,
-                n,
-                remove=["agent-in-progress"],
-                installation_token=installation_token,
-            )
-            if liveness_state is not None:
-                liveness_state.clear()
-            sched.mark_parked(n)
-            parked_reasons[n] = "issue fetch failed"
-            _daemon_mod.alert(
-                owner,
-                repo,
-                n,
-                f"Issue #{n} could not be fetched; worker not dispatched.",
-                severity="warn",
-                kind="debug",
-                runlog=runlog,
-                installation_token=installation_token,
-            )
-            continue
-
-        # Dispatch the worker.
-        # Emit dispatch event (best-effort; never raises into the loop).
-        if runlog is not None:
-            try:
-                runlog.emit(
-                    {
-                        "ts": datetime.now(timezone.utc).isoformat(),
-                        "event": "dispatch",
-                        "issue": n,
-                        "outcome": None,
-                        "severity": "info",
-                        "detail": f"dispatching worker for issue #{n}",
-                        "tick_id": None,
-                    }
-                )
-            except Exception:  # noqa: BLE001
-                pass
-        # Branch-protection preflight: resolve app_id and obs before launch.
-        # Both are required; either missing → fail-closed (park + continue).
-        _app_id = _daemon_mod._resolve_app_id()
-        if _app_id is None or obs is None:
-            _log.critical(
-                "daemon: preflight cannot run for #%d — "
-                "app_id=%r, obs=%s; refusing to launch (fail-closed)",
-                n,
-                _app_id,
-                "set" if obs is not None else "None",
-            )
-            _daemon_mod._label_edit(
-                owner,
-                repo,
-                n,
-                remove=["agent-in-progress"],
-                installation_token=installation_token,
-            )
-            if liveness_state is not None:
-                liveness_state.clear()
-            sched.mark_parked(n)
-            parked_reasons[n] = "preflight refused"
-            continue
-        try:
-            worker_result = await _daemon_mod._launch_one_issue(
-                orch,
-                issue_obj,
-                owner,
-                repo,
-                _app_id,
-                installation_token,
-                obs,
-                repo_root=repo_root,
-            )
-        except Exception as exc:
-            _log.error("daemon: _run_worker raised for #%d: %s", n, exc)
-            _daemon_mod._label_edit(
-                owner,
-                repo,
-                n,
-                remove=["agent-in-progress"],
-                installation_token=installation_token,
-            )
-            if liveness_state is not None:
-                liveness_state.clear()
-            sched.mark_parked(n)
-            parked_reasons[n] = f"worker exception: {exc}"
-            _daemon_mod.alert(
-                owner,
-                repo,
-                n,
-                f"Issue #{n} worker raised an exception: {exc}",
-                severity="warn",
-                kind="debug",
-                runlog=runlog,
-                installation_token=installation_token,
-            )
-            continue
-
-        # Preflight refused: _launch_one_issue returns None when
-        # _should_launch_worker denies launch.  Park + continue.
-        if worker_result is None:
-            _log.warning("daemon: preflight refused issue #%d; parking", n)
-            # Labels (restore agent-ready, remove agent-in-progress) are
-            # handled inside _launch_one_issue's refusal branch — outer
-            # loop only needs to park the scheduler state.
-            if liveness_state is not None:
-                liveness_state.clear()
-            sched.mark_parked(n)
-            parked_reasons[n] = "preflight refused"
-            continue
-
-        # Emit outcome event (best-effort; never raises into the loop).
-        if runlog is not None:
-            try:
-                runlog.emit(
-                    {
-                        "ts": datetime.now(timezone.utc).isoformat(),
-                        "event": "outcome",
-                        "issue": n,
-                        "outcome": str(worker_result),
-                        "severity": "info",
-                        "detail": (
-                            f"worker for issue #{n} returned {worker_result!r}"
+                if report is not None:
+                    report.record_escalation(
+                        n,
+                        kind="block",
+                        severity="critical",
+                        detail=(
+                            f"Issue #{n} labels unreadable; cannot verify"
+                            " single-state invariant — parking."
                         ),
-                        "tick_id": None,
-                    }
-                )
-            except Exception:  # noqa: BLE001
-                pass
-
-        # Re-read labels after _run_worker (after_run may have set blocked).
-        post_labels = _daemon_mod._fetch_issue_labels(
-            owner,
-            repo,
-            n,
-            installation_token=installation_token,
-        )
-
-        # Guard: None sentinel means the gh call failed or stdout was
-        # unparsable.  The single-state invariant CANNOT be verified and
-        # convergence MUST NOT fire on an unknown state (Codex P1 #3,
-        # PR #95).  Take the conservative path: park + alert.
-        if post_labels is None:
-            _log.error(
-                "daemon: label fetch failed for #%d"
-                " (gh error / unparsable); parking conservatively",
-                n,
-            )
-            if runlog is not None:
-                try:
-                    runlog.emit(
-                        {
-                            "ts": datetime.now(timezone.utc).isoformat(),
-                            "event": "label_fetch_failed",
-                            "issue": n,
-                            "outcome": None,
-                            "severity": "critical",
-                            "detail": (
-                                f"Issue #{n} labels unreadable;"
-                                " cannot verify single-state invariant"
-                            ),
-                            "tick_id": None,
-                        }
+                        ts=datetime.now(timezone.utc).isoformat(),
                     )
-                except Exception:  # noqa: BLE001
-                    pass
-            _daemon_mod.alert(
-                owner,
-                repo,
-                n,
-                (
-                    f"Issue #{n} labels unreadable; cannot verify"
-                    " single-state invariant — parking."
-                ),
-                severity="critical",
-                kind="block",
-                runlog=runlog,
-                installation_token=installation_token,
-            )
-            _daemon_mod._label_edit(
-                owner,
-                repo,
-                n,
-                remove=["agent-in-progress"],
-                installation_token=installation_token,
-            )
-            if liveness_state is not None:
-                liveness_state.clear()
-            sched.mark_parked(n)
-            parked_reasons[n] = "labels unreadable"
-            continue
-
-        has_blocked = "blocked" in post_labels
-
-        # Single-state invariant backstop (#34 P2 / #76).
-        # Must run BEFORE the outcome-protocol branches so torn or zero-state
-        # label sets are caught early rather than dispatched to logic that
-        # assumes a clean state.
-        _inv_violation = _daemon_mod.assert_single_state(post_labels)
-        if _inv_violation is not None:
-            # Convergence path (#31 P1 / #96): zero state labels + open PR +
-            # not blocked → re-derive target and apply it instead of
-            # parking.  This handles the torn-state window where a 60s
-            # kill between after_run's remove-agent-ready and
-            # add-agent-done leaves the issue in {agent-in-progress}
-            # only.
-            _state_labels_present = post_labels & set(
-                ["agent-ready", "agent-done", "blocked"]
-            )
-            _zero_state = len(_state_labels_present) == 0
-            if _zero_state and not has_blocked:
-                _conv_branch, _conv_sha = _daemon_mod._find_issue_pr(
-                    owner,
-                    repo,
-                    n,
-                    installation_token=installation_token,
-                )
-                if _conv_branch is not None:
-                    # Definite completion evidence: derive target via
-                    # the pure helper (avoids hard-coding "agent-done").
-                    _target = target_state_from_observed(
-                        blocked=False, pr_open=True
-                    )
-                    _log.warning(
-                        "daemon: backstop converging #%d to %r"
-                        " (zero state labels + open PR); skipping park",
-                        n,
-                        _target,
-                    )
-                    # Remove only the labels that are actually present to
-                    # keep the edit idempotent.
-                    _remove = ["agent-in-progress"] + [
-                        lbl for lbl in _state_labels_present if lbl != _target
-                    ]
-                    _daemon_mod._label_edit(
-                        owner,
-                        repo,
-                        n,
-                        add=[_target],
-                        remove=_remove,
-                        installation_token=installation_token,
-                    )
-                    if runlog is not None:
-                        try:
-                            runlog.emit(
-                                {
-                                    "ts": datetime.now(
-                                        timezone.utc
-                                    ).isoformat(),
-                                    "event": "label_invariant_converged",
-                                    "issue": n,
-                                    "outcome": None,
-                                    "severity": "warning",
-                                    "detail": (
-                                        f"backstop converged #{n}"
-                                        f" to {_target!r}:"
-                                        f" {_inv_violation}"
-                                    ),
-                                    "tick_id": None,
-                                }
-                            )
-                        except Exception:  # noqa: BLE001
-                            pass
-                    # Do NOT mark_parked; do NOT fire critical alert.
-                    # Reuse the convergence observation (no TOCTOU second
-                    # _find_issue_pr call) and route directly through the
-                    # shared CI-gate helper (#96 redesign).
-                    # NOTE: do NOT clear liveness before _run_ci_gate —
-                    # the CI gate (merge_issue_branch) can block for
-                    # minutes; clearing early blinds the heartbeat stall
-                    # monitor.  Every CI-gate terminal path clears
-                    # liveness at its own exit point (Refs #31 P2).
-                    assert _conv_sha is not None  # _conv_branch is not None
-                    _daemon_mod._run_ci_gate(
-                        owner=owner,
-                        repo=repo,
-                        n=n,
-                        issue_branch=_conv_branch,
-                        pr_head_sha=_conv_sha,
-                        repo_root=repo_root,
-                        branch_name=branch_name,
-                        sched=sched,
-                        liveness_state=liveness_state,
-                        runlog=runlog,
-                        merged_issues=merged_issues,
-                        parked_reasons=parked_reasons,
-                        ci_poll_interval=ci_poll_interval,
-                        ci_timeout=ci_timeout,
-                        required_checks=required_checks,
-                        installation_token=installation_token,
-                    )
-                    continue
-            # No convergence target found (no open PR, or blocked):
-            # invariant violated — park + alert (existing behavior).
-            _log.error(
-                "daemon: label invariant violated for #%d: %s; parking",
-                n,
-                _inv_violation,
-            )
-            if runlog is not None:
-                try:
-                    runlog.emit(
-                        {
-                            "ts": datetime.now(timezone.utc).isoformat(),
-                            "event": "label_invariant_violation",
-                            "issue": n,
-                            "outcome": None,
-                            "severity": "critical",
-                            "detail": _inv_violation,
-                            "tick_id": None,
-                        }
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
-            _daemon_mod.alert(
-                owner,
-                repo,
-                n,
-                (
-                    f"Issue #{n} failed the single-state"
-                    f" label invariant: {_inv_violation}"
-                ),
-                severity="critical",
-                kind="block",
-                runlog=runlog,
-                installation_token=installation_token,
-            )
-            _daemon_mod._label_edit(
-                owner,
-                repo,
-                n,
-                remove=["agent-in-progress"],
-                installation_token=installation_token,
-            )
-            if liveness_state is not None:
-                liveness_state.clear()
-            sched.mark_parked(n)
-            parked_reasons[n] = f"label invariant violation: {_inv_violation}"
-            continue
-
-        # Apply §3.5 outcome protocol.
-        if worker_result == "pr_created" and not has_blocked:
-            # Normal CI gate: locate the PR once, then delegate to the
-            # shared merge entry point (_run_ci_gate).
-            issue_branch, pr_head_sha = _daemon_mod._find_issue_pr(
-                owner,
-                repo,
-                n,
-                installation_token=installation_token,
-            )
-            if issue_branch is None or pr_head_sha is None:
-                _log.warning(
-                    "daemon: pr_created but no open PR found for #%d; parking",
-                    n,
-                )
                 _daemon_mod._label_edit(
                     owner,
                     repo,
                     n,
                     remove=["agent-in-progress"],
                     installation_token=installation_token,
+                    report=report,
                 )
                 if liveness_state is not None:
                     liveness_state.clear()
                 sched.mark_parked(n)
-                parked_reasons[n] = "pr_created but no PR located"
+                parked_reasons[n] = "labels unreadable"
+                continue
+
+            has_blocked = "blocked" in post_labels
+
+            # Single-state invariant backstop (#34 P2 / #76).
+            # Must run BEFORE the outcome-protocol branches so torn or
+            # zero-state label sets are caught early rather than dispatched
+            # to logic that assumes a clean state.
+            _inv_violation = _daemon_mod.assert_single_state(post_labels)
+            if _inv_violation is not None:
+                # Convergence path (#31 P1 / #96): zero state labels + open
+                # PR + not blocked → re-derive target and apply it instead
+                # of parking. This handles the torn-state window where a
+                # 60s kill between after_run's remove-agent-ready and
+                # add-agent-done leaves the issue in {agent-in-progress}
+                # only.
+                _state_labels_present = post_labels & set(
+                    ["agent-ready", "agent-done", "blocked"]
+                )
+                _zero_state = len(_state_labels_present) == 0
+                if _zero_state and not has_blocked:
+                    _conv_branch, _conv_sha = _daemon_mod._find_issue_pr(
+                        owner,
+                        repo,
+                        n,
+                        installation_token=installation_token,
+                    )
+                    if _conv_branch is not None:
+                        # Definite completion evidence: derive target via
+                        # the pure helper (avoids hard-coding "agent-done").
+                        _target = target_state_from_observed(
+                            blocked=False, pr_open=True
+                        )
+                        _log.warning(
+                            "daemon: backstop converging #%d to %r"
+                            " (zero state labels + open PR); skipping park",
+                            n,
+                            _target,
+                        )
+                        # Remove only the labels that are actually present to
+                        # keep the edit idempotent.
+                        _remove = ["agent-in-progress"] + [
+                            lbl
+                            for lbl in _state_labels_present
+                            if lbl != _target
+                        ]
+                        _daemon_mod._label_edit(
+                            owner,
+                            repo,
+                            n,
+                            add=[_target],
+                            remove=_remove,
+                            installation_token=installation_token,
+                            report=report,
+                        )
+                        if runlog is not None:
+                            try:
+                                runlog.emit(
+                                    {
+                                        "ts": datetime.now(
+                                            timezone.utc
+                                        ).isoformat(),
+                                        "event": "label_invariant_converged",
+                                        "issue": n,
+                                        "outcome": None,
+                                        "severity": "warning",
+                                        "detail": (
+                                            f"backstop converged #{n}"
+                                            f" to {_target!r}:"
+                                            f" {_inv_violation}"
+                                        ),
+                                        "tick_id": None,
+                                    }
+                                )
+                            except Exception:  # noqa: BLE001
+                                pass
+                        # Do NOT mark_parked; do NOT fire critical alert.
+                        # Reuse the convergence observation (no TOCTOU second
+                        # _find_issue_pr call) and route directly through the
+                        # shared CI-gate helper (#96 redesign).
+                        # NOTE: do NOT clear liveness before _run_ci_gate —
+                        # the CI gate (merge_issue_branch) can block for
+                        # minutes; clearing early blinds the heartbeat stall
+                        # monitor.  Every CI-gate terminal path clears
+                        # liveness at its own exit point (Refs #31 P2).
+                        assert (
+                            _conv_sha is not None
+                        )  # _conv_branch is not None
+                        _outcome = _daemon_mod._run_ci_gate(
+                            owner=owner,
+                            repo=repo,
+                            n=n,
+                            issue_branch=_conv_branch,
+                            pr_head_sha=_conv_sha,
+                            repo_root=repo_root,
+                            branch_name=branch_name,
+                            sched=sched,
+                            liveness_state=liveness_state,
+                            runlog=runlog,
+                            merged_issues=merged_issues,
+                            parked_reasons=parked_reasons,
+                            ci_poll_interval=ci_poll_interval,
+                            ci_timeout=ci_timeout,
+                            required_checks=required_checks,
+                            installation_token=installation_token,
+                        )
+                        if report is not None:
+                            _gate_ts = datetime.now(timezone.utc).isoformat()
+                            report.record_merge_gate(
+                                n,
+                                outcome=_outcome.name,
+                                merged_sha=(
+                                    _conv_sha
+                                    if _outcome == MergeOutcome.MERGED
+                                    else None
+                                ),
+                                ts=_gate_ts,
+                            )
+                            report.record_label_edit(
+                                n,
+                                added=[],
+                                removed=(
+                                    ["agent-in-progress", "agent-done"]
+                                    if _outcome == MergeOutcome.MERGED
+                                    else ["agent-in-progress"]
+                                ),
+                                ts=_gate_ts,
+                            )
+                        continue
+                # No convergence target found (no open PR, or blocked):
+                # invariant violated — park + alert (existing behavior).
+                _log.error(
+                    "daemon: label invariant violated for #%d: %s; parking",
+                    n,
+                    _inv_violation,
+                )
+                if runlog is not None:
+                    try:
+                        runlog.emit(
+                            {
+                                "ts": datetime.now(timezone.utc).isoformat(),
+                                "event": "label_invariant_violation",
+                                "issue": n,
+                                "outcome": None,
+                                "severity": "critical",
+                                "detail": _inv_violation,
+                                "tick_id": None,
+                            }
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
                 _daemon_mod.alert(
                     owner,
                     repo,
                     n,
-                    f"Issue #{n} returned pr_created but no PR found.",
-                    severity="warn",
-                    kind="debug",
+                    (
+                        f"Issue #{n} failed the single-state"
+                        f" label invariant: {_inv_violation}"
+                    ),
+                    severity="critical",
+                    kind="block",
                     runlog=runlog,
                     installation_token=installation_token,
                 )
+                if report is not None:
+                    report.record_escalation(
+                        n,
+                        kind="block",
+                        severity="critical",
+                        detail=(
+                            f"Issue #{n} failed the single-state"
+                            f" label invariant: {_inv_violation}"
+                        ),
+                        ts=datetime.now(timezone.utc).isoformat(),
+                    )
+                _daemon_mod._label_edit(
+                    owner,
+                    repo,
+                    n,
+                    remove=["agent-in-progress"],
+                    installation_token=installation_token,
+                    report=report,
+                )
+                if liveness_state is not None:
+                    liveness_state.clear()
+                sched.mark_parked(n)
+                parked_reasons[n] = (
+                    f"label invariant violation: {_inv_violation}"
+                )
                 continue
 
-            _daemon_mod._run_ci_gate(
-                owner=owner,
-                repo=repo,
-                n=n,
-                issue_branch=issue_branch,
-                pr_head_sha=pr_head_sha,
-                repo_root=repo_root,
-                branch_name=branch_name,
-                sched=sched,
-                liveness_state=liveness_state,
-                runlog=runlog,
+            # Apply §3.5 outcome protocol.
+            if worker_result == "pr_created" and not has_blocked:
+                # Normal CI gate: locate the PR once, then delegate to the
+                # shared merge entry point (_run_ci_gate).
+                issue_branch, pr_head_sha = _daemon_mod._find_issue_pr(
+                    owner,
+                    repo,
+                    n,
+                    installation_token=installation_token,
+                )
+                if issue_branch is None or pr_head_sha is None:
+                    _log.warning(
+                        "daemon: pr_created but no open PR found for #%d; "
+                        "parking",
+                        n,
+                    )
+                    _daemon_mod._label_edit(
+                        owner,
+                        repo,
+                        n,
+                        remove=["agent-in-progress"],
+                        installation_token=installation_token,
+                        report=report,
+                    )
+                    if liveness_state is not None:
+                        liveness_state.clear()
+                    sched.mark_parked(n)
+                    parked_reasons[n] = "pr_created but no PR located"
+                    _daemon_mod.alert(
+                        owner,
+                        repo,
+                        n,
+                        f"Issue #{n} returned pr_created but no PR found.",
+                        severity="warn",
+                        kind="debug",
+                        runlog=runlog,
+                        installation_token=installation_token,
+                    )
+                    if report is not None:
+                        report.record_escalation(
+                            n,
+                            kind="debug",
+                            severity="warn",
+                            detail=(
+                                f"Issue #{n} returned pr_created but no PR "
+                                "found."
+                            ),
+                            ts=datetime.now(timezone.utc).isoformat(),
+                        )
+                    continue
+
+                _outcome = _daemon_mod._run_ci_gate(
+                    owner=owner,
+                    repo=repo,
+                    n=n,
+                    issue_branch=issue_branch,
+                    pr_head_sha=pr_head_sha,
+                    repo_root=repo_root,
+                    branch_name=branch_name,
+                    sched=sched,
+                    liveness_state=liveness_state,
+                    runlog=runlog,
+                    merged_issues=merged_issues,
+                    parked_reasons=parked_reasons,
+                    ci_poll_interval=ci_poll_interval,
+                    ci_timeout=ci_timeout,
+                    required_checks=required_checks,
+                    installation_token=installation_token,
+                )
+                if report is not None:
+                    _gate_ts = datetime.now(timezone.utc).isoformat()
+                    report.record_merge_gate(
+                        n,
+                        outcome=_outcome.name,
+                        merged_sha=(
+                            pr_head_sha
+                            if _outcome == MergeOutcome.MERGED
+                            else None
+                        ),
+                        ts=_gate_ts,
+                    )
+                    report.record_label_edit(
+                        n,
+                        added=[],
+                        removed=(
+                            ["agent-in-progress", "agent-done"]
+                            if _outcome == MergeOutcome.MERGED
+                            else ["agent-in-progress"]
+                        ),
+                        ts=_gate_ts,
+                    )
+            else:
+                # Park path: blocked or no_pr.
+                kind = "block" if has_blocked else "debug"
+                reason_text = (
+                    "blocked label set"
+                    if has_blocked
+                    else "no PR created (agent may have failed)"
+                )
+                _daemon_mod._label_edit(
+                    owner,
+                    repo,
+                    n,
+                    remove=["agent-in-progress"],
+                    installation_token=installation_token,
+                    report=report,
+                )
+                if liveness_state is not None:
+                    liveness_state.clear()
+                sched.mark_parked(n)
+                parked_reasons[n] = reason_text
+                _daemon_mod.alert(
+                    owner,
+                    repo,
+                    n,
+                    f"Issue #{n} parked: {reason_text}.",
+                    severity="warn",
+                    kind=kind,
+                    runlog=runlog,
+                    installation_token=installation_token,
+                )
+                if report is not None:
+                    report.record_escalation(
+                        n,
+                        kind=kind,
+                        severity="warn",
+                        detail=f"Issue #{n} parked: {reason_text}.",
+                        ts=datetime.now(timezone.utc).isoformat(),
+                    )
+
+        # --- Step 3: completion. ---
+        _complete_work_unit(
+            repo_root,
+            owner,
+            repo,
+            branch_name,
+            slug,
+            merged_issues,
+            parked_reasons,
+            installation_token,
+            report=report,
+        )
+    finally:
+        if report is not None:
+            report.set_outcomes(
                 merged_issues=merged_issues,
                 parked_reasons=parked_reasons,
-                ci_poll_interval=ci_poll_interval,
-                ci_timeout=ci_timeout,
-                required_checks=required_checks,
-                installation_token=installation_token,
             )
-        else:
-            # Park path: blocked or no_pr.
-            kind = "block" if has_blocked else "debug"
-            reason_text = (
-                "blocked label set"
-                if has_blocked
-                else "no PR created (agent may have failed)"
-            )
-            _daemon_mod._label_edit(
-                owner,
-                repo,
-                n,
-                remove=["agent-in-progress"],
-                installation_token=installation_token,
-            )
-            if liveness_state is not None:
-                liveness_state.clear()
-            sched.mark_parked(n)
-            parked_reasons[n] = reason_text
-            _daemon_mod.alert(
-                owner,
-                repo,
-                n,
-                f"Issue #{n} parked: {reason_text}.",
-                severity="warn",
-                kind=kind,
-                runlog=runlog,
-                installation_token=installation_token,
-            )
-
-    # --- Step 3: completion. ---
-    _complete_work_unit(
-        repo_root,
-        owner,
-        repo,
-        branch_name,
-        slug,
-        merged_issues,
-        parked_reasons,
-        installation_token,
-    )
