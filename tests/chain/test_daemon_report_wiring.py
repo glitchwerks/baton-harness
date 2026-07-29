@@ -857,3 +857,45 @@ def test_open_pr_returns_pr_create_stdout_url_instead_of_none(
         "S7: _open_pr must return proc.stdout.strip() (the gh pr create "
         f"URL) instead of None; got {captured_returns[0]!r}"
     )
+
+
+def test_open_pr_failure_ignores_nonempty_stdout() -> None:
+    """A genuine gh failure must not return diagnostic stdout as a PR URL."""
+    proc = subprocess.CompletedProcess(
+        args=[],
+        returncode=1,
+        stdout="diagnostic output, not a PR URL\n",
+        stderr="permission denied",
+    )
+
+    with patch.object(daemon_mod, "_run_gh", return_value=proc):
+        result = daemon_mod._open_pr(
+            "o",
+            "r",
+            "feature/test",
+            "Test PR",
+            "Test body",
+        )
+
+    assert result is None
+
+
+def test_open_pr_already_exists_returns_stdout_url() -> None:
+    """An existing PR URL remains usable after create exits non-zero."""
+    proc = subprocess.CompletedProcess(
+        args=[],
+        returncode=1,
+        stdout="https://github.com/o/r/pull/99\n",
+        stderr="a pull request for branch feature/test already exists",
+    )
+
+    with patch.object(daemon_mod, "_run_gh", return_value=proc):
+        result = daemon_mod._open_pr(
+            "o",
+            "r",
+            "feature/test",
+            "Test PR",
+            "Test body",
+        )
+
+    assert result == "https://github.com/o/r/pull/99"

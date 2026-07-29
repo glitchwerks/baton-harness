@@ -516,6 +516,7 @@ def _open_pr(
                 proc.returncode,
                 proc.stderr,
             )
+            return None
     else:
         _log.info("daemon: PR opened for %r → main", branch_name)
     return proc.stdout.strip() or None
