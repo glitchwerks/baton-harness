@@ -421,6 +421,8 @@ The sweep is guarded: the entire `scan_orphan_worktrees` body is wrapped in a `t
 
 ## 12. Two-identity subprocess auth model (identity broker) [implemented — issue #222]
 
+*This section is the authoritative home for the broker's mechanics. For what each credential the harness handles* is *and why (GitHub App, fine-grained PAT fallback, Bitwarden Secrets Manager, Anthropic/Claude Code OAuth, Slack), see [docs/authentication.md](authentication.md) — that doc links back here for the broker rather than re-deriving it.*
+
 Every subprocess the daemon spawns needs a GitHub credential decision: does this process act as the harness's own privileged identity, or as the unprivileged worker doing the actual issue work? A single shared credential cannot answer both cases — a fine-grained PAT cannot hold the `checks` permission the daemon's CI reads need, and a feature-branch push to a ruleset-protected branch requires the bypass actor to be the GitHub App itself, not a PAT (issue #220; see `_authed_git_push` in `daemon.py`). So the harness models exactly two identities and never collapses them into one ambient environment.
 
 `src/baton_harness/chain/identity.py` defines the model:

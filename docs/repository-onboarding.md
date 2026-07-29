@@ -8,7 +8,9 @@ throwaway sandbox repository, exporting the Bitwarden access token, provisioning
 branch-protection rulesets, running the daemon's preflight check, and the first `--once`
 run. See [docs/system-setup.md](system-setup.md) for how this doc relates to
 [docs/smoke-test-daemon.md](smoke-test-daemon.md), the authoritative runbook this doc links
-out to rather than duplicating.
+out to rather than duplicating. For what each credential below *is* and why it's required,
+see [docs/authentication.md](authentication.md) — this doc covers the *how* (provisioning
+steps and verification commands) only.
 
 **Read the safety warning before running anything below.** `bh-daemon` spawns real
 `claude -p --dangerously-skip-permissions` processes that write code, commit, push
@@ -28,18 +30,21 @@ a value only you can supply. (For the machine-level CLI prerequisites — `uv`, 
 - A **throwaway sandbox GitHub repository**, created and cloned locally. The local clone
   path becomes `BH_PROJECT_ROOT`. Never point this walkthrough at a real project.
 - A **GitHub App** created and installed on that sandbox repo, with the permissions listed
-  in [docs/smoke-test-daemon.md §"Required GitHub App permissions"](smoke-test-daemon.md#required-github-app-permissions).
+  in [docs/authentication.md § GitHub App](authentication.md#github-app-primary).
   From it you need two numbers: the **App ID** (from the App's settings page) and the
   **installation ID** (`gh api /repos/<owner>/<repo>/installation --jq .id`).
 - The App's **RSA private key (PEM)**, uploaded to Bitwarden Secrets Manager as a secret —
   note that secret's UUID (`BWS_PEM_SECRET_ID`).
 - Optionally, a **GitHub fine-grained PAT** (see
-  [README §"GitHub token: least-privilege setup"](../README.md#github-token-least-privilege-setup)
-  for the exact permission table) uploaded to Bitwarden Secrets Manager as a secret
-  (`BWS_GH_TOKEN_SECRET_ID`). If you skip this, you must export `GH_TOKEN` directly instead.
+  [docs/authentication.md § GitHub fine-grained PAT](authentication.md#github-fine-grained-pat-fallback)
+  for the exact permission table — narrower than the App's) uploaded to Bitwarden Secrets
+  Manager as a secret (`BWS_GH_TOKEN_SECRET_ID`). If you skip this, you must export
+  `GH_TOKEN` directly instead.
 - A **Bitwarden Secrets Manager machine-account access token** (`BWS_ACCESS_TOKEN`). This
   is the one secret you personally carry and export — it is never stored in any file this
-  walkthrough writes to the repo or to `.bh/config.env`.
+  walkthrough writes to the repo or to `.bh/config.env`. See
+  [docs/authentication.md § Bitwarden Secrets Manager](authentication.md#bitwarden-secrets-manager)
+  for what it's used to fetch.
 
 Do not proceed to step 2 without the GitHub App and its two IDs, and the PEM's Bitwarden
 secret UUID in hand — step 2 (`bin/init-sandbox.sh`) prompts for them interactively and
@@ -399,7 +404,8 @@ Common first-run stumbling points, in the order you are likely to hit them:
   [docs/smoke-test-daemon.md §"CI-gate subtlety"](smoke-test-daemon.md#ci-gate-subtlety--required-check-names).
 
 If none of the above matches, `docs/smoke-test-daemon.md` covers the full environment-
-variable resolution chain, the required GitHub App permission table, and (for a server
-deployment) the `#40` recovery-path and `#239` block-escalation verification scripts,
-which exercise the daemon's startup gates and self-block behavior end-to-end against a
+variable resolution chain and (for a server deployment) the `#40` recovery-path and
+`#239` block-escalation verification scripts — see [docs/authentication.md](authentication.md)
+for the GitHub App permission table — which exercise the daemon's startup gates and
+self-block behavior end-to-end against a
 live sandbox.

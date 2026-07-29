@@ -86,7 +86,7 @@ If you are using `bin/init-sandbox.sh` to provision a throwaway sandbox, this is
 
 ## Environment variables
 
-The daemon's environment is assembled from three sources in order, with explicit shell exports as an escape hatch for any layer. This section describes each source and what it supplies.
+The daemon's environment is assembled from three sources in order, with explicit shell exports as an escape hatch for any layer. This section describes each source and what it supplies — for what each credential *is* and why it's required, see [docs/authentication.md](authentication.md).
 
 ### Sandbox-committed constants — `.bh/config.env` in the sandbox repo
 
@@ -114,7 +114,7 @@ BWS_HEARTBEAT_PING_URL_SECRET_ID=<uuid>  # optional
 | `BH_GITHUB_APP_INSTALLATION_ID` | Numeric GitHub App installation ID; required by `bin/provision-ruleset.sh` |
 | `BWS_PEM_SECRET_ID` | Bitwarden Secrets UUID of the RSA PEM private key for the GitHub App (required) |
 | `BWS_GH_TOKEN_SECRET_ID` | Bitwarden Secrets UUID for a GitHub fine-grained PAT. When set and `GH_TOKEN` is absent, `bootstrap_secrets()` fetches the PAT at startup. Leave empty to supply `GH_TOKEN` directly (backward-compat). |
-| `BWS_HEARTBEAT_PING_URL_SECRET_ID` | Bitwarden Secrets UUID for the Slack webhook URL. When set and `BH_HEARTBEAT_PING_URL` is absent, the URL is vault-fetched at startup. Leave empty to supply the URL directly or to omit it. |
+| `BWS_HEARTBEAT_PING_URL_SECRET_ID` | Bitwarden Secrets UUID for the dead-man's-switch heartbeat ping URL (`BH_HEARTBEAT_PING_URL` — not the Slack webhook URL, which has no vaulted form; see [docs/authentication.md § Slack](authentication.md#slack)). When set and `BH_HEARTBEAT_PING_URL` is absent, the URL is vault-fetched at startup. Leave empty to supply the URL directly or to omit it. |
 
 `BWS_APP_ID` and `BWS_INSTALLATION_ID` are **derived** by the parser from `BH_GITHUB_APP_ID` and `BH_GITHUB_APP_INSTALLATION_ID` — do not set them. Missing or malformed values produce per-key errors with line numbers and cause an immediate exit.
 
@@ -139,7 +139,7 @@ To reset the per-host config, delete `~/.config/baton-harness/host.env` and re-r
 **Vault-fetched at startup (no operator action required when the `BWS_*_SECRET_ID` is declared in `.bh/config.env`):**
 
 - `GH_TOKEN` — the GitHub fine-grained PAT used by `gh` CLI calls. If `BWS_GH_TOKEN_SECRET_ID` is set in `.bh/config.env` and `GH_TOKEN` is not already in the environment, `bootstrap_secrets()` fetches it from the vault and writes it to `os.environ`. If `GH_TOKEN` is already set (shell export, CI env), the vault is not called — operator override wins.
-- `BH_HEARTBEAT_PING_URL` — the Slack webhook URL for dead-man's-switch pings and per-launch preflight alerts (#144). Same skip logic: vault-fetch only when `BWS_HEARTBEAT_PING_URL_SECRET_ID` is declared and the URL is not already in the environment. If neither source supplies the URL, no alerts are sent — preflight refusals log to daemon stderr only.
+- `BH_HEARTBEAT_PING_URL` — the dead-man's-switch heartbeat ping URL for per-launch preflight alerts (#144); a distinct credential from the Slack webhook URL (`BH_SLACK_WEBHOOK_URL`, see [docs/authentication.md § Slack](authentication.md#slack)). Same skip logic: vault-fetch only when `BWS_HEARTBEAT_PING_URL_SECRET_ID` is declared and the URL is not already in the environment. If neither source supplies the URL, no alerts are sent — preflight refusals log to daemon stderr only.
 
 Vault errors propagate as `BwsClientError` — fail-closed, never swallowed.
 
@@ -225,21 +225,15 @@ You should see both ruleset names in the output.
 
 ## Required GitHub App permissions
 
-The harness GitHub App must have the following permissions on the target repository. Configure these on the GitHub App settings page before installing the App on the sandbox repo. An operator can verify the live permission set with:
+The full permission table (with the "why" for each entry) now lives in
+[docs/authentication.md § GitHub App](authentication.md#github-app-primary) — this section
+keeps only the live-verification command, since it's specific to this provisioning runbook.
+Configure the permissions on the GitHub App settings page before installing the App on the
+sandbox repo, then verify the live permission set with:
 
 ```bash
 gh api /repos/<owner>/<repo>/installation --jq '.permissions'
 ```
-
-| Permission | Level | Why required |
-|---|---|---|
-| `contents` | `write` | Push `feature/*` and `baton/*` branches; read repo files |
-| `pull_requests` | `write` | Create PRs; post review comments |
-| `issues` | `write` | Label transitions (`agent-ready` / `agent-in-progress` / `blocked` / `agent-done` / `agent-merged`); post escalation comments |
-| `actions` or `checks` | `read` | Poll CI check-runs for the merge gate |
-| `administration` | `read` | #144 preflight reads rulesets via `GET /repos/.../rulesets` (`ruleset_status.py:L356–361` returns `RulesetStatus.ERROR` on non-2xx, refusing every launch) |
-| `administration` | `write` | `bin/provision-ruleset.sh` POSTs and PUTs rulesets |
-| `metadata` | `read` | Always required by GitHub for any App installation |
 
 ---
 
@@ -392,13 +386,12 @@ To smoke-test the **full merge path**, add a GitHub Actions workflow to the sand
 
 ### Credentials and auth on the server
 
-The deployment model mandates OAuth/subscription auth for Claude — `ANTHROPIC_API_KEY` **must not be set** in the daemon's environment (`architecture-spec.md` §2, §5). The startup reconciliation sweep (G3b, `src/baton_harness/chain/reconcile.py`) checks for this at every daemon start and exits non-zero with a critical alert if the key is present. This is the most important thing to get right on a server:
+What each credential is, why it's required, and which startup gate validates it is documented in [docs/authentication.md](authentication.md) — this section covers only what's server-deployment-specific:
 
-- Mount the OAuth credentials volume at `/home/agent/.claude/` (or wherever the container user's home is). Do not supply an API key. The G3c startup gate (`reconcile.py:L176–199`) checks that `~/.claude/.credentials.json` is present and readable before the daemon enters its poll loop — an absent or unreadable credential file causes an immediate exit 1 with "OAuth credential file absent or unreadable". Mounting the OAuth volume satisfies G3c.
-- `gh` must have a valid GitHub fine-grained PAT available as `GH_TOKEN`. With `BWS_GH_TOKEN_SECRET_ID` declared in `.bh/config.env`, `bootstrap_secrets()` vault-fetches the PAT automatically at startup — the operator does not need to paste it into the systemd `EnvironmentFile=`. If you prefer to supply `GH_TOKEN` directly (for example in CI or during initial setup), export it in the shell or the `EnvironmentFile=` before invoking `bin/run-daemon.sh`; an explicit value always wins over the vault fetch.
+- Mount the OAuth credentials volume at `/home/agent/.claude/` (or wherever the container user's home is). Do not supply an API key. An absent or unreadable credential file causes an immediate exit 1 at startup (gate G3c) — mounting the OAuth volume satisfies it.
+- The daemon's primary GitHub credential is the App installation token, minted from `BWS_PEM_SECRET_ID` at startup — no operator action needed beyond declaring the secret ID in `.bh/config.env`. If deploying with the fine-grained PAT fallback instead, either declare `BWS_GH_TOKEN_SECRET_ID` (vault-fetched automatically) or export `GH_TOKEN` directly in the shell or the `EnvironmentFile=`; an explicit value always wins over the vault fetch.
 - `git` must be configured with a user name and email in the daemon's environment.
-
-Do not export `ANTHROPIC_API_KEY` — not in `.env` files, not in systemd `EnvironmentFile=`, not in the Docker entrypoint. Its presence at daemon startup is treated as a misconfiguration and causes an immediate hard abort.
+- Do not export `ANTHROPIC_API_KEY` — not in `.env` files, not in systemd `EnvironmentFile=`, not in the Docker entrypoint. Its presence at daemon startup causes an immediate hard abort (gate G3b).
 
 ### First run on the server
 

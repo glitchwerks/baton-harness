@@ -190,52 +190,39 @@ of: `<prefix>-<issue>`, `<prefix>-<issue>-<slug>`, or bare `<issue>`.
 
 ## Prerequisites (runtime)
 
-- **`claude` CLI** on `PATH` and authenticated (subscription auth — run `claude` once
-  interactively to confirm; the worker processes use OAuth, not an API key).
-  `bin/setup-env.sh` checks for `claude` and, when running interactively on Linux/macOS,
-  offers to auto-install via the official native installer (`curl -fsSL
-  https://claude.ai/install.sh | sh`). In non-interactive or CI contexts
-  (`BH_SETUP_NO_PROMPT=1`) it exits 1 with a link to the
-  [setup docs](https://docs.claude.com/en/docs/claude-code/setup).
-  Auth is operator-supplied (run `claude` once interactively after install).
-- **`gh` CLI** authenticated (`gh auth status`). `bin/setup-env.sh` checks for `gh` and,
-  when running interactively on Linux/macOS, offers to auto-install v2.62.0 to
-  `~/.local/bin` (pinned binary with checksum verification, mirroring the bws routine). In
-  non-interactive or CI contexts (`BH_SETUP_NO_PROMPT=1`) it exits 1 with a link to the
-  [install page](https://github.com/cli/cli#installation). Auth is operator-supplied
-  (`gh auth login` after install).
+For what each credential is, why it's required, and which module consumes it, see
+[docs/authentication.md](docs/authentication.md). The list below is the operational
+checklist — what to install and export before a first run.
+
+- **`claude` CLI** on `PATH` and authenticated (run `claude` once interactively; the
+  worker processes use OAuth, not an API key). `bin/setup-env.sh` checks for `claude` and,
+  when running interactively on Linux/macOS, offers to auto-install via the official native
+  installer. In non-interactive or CI contexts (`BH_SETUP_NO_PROMPT=1`) it exits 1 with a
+  link to the [setup docs](https://docs.claude.com/en/docs/claude-code/setup).
+- **`gh` CLI** authenticated (`gh auth login`, verify with `gh auth status`). `bin/setup-env.sh`
+  checks for `gh` and, when running interactively on Linux/macOS, offers to auto-install
+  v2.62.0 to `~/.local/bin`.
 - `git` configured with user name and email
 - **`bws` (Bitwarden Secrets CLI)** on `PATH` — required for vault-fetching the GitHub App PEM
-  key and optional secrets at daemon startup. `bin/setup-env.sh` checks for `bws` and, when
-  running interactively on Linux/macOS, offers to auto-install v2.1.0 to `~/.local/bin`. In
-  non-interactive or CI contexts (`BH_SETUP_NO_PROMPT=1`) it exits 1 with a link to the
-  [manual install page](https://bitwarden.com/help/secrets-manager-cli/). Verify with
+  key and optional secrets at daemon startup. `bin/setup-env.sh` checks for `bws` and offers
+  to auto-install v2.1.0 to `~/.local/bin` when running interactively. Verify with
   `bws --version`. Without it the daemon fails immediately at startup.
-- **`BWS_ACCESS_TOKEN`** — the single operator-supplied bootstrap secret (Bitwarden machine-
-  account access token). Provide it in a root-readable-only file and never commit it. The
-  canonical server path is `/etc/bh-daemon/secrets.env` (mode `600`); `bin/install-daemon-service.sh`
-  writes this file for you as part of the systemd install (see below) — see
+- **`BWS_ACCESS_TOKEN`** exported — the operator-supplied Bitwarden machine-account access
+  token. Provide it in a root-readable-only file and never commit it. The canonical server
+  path is `/etc/bh-daemon/secrets.env` (mode `600`); `bin/install-daemon-service.sh` writes
+  this file for you as part of the systemd install — see
   [docs/smoke-test-daemon.md §"systemd unit (recommended)"](docs/smoke-test-daemon.md) for the
-  `EnvironmentFile=` pattern it produces. Placeholder only — never write the real token here:
-  ```
-  BWS_ACCESS_TOKEN=<bitwarden-machine-account-token>
-  ```
-- **GitHub App** — must be created, installed on the target repo, and have the required
-  permissions configured **before** first run. `bin/run-daemon.sh` reads the App IDs from
-  `${BH_PROJECT_ROOT}/.bh/config.env`; `bin/provision-ruleset.sh` uses them to create the
-  branch-protection rulesets. See the permission table in
-  [docs/smoke-test-daemon.md §"Required GitHub App permissions"](docs/smoke-test-daemon.md)
-  for the full list.
-- **`~/.claude/.credentials.json` present and readable** — the OAuth credential file that
-  worker processes use for subscription auth. The G3c startup gate (`reconcile.py`) checks
-  for this at every daemon start and exits non-zero with "OAuth credential file absent or
-  unreadable" if it is missing. On a server this file must be an explicit credential-volume
-  mount.
-- **`ANTHROPIC_API_KEY` must NOT be set** — the deployment model is OAuth/subscription auth
-  only. The G3b startup gate checks for this at every daemon start and exits non-zero with a
-  critical alert if the key is present. Do not set this variable in shell profiles, `.env`
-  files, systemd `EnvironmentFile=`, or Docker entrypoints. (The reconciliation-sweep prose
-  in the [Usage](#usage) section also notes this; it bears repeating here.)
+  `EnvironmentFile=` pattern it produces.
+- **GitHub App** created, installed on the target repo, with the required permissions
+  configured **before** first run (table in [docs/authentication.md](docs/authentication.md)).
+  `bin/run-daemon.sh` reads the App IDs from `${BH_PROJECT_ROOT}/.bh/config.env`;
+  `bin/provision-ruleset.sh` uses them to create the branch-protection rulesets.
+- **`~/.claude/.credentials.json` present and readable** — the OAuth credential file the
+  worker processes use. Checked at every daemon start (fatal if absent or unreadable). On a
+  server this must be an explicit credential-volume mount.
+- **`ANTHROPIC_API_KEY` must NOT be set** — checked at every daemon start (fatal, critical
+  alert if present). Do not set this variable in shell profiles, `.env` files, systemd
+  `EnvironmentFile=`, or Docker entrypoints.
 - **OS:** Linux/macOS, bash. The server deployment scripts (`bin/verify-recovery.sh` in
   particular) are Linux-only.
 - `config/WORKFLOW.md` present in this repo (already committed — see `config/`)
@@ -277,91 +264,21 @@ five automatically when provisioning a throwaway sandbox.
 
 **Primary safeguard — use a dedicated bot/machine account.** Run the harness
 under a GitHub account that holds no memberships, no organization roles, and no
-permissions beyond what the table below requires. Structural least-privilege —
-the account literally cannot perform destructive actions — is the real security
+permissions beyond what the harness requires. Structural least-privilege — the
+account literally cannot perform destructive actions — is the real security
 boundary. No software check substitutes for it.
 
-**Defense-in-depth gate (issue #35).** The `validate_github_token()` check in
-`src/baton_harness/_auth.py` runs at the top of the `before_run` hook and
-rejects missing tokens, classic `ghp_` PATs, and tokens that fail a live
-`gh api user` capability probe. This reduces the chance an over-scoped or
-wrong-type token is used by accident. It is not a safety guarantee — it is a
-fast-fail layer that sits in front of the real enforcement, which is the bot
-account's permission configuration.
-
-### Required fine-grained PAT permissions
-
-Mint the token at <https://github.com/settings/personal-access-tokens/new>.
-The harness requires a fine-grained PAT (prefix `github_pat_`) — classic PATs
-(`ghp_`) are explicitly rejected because their account-wide scopes are
-incompatible with per-repo least privilege.
-
-| Operation | Fine-grained permission |
-|---|---|
-| Clone repo, push feature branches | Contents: Read & write |
-| Read issue body, edit labels, post comments | Issues: Read & write |
-| `gh pr list` / `gh pr create` | Pull requests: Read & write |
-| CI merge gate (read workflow-run/job conclusions) | Actions: Read |
-| Baseline (granted automatically) | Metadata: Read |
-
-**Why `Actions: Read` and not `Checks: Read`:** GitHub disabled the `Checks`
-permission for fine-grained PATs as of mid-2026 — it is now App-only and cannot
-be granted to a PAT at all. The CI merge gate therefore reads CI state from the
-Actions API (`repos/{owner}/{repo}/actions/runs` + `.../jobs`) instead of the
-Checks API. `Actions: Read` is what makes this possible. Do not request `Checks`
-— it will not be available and is not needed (#121, `src/baton_harness/chain/merge.py`).
-
-`Commit statuses: Read` is useful as a diagnostic supplement when running
-`gh pr checks` to inspect PR state, but is not required by the harness itself.
-
-Additional settings:
-
-- **Repository access:** Only select repositories → the pilot repo(s). Do not
-  grant organization-wide access.
-- **Expiry:** set the shortest expiry you can operationally manage; rotate on
-  schedule.
-- **Explicitly not granted:** Workflows, Administration, Secrets, Checks (App-only
-  — cannot be granted to a fine-grained PAT), any org-level scope.
-
-**Primary deployment path — vault fetch:** set `BWS_GH_TOKEN_SECRET_ID` in
-`${BH_PROJECT_ROOT}/.bh/config.env`. `bootstrap_secrets()` vault-fetches the PAT at
-startup and writes it to `GH_TOKEN` automatically — no operator export required.
-
-**Override / fallback** — export the token directly when bypassing the vault (e.g. initial
-setup, CI, one-off runs). The gate also accepts `GITHUB_TOKEN` consistent with standard CI
-conventions. An explicit env value always wins over the vault fetch:
+Auth method, required permissions, the fallback PAT's narrower permission
+surface relative to the GitHub App, and the validation gates are documented in
+[docs/authentication.md](docs/authentication.md) — this section is a pointer,
+not a restatement. Quick reference for exporting the fallback PAT directly
+(bypassing the Bitwarden vault fetch):
 
 ```bash
 export GH_TOKEN=github_pat_<your-token>
 export BH_PROJECT_ROOT=/path/to/local/clone
 bin/run-daemon.sh
 ```
-
-### Known limitation — fine-grained PAT scope introspection
-
-GitHub exposes a classic PAT's granted scopes via the `X-OAuth-Scopes` response
-header. Fine-grained PATs provide no equivalent introspection endpoint as of
-mid-2026. The gate therefore validates token *type* and *reachability* — it
-cannot verify that the exact permission set above was granted. That verification
-is the operator's responsibility at token-mint time.
-
-### Known limitation — persistent transient GitHub API failures fail-closed
-
-The capability self-test in the `before_run` auth gate calls `gh api user`
-to confirm the token is reachable. If the GitHub API is experiencing a
-sustained outage, rate-limit storm, or network-level failure (DNS, TLS, gateway
-errors), the self-test will retry a small number of times
-(`_auth._MAX_RETRIES`, currently 2) and then fail-closed — blocking the run
-before any git work is attempted.
-
-**This is intentional:** an agent run against an unreachable GitHub API would
-produce useless or misleading output.
-
-**Recovery:** wait for GitHub to recover (check
-<https://www.githubstatus.com/>), then re-run the harness or restart the
-daemon. The `TokenValidationError` message will indicate a
-transient/network condition so it is distinguishable from a genuine bad-token
-failure.
 
 ## Safety and guardrails
 
@@ -406,7 +323,7 @@ The `--once` flag runs exactly one poll-dispatch tick then exits — safe for a 
 
 **Startup reconciliation sweep (as of #40):** before entering the poll loop, the daemon runs a one-time reconciliation sweep:
 
-- **Fatal credential validation.** `validate_github_token()` is called to confirm the GitHub token is present and valid — exits non-zero if absent or invalid. `ANTHROPIC_API_KEY` is checked and the daemon **refuses to start if it is set**: the deployment model is OAuth via a mounted credentials volume (`architecture-spec.md` L318); a non-empty key means per-token billing, which must be rejected at startup. Previously, bad credentials caused every worker dispatch to fail silently.
+- **Fatal credential validation (gates G3a–G3d).** GitHub token, `ANTHROPIC_API_KEY` absence, OAuth credential-volume readability, and git credential-helper presence are each checked and fatal on failure. See [docs/authentication.md](docs/authentication.md) for what each gate validates and why. Previously, bad credentials caused every worker dispatch to fail silently.
 - **Ungraceful-prior-exit detection.** A `.baton-harness/daemon.alive` marker is written at startup and removed on graceful shutdown. If the marker is present at boot, the prior run ended ungracefully (likely OOM-kill) — a critical alert fires. This is the only tractable notification for an uncatchable SIGKILL: the harness reports it on the next boot.
 - **Orphan `claude` process sweep.** A `pgrep`-based scan detects any `claude -p` processes left over from a crashed prior run. Matches emit a warn alert with the PID list. Detection only — no auto-kill in v1.
 

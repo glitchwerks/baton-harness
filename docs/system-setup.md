@@ -12,11 +12,12 @@ steps — provisioning a throwaway sandbox repo, the Bitwarden access token, bra
 rulesets, the daemon preflight check, and the first run.
 
 Neither doc replaces [docs/smoke-test-daemon.md](smoke-test-daemon.md), which is the
-authoritative runbook for the daemon's environment-variable resolution chain, the required
-GitHub App permission table, DAG dependency wiring for a multi-issue smoke test, CI-gate
-behavior, and systemd deployment. Together these two docs get you from a bare machine to a
-passing preflight check and a first `--once` run; they link out to `smoke-test-daemon.md`
-for anything beyond that instead of duplicating it.
+authoritative runbook for the daemon's environment-variable resolution chain, DAG dependency
+wiring for a multi-issue smoke test, CI-gate behavior, and systemd deployment. Together these
+two docs get you from a bare machine to a passing preflight check and a first `--once` run;
+they link out to `smoke-test-daemon.md` for anything beyond that instead of duplicating it.
+For what each credential these walkthroughs provision *is* and why it's required, see
+[docs/authentication.md](authentication.md).
 
 ## 1. Prerequisites — have these in hand before you start
 
