@@ -30,7 +30,7 @@ Before running:
 
 - `claude` CLI on `PATH` and authenticated (subscription auth — run `claude` once interactively to confirm). `bin/setup-env.sh` offers to auto-install via the official native installer when running interactively; auth is operator-supplied after install.
 - `gh` CLI authenticated (`gh auth status`). `bin/setup-env.sh` offers to auto-install v2.62.0 (pinned, checksum-verified) when running interactively; `gh auth login` is operator-supplied after install.
-- `git` configured with a user name and email.
+- `git` configured with a username and email.
 - `bws` (Bitwarden Secrets CLI) on `PATH` — required for the App-auth bootstrap that mints the GitHub App installation token before the daemon starts. `bin/setup-env.sh` offers to auto-install v2.1.0 when running interactively. Install per the [Bitwarden Secrets Manager CLI docs](https://bitwarden.com/help/secrets-manager-cli/); verify with `bws --version`. Without it, the daemon fails immediately at startup with a subprocess error.
 - The **sandbox repo cloned locally**. The local clone path becomes `BH_PROJECT_ROOT`.
 - The harness package installed into a venv with `bh-daemon` on `PATH`:
@@ -389,8 +389,8 @@ To smoke-test the **full merge path**, add a GitHub Actions workflow to the sand
 What each credential is, why it's required, and which startup gate validates it is documented in [docs/authentication.md](authentication.md) — this section covers only what's server-deployment-specific:
 
 - Mount the OAuth credentials volume at `/home/agent/.claude/` (or wherever the container user's home is). Do not supply an API key. An absent or unreadable credential file causes an immediate exit 1 at startup (gate G3c) — mounting the OAuth volume satisfies it.
-- The daemon's primary GitHub credential is the App installation token, minted from `BWS_PEM_SECRET_ID` at startup — no operator action needed beyond declaring the secret ID in `.bh/config.env`. If deploying with the fine-grained PAT fallback instead, either declare `BWS_GH_TOKEN_SECRET_ID` (vault-fetched automatically) or export `GH_TOKEN` directly in the shell or the `EnvironmentFile=`; an explicit value always wins over the vault fetch.
-- `git` must be configured with a user name and email in the daemon's environment.
+- The daemon's primary GitHub credential is the App installation token, minted from the PEM fetched via `BWS_PEM_SECRET_ID` at startup. This still requires `BWS_ACCESS_TOKEN` — the Bitwarden machine-account token — to be present in the host/systemd environment; it is what authenticates the vault fetch itself (see [docs/repository-onboarding.md §3](repository-onboarding.md#3-bws_access_token--export-it-now-before-provisioning-rulesets)). With `BWS_ACCESS_TOKEN` exported, no further operator action is needed beyond declaring `BWS_PEM_SECRET_ID` in `.bh/config.env`. If deploying with the fine-grained PAT fallback instead, either declare `BWS_GH_TOKEN_SECRET_ID` (also vault-fetched, same `BWS_ACCESS_TOKEN` requirement) or export `GH_TOKEN` directly in the shell or the `EnvironmentFile=`; an explicit value always wins over the vault fetch.
+- `git` must be configured with a username and email in the daemon's environment.
 - Do not export `ANTHROPIC_API_KEY` — not in `.env` files, not in systemd `EnvironmentFile=`, not in the Docker entrypoint. Its presence at daemon startup causes an immediate hard abort (gate G3b).
 
 ### First run on the server
