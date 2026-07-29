@@ -1,14 +1,15 @@
 """Unit tests for daemon SessionReport wiring (issue #302, #243 Phase 2).
 
-These tests are the frozen contract for Phase 2 of
+These tests pin the behavioral contract delivered by Phase 2 of
 ``docs/superpowers/plans/2026-07-09-daemon-report-scenario-harness-243.md``
-(daemon wiring: report accumulation + finally emit + ``daemon_stop``). No
-Phase-2 implementation exists yet — every test below is expected to fail
-against current ``main``, most immediately with a ``TypeError`` on the new
-``report_path`` keyword argument this file assumes ``run_daemon`` gains (see
-"Assumptions" below), or with an ``AssertionError`` when a signature change
-(S7) hasn't landed. That failure is the intended "red" for this phase, not a
-broken test harness.
+(daemon wiring: report accumulation + finally emit + ``daemon_stop``):
+``run_daemon`` accumulates a ``SessionReport`` across a run and writes it
+to an explicit ``report_path`` from a ``finally`` block on every terminal
+exit path (normal completion, SIGTERM, and an in-tick exception), and the
+S7 signature changes to ``_run_ci_gate`` and ``_open_pr`` let that report
+record a PR url and a merge-gate outcome/sha. This file is the regression
+suite pinning that contract going forward, not a red/not-yet-implemented
+snapshot.
 
 All tests drive the real ``run_daemon`` with the same ``_run``/subprocess
 seam-stubbing convention already established in ``tests/chain/test_daemon.py``
@@ -72,6 +73,8 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import baton_harness.chain.daemon as daemon_mod
 from baton_harness.chain.daemon import run_daemon
 from baton_harness.chain.merge import MergeOutcome
@@ -119,13 +122,53 @@ def _minimal_wf_config() -> WorkflowConfig:
     )
 
 
-def _repo_cfg() -> RepoConfig:
-    """Return a minimal RepoConfig."""
+def _repo_cfg(project_root: Path) -> RepoConfig:
+    """Return a minimal RepoConfig rooted at ``project_root``.
+
+    Args:
+        project_root: Directory to use as the config's project root.
+            Callers must pass the test's ``tmp_path`` fixture, never the
+            real repo checkout — ``run_daemon`` startup writes a
+            ``.baton-harness/daemon.alive`` liveness marker (and a work
+            unit creates a ``.symphony/state.json``) under this path, so
+            a real-repo root would leak untracked artifacts into the
+            working tree.
+
+    A ``.git`` marker directory is created under ``project_root`` (if
+    absent) so ``_launch_one_issue``'s ``has_git_dir`` check (see
+    ``launch_gate.py``) does not fail closed on the
+    ``_NON_GIT_REPO_ROOT`` sentinel path. This does not make
+    ``project_root`` a real git repo or invoke any real git command —
+    ``_probe_worker_push_denied``, the only consumer of a "real" git
+    worktree once ``has_git_dir`` is true, is itself fully mocked by the
+    autouse ``_auto_patch_push_probe_daemon`` fixture in
+    ``tests/conftest.py`` for every test in this module.
+    """
+    (project_root / ".git").mkdir(exist_ok=True)
     return RepoConfig(
         owner=_OWNER,
         repo=_REPO_NAME,
-        project_root=_REPO_ROOT,
+        project_root=project_root,
     )
+
+
+def _isolate_work_unit_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Guard against ambient ``os.environ`` leaks from the work-unit path.
+
+    ``_run_work_unit`` writes ``BH_VENV``, ``CHAIN_BASE_BRANCH``, and
+    ``BH_FEATURE_BRANCH`` directly to the real ``os.environ`` (not via
+    ``monkeypatch``) as a side effect of dispatching a work unit. Those
+    writes would otherwise outlive the test and bleed into later tests in
+    the same pytest process. Calling ``monkeypatch.delenv`` here — before
+    ``run_daemon`` runs — arms ``monkeypatch``'s teardown to restore each
+    key to its pre-test state (absent, in the normal case) regardless of
+    what the code under test writes to it in between.
+
+    Args:
+        monkeypatch: The test's ``monkeypatch`` fixture.
+    """
+    for key in ("BH_VENV", "CHAIN_BASE_BRANCH", "BH_FEATURE_BRANCH"):
+        monkeypatch.delenv(key, raising=False)
 
 
 def _make_issue(number: int, labels: list[str]) -> dict[str, Any]:
@@ -279,6 +322,7 @@ def _common_success_patches() -> Any:  # noqa: ANN401
 
 def test_report_captures_pickup_label_transitions_pr_url_and_merge_gate(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Report records pickup, label transitions, PR url, and merge gate.
 
@@ -291,6 +335,7 @@ def test_report_captures_pickup_label_transitions_pr_url_and_merge_gate(
     (S7), and a ``merge_gate`` outcome of ``"MERGED"`` with a ``merged_sha``
     (S7 / S5).
     """
+    _isolate_work_unit_env(monkeypatch)
     ready_issues = [_make_issue(10, ["agent-ready"])]
     report_path = tmp_path / "session-report.json"
 
@@ -309,7 +354,7 @@ def test_report_captures_pickup_label_transitions_pr_url_and_merge_gate(
         asyncio.run(
             run_daemon(
                 _minimal_wf_config(),
-                [_repo_cfg()],
+                [_repo_cfg(tmp_path)],
                 once=True,
                 poll_interval_s=0,
                 report_path=report_path,
@@ -368,6 +413,7 @@ def test_report_captures_pickup_label_transitions_pr_url_and_merge_gate(
 
 def test_report_captures_parked_issue_with_block_kind_and_escalation(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A post-worker single ``blocked`` label parks with park_kind=block.
 
@@ -379,6 +425,7 @@ def test_report_captures_parked_issue_with_block_kind_and_escalation(
     a case-insensitive "block" substring match on the park reason text) and
     the daemon's own ``alert(kind="block")`` argument (§2.7).
     """
+    _isolate_work_unit_env(monkeypatch)
     ready_issues = [_make_issue(20, ["agent-ready"])]
     report_path = tmp_path / "session-report.json"
 
@@ -401,7 +448,7 @@ def test_report_captures_parked_issue_with_block_kind_and_escalation(
         asyncio.run(
             run_daemon(
                 _minimal_wf_config(),
-                [_repo_cfg()],
+                [_repo_cfg(tmp_path)],
                 once=True,
                 poll_interval_s=0,
                 report_path=report_path,
@@ -462,7 +509,7 @@ def test_report_records_once_complete_exit_reason_and_single_tick(
         asyncio.run(
             run_daemon(
                 _minimal_wf_config(),
-                [_repo_cfg()],
+                [_repo_cfg(tmp_path)],
                 once=True,
                 poll_interval_s=0,
                 report_path=report_path,
@@ -533,7 +580,7 @@ def test_sigterm_mid_tick_records_sigterm_exit_reason(
             asyncio.run(
                 run_daemon(
                     _minimal_wf_config(),
-                    [_repo_cfg()],
+                    [_repo_cfg(tmp_path)],
                     once=True,
                     poll_interval_s=0,
                     report_path=report_path,
@@ -565,6 +612,7 @@ def test_sigterm_mid_tick_records_sigterm_exit_reason(
 
 def test_tick_error_recorded_and_partial_state_survives_on_exception(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An exception building issue #99's DAG records a tick_error.
 
@@ -595,6 +643,7 @@ def test_tick_error_recorded_and_partial_state_survives_on_exception(
     ``test_daemon.py::test_second_work_unit_skipped_when_blocked_mid_drain``
     for exactly this mid-drain gate.
     """
+    _isolate_work_unit_env(monkeypatch)
     ready_issues = [
         _make_issue(10, ["agent-ready"]),
         _make_issue(99, ["agent-ready"]),
@@ -679,7 +728,7 @@ def test_tick_error_recorded_and_partial_state_survives_on_exception(
         asyncio.run(
             run_daemon(
                 _minimal_wf_config(),
-                [_repo_cfg()],
+                [_repo_cfg(tmp_path)],
                 once=True,
                 poll_interval_s=0,
                 report_path=report_path,
@@ -754,6 +803,7 @@ def test_run_ci_gate_returns_merge_outcome_directly() -> None:
 
 def test_open_pr_returns_pr_create_stdout_url_instead_of_none(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """S7: _open_pr returns the gh pr create stdout URL, not None.
 
@@ -768,6 +818,7 @@ def test_open_pr_returns_pr_create_stdout_url_instead_of_none(
     ``run_daemon`` never falls back to writing its always-on default report
     path into the real working directory during this test.
     """
+    _isolate_work_unit_env(monkeypatch)
     report_path = tmp_path / "session-report.json"
     ready_issues = [_make_issue(10, ["agent-ready"])]
     real_open_pr = daemon_mod._open_pr
@@ -794,7 +845,7 @@ def test_open_pr_returns_pr_create_stdout_url_instead_of_none(
         asyncio.run(
             run_daemon(
                 _minimal_wf_config(),
-                [_repo_cfg()],
+                [_repo_cfg(tmp_path)],
                 once=True,
                 poll_interval_s=0,
                 report_path=report_path,
