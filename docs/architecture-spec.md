@@ -9,7 +9,7 @@
 
 This spec defines the architecture of a self-hosted autonomous coding workflow that lets a solo developer hand off scoped GitHub work to an agent system in the morning and return to reviewed PRs and clearly articulated blocked questions in the evening — with no required intervention during the workday.
 
-The architecture is bounded by two human checkpoints (morning approval, evening review) and built around five layers: a comms layer for async interaction, GitHub as the source of truth, an orchestration harness as the broker, a containerised execution layer, and the human at both ends.
+The architecture is bounded by two human checkpoints (morning approval, evening review) and built around five layers: a comms layer for async interaction, GitHub as the source of truth, an orchestration harness as the broker, a containerized execution layer (target design — see [§5](#5-deployment-topology) for the v1-vs-v2 status), and the human at both ends.
 
 ---
 
@@ -20,11 +20,10 @@ The architecture is bounded by two human checkpoints (morning approval, evening 
 | Source of truth | **GitHub** (issues, PRs, milestones, labels) | Already where work lives; avoids parallel tracking |
 | Executor | **Claude Code** (`claude` CLI, first-party binary) | Only ToS-compliant path on subscription cost model |
 | Orchestrator | **custom always-on daemon** + **vendored `symphony._run_worker`** (worker) [implemented (v1, serial)] | Daemon owns DAG scheduling, feature-branch lifecycle, Slack escalation, sub-tree parking; worker (`_run_worker`) owns per-issue worktree + turn-loop; symphony's poll/dispatch loop dropped |
-| Isolation | **Single Docker container** running baton-harness (vendored symphony) + Claude Code | Restores host boundary lost by worktree-only isolation |
-| Comms | **Slack Bolt bot (Socket Mode)** + official GitHub→Slack app | Two channels, two purposes — active decisions + passive activity |
+| Isolation | **Single Docker container** running baton-harness (vendored symphony) + Claude Code [decided — not yet built] | Restores host boundary lost by worktree-only isolation. **What's actually implemented today is a bare process (systemd or foreground), not a container** — see [§5](#5-deployment-topology). |
+| Comms | **Slack Bolt bot (Socket Mode)** [deferred to v2 — not implemented] + official GitHub→Slack app | Two channels, two purposes — active decisions + passive activity. **What's actually implemented today is a plain incoming webhook (`BH_SLACK_WEBHOOK_URL`), not this bot** — see [§3.2](#32-layer-2--async-communication) and [docs/authentication.md § Slack](authentication.md#slack). |
 | CI | **GitHub Actions** (per-project precondition) | Verification is the project's responsibility, not the pipeline's |
-| Auth (Claude) | **OAuth via mounted volume** — no `ANTHROPIC_API_KEY` | Subscription-only; prevents accidental per-token billing |
-| Auth (GitHub) | **Fine-grained PAT** (prefix `github_pat_`) under a dedicated bot/machine account; supplied via `GH_TOKEN`; requires **`Actions: Read`** for the CI merge gate | Defense-in-depth gate added in issue #35; see [GitHub token: least-privilege setup](../README.md#github-token-least-privilege-setup) in README. CI state is sourced from the Actions API (`repos/…/actions/runs` + `/jobs`, `merge.py`) rather than the Checks API because GitHub disabled the `Checks` permission for fine-grained PATs as of mid-2026 — that permission is App-only (#121). |
+| Auth (Claude) and Auth (GitHub) | GitHub App (primary) + fine-grained PAT (fallback) for GitHub; OAuth via mounted volume (no `ANTHROPIC_API_KEY`) for Claude | See [docs/authentication.md](authentication.md) for auth method, required permissions, and consuming modules for every credential the harness uses — not restated here. |
 
 ---
 
@@ -62,7 +61,7 @@ The architecture is bounded by two human checkpoints (morning approval, evening 
 ┌─────────────────────────────────────────────────────────┐
 │  Layer 5 — Execution (Claude Code in git worktree)      │
 │  CLAUDE.md · skills · plugins · hooks (deterministic)   │
-│  runs inside Docker container, OAuth via volume         │
+│  v1: bare process (not containerized); OAuth via volume │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -78,17 +77,19 @@ Two human-owned bookends; everything between is the system's responsibility.
 
 ### 3.2 Layer 2 — Async communication
 
+**What's actually implemented today (v1) is much narrower than the two-channel design below: a single best-effort incoming webhook (`BH_SLACK_WEBHOOK_URL`), posting plain-text notifications, no bot process, no OAuth scopes, no Socket Mode.** See [docs/authentication.md § Slack](authentication.md#slack) for exactly what exists today versus what's deferred. The two-channel, Bolt-bot design below is the **v2 target design** — read the rest of this section as aspirational, not current state.
+
 Two distinct channels, two distinct purposes.
 
-**`#agent-activity`** — passive awareness, fed by the official GitHub→Slack app. Notifications on PR open, CI status, issue activity. Mutable; can be muted; zero code to maintain.
+**`#agent-activity`** — passive awareness, fed by the official GitHub→Slack app. Notifications on PR open, CI status, issue activity. Mutable; can be muted; zero code to maintain. (This channel is independent of the harness's own Slack integration and is unaffected by the v1/v2 gap above.)
 
-**`#agent-decisions`** — active interaction, fed by a custom Slack Bolt app. Every message in this channel requires action: agent asking a threshold-crossing question, run failed, blocked sub-tree surfaced. Uses Block Kit interactive cards for bounded approvals and thread replies for freeform steering.
+**`#agent-decisions`** [deferred to v2 — not implemented] — active interaction, fed by a custom Slack Bolt app. Every message in this channel requires action: agent asking a threshold-crossing question, run failed, blocked sub-tree surfaced. Uses Block Kit interactive cards for bounded approvals and thread replies for freeform steering.
 
-**Guidance flow [implemented]:** this channel is the notification surface for the always-on daemon's escalation path. When the daemon detects a `blocked` label (agent has posted a question on the issue), it posts a stall summary card here. The human posts guidance directly on the GitHub issue and removes `blocked`; the daemon's next poll sees the label gone and resumes the parked sub-tree. Slack is the *channel*; the GitHub issue is the *durable record* the agent reads.
+**Guidance flow [implemented, v1 form]:** the always-on daemon's escalation path (`src/baton_harness/chain/escalation.py`) is implemented today as a plain-text webhook POST, not the Block Kit card described above. When the daemon detects a `blocked` label (agent has posted a question on the issue), it posts a durable GitHub issue comment (always) and, if `BH_SLACK_WEBHOOK_URL` is configured, a best-effort plain-text Slack notification (optional). The human posts guidance directly on the GitHub issue and removes `blocked`; the daemon's next poll sees the label gone and resumes the parked sub-tree. Slack is the *channel*; the GitHub issue is the *durable record* the agent reads — this durable-record behavior is implemented and unaffected by the bot-vs-webhook gap.
 
-**Connection method:** Slack **Socket Mode**. The bot opens an outbound WebSocket to Slack; no inbound webhook, no reverse proxy, no public TLS endpoint on the server. Bot runs as a persistent process (systemd or a sidecar container).
+**Connection method [deferred to v2 — not implemented]:** Slack **Socket Mode**. The bot opens an outbound WebSocket to Slack; no inbound webhook, no reverse proxy, no public TLS endpoint on the server. Bot runs as a persistent process (systemd or a sidecar container). The v1 implementation instead makes a one-shot outbound HTTPS POST per escalation — no persistent bot process, no WebSocket.
 
-**State correlation:** every decision card embeds the issue number in the button `value` and the thread `thread_ts`. Replies are routed back to the originating issue. State persists on the GitHub issue as a comment — Slack is the *channel*, GitHub is the *record*.
+**State correlation [deferred to v2 — not implemented]:** every decision card embeds the issue number in the button `value` and the thread `thread_ts`. Replies are routed back to the originating issue. State persists on the GitHub issue as a comment — Slack is the *channel*, GitHub is the *record*. (This durable-record principle already holds in v1, just without the button/thread correlation, which requires the bot.)
 
 ### 3.3 Layer 3 — Source of truth
 
@@ -141,7 +142,7 @@ This script is the **Dial 2 of the confidence model** (see §4). It fires inside
 
 ### 3.5 Layer 5 — Execution (Claude Code)
 
-Each dispatched issue runs `claude -p` against an isolated git worktree, inside the same container as Baton.
+Each dispatched issue runs `claude -p` against an isolated git worktree. In v1 this runs as a bare process alongside the daemon (systemd or foreground) — see [§5](#5-deployment-topology) for the current deployment path and the deferred containerized target.
 
 **Context loaded by Claude Code, in order of priority:**
 
@@ -194,6 +195,8 @@ The always-on daemon [implemented] is the load-bearing mechanism for Dial 2: it 
 
 ## 5. Deployment topology
 
+**The container topology and Slack-bot process described in this section are the target v2 deployment design and are not yet built** — Docker containerization has not started (§10 item 1), and the Slack bot container below is the same deferred Bolt-bot design flagged in [§3.2](#32-layer-2--async-communication). The daemon currently runs as a bare process (systemd or foreground), not containerized; see [docs/system-setup.md](system-setup.md) and [docs/repository-onboarding.md](repository-onboarding.md) for the actual current deployment path. **Exception:** the Concurrency guidance at the end of this section (`max_concurrent` in `WORKFLOW.md`) is live and applies to the current bare-process deployment as well as the target v2 topology — it is a config knob, not a container-dependent behavior.
+
 Single Docker container running Baton, Claude Code, and supporting tools. The bot runs alongside but as a separate process.
 
 ```
@@ -221,6 +224,8 @@ Single Docker container running Baton, Claude Code, and supporting tools. The bo
 │                                                                   │
 └───────────────────────────────────────────────────────────────────┘
 ```
+
+The `slack-bot container` box above is the same deferred v2 Bolt-bot design flagged at the top of this section — not yet built.
 
 **Container image contents [decided — not yet built]:**
 - Base: `node:22-slim` (or equivalent; Claude Code is npm-distributed)
@@ -303,7 +308,7 @@ Start narrow: only decision cards and reply handling. Resist building activity-f
 
 ### 7.5 ToS posture on headless first-party use
 
-Anthropic's terms have been revised twice in 2026. Running the real `claude` binary containerised on subscription is normal use; running it *headlessly via orchestrator* is a less-explicitly-blessed grey zone. This grey zone cannot be resolved by reading the terms: Anthropic has remained deliberately vague through multiple 2026 revisions and provides no authoritative posture to confirm against.
+Anthropic's terms have been revised twice in 2026. Running the real `claude` binary containerized on subscription is normal use; running it *headlessly via orchestrator* is a less-explicitly-blessed grey zone. This grey zone cannot be resolved by reading the terms: Anthropic has remained deliberately vague through multiple 2026 revisions and provides no authoritative posture to confirm against.
 
 **Decision (issue #37, 2026-06-07):** Accepted as a known, bounded risk. The first-party `claude` binary is the most-compliant available path on subscription. Terms will be monitored at each major Anthropic revision; if explicit guidance appears, this posture is revisited. Fallback: switch to API-key billing — the executor interface is unchanged, only the auth credential differs.
 
@@ -314,12 +319,12 @@ Anthropic's terms have been revised twice in 2026. Running the real `claude` bin
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
 | Subscription rate limit caps real concurrency below desired | High | Medium | Start `max_concurrent: 2`; tune empirically; accept that throughput is capped by plan |
-| Worktree-level isolation isn't enough (port collisions on shared dev services) | Medium | Medium | Container around the whole stack already adds a boundary; per-issue port namespacing in `before_run` if needed |
+| Worktree-level isolation isn't enough (port collisions on shared dev services) | Medium | Medium | Per-issue port namespacing in `before_run` if needed; a container boundary around the whole stack is a deferred v2 addition (see [§5](#5-deployment-topology)), not yet in place |
 | Agent makes wrong design choice on ambiguous issue | Medium | High | Two-dial model; deterministic hooks; explicit confidence rule in prompt |
 | Anthropic ToS changes break the supported path | Low | High | First-party binary stays compliant; track terms updates; willingness to add API-key fallback if subscription path is closed |
-| Silent failure — harness process dies, no notifications fire | Low | High | Systemd auto-restart on container; daily health-check Slack message; reconciler catches stuck runs |
-| Slack bot WebSocket disconnects, decision cards never arrive | Medium | High | Bolt SDK auto-reconnects; second channel via GitHub→Slack app provides a fallback signal route |
-| Accidental `ANTHROPIC_API_KEY` set on host, leaks into container, bills per-token | Low | High | Explicit env validation at container startup; refuse to start if set |
+| Silent failure — harness process dies, no notifications fire | Low | High | Systemd auto-restart of the daemon process (v1 runs bare, not containerized — see [§5](#5-deployment-topology)); daily health-check Slack message; reconciler catches stuck runs |
+| Slack bot WebSocket disconnects, decision cards never arrive | Medium | High | **[deferred to v2 — bot not implemented]** Bolt SDK auto-reconnects; second channel via GitHub→Slack app provides a fallback signal route. The v1 webhook has no persistent connection to disconnect; its failure mode is a single dropped POST, logged at WARNING (see [docs/authentication.md § Slack](authentication.md#slack)) |
+| Accidental `ANTHROPIC_API_KEY` set on host, leaks into a worker process, bills per-token | Low | High | Explicit env validation at daemon startup (gate G3b, `reconcile.py`); refuse to start if set — see [docs/authentication.md](authentication.md) |
 | OAuth credentials in volume get corrupted or rotated | Low | Medium | Re-auth flow is one-time and documented; back up `~/.claude/.credentials.json` after first auth |
 
 ---
