@@ -342,12 +342,13 @@ async def run_daemon(
                         started_at=datetime.now(timezone.utc).isoformat()
                     )
                 _tick_error: str | None = None
+                _issues_processed: set[int] = set()
                 # FIX 2: defensive catch around each per-repo tick.  A
                 # failure building or running one work unit must not kill
                 # the always-on daemon.  Log, escalate if possible, then
                 # continue to the next repo/tick.
                 try:
-                    await _daemon_mod._poll_and_run(
+                    _issues_processed = await _daemon_mod._poll_and_run(
                         config,
                         repo_cfg,
                         ci_poll_interval=ci_poll_interval,
@@ -385,7 +386,7 @@ async def run_daemon(
                 finally:
                     if report is not None:
                         report.end_tick(
-                            issues_processed=[],
+                            issues_processed=sorted(_issues_processed),
                             ended_at=datetime.now(timezone.utc).isoformat(),
                             error=_tick_error,
                         )
@@ -410,12 +411,17 @@ async def run_daemon(
         except Exception:  # noqa: BLE001
             pass  # best-effort; never raise in finally
         if report is not None:
-            report.set_exit_reason(
-                _exit_reason[0],
-                ended_at=datetime.now(timezone.utc).isoformat(),
-            )
-            if report_path is not None:
-                report.write(report_path)
+            try:
+                report.set_exit_reason(
+                    _exit_reason[0],
+                    ended_at=datetime.now(timezone.utc).isoformat(),
+                )
+                if report_path is not None:
+                    report.write(report_path)
+            except Exception as exc:  # noqa: BLE001
+                _log.warning(
+                    "daemon: session report finalization failed: %s", exc
+                )
         if runlog is not None:
             try:
                 runlog.emit(
@@ -447,7 +453,7 @@ async def _poll_and_run(
     obs: ObsConfig | None = None,
     installation_token: InstallationTokenSource = "",
     report: SessionReport | None = None,
-) -> None:
+) -> set[int]:
     """Poll one repo for a ready work unit and run it if found.
 
     The poll cycle has three sequential phases (B-I3 serial invariant —
@@ -493,9 +499,13 @@ async def _poll_and_run(
             (``ghs_`` prefix).  Threaded to all ``gh`` subprocess
             calls.  Pass ``""`` (default) to inherit ambient creds.
         report: Optional session report receiving daemon activity.
+
+    Returns:
+        The issue numbers dispatched during this poll cycle.
     """
     owner = repo_cfg.owner
     repo = repo_cfg.repo
+    dispatched_issue_nums: set[int] = set()
 
     # Track which milestone numbers (and un-milestoned issue numbers)
     # were processed this cycle so the secondary scan can dedup.
@@ -534,13 +544,13 @@ async def _poll_and_run(
             proc.returncode,
             proc.stderr,
         )
-        return
+        return dispatched_issue_nums
 
     try:
         issues_raw = json.loads(proc.stdout)
     except (json.JSONDecodeError, TypeError) as exc:
         _log.error("daemon: issue list parse error: %s", exc)
-        return
+        return dispatched_issue_nums
 
     # Filter out issues that carry any dispatch-exclude label (e.g.
     # ``blocked``).  Uses the module-level ``_DISPATCH_EXCLUDE_LABELS``
@@ -756,6 +766,7 @@ async def _poll_and_run(
                     continue
 
             _drain_idx += 1
+            dispatched_issue_nums.update(membership)
             await _daemon_mod._run_work_unit(
                 config=config,
                 repo_cfg=repo_cfg,
@@ -808,16 +819,16 @@ async def _poll_and_run(
             orphan_proc.returncode,
             orphan_proc.stderr,
         )
-        return
+        return dispatched_issue_nums
 
     try:
         orphans_raw = json.loads(orphan_proc.stdout)
     except (json.JSONDecodeError, TypeError) as exc:
         _log.warning("daemon: orphan scan parse error: %s", exc)
-        return
+        return dispatched_issue_nums
 
     if not orphans_raw:
-        return
+        return dispatched_issue_nums
 
     # Walk each orphan; dedup by milestone number (or issue number for
     # un-milestoned).  Each milestone is seeded at most once.
@@ -874,6 +885,7 @@ async def _poll_and_run(
             orphan_slug,
             issue_num,
         )
+        dispatched_issue_nums.update(orphan_membership)
         await _daemon_mod._run_work_unit(
             config=config,
             repo_cfg=repo_cfg,
@@ -929,6 +941,8 @@ async def _poll_and_run(
         )
     except Exception as exc:  # noqa: BLE001
         _log.debug("daemon: worktree GC sweep raised (suppressed): %s", exc)
+
+    return dispatched_issue_nums
 
 
 def _select_work_unit(

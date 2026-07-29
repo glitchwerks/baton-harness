@@ -28,6 +28,7 @@ from baton_harness.chain.app_auth import InstallationTokenSource, gh_env
 from baton_harness.chain.heartbeat import LivenessState
 from baton_harness.chain.merge import REQUIRED_CHECKS, MergeOutcome
 from baton_harness.chain.runlog import RunLog
+from baton_harness.chain.session_report import SessionReport
 from baton_harness.vendor.symphony.config import WorkflowConfig
 from baton_harness.vendor.symphony.tracker import Issue
 
@@ -310,6 +311,7 @@ def _run_ci_gate(
     ci_timeout: float,
     required_checks: list[str] | None = None,
     installation_token: InstallationTokenSource = "",
+    report: SessionReport | None = None,
 ) -> MergeOutcome:
     """Run the CI gate and apply the merge/park terminal for one issue.
 
@@ -357,6 +359,7 @@ def _run_ci_gate(
             issue #225.
         installation_token: Optional GitHub App installation access token
             (``ghs_`` prefix).  Threaded to ``_label_edit`` calls.
+        report: Optional session report receiving successful label edits.
 
     Returns:
         The merge outcome applied to the issue.
@@ -387,6 +390,7 @@ def _run_ci_gate(
             n,
             remove=["agent-in-progress"],
             installation_token=installation_token,
+            report=report,
         )
         if liveness_state is not None:
             liveness_state.clear()
@@ -413,6 +417,7 @@ def _run_ci_gate(
             n,
             remove=["agent-in-progress", "agent-done"],
             installation_token=installation_token,
+            report=report,
         )
         if liveness_state is not None:
             liveness_state.clear()
@@ -426,6 +431,7 @@ def _run_ci_gate(
             n,
             remove=["agent-in-progress"],
             installation_token=installation_token,
+            report=report,
         )
         if liveness_state is not None:
             liveness_state.clear()

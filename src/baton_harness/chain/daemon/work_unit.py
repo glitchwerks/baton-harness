@@ -1179,6 +1179,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                             ci_timeout=ci_timeout,
                             required_checks=required_checks,
                             installation_token=installation_token,
+                            report=report,
                         )
                         if report is not None:
                             _gate_ts = datetime.now(timezone.utc).isoformat()
@@ -1189,16 +1190,6 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                                     _conv_sha
                                     if _outcome == MergeOutcome.MERGED
                                     else None
-                                ),
-                                ts=_gate_ts,
-                            )
-                            report.record_label_edit(
-                                n,
-                                added=[],
-                                removed=(
-                                    ["agent-in-progress", "agent-done"]
-                                    if _outcome == MergeOutcome.MERGED
-                                    else ["agent-in-progress"]
                                 ),
                                 ts=_gate_ts,
                             )
@@ -1333,6 +1324,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                     ci_timeout=ci_timeout,
                     required_checks=required_checks,
                     installation_token=installation_token,
+                    report=report,
                 )
                 if report is not None:
                     _gate_ts = datetime.now(timezone.utc).isoformat()
@@ -1343,16 +1335,6 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                             pr_head_sha
                             if _outcome == MergeOutcome.MERGED
                             else None
-                        ),
-                        ts=_gate_ts,
-                    )
-                    report.record_label_edit(
-                        n,
-                        added=[],
-                        removed=(
-                            ["agent-in-progress", "agent-done"]
-                            if _outcome == MergeOutcome.MERGED
-                            else ["agent-in-progress"]
                         ),
                         ts=_gate_ts,
                     )
