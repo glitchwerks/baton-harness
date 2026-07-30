@@ -453,6 +453,8 @@ def _label_edit(
             When non-empty, overrides ``GH_TOKEN`` in the subprocess env
             via a per-call copy — ``os.environ`` is never mutated.
         report: Optional session report receiving successful label edits.
+            Edits touching the ``blocked`` label are intentionally not
+            recorded: they are not daemon-attested transitions.
     """
     cmd = ["gh", "issue", "edit", str(issue), "--repo", f"{owner}/{repo}"]
     for lbl in add or []:
@@ -468,6 +470,8 @@ def _label_edit(
             proc.returncode,
             proc.stderr,
         )
+    # Skip blocked-label edits: only daemon-attested transitions are
+    # recorded in the session report.
     if (
         report is not None
         and proc.returncode == 0

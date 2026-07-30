@@ -335,12 +335,15 @@ async def reconcile_startup(
     # ------------------------------------------------------------------
     try:
         if marker.exists():
+            g2_detail = (
+                "Prior daemon run ended ungracefully (possible OOM); "
+                "in-flight work may have been lost"
+            )
             alert(
                 owner,
                 repo,
                 None,
-                "Prior daemon run ended ungracefully (possible OOM); "
-                "in-flight work may have been lost",
+                g2_detail,
                 severity="critical",
                 runlog=runlog,
                 installation_token=installation_token,
@@ -348,10 +351,7 @@ async def reconcile_startup(
             if report is not None:
                 report.record_startup_finding(
                     gate="G2",
-                    detail=(
-                        "Prior daemon run ended ungracefully (possible OOM); "
-                        "in-flight work may have been lost"
-                    ),
+                    detail=g2_detail,
                     pids=None,
                 )
         # (Re)create the marker for this run.
@@ -369,13 +369,16 @@ async def reconcile_startup(
     try:
         pids = _list_claude_procs()
         if pids:
+            g1_detail = (
+                f"Orphan claude processes detected at startup (PIDs: {pids}); "
+                "these may be leaked from a prior crashed run"
+                " — inspect manually"
+            )
             alert(
                 owner,
                 repo,
                 None,
-                f"Orphan claude processes detected at startup (PIDs: {pids}); "
-                "these may be leaked from a prior crashed run"
-                " — inspect manually",
+                g1_detail,
                 severity="warn",
                 runlog=runlog,
                 installation_token=installation_token,
@@ -383,11 +386,7 @@ async def reconcile_startup(
             if report is not None:
                 report.record_startup_finding(
                     gate="G1",
-                    detail=(
-                        f"Orphan claude processes detected at startup "
-                        f"(PIDs: {pids}); these may be leaked from a prior "
-                        "crashed run — inspect manually"
-                    ),
+                    detail=g1_detail,
                     pids=pids,
                 )
     except Exception:  # noqa: BLE001

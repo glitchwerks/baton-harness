@@ -521,12 +521,15 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                     )
                     sched.mark_parked(n)
                     parked_reasons[n] = "ci_gate_reentry: no open PR"
+                    detail = (
+                        f"Issue #{n} needs CI-gate re-entry but has no "
+                        "open PR."
+                    )
                     _daemon_mod.alert(
                         owner,
                         repo,
                         n,
-                        f"Issue #{n} needs CI-gate re-entry but has no "
-                        "open PR.",
+                        detail,
                         severity="critical",
                         kind="debug",
                         runlog=runlog,
@@ -537,11 +540,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                             n,
                             kind="debug",
                             severity="critical",
-                            detail=(
-                                f"Issue #{n} needs CI-gate re-entry but has "
-                                "no "
-                                "open PR."
-                            ),
+                            detail=detail,
                             ts=datetime.now(timezone.utc).isoformat(),
                         )
                     continue
@@ -596,11 +595,14 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                         liveness_state.clear()
                     sched.mark_parked(n)
                     parked_reasons[n] = f"merge exception (ci_gate): {exc}"
+                    detail = (
+                        f"Issue #{n} merge failed (ci_gate_reentry): {exc}"
+                    )
                     _daemon_mod.alert(
                         owner,
                         repo,
                         n,
-                        f"Issue #{n} merge failed (ci_gate_reentry): {exc}",
+                        detail,
                         severity="warn",
                         kind="debug",
                         runlog=runlog,
@@ -611,10 +613,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                             n,
                             kind="debug",
                             severity="warn",
-                            detail=(
-                                f"Issue #{n} merge failed "
-                                f"(ci_gate_reentry): {exc}"
-                            ),
+                            detail=detail,
                             ts=datetime.now(timezone.utc).isoformat(),
                         )
                     continue
@@ -701,12 +700,15 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                             )
                         except Exception:  # noqa: BLE001
                             pass
+                    escalation_detail = (
+                        f"Issue #{n} hit the re-dispatch loop threshold"
+                        " — parked to prevent infinite crash-restart cycle."
+                    )
                     _daemon_mod.alert(
                         owner,
                         repo,
                         n,
-                        f"Issue #{n} hit the re-dispatch loop threshold"
-                        " — parked to prevent infinite crash-restart cycle.",
+                        escalation_detail,
                         severity="critical",
                         kind="block",
                         runlog=runlog,
@@ -717,11 +719,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                             n,
                             kind="block",
                             severity="critical",
-                            detail=(
-                                f"Issue #{n} hit the re-dispatch loop "
-                                "threshold — parked to prevent infinite "
-                                "crash-restart cycle."
-                            ),
+                            detail=escalation_detail,
                             ts=datetime.now(timezone.utc).isoformat(),
                         )
                     _daemon_mod._label_edit(
@@ -768,14 +766,15 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                     " skipping this poll cycle (fail-closed, #128 P2a)",
                     n,
                 )
+                escalation_detail = (
+                    f"Issue #{n} labels unreadable before dispatch;"
+                    " skipping this poll cycle."
+                )
                 _daemon_mod.alert(
                     owner,
                     repo,
                     n,
-                    (
-                        f"Issue #{n} labels unreadable before dispatch;"
-                        " skipping this poll cycle."
-                    ),
+                    escalation_detail,
                     severity="critical",
                     kind="block",
                     runlog=runlog,
@@ -786,10 +785,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                         n,
                         kind="block",
                         severity="critical",
-                        detail=(
-                            f"Issue #{n} labels unreadable before dispatch;"
-                            " skipping this poll cycle."
-                        ),
+                        detail=escalation_detail,
                         ts=datetime.now(timezone.utc).isoformat(),
                     )
                 _daemon_mod._label_edit(
@@ -857,11 +853,14 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                     liveness_state.clear()
                 sched.mark_parked(n)
                 parked_reasons[n] = "issue fetch failed"
+                escalation_detail = (
+                    f"Issue #{n} could not be fetched; worker not dispatched."
+                )
                 _daemon_mod.alert(
                     owner,
                     repo,
                     n,
-                    f"Issue #{n} could not be fetched; worker not dispatched.",
+                    escalation_detail,
                     severity="warn",
                     kind="debug",
                     runlog=runlog,
@@ -872,10 +871,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                         n,
                         kind="debug",
                         severity="warn",
-                        detail=(
-                            f"Issue #{n} could not be fetched; "
-                            "worker not dispatched."
-                        ),
+                        detail=escalation_detail,
                         ts=datetime.now(timezone.utc).isoformat(),
                     )
                 continue
@@ -948,11 +944,14 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                     liveness_state.clear()
                 sched.mark_parked(n)
                 parked_reasons[n] = f"worker exception: {exc}"
+                escalation_detail = (
+                    f"Issue #{n} worker raised an exception: {exc}"
+                )
                 _daemon_mod.alert(
                     owner,
                     repo,
                     n,
-                    f"Issue #{n} worker raised an exception: {exc}",
+                    escalation_detail,
                     severity="warn",
                     kind="debug",
                     runlog=runlog,
@@ -963,7 +962,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                         n,
                         kind="debug",
                         severity="warn",
-                        detail=f"Issue #{n} worker raised an exception: {exc}",
+                        detail=escalation_detail,
                         ts=datetime.now(timezone.utc).isoformat(),
                     )
                 continue
@@ -1216,14 +1215,15 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                         )
                     except Exception:  # noqa: BLE001
                         pass
+                escalation_detail = (
+                    f"Issue #{n} failed the single-state"
+                    f" label invariant: {_inv_violation}"
+                )
                 _daemon_mod.alert(
                     owner,
                     repo,
                     n,
-                    (
-                        f"Issue #{n} failed the single-state"
-                        f" label invariant: {_inv_violation}"
-                    ),
+                    escalation_detail,
                     severity="critical",
                     kind="block",
                     runlog=runlog,
@@ -1234,10 +1234,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                         n,
                         kind="block",
                         severity="critical",
-                        detail=(
-                            f"Issue #{n} failed the single-state"
-                            f" label invariant: {_inv_violation}"
-                        ),
+                        detail=escalation_detail,
                         ts=datetime.now(timezone.utc).isoformat(),
                     )
                 _daemon_mod._label_edit(
@@ -1358,11 +1355,12 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                     liveness_state.clear()
                 sched.mark_parked(n)
                 parked_reasons[n] = reason_text
+                escalation_detail = f"Issue #{n} parked: {reason_text}."
                 _daemon_mod.alert(
                     owner,
                     repo,
                     n,
-                    f"Issue #{n} parked: {reason_text}.",
+                    escalation_detail,
                     severity="warn",
                     kind=kind,
                     runlog=runlog,
@@ -1373,7 +1371,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                         n,
                         kind=kind,
                         severity="warn",
-                        detail=f"Issue #{n} parked: {reason_text}.",
+                        detail=escalation_detail,
                         ts=datetime.now(timezone.utc).isoformat(),
                     )
 

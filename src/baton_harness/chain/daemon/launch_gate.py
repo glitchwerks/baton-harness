@@ -485,12 +485,15 @@ async def _launch_one_issue(
         )
         # Post a blocking comment so operators know why the worker was
         # refused.
+        escalation_detail = (
+            "preflight refused — branch protection missing or "
+            "misconfigured; worker not launched"
+        )
         _daemon_mod.alert(
             owner,
             repo,
             issue_number,
-            "preflight refused — branch protection missing or "
-            "misconfigured; worker not launched",
+            escalation_detail,
             severity="critical",
             installation_token=installation_token,
         )
@@ -499,10 +502,7 @@ async def _launch_one_issue(
                 issue_number,
                 kind="block",
                 severity="critical",
-                detail=(
-                    "preflight refused — branch protection missing or "
-                    "misconfigured; worker not launched"
-                ),
+                detail=escalation_detail,
                 ts=datetime.now(timezone.utc).isoformat(),
             )
         return None
