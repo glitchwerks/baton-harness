@@ -3,15 +3,14 @@
 #
 # Prepares a throwaway sandbox GitHub repository for a bh-daemon smoke test:
 #   - Creates the five required harness labels (idempotent)
-#   - Creates a trivial trigger issue (agent-ready)
-#   - Creates a hello-feature milestone with two DAG-ordered issues, plus a
-#     third issue that carries only a body-marker dependency (#126 fallback)
+#   - Seeds scenario-specific issues (the default hello scenario creates the
+#     existing trivial trigger + hello-feature DAG milestone)
 #   - Writes a stub CI workflow to the sandbox repo and pushes it
 #   - Writes .bh/config.env with repo/App/vault identifiers
 #   - Seeds .symphony/ into the sandbox repo's .gitignore and pushes it
 #
 # Usage:
-#   bin/init-sandbox.sh [--help|-h]
+#   bin/init-sandbox.sh [--scenario <name>] [--help|-h]
 #
 # Required environment variables:
 #   BH_REPO_OWNER      GitHub repository owner (org or user login)
@@ -53,26 +52,35 @@ print_safety_banner() {
 
 usage() {
     cat <<'EOF'
-Usage: bin/init-sandbox.sh [--help|-h]
+Usage: bin/init-sandbox.sh [--scenario <name>] [--help|-h]
 
 Prepares a throwaway sandbox GitHub repository for a bh-daemon smoke test.
+
+Options:
+  --scenario <name>  Seed one of the scenarios below. Overrides BH_SCENARIO.
+  --help, -h         Show this help.
+
+Scenario selection:
+  hello           Default. Seed the existing trivial issue + hello-feature DAG.
+  terminal-block  Seed one issue carrying both agent-ready and blocked.
+  recovery        Seed no agent-ready issues; retain shared repo setup only.
 
 Required environment variables:
   BH_REPO_OWNER      GitHub repository owner (org or user login)
   BH_REPO_NAME       GitHub repository name (without owner prefix)
   BH_PROJECT_ROOT    Absolute path to the local clone of the sandbox repo
 
+Optional environment variables:
+  BH_SCENARIO        Optional scenario fallback when --scenario is omitted
+
 Steps performed:
   1. Preflight checks (gh auth, git, BH_PROJECT_ROOT is a git repo)
   2. Create required labels (idempotent — skipped if already present)
-  3. Create a trivial trigger issue (agent-ready, no milestone)
-  4. Create hello-feature milestone + 2 DAG-ordered issues (B blocked_by A),
-     plus issue C — a body-marker-only dependency exercising the #126
-     issue-body fallback (no native dependency edge is wired for C)
-  5. Write stub CI workflow (.github/workflows/ci.yml) to BH_PROJECT_ROOT
+  3. Seed the selected scenario's issue/milestone content
+  4. Write stub CI workflow (.github/workflows/ci.yml) to BH_PROJECT_ROOT
      and push to the sandbox default branch (idempotent if unchanged)
-  6. Write BH_PROJECT_ROOT/.bh/config.env with sandbox repo/App/vault config
-  7. Seed .symphony/ into BH_PROJECT_ROOT/.gitignore and push
+  5. Write BH_PROJECT_ROOT/.bh/config.env with sandbox repo/App/vault config
+  6. Seed .symphony/ into BH_PROJECT_ROOT/.gitignore and push
      (idempotent — skipped if the entry is already present)
 
 Idempotency notes:
@@ -86,10 +94,39 @@ EOF
     print_safety_banner
 }
 
-if [[ "${1-}" == "--help" || "${1-}" == "-h" ]]; then
-    usage
-    exit 0
-fi
+SCENARIO="${BH_SCENARIO:-hello}"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --scenario)
+            if [[ $# -lt 2 || -z "$2" ]]; then
+                echo "baton-harness: error: --scenario requires a name" >&2
+                echo "  Valid scenarios: hello, terminal-block, recovery" >&2
+                exit 1
+            fi
+            SCENARIO="$2"
+            shift 2
+            ;;
+        --help|-h)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "baton-harness: error: unknown option: $1" >&2
+            usage >&2
+            exit 1
+            ;;
+    esac
+done
+
+case "${SCENARIO}" in
+    hello|terminal-block|recovery)
+        ;;
+    *)
+        echo "baton-harness: error: unknown scenario '${SCENARIO}'" >&2
+        echo "  Valid scenarios: hello, terminal-block, recovery" >&2
+        exit 1
+        ;;
+esac
 
 # Print safety banner at startup (always)
 print_safety_banner
@@ -246,6 +283,63 @@ _find_open_issue_url() {
     printf '%s' "${result}" | head -n1 || true
 }
 
+_create_issue_checked() {
+    local args=("$@")
+    local requested_labels=()
+    local issue_url issue_number actual_labels
+    local missing_labels=()
+    local index label
+
+    for ((index = 0; index < ${#args[@]}; index++)); do
+        if [[ "${args[index]}" == "--label" ]]; then
+            if ((index + 1 >= ${#args[@]})); then
+                echo "baton-harness: error: _create_issue_checked received --label without a value" >&2
+                exit 1
+            fi
+            requested_labels+=("${args[index + 1]}")
+            index=$((index + 1))
+        fi
+    done
+
+    if [[ ${#requested_labels[@]} -eq 0 ]]; then
+        echo "baton-harness: error: _create_issue_checked requires at least one --label value" >&2
+        exit 1
+    fi
+
+    issue_url="$(gh issue create --repo "${REPO_SLUG}" "${args[@]}")"
+    issue_number="${issue_url##*/}"
+    if [[ -z "${issue_number}" || ! "${issue_number}" =~ ^[0-9]+$ ]]; then
+        echo "baton-harness: error: failed to extract created issue number from URL (got: '${issue_url}')" >&2
+        exit 1
+    fi
+
+    actual_labels="$(gh issue view "${issue_number}" --repo "${REPO_SLUG}" \
+        --json labels --jq '.labels[].name' 2>&1)" || {
+        echo "baton-harness: error: failed to verify labels on created issue #${issue_number}: ${actual_labels}" >&2
+        exit 1
+    }
+
+    for label in "${requested_labels[@]}"; do
+        if ! printf '%s\n' "${actual_labels}" | grep -Fxq -- "${label}"; then
+            missing_labels+=("${label}")
+        fi
+    done
+
+    if [[ ${#missing_labels[@]} -gt 0 ]]; then
+        echo "baton-harness: error: issue #${issue_number} was created, but requested label(s) failed to attach:" >&2
+        for label in "${missing_labels[@]}"; do
+            echo "  missing: ${label}" >&2
+        done
+        echo "  Likely cause: the GitHub token lacks Issues:write scope." >&2
+        echo "  Refusing to continue with an invalid scenario seed." >&2
+        exit 1
+    fi
+
+    printf '%s\n' "${issue_url}"
+}
+
+case "${SCENARIO}" in
+hello)
 # ---------------------------------------------------------------------------
 # Create trivial trigger issue (single agent-ready, no milestone)
 # ---------------------------------------------------------------------------
@@ -262,8 +356,7 @@ TRIVIAL_ISSUE_URL="$(_find_open_issue_url "${_trivial_title}")" || true
 if [[ -n "${TRIVIAL_ISSUE_URL}" ]]; then
     echo "baton-harness:   trivial issue exists, reusing: ${TRIVIAL_ISSUE_URL}"
 else
-    TRIVIAL_ISSUE_URL="$(gh issue create \
-        --repo "${REPO_SLUG}" \
+    TRIVIAL_ISSUE_URL="$(_create_issue_checked \
         --title "${_trivial_title}" \
         --body "Add a Python file (greet.py) with a greet() function that prints 'greetings'." \
         --label "agent-ready")"
@@ -303,8 +396,7 @@ ISSUE_A_URL="$(_find_open_issue_url "${_issue_a_title}")" || true
 if [[ -n "${ISSUE_A_URL}" ]]; then
     echo "baton-harness:   issue A exists, reusing: ${ISSUE_A_URL}"
 else
-    ISSUE_A_URL="$(gh issue create \
-        --repo "${REPO_SLUG}" \
+    ISSUE_A_URL="$(_create_issue_checked \
         --title "${_issue_a_title}" \
         --body "Add hello.py with a hello() function." \
         --label "agent-ready" \
@@ -332,8 +424,7 @@ else
     # the native API result wins outright (gh_deps.fetch_blocked_by),
     # so this marker alone does not exercise the #126 body-fallback
     # path. Issue C below (no native edge) covers that case.
-    ISSUE_B_URL="$(gh issue create \
-        --repo "${REPO_SLUG}" \
+    ISSUE_B_URL="$(_create_issue_checked \
         --title "${_issue_b_title}" \
         --body "Add pytest tests for the hello() function from the prior issue. blocked_by #${ISSUE_A_NUMBER}" \
         --label "agent-ready" \
@@ -433,8 +524,7 @@ ISSUE_C_URL="$(_find_open_issue_url "${_issue_c_title}")" || true
 if [[ -n "${ISSUE_C_URL}" ]]; then
     echo "baton-harness:   issue C exists, reusing: ${ISSUE_C_URL}"
 else
-    ISSUE_C_URL="$(gh issue create \
-        --repo "${REPO_SLUG}" \
+    ISSUE_C_URL="$(_create_issue_checked \
         --title "${_issue_c_title}" \
         --body "Document the hello() function from the prior issue. blocked_by #${ISSUE_A_NUMBER}" \
         --label "agent-ready" \
@@ -448,6 +538,26 @@ if [[ -z "${ISSUE_C_NUMBER}" || ! "${ISSUE_C_NUMBER}" =~ ^[0-9]+$ ]]; then
     exit 1
 fi
 echo "baton-harness:   issue C: #${ISSUE_C_NUMBER} — ${ISSUE_C_URL} (blocked_by A via body marker only, no native edge)"
+    ;;
+terminal-block)
+    echo "baton-harness: creating terminal-block scenario issue ..."
+    _terminal_block_title="terminal-block scenario"
+    TERMINAL_BLOCK_ISSUE_URL="$(_find_open_issue_url "${_terminal_block_title}")" || true
+    if [[ -n "${TERMINAL_BLOCK_ISSUE_URL}" ]]; then
+        echo "baton-harness:   terminal-block issue exists, reusing: ${TERMINAL_BLOCK_ISSUE_URL}"
+    else
+        TERMINAL_BLOCK_ISSUE_URL="$(_create_issue_checked \
+            --title "${_terminal_block_title}" \
+            --body "No-dispatch fixture for the terminal-block scenario. This issue is intentionally both agent-ready and blocked and must never be worked." \
+            --label "agent-ready" \
+            --label "blocked")"
+        echo "baton-harness:   terminal-block issue created: ${TERMINAL_BLOCK_ISSUE_URL}"
+    fi
+    ;;
+recovery)
+    echo "baton-harness: recovery scenario seeds no agent-ready issues or milestones"
+    ;;
+esac
 
 # ---------------------------------------------------------------------------
 # Write stub CI workflow to the sandbox repo
@@ -621,14 +731,25 @@ echo "baton-harness: sandbox initialisation complete."
 echo ""
 echo "  Sandbox repo:    ${REPO_SLUG}"
 echo "  Local clone:     ${BH_PROJECT_ROOT}"
+echo "  Scenario:        ${SCENARIO}"
 echo ""
 echo "  Created:"
 echo "    - 5 required labels"
-echo "    - Trivial trigger issue:  ${TRIVIAL_ISSUE_URL}"
-echo "    - Milestone 'hello-feature' (#${MILESTONE_NUMBER})"
-echo "    - Issue A:  ${ISSUE_A_URL}"
-echo "    - Issue B:  ${ISSUE_B_URL}  (blocked_by A, native edge)"
-echo "    - Issue C:  ${ISSUE_C_URL}  (blocked_by A, body marker only — #126 fallback)"
+case "${SCENARIO}" in
+    hello)
+        echo "    - Trivial trigger issue:  ${TRIVIAL_ISSUE_URL}"
+        echo "    - Milestone 'hello-feature' (#${MILESTONE_NUMBER})"
+        echo "    - Issue A:  ${ISSUE_A_URL}"
+        echo "    - Issue B:  ${ISSUE_B_URL}  (blocked_by A, native edge)"
+        echo "    - Issue C:  ${ISSUE_C_URL}  (blocked_by A, body marker only — #126 fallback)"
+        ;;
+    terminal-block)
+        echo "    - Terminal-block issue:  ${TERMINAL_BLOCK_ISSUE_URL}  (agent-ready + blocked)"
+        ;;
+    recovery)
+        echo "    - No agent-ready issues or milestones"
+        ;;
+esac
 echo "    - Stub CI workflow: .github/workflows/ci.yml"
 echo "    - Created .bh/config.env"
 echo "    - .symphony/ entry in: .gitignore"

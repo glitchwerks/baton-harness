@@ -172,6 +172,8 @@ bin/setup-env.sh
 #    (BH_GITHUB_APP_ID, BH_GITHUB_APP_INSTALLATION_ID, BWS_PEM_SECRET_ID,
 #    BWS_GH_TOKEN_SECRET_ID, BWS_HEARTBEAT_PING_URL_SECRET_ID) and writes
 #    them to ${BH_PROJECT_ROOT}/.bh/config.env.
+#    Use --scenario <name> (or BH_SCENARIO) to select hello (default),
+#    terminal-block (dual-labeled no-dispatch issue), or recovery (no issues).
 export BH_REPO_OWNER=<owner>
 export BH_REPO_NAME=<repo>
 export BH_PROJECT_ROOT=<abs-path-to-local-sandbox-clone>
