@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+from datetime import datetime, timezone
 
 # post_slack_alert: `as post_slack_alert` self-reexport (#275, Phase 6c)
 # so mypy --strict's no_implicit_reexport treats
@@ -163,6 +164,7 @@ from baton_harness.chain.ruleset_status import (
 # THIS module -- so the explicit `as` form is required here (mypy
 # --strict no_implicit_reexport).
 from baton_harness.chain.runlog import RunLog as RunLog
+from baton_harness.chain.session_report import SessionReport
 from baton_harness.chain.subproc import run_cmd
 
 # gh_api_helpers.py cluster (#274, Phase 6b): re-exported so
@@ -437,6 +439,7 @@ def _label_edit(
     add: list[str] | None = None,
     remove: list[str] | None = None,
     installation_token: InstallationTokenSource = "",
+    report: SessionReport | None = None,
 ) -> None:
     """Edit labels on a GitHub issue.
 
@@ -449,6 +452,9 @@ def _label_edit(
         installation_token: Optional GitHub App installation access token.
             When non-empty, overrides ``GH_TOKEN`` in the subprocess env
             via a per-call copy — ``os.environ`` is never mutated.
+        report: Optional session report receiving successful label edits.
+            Edits touching the ``blocked`` label are intentionally not
+            recorded: they are not daemon-attested transitions.
     """
     cmd = ["gh", "issue", "edit", str(issue), "--repo", f"{owner}/{repo}"]
     for lbl in add or []:
@@ -463,6 +469,22 @@ def _label_edit(
             issue,
             proc.returncode,
             proc.stderr,
+        )
+    # Skip blocked-label edits: only daemon-attested transitions are
+    # recorded in the session report.
+    if (
+        report is not None
+        and proc.returncode == 0
+        and not any(
+            label.casefold() == "blocked"
+            for label in [*(add or []), *(remove or [])]
+        )
+    ):
+        report.record_label_edit(
+            issue,
+            added=list(add or []),
+            removed=list(remove or []),
+            ts=datetime.now(timezone.utc).isoformat(),
         )
 
 

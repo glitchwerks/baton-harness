@@ -88,6 +88,7 @@ from baton_harness.chain.recovery import scan_orphan_worktrees
 from baton_harness.chain.redispatch import RedispatchTally
 from baton_harness.chain.registry import RepoConfig
 from baton_harness.chain.runlog import RunLog
+from baton_harness.chain.session_report import SessionReport
 from baton_harness.vendor.symphony.config import WorkflowConfig
 from baton_harness.vendor.symphony.workspace import WorkspaceManager
 
@@ -173,6 +174,7 @@ async def run_daemon(
     ci_poll_interval: float = _DEFAULT_CI_POLL_INTERVAL,
     ci_timeout: float = _DEFAULT_CI_TIMEOUT,
     installation_token: InstallationTokenSource = "",
+    report_path: Path | None = None,
 ) -> None:
     """Run the always-on serial daemon outer loop.
 
@@ -192,6 +194,7 @@ async def run_daemon(
             (``ghs_`` prefix).  Threaded to all ``gh`` subprocess
             calls via per-call env override.  ``os.environ`` is never
             mutated.  Pass ``""`` (default) to inherit ambient creds.
+        report_path: Optional destination for the daemon session report.
     """
     if poll_interval_s is None:
         poll_interval_s = config.poll_interval_ms / 1000
@@ -237,6 +240,16 @@ async def run_daemon(
     except Exception as exc:  # noqa: BLE001
         _log.warning("daemon: observability init failed: %s", exc)
         runlog = None
+
+    report: SessionReport | None = None
+    if report_path is not None:
+        report = SessionReport(
+            mode="once" if once else "continuous",
+            poll_interval_s=poll_interval_s,
+            registry=[{"owner": r.owner, "repo": r.repo} for r in registry],
+            started_at=datetime.now(timezone.utc).isoformat(),
+        )
+
     try:
         if tally is None:
             obs_for_tally = _daemon_mod.load_obs_config()
@@ -259,6 +272,7 @@ async def run_daemon(
         obs,
         runlog,
         installation_token=installation_token,
+        report=report,
     )
 
     # --- SIGTERM handler (Fix 3 / PR #107): graceful shutdown clears marker.
@@ -267,6 +281,7 @@ async def run_daemon(
     _daemon_marker = (
         Path(registry[0].project_root) / ".baton-harness" / "daemon.alive"
     )
+    _exit_reason: list[str] = ["exception"]
 
     def _sigterm_handler(signum: int, frame: object) -> None:  # noqa: ARG001
         """Clear the daemon.alive marker then raise SystemExit."""
@@ -274,6 +289,7 @@ async def run_daemon(
             _daemon_marker.unlink(missing_ok=True)
         except Exception:  # noqa: BLE001
             pass
+        _exit_reason[0] = "sigterm"
         raise SystemExit(0)
 
     try:
@@ -321,12 +337,18 @@ async def run_daemon(
                 tally.advance_tick()
 
             for repo_cfg in registry:
+                if report is not None:
+                    report.begin_tick(
+                        started_at=datetime.now(timezone.utc).isoformat()
+                    )
+                _tick_error: str | None = None
+                _issues_processed: set[int] = set()
                 # FIX 2: defensive catch around each per-repo tick.  A
                 # failure building or running one work unit must not kill
                 # the always-on daemon.  Log, escalate if possible, then
                 # continue to the next repo/tick.
                 try:
-                    await _daemon_mod._poll_and_run(
+                    _issues_processed = await _daemon_mod._poll_and_run(
                         config,
                         repo_cfg,
                         ci_poll_interval=ci_poll_interval,
@@ -336,8 +358,10 @@ async def run_daemon(
                         liveness_state=liveness_state,
                         obs=obs,
                         installation_token=installation_token,
+                        report=report,
                     )
                 except Exception as exc:
+                    _tick_error = str(exc)
                     _log.error(
                         "daemon: unhandled exception for %s/%s: %s; "
                         "daemon continues",
@@ -359,11 +383,22 @@ async def run_daemon(
                         )
                     except Exception:
                         pass  # escalation may fail; daemon must survive
+                finally:
+                    if report is not None:
+                        report.end_tick(
+                            issues_processed=sorted(_issues_processed),
+                            ended_at=datetime.now(timezone.utc).isoformat(),
+                            error=_tick_error,
+                        )
 
             if once:
+                _exit_reason[0] = "once_complete"
                 break
 
             await asyncio.sleep(poll_interval_s)
+    except KeyboardInterrupt:
+        _exit_reason[0] = "keyboard_interrupt"
+        raise
     finally:
         # Signal the monitor thread and wait for it to exit cleanly.
         stop_event.set()
@@ -375,6 +410,33 @@ async def run_daemon(
             _daemon_marker.unlink(missing_ok=True)
         except Exception:  # noqa: BLE001
             pass  # best-effort; never raise in finally
+        if report is not None:
+            try:
+                report.set_exit_reason(
+                    _exit_reason[0],
+                    ended_at=datetime.now(timezone.utc).isoformat(),
+                )
+                if report_path is not None:
+                    report.write(report_path)
+            except Exception as exc:  # noqa: BLE001
+                _log.warning(
+                    "daemon: session report finalization failed: %s", exc
+                )
+        if runlog is not None:
+            try:
+                runlog.emit(
+                    {
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                        "event": "daemon_stop",
+                        "issue": None,
+                        "outcome": None,
+                        "severity": "info",
+                        "detail": "daemon stopping",
+                        "tick_id": None,
+                    }
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
     _log.info("daemon: stopped")
 
@@ -390,7 +452,8 @@ async def _poll_and_run(
     liveness_state: LivenessState | None = None,
     obs: ObsConfig | None = None,
     installation_token: InstallationTokenSource = "",
-) -> None:
+    report: SessionReport | None = None,
+) -> set[int]:
     """Poll one repo for a ready work unit and run it if found.
 
     The poll cycle has three sequential phases (B-I3 serial invariant —
@@ -435,9 +498,14 @@ async def _poll_and_run(
         installation_token: GitHub App installation access token
             (``ghs_`` prefix).  Threaded to all ``gh`` subprocess
             calls.  Pass ``""`` (default) to inherit ambient creds.
+        report: Optional session report receiving daemon activity.
+
+    Returns:
+        The issue numbers dispatched during this poll cycle.
     """
     owner = repo_cfg.owner
     repo = repo_cfg.repo
+    dispatched_issue_nums: set[int] = set()
 
     # Track which milestone numbers (and un-milestoned issue numbers)
     # were processed this cycle so the secondary scan can dedup.
@@ -476,13 +544,13 @@ async def _poll_and_run(
             proc.returncode,
             proc.stderr,
         )
-        return
+        return dispatched_issue_nums
 
     try:
         issues_raw = json.loads(proc.stdout)
     except (json.JSONDecodeError, TypeError) as exc:
         _log.error("daemon: issue list parse error: %s", exc)
-        return
+        return dispatched_issue_nums
 
     # Filter out issues that carry any dispatch-exclude label (e.g.
     # ``blocked``).  Uses the module-level ``_DISPATCH_EXCLUDE_LABELS``
@@ -551,6 +619,7 @@ async def _poll_and_run(
                 n,
                 remove=["agent-in-progress"],
                 installation_token=installation_token,
+                report=report,
             )
         else:
             ready_issues_live.append(issue)
@@ -697,6 +766,7 @@ async def _poll_and_run(
                     continue
 
             _drain_idx += 1
+            dispatched_issue_nums.update(membership)
             await _daemon_mod._run_work_unit(
                 config=config,
                 repo_cfg=repo_cfg,
@@ -711,6 +781,7 @@ async def _poll_and_run(
                 liveness_state=liveness_state,
                 obs=obs,
                 installation_token=installation_token,
+                report=report,
             )
     else:
         _log.debug("daemon: no ready issues in %s/%s", owner, repo)
@@ -748,16 +819,16 @@ async def _poll_and_run(
             orphan_proc.returncode,
             orphan_proc.stderr,
         )
-        return
+        return dispatched_issue_nums
 
     try:
         orphans_raw = json.loads(orphan_proc.stdout)
     except (json.JSONDecodeError, TypeError) as exc:
         _log.warning("daemon: orphan scan parse error: %s", exc)
-        return
+        return dispatched_issue_nums
 
     if not orphans_raw:
-        return
+        return dispatched_issue_nums
 
     # Walk each orphan; dedup by milestone number (or issue number for
     # un-milestoned).  Each milestone is seeded at most once.
@@ -814,6 +885,7 @@ async def _poll_and_run(
             orphan_slug,
             issue_num,
         )
+        dispatched_issue_nums.update(orphan_membership)
         await _daemon_mod._run_work_unit(
             config=config,
             repo_cfg=repo_cfg,
@@ -830,6 +902,7 @@ async def _poll_and_run(
             liveness_state=liveness_state,
             obs=obs,
             installation_token=installation_token,
+            report=report,
         )
 
     # ------------------------------------------------------------------
@@ -868,6 +941,8 @@ async def _poll_and_run(
         )
     except Exception as exc:  # noqa: BLE001
         _log.debug("daemon: worktree GC sweep raised (suppressed): %s", exc)
+
+    return dispatched_issue_nums
 
 
 def _select_work_unit(

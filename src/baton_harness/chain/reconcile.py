@@ -54,6 +54,7 @@ if TYPE_CHECKING:
     from baton_harness.chain.obs_config import ObsConfig  # noqa: F401
     from baton_harness.chain.registry import RepoConfig
     from baton_harness.chain.runlog import RunLog
+    from baton_harness.chain.session_report import SessionReport
 
 _log = logging.getLogger(__name__)
 
@@ -146,6 +147,7 @@ async def reconcile_startup(
     runlog: RunLog | None,
     *,
     installation_token: InstallationTokenSource = "",
+    report: SessionReport | None = None,
 ) -> None:
     """Run the startup reconciliation sweep.
 
@@ -176,6 +178,7 @@ async def reconcile_startup(
             for the token (env-discipline invariant).  Pass ``""``
             (default) to fall back to the ambient ``GH_TOKEN`` /
             ``GITHUB_TOKEN`` env var (legacy / test path).
+        report: Optional session report receiving startup findings.
     """
     owner = repo_cfgs[0].owner
     repo = repo_cfgs[0].repo
@@ -332,16 +335,25 @@ async def reconcile_startup(
     # ------------------------------------------------------------------
     try:
         if marker.exists():
+            g2_detail = (
+                "Prior daemon run ended ungracefully (possible OOM); "
+                "in-flight work may have been lost"
+            )
             alert(
                 owner,
                 repo,
                 None,
-                "Prior daemon run ended ungracefully (possible OOM); "
-                "in-flight work may have been lost",
+                g2_detail,
                 severity="critical",
                 runlog=runlog,
                 installation_token=installation_token,
             )
+            if report is not None:
+                report.record_startup_finding(
+                    gate="G2",
+                    detail=g2_detail,
+                    pids=None,
+                )
         # (Re)create the marker for this run.
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text("alive", encoding="utf-8")
@@ -357,17 +369,26 @@ async def reconcile_startup(
     try:
         pids = _list_claude_procs()
         if pids:
+            g1_detail = (
+                f"Orphan claude processes detected at startup (PIDs: {pids}); "
+                "these may be leaked from a prior crashed run"
+                " — inspect manually"
+            )
             alert(
                 owner,
                 repo,
                 None,
-                f"Orphan claude processes detected at startup (PIDs: {pids}); "
-                "these may be leaked from a prior crashed run"
-                " — inspect manually",
+                g1_detail,
                 severity="warn",
                 runlog=runlog,
                 installation_token=installation_token,
             )
+            if report is not None:
+                report.record_startup_finding(
+                    gate="G1",
+                    detail=g1_detail,
+                    pids=pids,
+                )
     except Exception:  # noqa: BLE001
         _log.warning(
             "reconcile: G1 orphan-process sweep failed; continuing",
