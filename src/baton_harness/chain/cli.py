@@ -9,6 +9,7 @@ Flags:
                     relative to the repo root derived from this file's
                     location).
     --poll-interval Override the outer-loop poll interval in seconds.
+    --report        Path to the session report JSON file.
 
 Exit codes:
     0  — daemon ran (and exited via ``--once`` or signal).
@@ -261,6 +262,15 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--report",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Path to the session report JSON file. Defaults to"
+            " .baton-harness/session-report.json in the managed repo."
+        ),
+    )
+    parser.add_argument(
         "--doctor",
         action="store_true",
         help="Run standalone preflight checks and exit.",
@@ -391,6 +401,13 @@ def main(argv: list[str] | None = None) -> int:
     # NOTE: workflow_path was resolved to absolute above, so it is
     # unaffected by this directory change.
     project_root = registry[0].project_root
+    report_path = (
+        Path(args.report).resolve()
+        if args.report
+        else (
+            Path(project_root) / ".baton-harness" / "session-report.json"
+        ).resolve()
+    )
 
     # Validate BH_PROJECT_ROOT before attempting to chdir.
     if not os.path.isdir(project_root):
@@ -510,6 +527,7 @@ def main(argv: list[str] | None = None) -> int:
                 once=args.once,
                 poll_interval_s=args.poll_interval,
                 installation_token=installation_token,
+                report_path=report_path,
             )
         )
     except KeyboardInterrupt:
