@@ -544,6 +544,34 @@ terminal-block)
     _terminal_block_title="terminal-block scenario"
     TERMINAL_BLOCK_ISSUE_URL="$(_find_open_issue_url "${_terminal_block_title}")" || true
     if [[ -n "${TERMINAL_BLOCK_ISSUE_URL}" ]]; then
+        TERMINAL_BLOCK_ISSUE_NUMBER="${TERMINAL_BLOCK_ISSUE_URL##*/}"
+        if [[ -z "${TERMINAL_BLOCK_ISSUE_NUMBER}" || ! "${TERMINAL_BLOCK_ISSUE_NUMBER}" =~ ^[0-9]+$ ]]; then
+            echo "baton-harness: error: failed to extract terminal-block issue number from URL (got: '${TERMINAL_BLOCK_ISSUE_NUMBER}')" >&2
+            exit 1
+        fi
+
+        _terminal_block_actual_labels="$(gh issue view "${TERMINAL_BLOCK_ISSUE_NUMBER}" --repo "${REPO_SLUG}" \
+            --json labels --jq '.labels[].name' 2>&1)" || {
+            echo "baton-harness: error: failed to verify labels on terminal-block issue #${TERMINAL_BLOCK_ISSUE_NUMBER} (${TERMINAL_BLOCK_ISSUE_URL}): ${_terminal_block_actual_labels}" >&2
+            exit 1
+        }
+
+        _terminal_block_missing_labels=()
+        for _terminal_block_label in "agent-ready" "blocked"; do
+            if ! printf '%s\n' "${_terminal_block_actual_labels}" | grep -Fxq -- "${_terminal_block_label}"; then
+                _terminal_block_missing_labels+=("${_terminal_block_label}")
+            fi
+        done
+
+        if [[ ${#_terminal_block_missing_labels[@]} -gt 0 ]]; then
+            echo "baton-harness: error: existing terminal-block issue #${TERMINAL_BLOCK_ISSUE_NUMBER} (${TERMINAL_BLOCK_ISSUE_URL}) is missing required label(s):" >&2
+            for _terminal_block_label in "${_terminal_block_missing_labels[@]}"; do
+                echo "  missing: ${_terminal_block_label}" >&2
+            done
+            echo "  Refusing to continue with an invalid terminal-block scenario seed." >&2
+            exit 1
+        fi
+
         echo "baton-harness:   terminal-block issue exists, reusing: ${TERMINAL_BLOCK_ISSUE_URL}"
     else
         TERMINAL_BLOCK_ISSUE_URL="$(_create_issue_checked \
