@@ -78,6 +78,13 @@ _bh_source_env_preserving_overrides() {
     # shellcheck disable=SC1090
     source "${_bh_file}"
 
+    # A plain NAME=value assignment creates a non-exported shell variable when
+    # NAME is new. Export every target so new config values reach subprocesses.
+    while IFS= read -r _bh_key; do
+        [[ -z "${_bh_key}" ]] && continue
+        export "${_bh_key}"
+    done <<< "${_bh_keys}"
+
     local _bh_i
     for (( _bh_i = 0; _bh_i < ${#_bh_prior_names[@]}; _bh_i++ )); do
         export "${_bh_prior_names[_bh_i]}=${_bh_prior_values[_bh_i]}"
