@@ -81,6 +81,19 @@ for v in BH_REPO_OWNER BH_REPO_NAME BH_GITHUB_APP_ID BH_GITHUB_APP_INSTALLATION_
 done
 if [[ ${#_missing[@]} -gt 0 ]]; then
     echo "provision-ruleset: missing env vars: ${_missing[*]}" >&2
+    if [[ -n "${BH_PROJECT_ROOT:-}" ]]; then
+        _bh_config_env="${BH_PROJECT_ROOT}/.bh/config.env"
+        echo "  detail: BH_PROJECT_ROOT=${BH_PROJECT_ROOT}" >&2
+        if [[ -f "${_bh_config_env}" ]]; then
+            echo "  detail: .bh/config.env=${_bh_config_env} (exists)" >&2
+        else
+            echo "  detail: .bh/config.env=${_bh_config_env} (does not exist)" >&2
+        fi
+        unset _bh_config_env
+    else
+        echo "  detail: BH_PROJECT_ROOT=(unset)" >&2
+        echo "  detail: .bh/config.env=(not checked: BH_PROJECT_ROOT unset)" >&2
+    fi
     exit 2
 fi
 

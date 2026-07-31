@@ -86,6 +86,13 @@ _bh_source_env_preserving_overrides() {
 # 1. Per-host config (written by bin/setup-env.sh) -> BH_PROJECT_ROOT
 # ---------------------------------------------------------------------------
 _BH_HOST_ENV="${XDG_CONFIG_HOME:-${HOME}/.config}/baton-harness/host.env"
+if [[ "${BH_DEBUG_CONFIG:-}" == "1" ]]; then
+    if [[ -f "${_BH_HOST_ENV}" ]]; then
+        echo "baton-harness: config-debug: host.env found — sourcing ${_BH_HOST_ENV}" >&2
+    else
+        echo "baton-harness: config-debug: host.env not found — skipping ${_BH_HOST_ENV}" >&2
+    fi
+fi
 _bh_source_env_preserving_overrides "${_BH_HOST_ENV}"
 unset _BH_HOST_ENV
 
@@ -95,7 +102,16 @@ unset _BH_HOST_ENV
 #    before this file was sourced) — config.env lives under that root.
 # ---------------------------------------------------------------------------
 if [[ -n "${BH_PROJECT_ROOT:-}" ]]; then
+    if [[ "${BH_DEBUG_CONFIG:-}" == "1" ]]; then
+        if [[ -f "${BH_PROJECT_ROOT}/.bh/config.env" ]]; then
+            echo "baton-harness: config-debug: .bh/config.env found — sourcing ${BH_PROJECT_ROOT}/.bh/config.env" >&2
+        else
+            echo "baton-harness: config-debug: .bh/config.env not found — skipping ${BH_PROJECT_ROOT}/.bh/config.env" >&2
+        fi
+    fi
     _bh_source_env_preserving_overrides "${BH_PROJECT_ROOT}/.bh/config.env"
+elif [[ "${BH_DEBUG_CONFIG:-}" == "1" ]]; then
+    echo "baton-harness: config-debug: BH_PROJECT_ROOT unset — skipping .bh/config.env lookup" >&2
 fi
 
 unset -f _bh_source_env_preserving_overrides
