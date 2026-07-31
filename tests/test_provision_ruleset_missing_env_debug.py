@@ -26,6 +26,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 HARNESS = Path(__file__).resolve().parents[1]
 SCRIPT = HARNESS / "bin" / "provision-ruleset.sh"
 
@@ -233,6 +235,42 @@ def test_missing_env_vars_per_var_detail_config_env_absent(
         expected = f"  detail: {var_name}: .bh/config.env does not exist"
         assert expected in stderr, (
             f"expected per-variable missing-file detail {expected!r}; "
+            f"stderr was:\n{stderr!r}"
+        )
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="chmod unreadability is unreliable on Windows/NTFS",
+)
+def test_missing_env_vars_per_var_detail_config_env_unreadable(
+    tmp_path: Path,
+) -> None:
+    """Each missing var reports that .bh/config.env is unreadable."""
+    project_root = tmp_path / "project"
+    bh_dir = project_root / ".bh"
+    bh_dir.mkdir(parents=True)
+    config_env = bh_dir / "config.env"
+    config_env.write_text("SOME_UNRELATED_VAR=foo\n", encoding="utf-8")
+    os.chmod(config_env, 0o000)
+
+    rc, stdout, stderr = _invoke(tmp_path, project_root=project_root)
+
+    assert rc == 2, (
+        f"expected exit 2 for missing required env vars; got rc={rc}\n"
+        f"stdout:\n{stdout}\nstderr:\n{stderr}"
+    )
+    for var_name in _REQUIRED_VARS:
+        expected = (
+            f"  detail: {var_name}: .bh/config.env exists but is not readable"
+        )
+        assert expected in stderr, (
+            f"expected per-variable unreadable-file detail {expected!r}; "
+            f"stderr was:\n{stderr!r}"
+        )
+        not_defined = f"  detail: {var_name}: not defined in .bh/config.env"
+        assert not_defined not in stderr, (
+            f"unexpected undefined-key detail {not_defined!r}; "
             f"stderr was:\n{stderr!r}"
         )
 

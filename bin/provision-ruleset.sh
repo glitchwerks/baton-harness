@@ -101,6 +101,8 @@ if [[ ${#_missing[@]} -gt 0 ]]; then
             _v_config_env="${BH_PROJECT_ROOT}/.bh/config.env"
             if [[ ! -f "${_v_config_env}" ]]; then
                 echo "  detail: ${_v}: .bh/config.env does not exist" >&2
+            elif [[ ! -r "${_v_config_env}" ]]; then
+                echo "  detail: ${_v}: .bh/config.env exists but is not readable" >&2
             elif grep -qE "^[[:space:]]*(export[[:space:]]+)?${_v}=" "${_v_config_env}"; then
                 echo "  detail: ${_v}: present in .bh/config.env but resolved empty" >&2
             else
