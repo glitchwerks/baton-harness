@@ -12,6 +12,15 @@ Single reference for every external service `bh-daemon` authenticates to: auth m
 | [Anthropic / Claude Code OAuth](#anthropic--claude-code) | Claude Code worker subprocess — `Identity.WORKER` | Web auth (interactive `claude` login, produces `~/.claude/.credentials.json`) |
 | [Slack webhook (`BH_SLACK_WEBHOOK_URL`)](#slack) | daemon escalation notifications (`escalation.py`) | User Setup (plain env var, no vault form exists for it) |
 
+## Operator `gh auth login` (not a runtime credential)
+
+The `gh auth login` session from [docs/system-setup.md §1](system-setup.md#1-prerequisites--have-these-in-hand-before-you-start) is the operator's own personal GitHub identity — separate from the five `bh-daemon` runtime credentials in the table above, and not one of the credentials `bh-daemon` provisions or requires at runtime. It backs one-time, operator-driven setup actions only:
+
+- `gh auth setup-git` (git credential helper), run by `bin/init-sandbox.sh`
+- Label, issue, and milestone creation in `bin/init-sandbox.sh` (`gh label create`, `gh issue create`, `gh api .../dependencies/blocked_by`)
+- Reading the GitHub App's installation ID (`gh api /repos/<owner>/<repo>/installation --jq .id`), per [docs/repository-onboarding.md](repository-onboarding.md)
+- Verifying rulesets after `bin/provision-ruleset.sh` runs (`gh api repos/<owner>/<repo>/rulesets --jq '.[].name'`), per [docs/repository-onboarding.md](repository-onboarding.md)
+
 ## GitHub App (primary)
 
 **Auth method:** App ID + installation ID + RSA private key (PEM) → RS256-signed JWT → short-lived GitHub App installation access token (prefix `ghs_`).
