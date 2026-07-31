@@ -1,11 +1,9 @@
 """Unit tests for baton_harness.scenario (issue #306, Phase 5a of #243).
 
-``src/baton_harness/scenario/`` does not exist yet — this file is the
-frozen contract for the greenfield scenario-assertion matcher described
-in ``docs/superpowers/plans/2026-07-09-daemon-report-scenario-harness-243.md``
-§ 5.1 / § 6 Phase 5a. Importing the module below is expected to raise
-``ModuleNotFoundError`` until the implementation lands; that import-time
-failure is the intended "red" for this phase, not a broken test harness.
+This file is the frozen contract for the implemented scenario-assertion
+matcher in ``src/baton_harness/scenario/``, originally described in
+``docs/superpowers/plans/2026-07-09-daemon-report-scenario-harness-243.md``
+§ 5.1 / § 6 Phase 5a.
 
 Call-surface decisions made here (no implementation existed to consult):
 
@@ -27,6 +25,8 @@ Call-surface decisions made here (no implementation existed to consult):
   specific expectation sub-check so a failure can be attributed to the
   exact assertion that produced it, not just "something failed":
     - ``"issues_len"``
+    - ``"issue.present"`` — emitted when an issue expectation is present
+      but the report has no usable issue record.
     - ``"issue.outcome"``
     - ``"issue.outcome_not"``
     - ``"issue.park_kind"``
@@ -76,14 +76,20 @@ Coverage:
   1) produces a distinct, attributable ``"issues_len"`` failure with no
   ``issue.*`` assertions present.
 - ``verify_report`` raises ``KeyError`` for an unknown scenario key.
+- Unknown top-level, issue-level, and startup-level expectation keys raise
+  ``ValueError`` instead of producing a vacuous pass.
+- Scalar and list forms of ``outcome_not`` reject forbidden outcomes and
+  accept outcomes outside the forbidden set.
 - Ordered-subsequence ``label_transitions`` matching (§ 5.1 M12, tested
   via ``match_report`` directly since no default scenario uses this
   key): correct order passes, reversed order fails, a valid
   subsequence with gaps still passes.
 - CLI exit-code contract: a PASS report exits 0 with exactly one
   ``[PASS]`` line per assertion (and no ``[FAIL]`` lines); a FAIL
-  report exits non-zero with at least one ``[FAIL]`` line, and every
-  assertion name from the underlying VerifyResult appears in stdout.
+  report exits 1 with at least one ``[FAIL]`` line, and every assertion
+  name from the underlying VerifyResult appears in stdout. Missing or
+  invalid report files and unknown scenario keys exit 2 with an error on
+  stderr.
 - The empty-``issues[]`` trap (plan § 4, B1): a scenario whose
   expectation guards ``issues_len`` (``terminal-block``) treats 0
   issues the same as any other ``issues_len`` mismatch — a distinct,
@@ -109,6 +115,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
 from baton_harness.scenario.expectations import EXPECTATIONS
 from baton_harness.scenario.verify import (
     AssertionResult,
@@ -466,6 +473,7 @@ def test_clean_implement_empty_issues_fails_without_raising() -> None:
     result = verify_report("clean-implement", report)
 
     assert result.passed is False
+    assert _failing_names(result) == {"issue.present"}
 
 
 # ---------------------------------------------------------------------------
@@ -516,6 +524,28 @@ def test_ci_fail_fail_outcome_not_violated() -> None:
     assert result.passed is False
     assert _failing_names(result) == {"issue.outcome_not"}
     assert _find(result, "issue.merge_gate.outcome").passed is True
+
+
+def test_outcome_not_list_fails_for_forbidden_outcome() -> None:
+    """A list-form outcome_not fails when the actual outcome is listed."""
+    expectation = {"issue": {"outcome_not": ["merged", "pr_open"]}}
+    report = _report(issues=[_issue(outcome="pr_open")])
+
+    result = match_report(expectation, report)
+
+    assert result.passed is False
+    assert _failing_names(result) == {"issue.outcome_not"}
+
+
+def test_outcome_not_list_passes_for_allowed_outcome() -> None:
+    """A list-form outcome_not passes when the actual outcome is absent."""
+    expectation = {"issue": {"outcome_not": ["merged", "pr_open"]}}
+    report = _report(issues=[_issue(outcome="parked")])
+
+    result = match_report(expectation, report)
+
+    assert result.passed is True
+    assert _find(result, "issue.outcome_not").passed is True
 
 
 def test_ci_fail_fail_merge_gate_outcome_mismatch() -> None:
@@ -688,6 +718,34 @@ def test_verify_report_unknown_scenario_raises_key_error() -> None:
 
     with pytest.raises(KeyError):
         verify_report("not-a-real-scenario", report)
+
+
+@pytest.mark.parametrize(
+    ("expectation", "level"),
+    [
+        ({"issues_lens": 1}, "top-level"),
+        ({"issue": {"outcom": "merged"}}, "issue"),
+        (
+            {"startup": {"finding_include_gates": ["G2"]}},
+            "startup",
+        ),
+    ],
+)
+def test_match_report_rejects_unrecognized_expectation_keys(
+    expectation: dict[str, Any],
+    level: str,
+) -> None:
+    """A typo at any expectation level raises a descriptive ValueError.
+
+    Args:
+        expectation: Standalone expectation containing one typo'd key.
+        level: Expectation mapping level named in the expected error.
+
+    Raises:
+        AssertionError: If match_report does not reject the unknown key.
+    """
+    with pytest.raises(ValueError, match=f"unrecognized {level} expectation"):
+        match_report(expectation, _report())
 
 
 # ---------------------------------------------------------------------------
@@ -903,6 +961,55 @@ def test_main_exits_nonzero_and_prints_fail_marker_for_failed_assertion(
     assert exit_code != 0
     assert "[FAIL]" in captured.out
     assert "issue.pr_present" in captured.out
+
+
+def test_main_missing_report_returns_input_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A missing report path exits 2 and reports the error on stderr."""
+    report_path = tmp_path / "missing-report.json"
+
+    exit_code = main(
+        ["--scenario", "clean-implement", "--report", str(report_path)]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "error: report file not found:" in captured.err
+    assert captured.out == ""
+
+
+def test_main_invalid_json_returns_input_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Invalid report JSON exits 2 and reports the error on stderr."""
+    report_path = tmp_path / "invalid-report.json"
+    report_path.write_text("not JSON", encoding="utf-8")
+
+    exit_code = main(
+        ["--scenario", "clean-implement", "--report", str(report_path)]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "error: report file is not valid JSON:" in captured.err
+    assert captured.out == ""
+
+
+def test_main_unknown_scenario_returns_input_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An unknown scenario exits 2 and reports the error on stderr."""
+    report_path = _write_report(tmp_path, _report())
+
+    exit_code = main(
+        ["--scenario", "not-a-real-scenario", "--report", str(report_path)]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "error: unknown scenario key:" in captured.err
+    assert captured.out == ""
 
 
 # ---------------------------------------------------------------------------

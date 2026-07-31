@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -126,7 +127,26 @@ def _match_issue(
 
     Returns:
         Assertion results in expectation evaluation order.
+
+    Raises:
+        ValueError: If expectation contains an unrecognized key.
     """
+    recognized_keys = {
+        "escalations_include",
+        "label_transitions",
+        "merge_gate",
+        "outcome",
+        "outcome_not",
+        "park_kind",
+        "park_reason_present",
+        "pr_present",
+    }
+    unknown = set(expectation) - recognized_keys
+    if unknown:
+        raise ValueError(
+            f"unrecognized issue expectation key(s): {sorted(unknown)}"
+        )
+
     assertions: list[AssertionResult] = []
 
     if "outcome" in expectation:
@@ -149,10 +169,15 @@ def _match_issue(
     if "outcome_not" in expectation:
         forbidden_outcome = expectation["outcome_not"]
         actual_outcome = issue.get("outcome")
+        passed = (
+            actual_outcome not in forbidden_outcome
+            if isinstance(forbidden_outcome, list)
+            else actual_outcome != forbidden_outcome
+        )
         assertions.append(
             _assertion(
                 "issue.outcome_not",
-                actual_outcome != forbidden_outcome,
+                passed,
                 expected=f"not {forbidden_outcome!r}",
                 actual=actual_outcome,
             )
@@ -274,7 +299,17 @@ def _match_startup(
 
     Returns:
         One assertion per expected startup gate.
+
+    Raises:
+        ValueError: If expectation contains an unrecognized key.
     """
+    recognized_keys = {"findings_include_gates"}
+    unknown = set(expectation) - recognized_keys
+    if unknown:
+        raise ValueError(
+            f"unrecognized startup expectation key(s): {sorted(unknown)}"
+        )
+
     startup_value = report.get("startup")
     startup = startup_value if isinstance(startup_value, Mapping) else {}
     findings_value = startup.get("findings")
@@ -315,7 +350,17 @@ def match_report(
 
     Returns:
         The complete verification result.
+
+    Raises:
+        ValueError: If an expectation mapping contains an unrecognized key.
     """
+    recognized_keys = {"issue", "issues_len", "startup"}
+    unknown = set(expectation) - recognized_keys
+    if unknown:
+        raise ValueError(
+            f"unrecognized top-level expectation key(s): {sorted(unknown)}"
+        )
+
     assertions: list[AssertionResult] = []
     issues_value = report.get("issues")
     issues = issues_value if isinstance(issues_value, list) else []
@@ -334,17 +379,21 @@ def match_report(
         )
 
     issue_expectation = expectation.get("issue")
-    if isinstance(issue_expectation, Mapping) and issue_precondition_passed:
-        if issues and isinstance(issues[0], Mapping):
-            assertions.extend(_match_issue(issue_expectation, issues[0]))
-        else:
-            assertions.append(
-                AssertionResult(
-                    name="issue",
-                    passed=False,
-                    message="expected an issue record; got none",
+    if isinstance(issue_expectation, Mapping):
+        issue_present = bool(issues) and isinstance(issues[0], Mapping)
+        issue = issues[0] if issue_present else {}
+        issue_assertions = _match_issue(issue_expectation, issue)
+        if issue_precondition_passed:
+            if issue_present:
+                assertions.extend(issue_assertions)
+            else:
+                assertions.append(
+                    AssertionResult(
+                        name="issue.present",
+                        passed=False,
+                        message="expected an issue record; got none",
+                    )
                 )
-            )
 
     startup_expectation = expectation.get("startup")
     if isinstance(startup_expectation, Mapping):
@@ -387,7 +436,12 @@ def main(argv: list[str] | None = None) -> int:
         argv: Command-line arguments. Defaults to ``sys.argv[1:]``.
 
     Returns:
-        Zero when every assertion passes, otherwise one.
+        Zero when every assertion passes, one when an assertion fails, or
+        two when the report path, report JSON, or scenario key is invalid.
+
+    Raises:
+        ValueError: If the report JSON is valid but does not contain an
+            object.
     """
     parser = argparse.ArgumentParser(
         prog="python -m baton_harness.scenario.verify",
@@ -407,11 +461,25 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    report_data = json.loads(Path(args.report).read_text(encoding="utf-8"))
+    try:
+        report_data = json.loads(Path(args.report).read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        print(f"error: report file not found: {exc}", file=sys.stderr)
+        return 2
+    except json.JSONDecodeError as exc:
+        print(
+            f"error: report file is not valid JSON: {exc}",
+            file=sys.stderr,
+        )
+        return 2
     if not isinstance(report_data, dict):
         raise ValueError("session report JSON must contain an object")
 
-    result = verify_report(args.scenario, report_data)
+    try:
+        result = verify_report(args.scenario, report_data)
+    except KeyError as exc:
+        print(f"error: unknown scenario key: {exc}", file=sys.stderr)
+        return 2
     for assertion in result.assertions:
         marker = "PASS" if assertion.passed else "FAIL"
         print(f"[{marker}] {assertion.name}: {assertion.message}")
