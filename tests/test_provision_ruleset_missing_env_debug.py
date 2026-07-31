@@ -195,3 +195,109 @@ def test_missing_env_vars_detail_config_env_present(tmp_path: Path) -> None:
         "expected the .bh/config.env (exists) detail line with the "
         f"correct resolved path; stderr was:\n{stderr!r}"
     )
+
+
+def test_missing_env_vars_per_var_detail_project_root_unset(
+    tmp_path: Path,
+) -> None:
+    """Each missing var reports that config lookup was not possible."""
+    rc, stdout, stderr = _invoke(tmp_path, project_root=None)
+
+    assert rc == 2, (
+        f"expected exit 2 for missing required env vars; got rc={rc}\n"
+        f"stdout:\n{stdout}\nstderr:\n{stderr}"
+    )
+    for var_name in _REQUIRED_VARS:
+        expected = f"  detail: {var_name}: not checked (BH_PROJECT_ROOT unset)"
+        assert expected in stderr, (
+            f"expected per-variable not-checked detail {expected!r}; "
+            f"stderr was:\n{stderr!r}"
+        )
+
+
+def test_missing_env_vars_per_var_detail_config_env_absent(
+    tmp_path: Path,
+) -> None:
+    """Each missing var reports that .bh/config.env does not exist."""
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    # Deliberately no .bh/config.env under project_root.
+
+    rc, stdout, stderr = _invoke(tmp_path, project_root=project_root)
+
+    assert rc == 2, (
+        f"expected exit 2 for missing required env vars; got rc={rc}\n"
+        f"stdout:\n{stdout}\nstderr:\n{stderr}"
+    )
+    for var_name in _REQUIRED_VARS:
+        expected = f"  detail: {var_name}: .bh/config.env does not exist"
+        assert expected in stderr, (
+            f"expected per-variable missing-file detail {expected!r}; "
+            f"stderr was:\n{stderr!r}"
+        )
+
+
+def test_missing_env_vars_per_var_detail_not_defined_in_config_env(
+    tmp_path: Path,
+) -> None:
+    """Each absent assignment is distinguished from an empty value."""
+    project_root = tmp_path / "project"
+    bh_dir = project_root / ".bh"
+    bh_dir.mkdir(parents=True)
+    (bh_dir / "config.env").write_text(
+        "SOME_UNRELATED_VAR=foo\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    rc, stdout, stderr = _invoke(tmp_path, project_root=project_root)
+
+    assert rc == 2, (
+        f"expected exit 2 for missing required env vars; got rc={rc}\n"
+        f"stdout:\n{stdout}\nstderr:\n{stderr}"
+    )
+    for var_name in _REQUIRED_VARS:
+        expected = f"  detail: {var_name}: not defined in .bh/config.env"
+        assert expected in stderr, (
+            f"expected per-variable undefined-key detail {expected!r}; "
+            f"stderr was:\n{stderr!r}"
+        )
+
+
+def test_missing_env_vars_per_var_detail_present_but_empty(
+    tmp_path: Path,
+) -> None:
+    """An assigned empty value is distinguished from absent assignments."""
+    project_root = tmp_path / "project"
+    bh_dir = project_root / ".bh"
+    bh_dir.mkdir(parents=True)
+    (bh_dir / "config.env").write_text(
+        "BH_GITHUB_APP_ID=\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    rc, stdout, stderr = _invoke(tmp_path, project_root=project_root)
+
+    assert rc == 2, (
+        f"expected exit 2 for missing required env vars; got rc={rc}\n"
+        f"stdout:\n{stdout}\nstderr:\n{stderr}"
+    )
+    empty_expected = (
+        "  detail: BH_GITHUB_APP_ID: present in .bh/config.env "
+        "but resolved empty"
+    )
+    assert empty_expected in stderr, (
+        f"expected present-but-empty detail {empty_expected!r}; "
+        f"stderr was:\n{stderr!r}"
+    )
+    for var_name in (
+        "BH_REPO_OWNER",
+        "BH_REPO_NAME",
+        "BH_GITHUB_APP_INSTALLATION_ID",
+    ):
+        expected = f"  detail: {var_name}: not defined in .bh/config.env"
+        assert expected in stderr, (
+            f"expected per-variable undefined-key detail {expected!r}; "
+            f"stderr was:\n{stderr!r}"
+        )
