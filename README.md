@@ -357,10 +357,10 @@ bh-daemon           # continuous
 | `BH_WORKER_PROGRESS_STALL_S` | `1800` | Seconds without a turn-progress signal during the worker-active phase (fresh dispatch) before a progress-stall alert fires. 1800 s is 6× the 300 s per-turn timeout. Non-numeric value logs a WARNING and falls back to the default. |
 | `BH_WORKTREE_GC` | `detect` | Worktree orphan-GC mode. `detect` logs orphaned worktrees without removing them (safe default). `reclaim` additionally removes confirmed orphans. Unrecognised value logs a WARNING and falls back to `detect`. |
 
-`bin/init-sandbox.sh` provisions a throwaway sandbox repo for a first smoke test — it
-creates the required labels, a trivial trigger issue, a `hello-feature` DAG milestone, the
-stub CI workflow, and `${BH_PROJECT_ROOT}/.bh/config.env` in one step (pass `--help` for
-the safety warning and required env vars).
+`bin/init-sandbox.sh` provisions a throwaway sandbox repo for a smoke test. Its
+`--scenario <name>` flag (or `BH_SCENARIO`) selects `hello` (the existing default),
+`terminal-block` (one dual-labeled no-dispatch issue), or `recovery` (no issues); shared
+setup still creates the labels, stub CI workflow, and `${BH_PROJECT_ROOT}/.bh/config.env`.
 
 `bin/run-daemon.sh` now requires only `BH_PROJECT_ROOT` in the shell. Repo identity,
 GitHub App IDs, and vault secret IDs are read at daemon startup from
@@ -392,6 +392,7 @@ bin/setup-env.sh
 #   Reads BH_REPO_OWNER, BH_REPO_NAME, BH_PROJECT_ROOT from the environment.
 #   Prompts interactively for the 5 App/vault identity values and writes
 #   ${BH_PROJECT_ROOT}/.bh/config.env.
+#   Optional: --scenario hello|terminal-block|recovery (or BH_SCENARIO).
 export BH_REPO_OWNER=<owner>
 export BH_REPO_NAME=<repo>
 export BH_PROJECT_ROOT=<abs-path-to-local-sandbox-clone>
