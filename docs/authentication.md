@@ -4,12 +4,10 @@ Single reference for every external service `bh-daemon` authenticates to: auth m
 
 **Audience:** operators provisioning or troubleshooting a `bh-daemon` deployment, and developers changing auth-adjacent code. For the step-by-step provisioning walkthrough, see [docs/system-setup.md](system-setup.md) (machine-level) and [docs/repository-onboarding.md](repository-onboarding.md) (repo/sandbox-level) — this doc explains *what* each credential is and *why* it's required; those docs explain *how* to provision it. For the mechanics of how credentials are threaded into subprocess environments, see [docs/harness-design.md §12](harness-design.md#12-two-identity-subprocess-auth-model-identity-broker-implemented--issue-222) — that section is the authoritative home for the two-identity broker model and is not duplicated here.
 
-## Quick reference
-
 | Authentication Method | Consumer | Method of Provision |
 |---|---|---|
 | [GitHub App installation token](#github-app-primary) | daemon push/labels/CI-reads/ruleset-bypass (`git`, `gh`) — `Identity.APP` | Vault (Bitwarden PEM, minted to short-lived token at runtime) |
-| [GitHub fine-grained PAT](#github-fine-grained-pat-fallback) | daemon fallback path, same ops minus ruleset bypass (`git`, `gh`) — `Identity.APP` | Vault (preferred) or User Setup (direct `export GH_TOKEN=...`) |
+| [GitHub fine-grained PAT](#github-fine-grained-pat-fallback) | daemon fallback path, CI reads via Actions API not Checks, no ruleset bypass (`git`, `gh`) — `Identity.APP` | Vault (preferred) or User Setup (direct `export GH_TOKEN=...`) |
 | [Bitwarden Secrets Manager (`BWS_ACCESS_TOKEN`)](#bitwarden-secrets-manager) | daemon startup / secret bootstrap (`app_auth.py`) | User Setup (operator exports manually — this credential itself is never vaulted) |
 | [Anthropic / Claude Code OAuth](#anthropic--claude-code) | Claude Code worker subprocess — `Identity.WORKER` | Web auth (interactive `claude` login, produces `~/.claude/.credentials.json`) |
 | [Slack webhook (`BH_SLACK_WEBHOOK_URL`)](#slack) | daemon escalation notifications (`escalation.py`) | User Setup (plain env var, no vault form exists for it) |
