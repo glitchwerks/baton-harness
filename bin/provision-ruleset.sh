@@ -81,6 +81,37 @@ for v in BH_REPO_OWNER BH_REPO_NAME BH_GITHUB_APP_ID BH_GITHUB_APP_INSTALLATION_
 done
 if [[ ${#_missing[@]} -gt 0 ]]; then
     echo "provision-ruleset: missing env vars: ${_missing[*]}" >&2
+    if [[ -n "${BH_PROJECT_ROOT:-}" ]]; then
+        _bh_config_env="${BH_PROJECT_ROOT}/.bh/config.env"
+        echo "  detail: BH_PROJECT_ROOT=${BH_PROJECT_ROOT}" >&2
+        if [[ -f "${_bh_config_env}" ]]; then
+            echo "  detail: .bh/config.env=${_bh_config_env} (exists)" >&2
+        else
+            echo "  detail: .bh/config.env=${_bh_config_env} (does not exist)" >&2
+        fi
+        unset _bh_config_env
+    else
+        echo "  detail: BH_PROJECT_ROOT=(unset)" >&2
+        echo "  detail: .bh/config.env=(not checked: BH_PROJECT_ROOT unset)" >&2
+    fi
+    for _v in "${_missing[@]}"; do
+        if [[ -z "${BH_PROJECT_ROOT:-}" ]]; then
+            echo "  detail: ${_v}: not checked (BH_PROJECT_ROOT unset)" >&2
+        else
+            _v_config_env="${BH_PROJECT_ROOT}/.bh/config.env"
+            if [[ ! -f "${_v_config_env}" ]]; then
+                echo "  detail: ${_v}: .bh/config.env does not exist" >&2
+            elif [[ ! -r "${_v_config_env}" ]]; then
+                echo "  detail: ${_v}: .bh/config.env exists but is not readable" >&2
+            elif grep -qE "^[[:space:]]*(export[[:space:]]+)?${_v}=" "${_v_config_env}"; then
+                echo "  detail: ${_v}: present in .bh/config.env but resolved empty" >&2
+            else
+                echo "  detail: ${_v}: not defined in .bh/config.env" >&2
+            fi
+            unset _v_config_env
+        fi
+    done
+    unset _v
     exit 2
 fi
 
