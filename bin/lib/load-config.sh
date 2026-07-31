@@ -55,6 +55,10 @@
 _bh_source_env_preserving_overrides() {
     local _bh_file="$1"
     [[ -f "${_bh_file}" ]] || return 0
+    if [[ ! -r "${_bh_file}" ]]; then
+        echo "baton-harness: warning: ${_bh_file} exists but is not readable — skipping" >&2
+        return 0
+    fi
 
     local _bh_keys
     _bh_keys="$(grep -oE '^[[:space:]]*(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*=' "${_bh_file}" 2>/dev/null \
