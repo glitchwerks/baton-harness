@@ -80,6 +80,7 @@ from pathlib import Path
 HARNESS = Path(__file__).resolve().parents[1]
 SCRIPT = HARNESS / "bin" / "provision-ruleset.sh"
 FAKE_GH_DIR = HARNESS / "tests" / "fixtures" / "fake_gh"
+FAKE_CURL_DIR = HARNESS / "tests" / "fixtures" / "fake_curl"
 
 # On Windows, the system bash (C:\Windows\System32\bash.exe) launches WSL and
 # fails when no WSL distro is configured.  Prefer Git Bash when available.
@@ -182,6 +183,7 @@ def _invoke(
     env["PATH"] = os.pathsep.join(
         part
         for part in [
+            str(FAKE_CURL_DIR),
             str(FAKE_GH_DIR),
             _BASH_BIN_DIR,
             os.environ.get("PATH", ""),
@@ -292,20 +294,32 @@ def _credential_blob(record: dict) -> str:  # type: ignore[type-arg]
     The script may pass a bearer credential to ``gh api`` via an
     ``-H "Authorization: ..."`` header, via ``GH_TOKEN``, or via
     ``GITHUB_TOKEN`` — this helper is agnostic to which mechanism the
-    implementation chooses. The env_gh_token/env_github_token fields
-    contain fingerprints rather than raw values, so tests can assert
-    on credential identity without pinning a specific passing mechanism.
+    implementation chooses. The auth_header value is normalized to a
+    fingerprint here, while env_gh_token/env_github_token already contain
+    fingerprints, so tests can assert on credential identity without
+    pinning a specific passing mechanism.
 
     Args:
         record: A single call record from ``_calls``.
 
     Returns:
-        Space-joined string of the auth_header / env_gh_token /
-        env_github_token fields (each defaulting to "" if absent).
+        Space-joined string of the fingerprinted auth_header plus the
+        env_gh_token / env_github_token fields (each defaulting to ""
+        if absent).
     """
+    auth_header = record.get("auth_header", "")
+    raw_credential = auth_header
+    authorization_prefix = "Authorization: "
+    if auth_header.startswith(authorization_prefix):
+        scheme, separator, credential = auth_header[
+            len(authorization_prefix) :
+        ].partition(" ")
+        if separator and scheme.lower() in ("bearer", "token"):
+            raw_credential = credential
+
     return " ".join(
         [
-            record.get("auth_header", ""),
+            _fingerprint(raw_credential),
             record.get("env_gh_token", ""),
             record.get("env_github_token", ""),
         ]

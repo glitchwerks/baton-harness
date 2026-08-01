@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+# tests/fixtures/fake_curl/curl — recording shim for provision-ruleset.sh's
+# GET /app preflight (issue #326).
+#
+# Real `gh api app` cannot be used for this call: `gh api` unconditionally
+# sends `Authorization: token <value>`, but GitHub's API requires
+# `Authorization: Bearer <value>` for App JWTs
+# (https://github.com/cli/cli/issues/12828). The preflight instead shells
+# out to curl directly. This shim simulates ONLY that one call — every
+# OTHER endpoint provision-ruleset.sh hits (collaborators, rulesets
+# LIST/GET/POST/PUT, custom-repository-roles) still goes through `gh` and
+# is served by tests/fixtures/fake_gh/gh, unchanged.
+#
+# Expected invocation shape (the frozen contract this shim tests against):
+#
+#   curl -sS \
+#       -H "Authorization: Bearer ${_APP_JWT}" \
+#       -H "Accept: application/vnd.github+json" \
+#       -o "${_app_body_file}" \
+#       -w '%{http_code}' \
+#       "https://api.github.com/app"
+#
+#   - the response BODY is written to the file named by -o/--output
+#   - the numeric HTTP status code — and ONLY that, no other write-out
+#     text — is printed to stdout via -w/--write-out '%{http_code}'
+#   - -sS (or any other bare short/long flag) is accepted and ignored
+#   - any -H/--header is accepted; only a header whose name is
+#     "Authorization" (case-insensitive) is recorded in the call log, so
+#     a test can assert the caller used the Bearer scheme (the actual
+#     bug fix under test) and not the token scheme `gh api` sends
+#   - curl's OWN exit code reflects only TRANSPORT success/failure, never
+#     the HTTP status returned — this matches real curl without --fail:
+#     a 401 or 503 response is still a "successful" transfer as far as
+#     curl's own exit code is concerned. The caller must read the
+#     -w-printed status code to learn the HTTP outcome. Only a genuine
+#     transport failure (DNS, network, TLS — modeled here by the
+#     curl_transport_failure marker) makes this shim exit non-zero.
+#
+# Canned scenarios live in $BH_FAKE_GH_CANNED_DIR — the SAME directory
+# fake_gh reads from; the App-ID preflight is one logical scenario shared
+# across both shims:
+#
+#   app_id.txt             — (reused from fake_gh) integer written as the
+#                             "id" field of a 200 response body. This is
+#                             the DEFAULT scenario: served when none of
+#                             the markers below is present.
+#   curl_no_id              — optional marker file (any content). When
+#                             present, GET /app returns HTTP 200 with a
+#                             body that has no "id" field (e.g. "{}").
+#   curl_http_401           — optional marker file (any content). When
+#                             present, GET /app returns a real HTTP 401
+#                             response. curl itself still exits 0 — the
+#                             transfer succeeded; the *server* said no.
+#   curl_http_status.txt    — optional file containing an arbitrary
+#                             integer HTTP status code (e.g. "503"). When
+#                             present, GET /app returns that status with
+#                             a generic error body. Models "any other
+#                             non-200/401 status" (403/404/500/503/...)
+#                             — deliberately a single generic marker
+#                             rather than one dedicated file per status
+#                             code, since the preflight's contract does
+#                             not distinguish between them.
+#   curl_malformed_body     — optional marker file (any content). When
+#                             present, GET /app returns HTTP 200 with a
+#                             body that is not valid JSON.
+#   curl_transport_failure  — optional marker file (any content). When
+#                             present, curl itself fails before
+#                             completing the transfer (DNS failure,
+#                             network unreachable, TLS error, ...): the
+#                             shim exits non-zero, writes NOTHING to the
+#                             -o file, and prints NOTHING to stdout (real
+#                             curl never reaches the point of evaluating
+#                             -w when the transfer itself never happens).
+#
+# Precedence when more than one marker is present (tests are expected to
+# set at most one): curl_transport_failure > curl_http_status.txt >
+# curl_malformed_body > curl_http_401 > curl_no_id > app_id.txt
+# (default 200-match/mismatch).
+#
+# Every call is appended as a JSON line to $BH_FAKE_GH_LOG — the SAME
+# log file fake_gh writes to, so a test can assert on the combined gh+
+# curl call history from one file. Records are distinguished from
+# fake_gh's by an additive "tool":"curl" field that fake_gh's records
+# never carry (fake_gh is unmodified by this fixture). Shape (all values
+# JSON strings):
+#   tool         — always "curl"
+#   method       — always "GET" (the only verb this shim's one caller
+#                  ever uses against this one endpoint)
+#   url          — the request URL as given on the command line
+#   endpoint     — always "get_app" (the only endpoint this shim
+#                  simulates — any other URL is rejected, see below)
+#   auth_header  — the full value of an "Authorization: ..." -H/--header
+#                  argument, or "" if none was given
+#   http_code    — the status code this call reports via -w, or "" if
+#                  curl_transport_failure fired (no response was ever
+#                  received, so there is no status to report)
+
+set -euo pipefail
+
+_log() {
+    printf '%s\n' "$1" >> "${BH_FAKE_GH_LOG}"
+}
+
+_json_escape() {
+    # Escape backslashes, double-quotes, tabs, and carriage-returns for
+    # JSON. Mirrors fake_gh's helper of the same name/behavior.
+    printf '%s' "$1" \
+        | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g; s/\r/\\r/g' \
+        | sed ':a;N;$!ba;s/\n/\\n/g'
+}
+
+# ---------------------------------------------------------------------------
+# Parse argv: track -H/--header (Authorization only), -o/--output (body
+# destination), -X/--request and -w/--write-out (consume their value but
+# do not otherwise need it), and treat the first arg matching none of
+# those patterns as the URL. Every other -flag (e.g. -sS, -s, -S,
+# --compressed) is accepted and silently ignored.
+# ---------------------------------------------------------------------------
+_args=("$@")
+_output_file=""
+_auth_header=""
+_url=""
+_i=0
+while [[ ${_i} -lt ${#_args[@]} ]]; do
+    _a="${_args[${_i}]}"
+    case "${_a}" in
+        -H | --header)
+            _i=$((_i + 1))
+            _hval="${_args[${_i}]:-}"
+            if [[ "${_hval}" =~ ^[Aa]uthorization: ]]; then
+                _auth_header="${_hval}"
+            fi
+            ;;
+        -o | --output)
+            _i=$((_i + 1))
+            _output_file="${_args[${_i}]:-}"
+            ;;
+        -w | --write-out)
+            _i=$((_i + 1))
+            # Value intentionally unexamined: this shim always emits a
+            # bare HTTP status code on stdout, matching the only
+            # write-out format ('%{http_code}') provision-ruleset.sh
+            # ever passes here.
+            ;;
+        -X | --request)
+            _i=$((_i + 1))
+            ;;
+        -*)
+            # Bare flag (-sS, -s, -S, --compressed, ...): no value to
+            # consume, no effect on this shim's behavior.
+            ;;
+        *)
+            _url="${_a}"
+            ;;
+    esac
+    _i=$((_i + 1))
+done
+
+if [[ "${_url}" != *"api.github.com/app"* ]]; then
+    printf 'curl: (3) fake_curl shim only simulates https://api.github.com/app, got: %s\n' \
+        "${_url}" >&2
+    exit 3
+fi
+
+if [[ -f "${BH_FAKE_GH_CANNED_DIR}/curl_transport_failure" ]]; then
+    _log "$(printf '{"tool":"curl","method":"GET","url":"%s","endpoint":"get_app","auth_header":"%s","http_code":""}' \
+        "$(_json_escape "${_url}")" "$(_json_escape "${_auth_header}")")"
+    printf 'curl: (6) Could not resolve host: api.github.com\n' >&2
+    exit 6
+fi
+
+if [[ -f "${BH_FAKE_GH_CANNED_DIR}/curl_http_status.txt" ]]; then
+    _status="$(cat "${BH_FAKE_GH_CANNED_DIR}/curl_http_status.txt")"
+    _body='{"message":"simulated non-200/401 status from fake_curl"}'
+elif [[ -f "${BH_FAKE_GH_CANNED_DIR}/curl_malformed_body" ]]; then
+    _status="200"
+    _body='<html>truncated response'
+elif [[ -f "${BH_FAKE_GH_CANNED_DIR}/curl_http_401" ]]; then
+    _status="401"
+    _body='{"message":"Bad credentials"}'
+elif [[ -f "${BH_FAKE_GH_CANNED_DIR}/curl_no_id" ]]; then
+    _status="200"
+    _body='{}'
+else
+    _status="200"
+    _body="$(printf '{"id":%s}' "$(cat "${BH_FAKE_GH_CANNED_DIR}/app_id.txt")")"
+fi
+
+_log "$(printf '{"tool":"curl","method":"GET","url":"%s","endpoint":"get_app","auth_header":"%s","http_code":"%s"}' \
+    "$(_json_escape "${_url}")" "$(_json_escape "${_auth_header}")" "$(_json_escape "${_status}")")"
+
+if [[ -n "${_output_file}" ]]; then
+    printf '%s' "${_body}" > "${_output_file}"
+fi
+printf '%s' "${_status}"
+exit 0
