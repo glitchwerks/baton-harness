@@ -885,26 +885,22 @@ def test_pagination_absent_on_all_pages_triggers_post(
 #   6. Genuine curl transport failure (non-zero curl exit, no HTTP
 #      response at all) -> hard fail, exit 1, zero writes.
 #
-# Contract gap, deliberately resolved (not silently dropped): case 3
-# above is written as "no .id field in an otherwise-valid JSON body".
-# The router's five outcomes don't separately address "HTTP 200 with a
-# body that isn't valid JSON at all" (a truncated response, an HTML
-# error page served with a 200 status). This suite folds that scenario
-# into case 3's soften-and-skip contract too — "an .id cannot be
-# extracted, whether because the field is absent or the body doesn't
-# parse" — rather than the fail-closed treatment this repo already
-# gives an analogous malformed-body case on the LIST endpoint (see
-# ``list_malformed`` / ``test_lookup_id_fails_closed_on_malformed_list_body``
-# below). That precedent was considered and rejected here because
-# unlike LIST (whose result directly drives a create-vs-update
-# decision), a malformed /app body only ever gates a *cross-check*
-# that already has a soften path for "cannot confirm identity" — so
-# treating "cannot parse" the same as "field absent" preserves today's
-# behavior (the unguarded ``|| true`` already produces skip+proceed
-# here) without adding a fourth code path. No dedicated test enforces
-# this sub-case (only the four fake_curl scenarios above are wired);
-# flagged here for the router to veto if the alternative (fail closed)
-# is actually wanted.
+# Contract gap, deliberately resolved (not silently dropped): case 4b
+# covers "HTTP 200 with a body that is not valid JSON" (for example, a
+# truncated response or an HTML error page served with a 200 status).
+# This is distinct from case 3, where the JSON body is valid but has no
+# .id field. An unparseable body fails closed, matching the analogous
+# malformed-body treatment on the LIST endpoint (see ``list_malformed``
+# / ``test_lookup_id_fails_closed_on_malformed_list_body`` below). The
+# rejected alternative would have folded a parse failure into case 3's
+# soften-and-skip path merely because neither response yields an .id;
+# keeping them separate prevents a malformed response from being
+# mistaken for an affirmative no-.id result. The fake-curl router wires
+# this outcome through ``curl_malformed_body``, and
+# ``test_preflight_curl_http_200_malformed_body_hard_fails`` enforces the
+# fail-closed contract below. Together with the other four marker-driven
+# outcomes and the default success path, all six router sub-scenarios
+# are covered.
 #
 # Every case below additionally asserts a curl call was actually
 # recorded (via ``_curl_calls``), carrying the Bearer-scheme
@@ -1267,6 +1263,10 @@ def test_preflight_curl_transport_failure_hard_fails(
         f"expected stderr to reference the failed GET /app call; "
         f"stderr was:\n{stderr}"
     )
+    assert "curl: (6) Could not resolve host: api.github.com" in stderr, (
+        f"expected stderr to surface curl's transport error detail; "
+        f"stderr was:\n{stderr}"
+    )
     stderr_lower = stderr.lower()
     assert "skip" not in stderr_lower, (
         f"a genuine transport failure must not be reported as a skip; "
@@ -1293,10 +1293,23 @@ def test_preflight_curl_http_200_malformed_body_hard_fails(
     )
 
     calls = _calls(log)
-    assert _curl_calls(calls), "expected curl GET /app preflight call"
+    curl_calls = _curl_calls(calls)
+    assert curl_calls, "expected curl GET /app preflight call"
+    assert curl_calls[0]["http_code"] == "200", (
+        f"expected malformed-body fixture to report HTTP 200; got "
+        f"http_code={curl_calls[0]['http_code']!r}"
+    )
     assert rc == 1, f"expected exit 1, got {rc}; stderr:\n{stderr}"
     assert "PREFLIGHT FAILURE" in stderr
     assert "GET /app" in stderr
+    assert "unparseable JSON body" in stderr, (
+        f"expected the malformed-body-specific failure detail; "
+        f"stderr was:\n{stderr}"
+    )
+    assert "skip" not in stderr.lower(), (
+        f"a malformed HTTP 200 body must fail closed, not skip; "
+        f"stderr was:\n{stderr}"
+    )
     assert _writes(calls) == []
 
 

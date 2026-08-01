@@ -155,32 +155,32 @@ fi
 # Capture curl's response body and HTTP status separately, then parse the body.
 # ---------------------------------------------------------------------------
 _warn_skip_appid_check() {
-    echo "provision-ruleset: WARNING — gh is not App-authenticated or GET /app returned no App ID; skipping the App ID cross-check via GET /app. Ensure the ambient token has administration: write for the subsequent ruleset writes." >&2
+    echo "provision-ruleset: WARNING — GET /app rejected the App JWT (HTTP 401) or returned no App ID; skipping the App ID cross-check. Ensure the ambient token has administration: write for the subsequent ruleset writes." >&2
 }
 
 _app_body_file="$(mktemp)"
 _app_stderr_file="$(mktemp)"
+trap 'rm -f "${_app_body_file}" "${_app_stderr_file}"' EXIT
 if ! _app_http_status="$(
     curl -sS \
         -H "Authorization: Bearer ${_APP_JWT}" \
         -H "Accept: application/vnd.github+json" \
         -o "${_app_body_file}" \
         -w '%{http_code}' \
+        --connect-timeout 10 \
+        --max-time 30 \
         "https://api.github.com/app" \
         2>"${_app_stderr_file}"
 )"; then
     _app_stderr="$(cat "${_app_stderr_file}" 2>/dev/null || true)"
-    rm -f "${_app_body_file}" "${_app_stderr_file}"
     echo "provision-ruleset: PREFLIGHT FAILURE — GET /app failed; cannot confirm BH_GITHUB_APP_ID. A freshly-minted App JWT is always used for this call, so any failure means that credential is unusable." >&2
     if [[ -n "${_app_stderr}" ]]; then
         echo "  ${_app_stderr}" >&2
     fi
     exit 1
 elif [[ "${_app_http_status}" == "401" ]]; then
-    rm -f "${_app_body_file}" "${_app_stderr_file}"
     _warn_skip_appid_check
 elif [[ "${_app_http_status}" != "200" ]]; then
-    rm -f "${_app_body_file}" "${_app_stderr_file}"
     echo "provision-ruleset: PREFLIGHT FAILURE — GET /app failed; cannot confirm BH_GITHUB_APP_ID. A freshly-minted App JWT is always used for this call, so any failure means that credential is unusable." >&2
     echo "  GET /app returned HTTP ${_app_http_status}." >&2
     exit 1
@@ -190,11 +190,9 @@ else
             'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); print(data["id"] if isinstance(data, dict) and "id" in data else "")' \
             "${_app_body_file}" 2>/dev/null
     )"; then
-        rm -f "${_app_body_file}" "${_app_stderr_file}"
         echo "provision-ruleset: PREFLIGHT FAILURE — GET /app returned an unparseable JSON body; cannot confirm BH_GITHUB_APP_ID." >&2
         exit 1
     fi
-    rm -f "${_app_body_file}" "${_app_stderr_file}"
     if [[ -z "${_live_app_id}" ]]; then
         _warn_skip_appid_check
     elif [[ "${_live_app_id}" != "${BH_GITHUB_APP_ID}" ]]; then
