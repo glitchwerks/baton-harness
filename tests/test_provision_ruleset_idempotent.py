@@ -1,13 +1,18 @@
 """Slice 3b — bin/provision-ruleset.sh idempotency.
 
-Drives the bash script with a fake gh on PATH that records every API
-call to a log file and returns canned JSON for BOTH endpoints the
-script hits:
+Drives the bash script with a fake gh AND a fake curl on PATH
+(``tests/fixtures/fake_gh/gh`` and ``tests/fixtures/fake_curl/curl``)
+that both record every call to a shared log file and return canned
+responses. gh serves every endpoint except the GET /app preflight:
 
   - LIST:  GET /repos/<owner>/<repo>/rulesets  (returns array of
            {id, name})
   - BY-ID: GET /repos/<owner>/<repo>/rulesets/<id>  (returns single
            object)
+
+curl serves the GET /app preflight only (issue #326 — see that section
+near the end of this file); the old `gh api app`-based preflight cases
+are the "REMOVED" / "superseded" items in the numbered list below.
 
 Six cases:
 
@@ -23,58 +28,43 @@ Six cases:
    AND the call log shows the script GET-d /rulesets/99, not
    /rulesets/22.  Proves the list-then-by-id path is used (NOT a
    name-string lookup).
-5. Preflight App-ID mismatch (gh api /app returns id=111 but
-   BH_GITHUB_APP_ID=222) -> exit 2, no writes.
+5. REMOVED (issue #326) — the old gh-based B3 preflight-mismatch test
+   is superseded by the curl-based "success, ID mismatch" test in the
+   "Issue #326" section below.
 6. Admin-bypass actor_id logging: script logs the resolved actor_id
    before any writes so an operator can verify before enforcement.
 
-Issue #199 — soften the App-ID preflight for PAT auth (superseded by #200):
+History of the GET /app preflight mechanism (issues #199 through #201,
+superseded by #326 — kept for context; none of cases 7/7b/8/9/10/11
+below exist as test functions any more):
 
-  GET /app is App-JWT-only. A PAT-authenticated gh gets a 401/non-zero
-  exit rather than a body to compare .id against. Issue #200 supersedes
-  that PAT-only contract for case 7:
+  GET /app is App-JWT-only. Issue #199 first tried softening a
+  PAT-authenticated gh's 401 into skip+proceed. Issue #200 then always
+  minted a real App JWT before this call, so a confirmed 401 became a
+  hard-fail instead (case 7) alongside softening only a genuine no-.id
+  success body (case 7b), with mismatched/matching regression guards
+  (cases 8/9). Adversarial review of PR #201 found that ANY non-zero
+  `gh api app` exit — a genuine 401 but also a transient 5xx, a
+  rate-limit, a network blip — was being collapsed into the same
+  soften path; case 10 narrowed the soften to a stderr match on
+  literal "HTTP 401". CodeRabbit review of PR #201 (commit 6e9287a)
+  then found that a bare "401" substring anywhere in stderr (e.g. a
+  correlation id) could false-trigger that same match; case 11
+  narrowed it again to require the "HTTP 401" substring specifically.
 
-7. Confirmed 401 from gh api app -> now hard-fails with exit 1 and
-   zero writes, identically to cases 10/11. Issue #200's durable fix
-   always mints a real App JWT for GET /app, removing the PAT-only path
-   that issue #199 softened; the former case-7 test is repurposed and
-   renamed accordingly.
-7b. (CodeRabbit follow-up) gh api app exits 0 but the body has no
-    .id -> must warn and skip the App-ID cross-check, then proceed
-    to writes (the same warn+skip+proceed contract case 7 used before
-    issue #200's durable fix), not be treated as a mismatch.
-8. App-authed but mismatched .id -> still hard-fails (regression
-   guard; the soften must not weaken this).
-9. App-authed with matching .id -> still proceeds (regression guard).
-
-Adversarial review of PR #201 flagged the case-7 soften as too broad:
-ANY non-zero exit of `gh api app` (a genuine 401, but also a transient
-network error, a 5xx, a rate-limit) was being collapsed into the same
-warn+skip+proceed path. A transient error on a genuinely App-authed
-run would then silently proceed to write rulesets with an unconfirmed
-App ID. Case 10 (below) is the new red test for the narrower contract:
-only a *confirmed* 401 auth failure may soften; any other non-zero
-exit from `gh api app` must hard-fail before any ruleset write.
-
-10. Non-auth gh api app failure (e.g. HTTP 503) -> must hard-fail
-    (non-zero exit, distinct from the exit-2 mismatch code, zero
-    writes), NOT skip-and-proceed (the behavior case 7 had before
-    issue #200's durable fix).
-
-CodeRabbit review of PR #201 (commit 6e9287a) flagged the case-10 fix
-as still too broad: it discriminates "confirmed 401" from other
-failures by testing whether gh's stderr contains the bare substring
-`401` — so a stray `401` anywhere in stderr (a request id, a
-correlation token, a byte count) that has nothing to do with an auth
-failure would false-trigger the soften-and-proceed path and silently
-bypass App-ID validation. Case 11 (below) is the new red test for the
-narrower contract: only a stderr containing `HTTP 401` specifically
-may soften; a bare `401` substring elsewhere in stderr must hard-fail.
-
-11. Stray "401" substring in non-auth gh api app stderr (e.g. inside a
-    correlation id, no "HTTP 401" present) -> must hard-fail exactly
-    like case 10 (exit 1, zero writes), NOT skip-and-proceed (the
-    behavior case 7 had before issue #200's durable fix).
+  Issue #326 replaces the entire mechanism instead of patching it
+  further: `gh api app` cannot work here at all, because `gh api`
+  unconditionally sends `Authorization: token <value>` while GitHub's
+  API requires `Authorization: Bearer <value>` for App JWTs
+  (https://github.com/cli/cli/issues/12828 — confirmed via a live A/B
+  test: the identical JWT gets 200 via `curl -H "Authorization: Bearer
+  $JWT"` and 401 "could not be decoded" via `gh api app`). The
+  preflight now calls curl directly and inspects the REAL HTTP status
+  code curl reports, which eliminates the whole stray-substring class
+  of bug cases 10/11 existed to guard against — there is no more
+  stderr text to stray-match against. See the "Issue #326" section
+  near the end of this file for the six replacement test cases and
+  ``tests/fixtures/fake_curl/curl`` for the new shim.
 
 Issue #202 — the fake gh shim diverged from real gh in two ways that let
 this suite pass against a script that fails in production:
@@ -117,6 +107,7 @@ from pathlib import Path
 HARNESS = Path(__file__).resolve().parents[1]
 SCRIPT = HARNESS / "bin" / "provision-ruleset.sh"
 FAKE_GH_DIR = HARNESS / "tests" / "fixtures" / "fake_gh"
+FAKE_CURL_DIR = HARNESS / "tests" / "fixtures" / "fake_curl"
 
 # On Windows, the system bash (C:\Windows\System32\bash.exe) launches WSL and
 # fails when no WSL distro is configured.  Prefer Git Bash when available.
@@ -142,23 +133,27 @@ def _invoke(
     admin_role_id: str = "5",
     admin_collaborators_body: str | None = None,
     custom_roles_body: str | None = None,
-    app_authenticated: bool = True,
-    app_response_has_id: bool = True,
-    app_transient_error: bool = False,
-    app_stray_401: bool = False,
+    app_get_outcome: str = "success",
+    app_http_status: str = "503",
     return_stderr: bool = False,
 ) -> tuple[int, str, Path] | tuple[int, str, str, Path]:
-    """Run the provisioning script with the fake gh on PATH.
+    """Run the provisioning script with the fake gh AND fake curl on PATH.
+
+    Issue #326: the GET /app preflight now calls curl (not `gh api
+    app`), so the "app_*" scenario knobs from before that issue have
+    been replaced by app_get_outcome / app_http_status, which drive
+    ``tests/fixtures/fake_curl/curl``'s marker files instead of the old
+    ``tests/fixtures/fake_gh/gh`` "get_app" marker files.
 
     Args:
         tmp_path: Pytest-provided temp directory for this test.
         canned_state_dir: Directory containing canned response files
-            read by the fake gh shim.
+            read by both the fake gh and fake curl shims.
         app_id: Value of BH_GITHUB_APP_ID passed to the script.
-        preflight_app_id: The id the fake /app endpoint returns
-            (may differ from app_id to trigger B3 mismatch). Ignored
-            when app_authenticated is False or app_response_has_id
-            is False.
+        preflight_app_id: The id the fake curl GET /app endpoint
+            returns in the "success" outcome (may differ from app_id
+            to trigger a B3 mismatch). Ignored for every other
+            app_get_outcome value.
         admin_role_id: Value of BH_ADMIN_ROLE_ID passed to the
             script; defaults to the spec default of "5".
         admin_collaborators_body: Optional canned JSON body for
@@ -167,33 +162,27 @@ def _invoke(
         custom_roles_body: Optional canned JSON body for
             GET /orgs/.../custom-repository-roles. When absent, the
             fake gh returns a 404-style "feature not available" error.
-        app_authenticated: When False, the fake gh simulates a PAT
-            caller hitting the App-JWT-only GET /app endpoint: gh
-            exits non-zero with a 401-style stderr message instead of
-            returning an id (issue #199).
-        app_response_has_id: When False, the fake gh returns a
-            successful (exit 0) GET /app response whose body has no
-            "id" field — e.g. {} — rather than omitting the call
-            entirely (issue #199 no-.id gap). Ignored when
-            app_authenticated is False (that case already omits any
-            id).
-        app_transient_error: When True, the fake gh simulates a
-            non-auth failure on GET /app (e.g. HTTP 503) — gh exits
-            non-zero with a stderr that does NOT indicate 401. Used
-            to test the adversarial-review follow-up to #199: only a
-            confirmed 401 may soften into skip+proceed; any other
-            failure must hard-fail. Mutually exclusive with
-            app_authenticated=False and app_response_has_id=False;
-            when True, this marker takes precedence in the shim.
-        app_stray_401: When True, the fake gh simulates a non-auth
-            GET /app failure whose stderr contains the bare substring
-            "401" (e.g. inside a correlation id) but NOT "HTTP 401".
-            Used to test a CodeRabbit follow-up on PR #201: a bare
-            `*"401"*` stderr match must not be treated as a confirmed
-            auth failure. Mutually exclusive with app_transient_error,
-            app_authenticated=False, and app_response_has_id=False;
-            when True and app_transient_error is False, this marker
-            takes precedence in the shim.
+        app_get_outcome: Selects which fake-curl GET /app scenario to
+            can. One of:
+              "success" (default) — HTTP 200, body {"id": <the
+                  preflight_app_id value>}. Compared against app_id
+                  exactly as before — a match proceeds, a mismatch
+                  hard-fails with exit 2.
+              "no_id" — HTTP 200, body has no "id" field (e.g. {}).
+                  Soften-and-skip: warn, then proceed to writes.
+              "http_401" — a genuine HTTP 401 response (curl itself
+                  still exits 0 — the transfer succeeded, the server
+                  said no). Soften-and-skip: warn, then proceed.
+               "http_other" — any HTTP status that is neither 200 nor
+                   401 (value set via app_http_status, default "503").
+                   Hard-fails with exit 1, zero writes.
+              "malformed_body" — HTTP 200 with a body that is not
+                  valid JSON. Hard-fails with exit 1, zero writes.
+               "transport_failure" — curl itself fails before
+                  completing the transfer (DNS/network/TLS). Hard
+                  -fails with exit 1, zero writes.
+        app_http_status: The status code fake curl reports when
+            app_get_outcome is "http_other". Ignored otherwise.
         return_stderr: When True, return a four-tuple that also
             includes the combined stderr, for tests that assert on
             preflight warning text.
@@ -201,35 +190,35 @@ def _invoke(
     Returns:
         A three-tuple of (returncode, combined_stdout, gh_call_log_path)
         by default, or a four-tuple that inserts stderr before the log
-        path when return_stderr is True.
+        path when return_stderr is True. The log path is shared by
+        both shims — see ``_curl_calls`` to filter to fake-curl
+        records only.
     """
     log_path = tmp_path / "gh_calls.jsonl"
-    # The shim reads app_id.txt to build its /app response.
+    # Reused by fake_curl's "success" outcome (and, harmlessly, still
+    # read by fake_gh's now-unused "get_app" case — see that shim's
+    # header comment).
     (canned_state_dir / "app_id.txt").write_text(
         preflight_app_id, encoding="utf-8"
     )
-    if app_transient_error:
-        # Presence of this marker tells the shim to simulate a non-401
-        # failure (e.g. HTTP 503) on GET /app — a genuine transient/infra
-        # error, distinct from a confirmed PAT-auth 401.
-        (canned_state_dir / "app_transient_error").write_text(
+    if app_get_outcome == "no_id":
+        (canned_state_dir / "curl_no_id").write_text("1", encoding="utf-8")
+    elif app_get_outcome == "http_401":
+        (canned_state_dir / "curl_http_401").write_text("1", encoding="utf-8")
+    elif app_get_outcome == "http_other":
+        (canned_state_dir / "curl_http_status.txt").write_text(
+            app_http_status, encoding="utf-8"
+        )
+    elif app_get_outcome == "malformed_body":
+        (canned_state_dir / "curl_malformed_body").write_text(
             "1", encoding="utf-8"
         )
-    elif app_stray_401:
-        # Presence of this marker tells the shim to simulate a non-auth
-        # failure on GET /app whose stderr merely contains the substring
-        # "401" incidentally (not "HTTP 401") — must not soften.
-        (canned_state_dir / "app_stray_401").write_text("1", encoding="utf-8")
-    elif not app_authenticated:
-        # Presence of this marker tells the shim to simulate a 401 on
-        # GET /app, as a real PAT-authenticated gh would get.
-        (canned_state_dir / "app_unauthenticated").write_text(
+    elif app_get_outcome == "transport_failure":
+        (canned_state_dir / "curl_transport_failure").write_text(
             "1", encoding="utf-8"
         )
-    elif not app_response_has_id:
-        # Presence of this marker tells the shim to return a successful
-        # GET /app whose body has no "id" field.
-        (canned_state_dir / "app_no_id").write_text("1", encoding="utf-8")
+    elif app_get_outcome != "success":
+        raise ValueError(f"unknown app_get_outcome: {app_get_outcome!r}")
     (canned_state_dir / "collaborators_admin.body").write_text(
         admin_collaborators_body
         if admin_collaborators_body is not None
@@ -253,6 +242,7 @@ def _invoke(
         "PATH": os.pathsep.join(
             part
             for part in [
+                str(FAKE_CURL_DIR),
                 str(FAKE_GH_DIR),
                 _BASH_BIN_DIR,
                 os.environ.get("PATH", ""),
@@ -269,8 +259,11 @@ def _invoke(
         # #200: the script now unconditionally obtains App-auth credentials
         # before any gh call. These two overrides stand in for the real
         # `python -m baton_harness.chain.app_auth {jwt|token}` invocation so
-        # this suite's 21 pre-existing cases keep exercising the ruleset
+        # this suite's pre-existing cases keep exercising the ruleset
         # write/idempotency behavior without needing real BWS_* secrets.
+        # #326: the App JWT this produces is also what the curl-based
+        # preflight must send as "Authorization: Bearer <this value>" —
+        # see the "Issue #326" test section, which pins the exact header.
         "BH_APP_AUTH_JWT_CMD": ("printf %s fake-jwt-for-idempotency-tests"),
         "BH_APP_AUTH_TOKEN_CMD": (
             "printf %s fake-install-token-for-idempotency-tests"
@@ -304,14 +297,15 @@ def _invoke(
 
 
 def _calls(log_path: Path) -> list[dict]:  # type: ignore[type-arg]
-    """Parse the gh call log as a list of dicts.
+    """Parse the combined gh + curl call log as a list of dicts.
 
     Args:
-        log_path: Path to the JSONL file written by the fake gh shim.
+        log_path: Path to the JSONL file written by both the fake gh
+            and fake curl shims (see ``_invoke``'s BH_FAKE_GH_LOG).
 
     Returns:
-        List of call-record dicts, one per gh invocation.  Empty list
-        if the log file does not exist (no calls were made).
+        List of call-record dicts, one per gh or curl invocation.
+        Empty list if the log file does not exist (no calls were made).
     """
     if not log_path.exists():
         return []
@@ -332,6 +326,22 @@ def _writes(calls: list[dict]) -> list[dict]:  # type: ignore[type-arg]
         Subset of records whose method is POST or PUT.
     """
     return [c for c in calls if c["method"] in ("POST", "PUT")]
+
+
+def _curl_calls(calls: list[dict]) -> list[dict]:  # type: ignore[type-arg]
+    """Filter a call list to only fake-curl records (issue #326).
+
+    fake_curl's JSONL records carry an additive ``"tool":"curl"`` field
+    that fake_gh's records never carry, so this is a simple filter over
+    the same combined log ``_calls`` returns.
+
+    Args:
+        calls: Call records from ``_calls``.
+
+    Returns:
+        Subset of records written by ``tests/fixtures/fake_curl/curl``.
+    """
+    return [c for c in calls if c.get("tool") == "curl"]
 
 
 def _strip_comments(obj: object) -> object:
@@ -571,31 +581,6 @@ def test_preexisting_with_stale_id_uses_list_filter_path(
         for u in get_urls
         if "/rulesets/" in u
     ), f"name-string appeared in GET URL (name-lookup used): {get_urls}"
-
-
-# ---------------------------------------------------------------------------
-# Case 5: B3 preflight mismatch aborts before any write
-# ---------------------------------------------------------------------------
-
-
-def test_preflight_app_id_mismatch_aborts(tmp_path: Path) -> None:
-    """B3: BH_GITHUB_APP_ID != GET /app .id -> exit 2 with no writes.
-
-    The /app endpoint returns id=111 but the env carries 222, so the
-    script must abort (exit 2) before performing any ruleset mutation.
-    """
-    canned = tmp_path / "canned"
-    canned.mkdir()
-    (canned / "list.body").write_text("[]", encoding="utf-8")
-
-    rc, _stdout, log = _invoke(
-        tmp_path, canned, app_id="222", preflight_app_id="111"
-    )
-
-    assert rc == 2, f"expected exit 2 for App-ID mismatch, got {rc}"
-    assert _writes(_calls(log)) == [], (
-        "script must write zero ruleset mutations on preflight failure"
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -870,183 +855,113 @@ def test_pagination_absent_on_all_pages_triggers_post(
 
 
 # ---------------------------------------------------------------------------
-# Issue #199: soften the App-ID preflight under PAT auth
-# ---------------------------------------------------------------------------
+# Issue #326: GET /app preflight replaced with curl + real HTTP status
+# codes.
 #
-# GET /app is App-JWT-only. Issue #200 now guarantees that the script
-# supplies a freshly-minted App JWT, so case 7 asserts that a confirmed
-# 401 hard-fails. Cases 8-9 remain regression guards for the successful
-# App-authenticated response paths.
+# `gh api app` cannot authenticate this call: `gh api` unconditionally
+# sends `Authorization: token <value>`, but GitHub's API requires
+# `Authorization: Bearer <value>` for App JWTs
+# (https://github.com/cli/cli/issues/12828 — confirmed via a live A/B
+# test: the identical JWT gets 200 via `curl -H "Authorization: Bearer
+# $JWT"` and 401 "could not be decoded" via `gh api app`). The preflight
+# now shells out to curl directly, capturing the real HTTP status code
+# via `-w '%{http_code}'` instead of sniffing gh's stderr text — see
+# ``tests/fixtures/fake_curl/curl`` for the exact invocation shape this
+# suite expects the implementation to use.
+#
+# Because real status codes replace stderr text-matching, the whole
+# stray-substring class of bug the old cases 10/11 existed to guard
+# against (a bare "401" appearing incidentally in stderr) no longer has
+# an attack surface — there is no more stderr to stray-match. The six
+# cases below are the complete replacement contract:
+#
+#   1. Success, ID matches -> preflight OK, proceeds to write rulesets.
+#   2. Success, ID mismatch -> PREFLIGHT FAILURE, exit 2, zero writes.
+#   3. HTTP 200, no .id in body -> warn + skip + proceed.
+#   4. HTTP 401 -> warn + skip + proceed (curl itself still exits 0;
+#      the *server* said no, which is not a transport failure).
+#   5. HTTP 503 (any non-200/non-401 status) -> hard fail, exit 1, zero
+#      writes.
+#   6. Genuine curl transport failure (non-zero curl exit, no HTTP
+#      response at all) -> hard fail, exit 1, zero writes.
+#
+# Contract gap, deliberately resolved (not silently dropped): case 3
+# above is written as "no .id field in an otherwise-valid JSON body".
+# The router's five outcomes don't separately address "HTTP 200 with a
+# body that isn't valid JSON at all" (a truncated response, an HTML
+# error page served with a 200 status). This suite folds that scenario
+# into case 3's soften-and-skip contract too — "an .id cannot be
+# extracted, whether because the field is absent or the body doesn't
+# parse" — rather than the fail-closed treatment this repo already
+# gives an analogous malformed-body case on the LIST endpoint (see
+# ``list_malformed`` / ``test_lookup_id_fails_closed_on_malformed_list_body``
+# below). That precedent was considered and rejected here because
+# unlike LIST (whose result directly drives a create-vs-update
+# decision), a malformed /app body only ever gates a *cross-check*
+# that already has a soften path for "cannot confirm identity" — so
+# treating "cannot parse" the same as "field absent" preserves today's
+# behavior (the unguarded ``|| true`` already produces skip+proceed
+# here) without adding a fourth code path. No dedicated test enforces
+# this sub-case (only the four fake_curl scenarios above are wired);
+# flagged here for the router to veto if the alternative (fail closed)
+# is actually wanted.
+#
+# Every case below additionally asserts a curl call was actually
+# recorded (via ``_curl_calls``), carrying the Bearer-scheme
+# Authorization header the App JWT requires. This is deliberate, not
+# redundant with the rc/writes assertions: for cases 1 and 2, the
+# *outcome* (exit 0 + 2 writes / exit 2 + zero writes) is
+# indistinguishable from what the OLD gh-based preflight already
+# produces on a match/mismatch — since _invoke no longer writes any of
+# the old fake_gh "get_app" markers, the pre-#326 implementation falls
+# through to fake_gh's default (matching) GET /app response regardless
+# of which app_get_outcome this suite requests. Without the
+# curl-was-actually-called assertion, cases 1 and 2 would misreport
+# green against an implementation that still calls `gh api app` and
+# never touches curl at all — the exact "red for the wrong reason" trap
+# a byte-for-byte outcome match can hide.
+# ---------------------------------------------------------------------------
 
 
-def test_confirmed_401_hard_fails(tmp_path: Path) -> None:
-    """Case 7: a confirmed 401 from GET /app hard-fails with zero writes.
+def test_preflight_curl_success_id_match_proceeds(tmp_path: Path) -> None:
+    """Case 1: curl GET /app returns 200 with a matching .id -> proceeds.
 
-    Issue #199 softened this failure because there was no way to
-    guarantee an App JWT was available for GET /app under PAT auth.
-    Issue #200's durable fix removed that gap: the script always mints
-    and supplies a real App JWT now, so a confirmed 401 means that JWT
-    itself is unusable and must hard-fail exactly like cases 10/11.
-    """
-    canned = tmp_path / "canned"
-    canned.mkdir()
-    # Empty LIST -> if the script incorrectly soften-and-proceeds, it
-    # would create both rulesets here.
-    (canned / "list.body").write_text("[]", encoding="utf-8")
-
-    rc, stdout, stderr, log = _invoke(
-        tmp_path, canned, app_authenticated=False, return_stderr=True
-    )
-
-    assert rc != 0, (
-        f"a confirmed 401 from GET /app must hard-fail, not exit 0; "
-        f"stdout:\n{stdout}\nstderr:\n{stderr}"
-    )
-    assert rc != 2, (
-        f"a confirmed 401 from GET /app must use a code distinct from "
-        f"the exit-2 App-ID-mismatch path; got rc={rc}"
-    )
-    assert rc == 1, (
-        f"expected exit 1 for a confirmed 401 from GET /app; got "
-        f"rc={rc}\nstdout:\n{stdout}\nstderr:\n{stderr}"
-    )
-
-    assert _writes(_calls(log)) == [], (
-        "a confirmed 401 from GET /app must write zero ruleset "
-        "mutations — an unusable App JWT must never reach the write phase"
-    )
-
-    stderr_lower = stderr.lower()
-    assert "app" in stderr_lower, (
-        f"expected stderr to reference the failed GET /app call; "
-        f"stderr was:\n{stderr}"
-    )
-    assert "skip" not in stderr_lower, (
-        "a confirmed 401 must not be reported as a skip; "
-        f"stderr was:\n{stderr}"
-    )
-
-
-def test_app_authed_empty_or_missing_id_skips_and_proceeds(
-    tmp_path: Path,
-) -> None:
-    """Case 7b (CodeRabbit follow-up): GET /app succeeds with no .id.
-
-    gh api app can exit 0 (success) yet return a body with no "id"
-    field. Today the script extracts an empty _live_app_id from such a
-    body and compares it against BH_GITHUB_APP_ID; since "" never
-    equals a numeric app id, this is indistinguishable from a genuine
-    mismatch and hard-fails with PREFLIGHT FAILURE (exit 2).
-
-    A missing .id is not evidence of a *wrong* app id — it is the same
-    "we cannot confirm the App identity" situation as non-App auth
-    (case 7), and must be handled identically: warn + skip the
-    cross-check + proceed to the write phase. Treating it as a hard
-    mismatch would false-positive-block any caller whose /app response
-    shape omits the field, which is exactly the class of gap #199 set
-    out to soften.
-    """
-    canned = tmp_path / "canned"
-    canned.mkdir()
-    (canned / "list.body").write_text("[]", encoding="utf-8")
-
-    rc, stdout, stderr, log = _invoke(
-        tmp_path,
-        canned,
-        app_response_has_id=False,
-        return_stderr=True,
-    )
-
-    assert rc == 0, (
-        f"a successful GET /app with no .id must not hard-fail the "
-        f"preflight (treat like non-App auth, #199); got rc={rc}\n"
-        f"stdout:\n{stdout}\nstderr:\n{stderr}"
-    )
-
-    stderr_lower = stderr.lower()
-    assert "skip" in stderr_lower, (
-        f"expected a 'skip' warning on stderr when GET /app returns no "
-        f".id; stderr was:\n{stderr}"
-    )
-    assert "app" in stderr_lower and "id" in stderr_lower, (
-        f"expected the skip warning to reference the App-ID check; "
-        f"stderr was:\n{stderr}"
-    )
-    assert "preflight failure" not in stderr_lower, (
-        f"a no-.id success response must not be reported as a "
-        f"preflight failure; stderr was:\n{stderr}"
-    )
-
-    writes = _writes(_calls(log))
-    assert len(writes) == 2, (
-        f"expected the script to proceed to create both rulesets after "
-        f"skipping the App-ID check on a no-.id response, got "
-        f"writes={writes}"
-    )
-    assert {c["ruleset_name"] for c in writes} == {
-        "harness-main-no-merge",
-        "harness-feature-daemon-only",
-    }
-
-
-def test_app_authed_mismatched_id_still_hard_fails(tmp_path: Path) -> None:
-    """Case 8 (regression guard): App-authed + mismatched .id -> exit 2.
-
-    When gh IS App-authenticated (GET /app succeeds) but the returned
-    .id does not match BH_GITHUB_APP_ID, the preflight must still hard
-    -fail exactly as before #199 — the soften only applies to the
-    non-App-authenticated case (case 7), never to a confirmed mismatch.
+    Mirrors the pre-#326 "App-authed with matching .id" regression
+    guard, but via the curl-based mechanism: the script must send the
+    App JWT as a Bearer credential and read the REAL 200 status curl
+    reports, not sniff any stderr text.
     """
     canned = tmp_path / "canned"
     canned.mkdir()
     (canned / "list.body").write_text("[]", encoding="utf-8")
 
-    rc, stdout, stderr, log = _invoke(
-        tmp_path,
-        canned,
-        app_id="222",
-        preflight_app_id="111",
-        app_authenticated=True,
-        return_stderr=True,
-    )
-
-    assert rc == 2, (
-        f"App-authed mismatch must still hard-fail with exit 2 "
-        f"(preserved by #199); got rc={rc}\nstderr:\n{stderr}"
-    )
-    assert "PREFLIGHT FAILURE" in stderr, (
-        f"expected the existing hard-fail banner to be preserved; "
-        f"stderr was:\n{stderr}"
-    )
-    assert _writes(_calls(log)) == [], (
-        "script must write zero ruleset mutations on a confirmed "
-        "App-ID mismatch"
-    )
-
-
-def test_app_authed_matching_id_still_proceeds(tmp_path: Path) -> None:
-    """Case 9 (regression guard): App-authed + matching .id -> proceeds.
-
-    When gh IS App-authenticated and the returned .id matches
-    BH_GITHUB_APP_ID, the preflight must pass exactly as before #199,
-    proceeding into the normal write phase.
-    """
-    canned = tmp_path / "canned"
-    canned.mkdir()
-    (canned / "list.body").write_text("[]", encoding="utf-8")
-
-    rc, stdout, stderr, log = _invoke(
+    rc, stdout, log = _invoke(
         tmp_path,
         canned,
         app_id="111",
         preflight_app_id="111",
-        app_authenticated=True,
-        return_stderr=True,
+        app_get_outcome="success",
     )
 
-    assert rc == 0, (
-        f"App-authed matching id must proceed as before #199; "
-        f"got rc={rc}\nstderr:\n{stderr}"
+    curl_calls = _curl_calls(_calls(log))
+    assert curl_calls, (
+        "expected the script to call curl for the GET /app preflight; "
+        "got zero fake-curl call-log records — the implementation is "
+        "still using the old gh-based preflight (or never made the "
+        f"call at all). Full call log: {_calls(log)}"
+    )
+    assert curl_calls[0]["auth_header"] == (
+        "Authorization: Bearer fake-jwt-for-idempotency-tests"
+    ), (
+        "expected the App JWT to be sent as a Bearer credential (the "
+        "actual bug under test — gh api app always sends "
+        "'Authorization: token ...' instead); got auth_header="
+        f"{curl_calls[0]['auth_header']!r}"
+    )
+
+    assert rc == 0, f"script exited {rc}"
+    assert "preflight ok" in stdout.lower(), (
+        f"expected a preflight-OK message in stdout; stdout was:\n{stdout}"
     )
     writes = _writes(_calls(log))
     assert len(writes) == 2, (
@@ -1059,147 +974,330 @@ def test_app_authed_matching_id_still_proceeds(tmp_path: Path) -> None:
     }
 
 
-# ---------------------------------------------------------------------------
-# Adversarial-review follow-up to #199 (PR #201): only a confirmed 401
-# may soften into skip+proceed; any other GET /app failure must hard-fail.
-# ---------------------------------------------------------------------------
+def test_preflight_curl_success_id_mismatch_hard_fails(
+    tmp_path: Path,
+) -> None:
+    """Case 2: curl GET /app returns 200 with a mismatched .id -> exit 2.
 
-
-def test_non_auth_gh_api_app_failure_hard_fails(tmp_path: Path) -> None:
-    """Case 10: gh api app fails non-401 -> hard-fail, zero writes.
-
-    The pre-fix behaviour (issue #199) collapsed ANY non-zero exit of
-    `gh api app` — a genuine 401, but also a transient network error,
-    a 5xx, or a rate-limit — into the same warn+skip+proceed path. A
-    transient error on a genuinely App-authenticated run would then
-    silently proceed to write rulesets with an *unconfirmed* App ID,
-    defeating the preflight's protective purpose.
-
-    This test simulates a non-auth GET /app failure (HTTP 503) via the
-    `app_transient_error` shim marker. Unlike case 7 (confirmed 401,
-    which softens), this must:
-      - exit non-zero,
-      - use a distinct code from the exit-2 App-ID-mismatch path (this
-        suite asserts exit 1 — the implementer must match this code),
-      - write ZERO ruleset mutations (no POST/PUT in the call log),
-      - report on stderr that GET /app failed for a non-auth reason
-        (i.e. must NOT emit the case-7/7b "skip" warning, and must
-        surface the underlying failure, e.g. "503").
+    Mirrors the pre-#326 B3 preflight-mismatch case, but via curl: the
+    real 200 status plus a parsed .id that disagrees with
+    BH_GITHUB_APP_ID must still abort before any ruleset write.
     """
     canned = tmp_path / "canned"
     canned.mkdir()
-    # Empty LIST -> if the script incorrectly soften-and-proceeds (the
-    # pre-fix bug), it would create both rulesets here.
     (canned / "list.body").write_text("[]", encoding="utf-8")
 
     rc, stdout, stderr, log = _invoke(
-        tmp_path, canned, app_transient_error=True, return_stderr=True
+        tmp_path,
+        canned,
+        app_id="222",
+        preflight_app_id="111",
+        app_get_outcome="success",
+        return_stderr=True,
     )
 
-    assert rc != 0, (
-        f"a non-auth GET /app failure must hard-fail, not exit 0; "
-        f"stdout:\n{stdout}\nstderr:\n{stderr}"
+    curl_calls = _curl_calls(_calls(log))
+    assert curl_calls, (
+        "expected the script to call curl for the GET /app preflight; "
+        "got zero fake-curl call-log records. Full call log: "
+        f"{_calls(log)}"
     )
-    assert rc != 2, (
-        f"a non-auth GET /app failure must use a code distinct from "
-        f"the exit-2 App-ID-mismatch path (confusing the two failure "
-        f"modes was the adversarial-review finding); got rc={rc}"
-    )
-    assert rc == 1, (
-        f"expected exit 1 for a non-auth GET /app failure (the code "
-        f"this test suite standardizes on); got rc={rc}\n"
-        f"stdout:\n{stdout}\nstderr:\n{stderr}"
+    assert curl_calls[0]["auth_header"] == (
+        "Authorization: Bearer fake-jwt-for-idempotency-tests"
+    ), (
+        f"expected a Bearer-scheme Authorization header; got "
+        f"auth_header={curl_calls[0]['auth_header']!r}"
     )
 
+    assert rc == 2, (
+        f"expected exit 2 for a curl-confirmed App-ID mismatch, got "
+        f"{rc}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    )
+    assert "PREFLIGHT FAILURE" in stderr, (
+        f"expected the existing hard-fail banner to be preserved; "
+        f"stderr was:\n{stderr}"
+    )
+    assert "BH_GITHUB_APP_ID=222" in stderr, (
+        f"expected the configured (wrong) app id in the failure "
+        f"message; stderr was:\n{stderr}"
+    )
+    assert "111" in stderr, (
+        f"expected the live .id GET /app actually returned in the "
+        f"failure message; stderr was:\n{stderr}"
+    )
     assert _writes(_calls(log)) == [], (
-        "a non-auth GET /app failure must write zero ruleset "
-        "mutations — an unconfirmed App ID must never reach the "
-        "write phase"
+        "script must write zero ruleset mutations on a confirmed "
+        "App-ID mismatch"
     )
 
+
+def test_preflight_curl_http_200_no_id_skips_and_proceeds(
+    tmp_path: Path,
+) -> None:
+    """Case 3: curl GET /app returns 200 with no .id -> warn+skip+proceed.
+
+    A successful response whose body has no "id" field is not evidence
+    of a *wrong* App ID — it must soften into skip+proceed exactly like
+    a confirmed non-App-auth response, not hard-fail as a mismatch.
+    """
+    canned = tmp_path / "canned"
+    canned.mkdir()
+    (canned / "list.body").write_text("[]", encoding="utf-8")
+
+    rc, stdout, stderr, log = _invoke(
+        tmp_path, canned, app_get_outcome="no_id", return_stderr=True
+    )
+
+    curl_calls = _curl_calls(_calls(log))
+    assert curl_calls, (
+        "expected the script to call curl for the GET /app preflight; "
+        f"got zero fake-curl call-log records. Full call log: "
+        f"{_calls(log)}"
+    )
+    assert curl_calls[0]["auth_header"] == (
+        "Authorization: Bearer fake-jwt-for-idempotency-tests"
+    ), (
+        f"expected a Bearer-scheme Authorization header; got "
+        f"auth_header={curl_calls[0]['auth_header']!r}"
+    )
+    assert curl_calls[0]["http_code"] == "200", (
+        f"expected the fake curl shim to report HTTP 200 for the "
+        f"no-id scenario; got http_code={curl_calls[0]['http_code']!r}"
+    )
+
+    assert rc == 0, (
+        f"a 200 response with no .id must not hard-fail the preflight; "
+        f"got rc={rc}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    )
     stderr_lower = stderr.lower()
-    assert "app" in stderr_lower, (
+    assert "skip" in stderr_lower, (
+        f"expected a 'skip' warning on stderr when GET /app returns no "
+        f".id; stderr was:\n{stderr}"
+    )
+    assert "app" in stderr_lower and "id" in stderr_lower, (
+        f"expected the skip warning to reference the App-ID check; "
+        f"stderr was:\n{stderr}"
+    )
+    assert "preflight failure" not in stderr_lower, (
+        f"a no-.id 200 response must not be reported as a preflight "
+        f"failure; stderr was:\n{stderr}"
+    )
+    writes = _writes(_calls(log))
+    assert len(writes) == 2, (
+        f"expected the script to proceed to create both rulesets after "
+        f"skipping the App-ID check on a no-.id response, got "
+        f"writes={writes}"
+    )
+    assert {c["ruleset_name"] for c in writes} == {
+        "harness-main-no-merge",
+        "harness-feature-daemon-only",
+    }
+
+
+def test_preflight_curl_http_401_skips_and_proceeds(tmp_path: Path) -> None:
+    """Case 4: curl GET /app returns a real HTTP 401 -> warn+skip+proceed.
+
+    curl itself exits 0 here (the transfer succeeded; the server
+    responded with 401) — this is the "confirmed 401" scenario the
+    pre-#326 suite covered via gh's stderr text; under the curl-based
+    contract it is confirmed via the actual status code instead, so it
+    still softens into skip+proceed rather than hard-failing.
+    """
+    canned = tmp_path / "canned"
+    canned.mkdir()
+    (canned / "list.body").write_text("[]", encoding="utf-8")
+
+    rc, stdout, stderr, log = _invoke(
+        tmp_path, canned, app_get_outcome="http_401", return_stderr=True
+    )
+
+    curl_calls = _curl_calls(_calls(log))
+    assert curl_calls, (
+        "expected the script to call curl for the GET /app preflight; "
+        f"got zero fake-curl call-log records. Full call log: "
+        f"{_calls(log)}"
+    )
+    assert curl_calls[0]["auth_header"] == (
+        "Authorization: Bearer fake-jwt-for-idempotency-tests"
+    ), (
+        f"expected a Bearer-scheme Authorization header; got "
+        f"auth_header={curl_calls[0]['auth_header']!r}"
+    )
+    assert curl_calls[0]["http_code"] == "401", (
+        f"expected the fake curl shim to report HTTP 401; got "
+        f"http_code={curl_calls[0]['http_code']!r}"
+    )
+
+    assert rc == 0, (
+        f"a confirmed HTTP 401 from GET /app must soften into "
+        f"skip+proceed, not hard-fail; got rc={rc}\nstdout:\n{stdout}\n"
+        f"stderr:\n{stderr}"
+    )
+    stderr_lower = stderr.lower()
+    assert "skip" in stderr_lower, (
+        f"expected a 'skip' warning on stderr for a confirmed 401; "
+        f"stderr was:\n{stderr}"
+    )
+    assert "preflight failure" not in stderr_lower, (
+        f"a confirmed 401 must not be reported as a preflight failure; "
+        f"stderr was:\n{stderr}"
+    )
+    writes = _writes(_calls(log))
+    assert len(writes) == 2, (
+        f"expected the script to proceed to create both rulesets after "
+        f"skipping the App-ID check on a confirmed 401, got "
+        f"writes={writes}"
+    )
+
+
+def test_preflight_curl_non_200_non_401_status_hard_fails(
+    tmp_path: Path,
+) -> None:
+    """Case 5: curl GET /app returns 503 -> hard fail, exit 1, zero writes.
+
+    Any HTTP status that is neither 200 nor 401 (403, 404, 500, 503,
+    ...) must hard-fail exactly like a genuine transport failure — with
+    real status codes there is no more stderr text to stray-match, so
+    this single case replaces the old cases 10 AND 11 (which existed
+    only to guard against stderr-substring false positives).
+
+    Asserting rc == 1 specifically (not merely rc != 0) matters: a bare
+    `set -e` abort on curl's own non-zero-status handling would not
+    reliably produce this exact code or print the failure banner below
+    — the implementation must explicitly branch on the status code and
+    emit both.
+    """
+    canned = tmp_path / "canned"
+    canned.mkdir()
+    (canned / "list.body").write_text("[]", encoding="utf-8")
+
+    rc, stdout, stderr, log = _invoke(
+        tmp_path,
+        canned,
+        app_get_outcome="http_other",
+        app_http_status="503",
+        return_stderr=True,
+    )
+
+    curl_calls = _curl_calls(_calls(log))
+    assert curl_calls, (
+        "expected the script to call curl for the GET /app preflight; "
+        f"got zero fake-curl call-log records. Full call log: "
+        f"{_calls(log)}"
+    )
+    assert curl_calls[0]["http_code"] == "503", (
+        f"expected the fake curl shim to report HTTP 503; got "
+        f"http_code={curl_calls[0]['http_code']!r}"
+    )
+
+    assert rc == 1, (
+        f"expected exit 1 for a non-200/non-401 GET /app status "
+        f"(distinct from the exit-2 mismatch path); got rc={rc}\n"
+        f"stdout:\n{stdout}\nstderr:\n{stderr}"
+    )
+    assert "PREFLIGHT FAILURE" in stderr, (
+        f"expected the existing hard-fail banner to be preserved; "
+        f"stderr was:\n{stderr}"
+    )
+    assert "GET /app" in stderr, (
         f"expected stderr to reference the failed GET /app call; "
         f"stderr was:\n{stderr}"
     )
-    assert "503" in stderr or "service unavailable" in stderr_lower, (
-        f"expected stderr to surface the underlying non-auth failure "
-        f"(HTTP 503); stderr was:\n{stderr}"
-    )
-    # Must NOT be reported via the case-7/7b skip-and-proceed wording —
-    # this is the exact confusion the adversarial review flagged.
-    assert "skip" not in stderr_lower, (
-        f"a non-auth failure must not be reported as a skip (that "
-        f"wording is reserved for a confirmed 401 per case 7); "
+    assert "503" in stderr, (
+        f"expected stderr to surface the underlying HTTP status; "
         f"stderr was:\n{stderr}"
     )
+    stderr_lower = stderr.lower()
+    assert "skip" not in stderr_lower, (
+        f"a non-200/non-401 status must not be reported as a skip; "
+        f"stderr was:\n{stderr}"
+    )
+    assert _writes(_calls(log)) == [], (
+        "a non-200/non-401 GET /app status must write zero ruleset "
+        "mutations — an unconfirmed App ID must never reach the write "
+        "phase"
+    )
 
 
-# ---------------------------------------------------------------------------
-# CodeRabbit follow-up on PR #201 (commit 6e9287a): the case-10 fix must
-# require "HTTP 401" specifically, not a bare "401" substring anywhere in
-# stderr.
-# ---------------------------------------------------------------------------
+def test_preflight_curl_transport_failure_hard_fails(
+    tmp_path: Path,
+) -> None:
+    """Case 6: a genuine curl transport failure -> hard fail, zero writes.
 
-
-def test_stray_401_in_stderr_still_hard_fails(tmp_path: Path) -> None:
-    """Case 11: a bare "401" substring in non-auth stderr must hard-fail.
-
-    The case-10 fix (commit 6e9287a) discriminates "confirmed 401 auth
-    failure" from any other `gh api app` failure by testing whether
-    gh's stderr contains the substring `401`. That match is too broad:
-    a stderr that merely happens to contain the digits "401" for an
-    unrelated reason (here, inside a correlation id:
-    "req-401aa") is NOT a confirmed 401 auth failure, and must not be
-    softened into the case-7 skip+proceed path. Only a stderr
-    containing the specific substring "HTTP 401" (as the real GitHub
-    CLI emits for an actual 401 response, and as the existing
-    `app_unauthenticated` marker's "gh: HTTP 401: Bad credentials"
-    reproduces) may soften.
-
-    This must hard-fail exactly like case 10: non-zero exit (this
-    suite standardizes on exit 1, matching
-    ``test_non_auth_gh_api_app_failure_hard_fails``), zero ruleset
-    writes, and stderr must NOT carry the case-7 "skip" wording.
+    Simulates curl itself failing before completing the transfer (DNS
+    failure, network unreachable, TLS error, ...) — there is no HTTP
+    response at all, so there is no status code to inspect. This must
+    fail exactly like case 5 (exit 1, zero writes), and the underlying
+    curl failure must be surfaced on stderr.
     """
     canned = tmp_path / "canned"
     canned.mkdir()
-    # Empty LIST -> if the script incorrectly soften-and-proceeds (the
-    # bare-"401"-match bug), it would create both rulesets here.
     (canned / "list.body").write_text("[]", encoding="utf-8")
 
     rc, stdout, stderr, log = _invoke(
-        tmp_path, canned, app_stray_401=True, return_stderr=True
+        tmp_path,
+        canned,
+        app_get_outcome="transport_failure",
+        return_stderr=True,
     )
 
-    assert rc != 0, (
-        f"a stray '401' substring in non-auth stderr must hard-fail, "
-        f"not exit 0; stdout:\n{stdout}\nstderr:\n{stderr}"
+    curl_calls = _curl_calls(_calls(log))
+    assert curl_calls, (
+        "expected the script to attempt curl for the GET /app "
+        f"preflight; got zero fake-curl call-log records. Full call "
+        f"log: {_calls(log)}"
     )
-    assert rc != 2, (
-        f"a stray '401' substring in non-auth stderr must use a code "
-        f"distinct from the exit-2 App-ID-mismatch path; got rc={rc}"
+    assert curl_calls[0]["http_code"] == "", (
+        "a genuine transport failure means no HTTP response was ever "
+        "received, so the fake curl shim reports an empty http_code; "
+        f"got http_code={curl_calls[0]['http_code']!r} — the "
+        "implementation may be substituting a fabricated status "
+        "instead of detecting curl's own non-zero exit"
     )
+
     assert rc == 1, (
-        f"expected exit 1 for a non-auth GET /app failure whose stderr "
-        f"merely contains a stray '401' substring (matching the case-10 "
-        f"convention); got rc={rc}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        f"expected exit 1 for a genuine curl transport failure; got "
+        f"rc={rc}\nstdout:\n{stdout}\nstderr:\n{stderr}"
     )
-
-    assert _writes(_calls(log)) == [], (
-        "a stray '401' substring in non-auth stderr must write zero "
-        "ruleset mutations — it is not a confirmed auth failure and "
-        "must not soften into skip+proceed"
+    assert "PREFLIGHT FAILURE" in stderr, (
+        f"expected the existing hard-fail banner to be preserved; "
+        f"stderr was:\n{stderr}"
     )
-
+    assert "GET /app" in stderr, (
+        f"expected stderr to reference the failed GET /app call; "
+        f"stderr was:\n{stderr}"
+    )
     stderr_lower = stderr.lower()
-    # Must NOT be reported via the case-7/7b skip-and-proceed wording —
-    # this is exactly the false-trigger CodeRabbit flagged.
     assert "skip" not in stderr_lower, (
-        f"a stray '401' substring must not be reported as a skip (that "
-        f"wording is reserved for a confirmed 'HTTP 401' failure per "
-        f"case 7); stderr was:\n{stderr}"
+        f"a genuine transport failure must not be reported as a skip; "
+        f"stderr was:\n{stderr}"
     )
+    assert _writes(_calls(log)) == [], (
+        "a genuine curl transport failure must write zero ruleset mutations"
+    )
+
+
+def test_preflight_curl_http_200_malformed_body_hard_fails(
+    tmp_path: Path,
+) -> None:
+    """Case 4b: HTTP 200 with an unparseable body must fail closed."""
+    canned = tmp_path / "canned"
+    canned.mkdir()
+    (canned / "list.body").write_text("[]", encoding="utf-8")
+
+    rc, _stdout, stderr, log = _invoke(
+        tmp_path,
+        canned,
+        app_get_outcome="malformed_body",
+        return_stderr=True,
+    )
+
+    calls = _calls(log)
+    assert _curl_calls(calls), "expected curl GET /app preflight call"
+    assert rc == 1, f"expected exit 1, got {rc}; stderr:\n{stderr}"
+    assert "PREFLIGHT FAILURE" in stderr
+    assert "GET /app" in stderr
+    assert _writes(calls) == []
 
 
 # ---------------------------------------------------------------------------
