@@ -1133,7 +1133,9 @@ def test_provisioned_despite_github_server_defaults_feature() -> None:
     because its only parameter is already the default ``false`` — a
     divergence from the rendered desired config that must not be treated
     as drift once ``rules`` is compared structurally instead of as an
-    opaque blob.
+    opaque blob.  The ``creation`` rule was added to the fixture by hand to
+    reflect the post-#330 ruleset shape; the original 2026-07-04 capture had
+    only three rules because it predates that fix.
     """
     from baton_harness.chain.ruleset_status import (
         RulesetStatus,
