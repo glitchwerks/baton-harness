@@ -51,6 +51,17 @@ The `gh auth login` session from [docs/system-setup.md §1](system-setup.md#1-pr
 | `administration` | `write` | `bin/provision-ruleset.sh` POSTs and PUTs rulesets |
 | `metadata` | `read` | Always required by GitHub for any App installation |
 
+**Residual risk — `administration: write` is repo-scoped, not ruleset-scoped:** GitHub's permission model has no way to grant "write this ruleset only" — `administration: write` authorizes POST/PUT on *every* ruleset in the repo, including `harness-main-no-merge`, the ruleset enforcing the daemon's core "never merges to `main`" invariant ([docs/harness-design.md §10](harness-design.md#10-always-on-daemon-dependency-ordered-work-units-implemented-v1-serial)). This is a **GitHub platform limitation, not a gap in this harness's design** — no finer-grained permission exists to request instead.
+
+The existing mitigations are code-level, not permission-level (see [docs/harness-design.md §12](harness-design.md#12-two-identity-subprocess-auth-model-identity-broker-implemented--issue-222) for the broker mechanics; not re-derived here):
+
+- `Identity.APP` — the identity actually carrying this token — is resolved only at fixed daemon call sites (`_authed_git_push`, the ruleset preflight `gh api` reads) and by the operator-run `bin/provision-ruleset.sh`; the Claude Code worker subprocess never resolves `Identity.APP`.
+- `Identity.WORKER` — what the LLM agent runs under — strips all three privileged env keys (`GH_TOKEN`, `GITHUB_TOKEN`, `GH_INSTALLATION_TOKEN`) unconditionally (`identity.py`). The identity is additive-safe by construction: requesting `WORKER` can only remove credentials, never grant them.
+- `tests/chain/test_identity_spawn_guard.py` AST-walks every subprocess spawn under `src/baton_harness/chain/` and fails closed on any spawn that omits an explicit identity — no call site can silently inherit an ambient token.
+- Net effect: the prompt-injectable, untrusted part of the system (the LLM worker) never holds the App token and never calls `gh api` on rulesets. Only fixed, reviewed script/daemon code does, and that code only ever touches the two rulesets defined in checked-in JSON (`config/ruleset.main.json`, `config/ruleset.feature.json`) — never an arbitrary or agent-supplied ruleset name.
+
+**Decision: risk accepted**, following the same posture as [D1](harness-design.md#d1--tos-posture-risk-accepted-revisit-at-terms-changes) — this is a *monitored assumption*, not a closed gate. What would further close it (future hardening, not a current gap or action item): credential rotation discipline for the App's private key, and audit-log alerting on ruleset-modification events (GitHub's audit log API or an equivalent webhook).
+
 **Provisioning:** [docs/repository-onboarding.md](repository-onboarding.md) walks through App creation, obtaining the App ID and installation ID, and uploading the PEM to Bitwarden.
 
 ## GitHub fine-grained PAT (fallback)
