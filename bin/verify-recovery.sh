@@ -136,7 +136,7 @@ fail() {
 
 _BH_LOAD_CONFIG="$(dirname "${BASH_SOURCE[0]}")/lib/load-config.sh"
 if [[ -f "${_BH_LOAD_CONFIG}" ]]; then
-    # shellcheck disable=SC1091
+    # shellcheck disable=SC1090,SC1091
     source "${_BH_LOAD_CONFIG}"
 fi
 unset _BH_LOAD_CONFIG
@@ -298,7 +298,7 @@ echo ""
 _DECOY_PID=""
 _MARKER_WAS_CREATED_BY_US=0
 
-# shellcheck disable=SC2329  # invoked indirectly via trap EXIT
+# shellcheck disable=SC2317,SC2329  # invoked indirectly via trap EXIT
 _cleanup() {
     # Reap decoy process if still running
     if [[ -n "${_DECOY_PID}" ]] && kill -0 "${_DECOY_PID}" 2>/dev/null; then

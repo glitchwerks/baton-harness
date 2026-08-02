@@ -8,7 +8,7 @@ on:
   pull_request:
     branches: [main, "feature/**"]
 
-# Three independent jobs run in parallel so a failure in one still runs
+# Four independent jobs run in parallel so a failure in one still runs
 # and reports the others — each surfaces its own named check in the PR UI.
 
 jobs:
@@ -50,3 +50,13 @@ jobs:
 
       - name: Test (pytest)
         run: .venv/bin/python -m pytest
+
+  shellcheck:
+    name: Lint (shellcheck)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint (shellcheck)
+        run: shellcheck bin/*.sh bin/lib/*.sh

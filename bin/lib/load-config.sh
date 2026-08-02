@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # bin/lib/load-config.sh — shared env-config loader for bin/ entrypoints (#197)
 #
 # SOURCE THIS FILE — do not execute it standalone (it has no shebang and
@@ -82,6 +83,7 @@ _bh_source_env_preserving_overrides() {
     # NAME is new. Export every target so new config values reach subprocesses.
     while IFS= read -r _bh_key; do
         [[ -z "${_bh_key}" ]] && continue
+        # shellcheck disable=SC2163  # intentional dynamic export-by-name
         export "${_bh_key}"
     done <<< "${_bh_keys}"
 

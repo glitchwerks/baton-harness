@@ -45,7 +45,7 @@ HARNESS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # ---------------------------------------------------------------------------
 _BH_LOAD_CONFIG="${SCRIPT_DIR}/lib/load-config.sh"
 if [[ -f "${_BH_LOAD_CONFIG}" ]]; then
-    # shellcheck disable=SC1091
+    # shellcheck disable=SC1090,SC1091
     source "${_BH_LOAD_CONFIG}"
 fi
 unset _BH_LOAD_CONFIG
@@ -63,7 +63,7 @@ _PYTHON="${HARNESS_DIR}/.venv/Scripts/python.exe"
 # ---------------------------------------------------------------------------
 _probe_assert() {
     (
-        cd "${HARNESS_DIR}"
+        cd "${HARNESS_DIR}" || exit
         "${_PYTHON}" -m scripts.probe_assert "$@"
     )
 }
@@ -217,7 +217,7 @@ _hook_vector() {
     local _tmp_herr
     _tmp_herr="$(mktemp)"
     (
-        cd "${tmpdir}"
+        cd "${tmpdir}" || exit
         printf '%s' "${payload}" | "${_HOOK_SCRIPT}" 2>"${_tmp_herr}"
     )
     _HOOK_EXIT=$?

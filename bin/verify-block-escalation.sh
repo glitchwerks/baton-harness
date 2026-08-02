@@ -177,7 +177,7 @@ skipped() {
 
 _BH_LOAD_CONFIG="$(dirname "${BASH_SOURCE[0]}")/lib/load-config.sh"
 if [[ -f "${_BH_LOAD_CONFIG}" ]]; then
-    # shellcheck disable=SC1091
+    # shellcheck disable=SC1090,SC1091
     source "${_BH_LOAD_CONFIG}"
 fi
 unset _BH_LOAD_CONFIG
@@ -396,7 +396,7 @@ echo ""
 _ISSUE_NUM=""
 _DAEMON_OUTPUT_FILE=""
 
-# shellcheck disable=SC2329  # invoked indirectly via trap EXIT
+# shellcheck disable=SC2317,SC2329  # invoked indirectly via trap EXIT
 _cleanup() {
     # Defect #242 (1): a daemon exit 0 combined with failed assertions used
     # to leave zero evidence — this file was deleted unconditionally on
