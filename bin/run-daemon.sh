@@ -165,8 +165,13 @@ if [[ ! -f "${_CONFIG_ENV}" ]]; then
     echo "  Run bin/init-sandbox.sh in the sandbox, or add .bh/config.env by hand (see docs/smoke-test-daemon.md)." >&2
     exit 1
 fi
-BH_REPO_OWNER="$(grep -E '^BH_REPO_OWNER=' "${_CONFIG_ENV}" | head -1 | cut -d= -f2- | tr -d "\"' ")"
-BH_REPO_NAME="$(grep -E '^BH_REPO_NAME=' "${_CONFIG_ENV}" | head -1 | cut -d= -f2- | tr -d "\"' ")"
+# Operator override: operator env wins; only extract values still unset/empty.
+if [[ -z "${BH_REPO_OWNER:-}" ]]; then
+    BH_REPO_OWNER="$(grep -E '^BH_REPO_OWNER=' "${_CONFIG_ENV}" | head -1 | cut -d= -f2- | tr -d "\"' " || true)"
+fi
+if [[ -z "${BH_REPO_NAME:-}" ]]; then
+    BH_REPO_NAME="$(grep -E '^BH_REPO_NAME=' "${_CONFIG_ENV}" | head -1 | cut -d= -f2- | tr -d "\"' " || true)"
+fi
 
 if [[ -z "${BH_REPO_OWNER}" || -z "${BH_REPO_NAME}" ]]; then
     echo "error: BH_REPO_OWNER or BH_REPO_NAME missing from ${_CONFIG_ENV}" >&2
