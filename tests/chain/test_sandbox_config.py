@@ -21,6 +21,11 @@ Coverage (issue #175):
 - Derived-twin keys appearing in file (BWS_APP_ID, BWS_INSTALLATION_ID)
   → silently ignored (no error).
 
+Coverage (issue #339 — export-prefixed lines):
+- Lines prefixed with ``export `` (as written by bin/init-sandbox.sh)
+  parse identically to bare ``KEY=value`` lines, both when every line
+  is prefixed and when prefixed/bare lines are mixed in the same file.
+
 Coverage (issue #191 — env override):
 - A non-empty pre-existing os.environ value for a required or secret-ID
   key is used instead of the file's value (validated with the same
@@ -387,6 +392,88 @@ class TestFileParsingEdgeCases:
         result = read_and_validate(env_file, run=run)
 
         assert result.repo_name == _REPO
+
+
+# ---------------------------------------------------------------------------
+# H2b. Export-prefixed lines (issue #339) — bin/init-sandbox.sh writes
+# every assignment line in .bh/config.env with an `export ` prefix so
+# the file can also be safely `source`d by bash. read_and_validate must
+# tolerate that prefix, matching bin/lib/load-config.sh's existing
+# key-extraction regex:
+#   ^[[:space:]]*(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*=
+# ---------------------------------------------------------------------------
+
+
+class TestExportPrefixedLines:
+    """Lines with an ``export `` prefix parse the same as bare lines."""
+
+    def test_export_prefix_on_every_line_parses_successfully(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """All 7 lines prefixed with 'export ' → SandboxConfig as usual.
+
+        Matches exactly what bin/init-sandbox.sh (lines ~739-742) writes
+        to .bh/config.env — every assignment line is prefixed so the
+        file can also be sourced directly by bash.
+        """
+        _delenv_all(monkeypatch)
+        content = textwrap.dedent(
+            f"""\
+            export BH_REPO_OWNER={_OWNER}
+            export BH_REPO_NAME={_REPO}
+            export BH_GITHUB_APP_ID={_APP_ID}
+            export BH_GITHUB_APP_INSTALLATION_ID={_INSTALL_ID}
+            export BWS_PEM_SECRET_ID={_PEM_UUID}
+            export BWS_GH_TOKEN_SECRET_ID={_GH_TOKEN_UUID}
+            export BWS_HEARTBEAT_PING_URL_SECRET_ID={_HEARTBEAT_UUID}
+            """
+        )
+        env_file = _write_env(tmp_path, content)
+        run = _make_run_stub()
+
+        result = read_and_validate(env_file, run=run)
+
+        assert isinstance(result, SandboxConfig)
+        assert result.repo_owner == _OWNER
+        assert result.repo_name == _REPO
+        assert result.github_app_id == _APP_ID
+        assert result.github_app_installation_id == _INSTALL_ID
+        assert result.bws_pem_secret_id == _PEM_UUID
+        assert result.bws_gh_token_secret_id == _GH_TOKEN_UUID
+        assert result.bws_heartbeat_ping_url_secret_id == _HEARTBEAT_UUID
+
+    def test_export_prefix_mixed_with_unprefixed_lines_parses_successfully(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A file mixing 'export '-prefixed and bare lines parses fine.
+
+        Proves the parser tolerates either form on a per-line basis,
+        not just an all-prefixed-or-all-bare file.
+        """
+        _delenv_all(monkeypatch)
+        content = textwrap.dedent(
+            f"""\
+            export BH_REPO_OWNER={_OWNER}
+            BH_REPO_NAME={_REPO}
+            export BH_GITHUB_APP_ID={_APP_ID}
+            BH_GITHUB_APP_INSTALLATION_ID={_INSTALL_ID}
+            export BWS_PEM_SECRET_ID={_PEM_UUID}
+            """
+        )
+        env_file = _write_env(tmp_path, content)
+        run = _make_run_stub()
+
+        result = read_and_validate(env_file, run=run)
+
+        assert result.repo_owner == _OWNER
+        assert result.repo_name == _REPO
+        assert result.github_app_id == _APP_ID
+        assert result.github_app_installation_id == _INSTALL_ID
+        assert result.bws_pem_secret_id == _PEM_UUID
 
 
 # ---------------------------------------------------------------------------

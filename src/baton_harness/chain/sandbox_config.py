@@ -47,7 +47,7 @@ from baton_harness.chain.identity import Identity, env_for
 #: Type of the injected subprocess runner. Signature: ``(args, **kwargs)``.
 RunFn = Callable[..., subprocess.CompletedProcess[str]]
 
-_LINE_RE = re.compile(r"^([A-Z_][A-Z0-9_]*)=(.*)$")
+_LINE_RE = re.compile(r"^(?:export\s+)?([A-Z_][A-Z0-9_]*)=(.*)$")
 _REPO_PART_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _UUID_RE = re.compile(
     r"^[0-9A-Fa-f]{8}-"
