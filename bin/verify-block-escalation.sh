@@ -396,7 +396,7 @@ echo ""
 _ISSUE_NUM=""
 _DAEMON_OUTPUT_FILE=""
 
-# shellcheck disable=SC2329  # invoked indirectly via trap EXIT
+# shellcheck disable=SC2317,SC2329  # invoked indirectly via trap EXIT
 _cleanup() {
     # Defect #242 (1): a daemon exit 0 combined with failed assertions used
     # to leave zero evidence — this file was deleted unconditionally on
