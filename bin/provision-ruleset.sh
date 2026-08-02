@@ -58,7 +58,7 @@ HARNESS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # ---------------------------------------------------------------------------
 _BH_LOAD_CONFIG="${SCRIPT_DIR}/lib/load-config.sh"
 if [[ -f "${_BH_LOAD_CONFIG}" ]]; then
-    # shellcheck disable=SC1091
+    # shellcheck disable=SC1090,SC1091
     source "${_BH_LOAD_CONFIG}"
 fi
 unset _BH_LOAD_CONFIG

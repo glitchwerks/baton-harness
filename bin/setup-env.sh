@@ -9,6 +9,7 @@
 #
 # Prerequisites:
 #   uv on PATH  (https://astral.sh/uv)
+#   prek on PATH  (https://github.com/j178/prek#installation)
 
 set -euo pipefail
 
@@ -39,9 +40,10 @@ Steps performed:
      via the official native installer when running in an interactive terminal
   5. Creates .venv (skipped if already present — idempotent)
   6. Installs the package with dev extras: uv pip install -e ".[dev]"
-  7. Verifies bh-daemon is accessible inside the venv
-  8. Prints the activation hint
-  9. Checks whether BWS_ACCESS_TOKEN is present for bh-daemon runtime and
+  7. Checks that prek is on PATH and installs the git pre-commit hook
+  8. Verifies bh-daemon is accessible inside the venv
+  9. Prints the activation hint
+  10. Checks whether BWS_ACCESS_TOKEN is present for bh-daemon runtime and
      prints a non-fatal notice if it is missing
 
 Safe to re-run: venv creation is skipped when .venv already exists.
@@ -429,6 +431,21 @@ fi
 
 echo "baton-harness: installing package (uv pip install -e \".[dev]\") ..."
 uv pip install --python "${VENV_DIR}" -e "${BATON_HARNESS_DIR}[dev]"
+
+# ---------------------------------------------------------------------------
+# Install the git pre-commit hook (prek install is idempotent)
+# ---------------------------------------------------------------------------
+
+if ! command -v prek &>/dev/null; then
+    echo "baton-harness: error: prek not found on PATH" >&2
+    echo "  Install prek with pip, cargo, npm, or a supported package manager:" >&2
+    echo "    https://github.com/j178/prek#installation" >&2
+    echo "  Then restart your shell and re-run this script." >&2
+    exit 1
+fi
+
+echo "baton-harness: installing git pre-commit hook with prek ..."
+prek install
 
 # ---------------------------------------------------------------------------
 # Verify bh-daemon is accessible inside the venv

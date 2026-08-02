@@ -119,6 +119,7 @@ baton-harness/
 
 - Python 3.10+
 - [uv](https://docs.astral.sh/uv/) (recommended) or pip
+- [`prek`](https://github.com/j178/prek#installation) for automated local pre-commit checks
 - `git` (required by `bin/init-sandbox.sh` for sandbox repo operations)
 
 ### Setup
@@ -133,7 +134,11 @@ uv pip install -e ".[dev]"
 
 ### Running the quality gate
 
-These three commands mirror the CI checks exactly — all must be clean before
+`prek` (installed via `bin/setup-env.sh`, or separately with `pip install prek` or
+`cargo install prek`) runs ruff check, ruff format --check, mypy src, and shellcheck
+automatically on `git commit` via `.pre-commit-config.yaml`. The commands below mirror
+what CI and the pre-commit hook run, for manual CI-parity reference or to run everything
+without committing. Pytest remains CI/manual-only. All commands must be clean before
 pushing:
 
 ```bash

@@ -1,0 +1,26 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.20
+    hooks:
+      - id: ruff
+      - id: ruff-format
+        args: [--check]
+
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy src
+        entry: >-
+          bash -c 'if [[ -x .venv/Scripts/python.exe ]]; then exec
+          .venv/Scripts/python.exe -m mypy src; else exec
+          .venv/bin/python -m mypy src; fi'
+        language: system
+        types: [python]
+        pass_filenames: false
+
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.11.0.1
+    hooks:
+      - id: shellcheck
+        args: [--exclude=SC1017]
+        files: ^bin/.*\.sh$

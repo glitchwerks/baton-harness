@@ -83,7 +83,7 @@ export BATON_HARNESS_DIR
 
 _BH_LOAD_CONFIG="$(dirname "${BASH_SOURCE[0]}")/lib/load-config.sh"
 if [[ -f "${_BH_LOAD_CONFIG}" ]]; then
-    # shellcheck disable=SC1091
+    # shellcheck disable=SC1090,SC1091
     source "${_BH_LOAD_CONFIG}"
 fi
 unset _BH_LOAD_CONFIG
@@ -93,6 +93,7 @@ unset _BH_LOAD_CONFIG
 # ---------------------------------------------------------------------------
 
 _missing_env=()
+# shellcheck disable=SC2043  # deliberate extensible checklist; currently one entry
 for _var in BH_PROJECT_ROOT; do
     if [[ -z "${!_var:-}" ]]; then
         _missing_env+=("${_var}")

@@ -12,10 +12,11 @@ Required-check set (C-I2 finding):
     contexts are NOT enumerated in the API response).  Therefore this module
     takes the required-check set from a **module constant**
     (``REQUIRED_CHECKS``)
-    that defaults to the three actual CI check names confirmed from the repo's
+    that defaults to the four actual CI check names confirmed from the repo's
     workflow file:
 
         - ``"Lint (ruff)"``
+        - ``"Lint (shellcheck)"``
         - ``"Test (pytest)"``
         - ``"Type check (mypy)"``
 
@@ -106,7 +107,7 @@ _log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Required-check set (C-I2 resolution)
 #
-# Hardcoded fallback default matching the three checks confirmed from
+# Hardcoded fallback default matching the four checks confirmed from
 # .github/workflows/ci.yml.  Operators override it via a
 # `required_checks:` list in config/WORKFLOW.md (issue #225 / VP-8); see
 # chain.daemon.gh_api_helpers._effective_required_checks (moved from
@@ -117,6 +118,7 @@ _log = logging.getLogger(__name__)
 
 REQUIRED_CHECKS: list[str] = [
     "Lint (ruff)",
+    "Lint (shellcheck)",
     "Test (pytest)",
     "Type check (mypy)",
 ]
