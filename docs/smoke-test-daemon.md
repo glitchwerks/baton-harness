@@ -173,7 +173,10 @@ bin/setup-env.sh
 #    BWS_GH_TOKEN_SECRET_ID, BWS_HEARTBEAT_PING_URL_SECRET_ID) and writes
 #    them to ${BH_PROJECT_ROOT}/.bh/config.env.
 #    Use --scenario <name> (or BH_SCENARIO) to select hello (default),
-#    terminal-block (dual-labeled no-dispatch issue), or recovery (no issues).
+#    terminal-block (dual-labeled no-dispatch issue), recovery (no issues),
+#    clean-implement (green merge), block-ambiguity (self-block), or ci-fail
+#    (deterministic red CI). The last three require a real daemon, real agent
+#    dispatch, and OAuth credentials; ordinary GitHub Actions CI cannot run them.
 export BH_REPO_OWNER=<owner>
 export BH_REPO_NAME=<repo>
 export BH_PROJECT_ROOT=<abs-path-to-local-sandbox-clone>
@@ -353,9 +356,10 @@ INFO baton_harness.chain.daemon: work unit complete; opening PR feature/... → 
 
 **This is the most likely reason a smoke test parks rather than merges. Read this section before running.**
 
-The CI gate's green predicate requires these three check names to be **present and passing** on the agent's PR head commit:
+The CI gate's green predicate requires these four check names to be **present and passing** on the agent's PR head commit:
 
 - `Lint (ruff)`
+- `Lint (shellcheck)`
 - `Test (pytest)`
 - `Type check (mypy)`
 
@@ -367,11 +371,11 @@ These names are a module constant in `src/baton_harness/chain/merge.py` (`REQUIR
 |---|---|
 | No CI workflow at all | Required checks never arrive → 30-minute wait → CI_TIMEOUT → issue parked |
 | CI workflow but check names differ | Same as above — name match is exact |
-| CI workflow with exactly those three check names | Full merge path exercised |
+| CI workflow with exactly those four check names | Full merge path exercised |
 
 To smoke-test only the **dispatch → agent → PR-creation path** without waiting for the CI timeout, you can observe the agent's PR being opened on GitHub and stop the daemon (Ctrl-C) before the CI gate fires. The 30-minute timeout is the maximum wait; the daemon will log the CI_TIMEOUT and park the issue rather than block indefinitely.
 
-To smoke-test the **full merge path**, add a GitHub Actions workflow to the sandbox repo that runs and names its jobs exactly `Lint (ruff)`, `Test (pytest)`, and `Type check (mypy)`. A workflow that simply exits 0 under those names is sufficient.
+To smoke-test the **full merge path**, add a GitHub Actions workflow to the sandbox repo that runs and names its jobs exactly `Lint (ruff)`, `Lint (shellcheck)`, `Test (pytest)`, and `Type check (mypy)`. A workflow that simply exits 0 under those names is sufficient.
 
 ---
 
