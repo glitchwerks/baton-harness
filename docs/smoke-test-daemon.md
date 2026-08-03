@@ -356,7 +356,7 @@ INFO baton_harness.chain.daemon: work unit complete; opening PR feature/... → 
 
 **This is the most likely reason a smoke test parks rather than merges. Read this section before running.**
 
-The CI gate's green predicate requires these four check names to be **present and passing** on the agent's PR head commit:
+When `required_checks` is not configured, the CI gate's green predicate requires these four check names to be **present and passing** on the agent's PR head commit (defaults; overridable via `config.required_checks`):
 
 - `Lint (ruff)`
 - `Lint (shellcheck)`
