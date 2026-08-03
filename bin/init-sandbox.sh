@@ -64,6 +64,12 @@ Scenario selection:
   hello           Default. Seed the existing trivial issue + hello-feature DAG.
   terminal-block  Seed one issue carrying both agent-ready and blocked.
   recovery        Seed no agent-ready issues; retain shared repo setup only.
+  clean-implement Seed one trivial issue for a clean implementation and merge.
+  block-ambiguity Seed one contradictory issue that should self-block.
+  ci-fail         Seed one trivial issue with deterministic failing CI.
+
+The last three scenarios require a live daemon, real agent dispatch, and OAuth
+credentials; ordinary GitHub Actions CI alone cannot exercise them.
 
 Required environment variables:
   BH_REPO_OWNER      GitHub repository owner (org or user login)
@@ -100,7 +106,8 @@ while [[ $# -gt 0 ]]; do
         --scenario)
             if [[ $# -lt 2 || -z "$2" ]]; then
                 echo "baton-harness: error: --scenario requires a name" >&2
-                echo "  Valid scenarios: hello, terminal-block, recovery" >&2
+                echo "  Valid scenarios: hello, terminal-block, recovery, clean-implement," >&2
+                echo "    block-ambiguity, ci-fail" >&2
                 exit 1
             fi
             SCENARIO="$2"
@@ -119,11 +126,12 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "${SCENARIO}" in
-    hello|terminal-block|recovery)
+    hello|terminal-block|recovery|clean-implement|block-ambiguity|ci-fail)
         ;;
     *)
         echo "baton-harness: error: unknown scenario '${SCENARIO}'" >&2
-        echo "  Valid scenarios: hello, terminal-block, recovery" >&2
+        echo "  Valid scenarios: hello, terminal-block, recovery, clean-implement," >&2
+        echo "    block-ambiguity, ci-fail" >&2
         exit 1
         ;;
 esac
@@ -582,6 +590,74 @@ terminal-block)
         echo "baton-harness:   terminal-block issue created: ${TERMINAL_BLOCK_ISSUE_URL}"
     fi
     ;;
+clean-implement)
+    echo "baton-harness: creating clean-implement scenario issue ..."
+    _clean_implement_title="clean-implement scenario: add a greet() function"
+    CLEAN_IMPLEMENT_ISSUE_URL="$(_find_open_issue_url "${_clean_implement_title}")" || true
+    if [[ -n "${CLEAN_IMPLEMENT_ISSUE_URL}" ]]; then
+        echo "baton-harness:   clean-implement issue exists, reusing: ${CLEAN_IMPLEMENT_ISSUE_URL}"
+    else
+        CLEAN_IMPLEMENT_ISSUE_URL="$(_create_issue_checked \
+            --title "${_clean_implement_title}" \
+            --body "Add a Python file (greet.py) with a greet() function that prints 'greetings'." \
+            --label "agent-ready")"
+        echo "baton-harness:   clean-implement issue created: ${CLEAN_IMPLEMENT_ISSUE_URL}"
+    fi
+    ;;
+block-ambiguity)
+    echo "baton-harness: creating block-ambiguity scenario issue ..."
+    _block_ambiguity_title="block-ambiguity scenario: Add a small in-memory cache utility with eviction and retention guarantees"
+    _block_ambiguity_body="$(cat <<'EOF'
+Add a small in-memory cache utility to this project: a function or class
+that memoizes the result of an expensive call so repeated calls with the
+same input are served from cache instead of recomputing.
+
+## Acceptance Criteria
+
+- [ ] Add a cache utility (function or class) with a `get`/`set`-style
+      interface. The cache's maximum capacity is exactly ONE entry;
+      secondary or overflow storage of any kind is NOT permitted.
+- [ ] When the cache is full and a new entry is added, the cache MUST
+      evict the least-recently-used (LRU) entry to make room for the
+      new one.
+- [ ] `set("a", 1)`, `get("a")`, `set("b", 2)` must all succeed, and
+      `get("b")` must return `2`.
+- [ ] Once an entry has been read via `get` at least one time, it MUST
+      NEVER be evicted from the cache for the remaining lifetime of the
+      process.
+- [ ] Add a short docstring describing how to use it.
+
+## Notes
+
+This issue was seeded by bin/init-sandbox.sh (block-ambiguity scenario)
+to exercise the WORKFLOW.md self-block rule.
+EOF
+)"
+    BLOCK_AMBIGUITY_ISSUE_URL="$(_find_open_issue_url "${_block_ambiguity_title}")" || true
+    if [[ -n "${BLOCK_AMBIGUITY_ISSUE_URL}" ]]; then
+        echo "baton-harness:   block-ambiguity issue exists, reusing: ${BLOCK_AMBIGUITY_ISSUE_URL}"
+    else
+        BLOCK_AMBIGUITY_ISSUE_URL="$(_create_issue_checked \
+            --title "${_block_ambiguity_title}" \
+            --body "${_block_ambiguity_body}" \
+            --label "agent-ready")"
+        echo "baton-harness:   block-ambiguity issue created: ${BLOCK_AMBIGUITY_ISSUE_URL}"
+    fi
+    ;;
+ci-fail)
+    echo "baton-harness: creating ci-fail scenario issue ..."
+    _ci_fail_title="ci-fail scenario: add a greet() function"
+    CI_FAIL_ISSUE_URL="$(_find_open_issue_url "${_ci_fail_title}")" || true
+    if [[ -n "${CI_FAIL_ISSUE_URL}" ]]; then
+        echo "baton-harness:   ci-fail issue exists, reusing: ${CI_FAIL_ISSUE_URL}"
+    else
+        CI_FAIL_ISSUE_URL="$(_create_issue_checked \
+            --title "${_ci_fail_title}" \
+            --body "Add a Python file (greet.py) with a greet() function that prints 'greetings'." \
+            --label "agent-ready")"
+        echo "baton-harness:   ci-fail issue created: ${CI_FAIL_ISSUE_URL}"
+    fi
+    ;;
 recovery)
     echo "baton-harness: recovery scenario seeds no agent-ready issues or milestones"
     ;;
@@ -592,6 +668,7 @@ esac
 #
 # Job names MUST match REQUIRED_CHECKS in src/baton_harness/chain/merge.py:
 #   - "Lint (ruff)"
+#   - "Lint (shellcheck)"
 #   - "Test (pytest)"
 #   - "Type check (mypy)"
 # ---------------------------------------------------------------------------
@@ -620,8 +697,47 @@ fi
 WORKFLOW_DIR="${BH_PROJECT_ROOT}/.github/workflows"
 WORKFLOW_FILE="${WORKFLOW_DIR}/ci.yml"
 
-# Build the expected workflow content
-read -r -d '' WORKFLOW_CONTENT <<'YAML' || true
+# Build the expected workflow content. The ci-fail scenario changes only the
+# pytest step so all four required check names still appear in the API response.
+if [[ "${SCENARIO}" == "ci-fail" ]]; then
+    read -r -d '' WORKFLOW_CONTENT <<'YAML' || true
+# Stub CI workflow for bh-daemon smoke testing.
+# Job names must match REQUIRED_CHECKS in baton_harness/chain/merge.py exactly.
+# Every job exits 0 EXCEPT Test (pytest), which intentionally exits 1
+# to produce a deterministic CI_FAILED outcome for the ci-fail scenario.
+name: CI
+
+on:
+  pull_request:
+  push:
+
+jobs:
+  lint:
+    name: "Lint (ruff)"
+    runs-on: ubuntu-latest
+    steps:
+      - run: "true"
+
+  shellcheck:
+    name: "Lint (shellcheck)"
+    runs-on: ubuntu-latest
+    steps:
+      - run: "true"
+
+  test:
+    name: "Test (pytest)"
+    runs-on: ubuntu-latest
+    steps:
+      - run: "exit 1"
+
+  typecheck:
+    name: "Type check (mypy)"
+    runs-on: ubuntu-latest
+    steps:
+      - run: "true"
+YAML
+else
+    read -r -d '' WORKFLOW_CONTENT <<'YAML' || true
 # Stub CI workflow for bh-daemon smoke testing.
 # Job names must match REQUIRED_CHECKS in baton_harness/chain/merge.py exactly.
 # Each job exits 0 — sufficient for the CI gate to pass.
@@ -638,6 +754,12 @@ jobs:
     steps:
       - run: "true"
 
+  shellcheck:
+    name: "Lint (shellcheck)"
+    runs-on: ubuntu-latest
+    steps:
+      - run: "true"
+
   test:
     name: "Test (pytest)"
     runs-on: ubuntu-latest
@@ -650,6 +772,7 @@ jobs:
     steps:
       - run: "true"
 YAML
+fi
 
 mkdir -p "${WORKFLOW_DIR}"
 printf '%s\n' "${WORKFLOW_CONTENT}" > "${WORKFLOW_FILE}"
@@ -773,6 +896,15 @@ case "${SCENARIO}" in
         ;;
     terminal-block)
         echo "    - Terminal-block issue:  ${TERMINAL_BLOCK_ISSUE_URL}  (agent-ready + blocked)"
+        ;;
+    clean-implement)
+        echo "    - Clean-implement issue:  ${CLEAN_IMPLEMENT_ISSUE_URL}  (agent-ready)"
+        ;;
+    block-ambiguity)
+        echo "    - Block-ambiguity issue:  ${BLOCK_AMBIGUITY_ISSUE_URL}  (agent-ready)"
+        ;;
+    ci-fail)
+        echo "    - CI-fail issue:  ${CI_FAIL_ISSUE_URL}  (agent-ready)"
         ;;
     recovery)
         echo "    - No agent-ready issues or milestones"
