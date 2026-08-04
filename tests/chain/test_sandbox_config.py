@@ -38,6 +38,15 @@ Coverage (issue #191 — env override):
   BH_GITHUB_APP_INSTALLATION_ID — they are not independently
   overloadable via their own env vars.
 
+Coverage (issue #341 — env-only required key):
+- A required key supplied ONLY via env override, and absent from the
+  file entirely, succeeds instead of incorrectly raising
+  ``SandboxConfigError("missing required key: ...")`` — the
+  presence check must run after env-override resolution.
+- A required key absent from BOTH the file and the environment still
+  raises SandboxConfigError naming the key (legitimate failure path
+  unaffected by the fix).
+
 All subprocess / network calls are intercepted via an injectable ``run``
 kwarg.  No real ``gh`` binary or GitHub API is contacted.
 """
@@ -165,6 +174,31 @@ def _delenv_all(monkeypatch: pytest.MonkeyPatch) -> None:
         "BWS_INSTALLATION_ID",
     ):
         monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _clean_sandbox_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Isolate every test in this module from ambient sandbox-config env.
+
+    ``read_and_validate`` writes real ``os.environ`` entries on success
+    (see ``TestHappyPath``). Tests earlier in this file that request
+    ``monkeypatch`` but don't call ``_delenv_all`` (e.g.
+    ``test_returns_sandbox_config_with_all_fields``) leave those writes
+    in the *real* environment, since ``os.environ`` mutations made
+    directly by the code under test are not tracked or rolled back by
+    monkeypatch unless the test itself used ``monkeypatch.setenv``.
+    Once required-key presence is checked against the resolved
+    (env-aware) value (issue #341), a leaked ambient value from an
+    earlier test would silently satisfy a later test's "missing
+    required key" expectation (e.g. ``TestRequiredKeysMissing``),
+    breaking that legitimate failure path via test order rather than
+    behavior. Running this before every test closes that gap without
+    editing any existing test body.
+
+    Args:
+        monkeypatch: pytest's monkeypatch fixture.
+    """
+    _delenv_all(monkeypatch)
 
 
 # ---------------------------------------------------------------------------
@@ -1198,3 +1232,80 @@ class TestDerivedTwinsFollowResolvedValues:
             f"Expected BWS_INSTALLATION_ID={_ENV_INSTALL_ID!r} (resolved), "
             f"got {os.environ.get('BWS_INSTALLATION_ID')!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# H13. Env-only required key (issue #341) — a required key supplied ONLY
+# via env-override, and entirely absent from the file, must not trip the
+# required-key presence check before the override is consulted.
+# ---------------------------------------------------------------------------
+
+
+class TestRequiredKeySourcedOnlyFromEnv:
+    """A required key with no file line but a valid env override succeeds.
+
+    Regression test for issue #341: ``read_and_validate()`` checked
+    required-key presence against the file-parsed dict *before* the
+    env-override resolution loop ran, so a required key supplied only
+    via ``os.environ`` (and intentionally absent from
+    ``.bh/config.env``) incorrectly raised
+    ``SandboxConfigError("missing required key: ...")`` before the
+    override was ever consulted.
+    """
+
+    def test_required_key_present_only_via_env_succeeds(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """BWS_PEM_SECRET_ID absent from file, valid env value → success.
+
+        The file omits BWS_PEM_SECRET_ID entirely (not even a blank or
+        commented line for it); the value is supplied solely via
+        os.environ. read_and_validate() must resolve the env override
+        before checking required-key presence, so this should succeed
+        and return the env-supplied value.
+        """
+        _delenv_all(monkeypatch)
+        monkeypatch.setenv("BWS_PEM_SECRET_ID", _ENV_PEM_UUID)
+        content = textwrap.dedent(
+            f"""\
+            BH_REPO_OWNER={_OWNER}
+            BH_REPO_NAME={_REPO}
+            BH_GITHUB_APP_ID={_APP_ID}
+            BH_GITHUB_APP_INSTALLATION_ID={_INSTALL_ID}
+            """
+        )
+        env_file = _write_env(tmp_path, content)
+        run = _make_run_stub()
+
+        result = read_and_validate(env_file, run=run)
+
+        assert result.bws_pem_secret_id == _ENV_PEM_UUID
+
+    def test_required_key_absent_from_both_still_raises(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """BWS_PEM_SECRET_ID absent from file AND env → still raises.
+
+        Confirms the legitimate failure path is unaffected by the
+        env-override-before-presence-check fix: when a required key is
+        truly absent from both sources, SandboxConfigError naming the
+        key must still be raised.
+        """
+        _delenv_all(monkeypatch)
+        content = textwrap.dedent(
+            f"""\
+            BH_REPO_OWNER={_OWNER}
+            BH_REPO_NAME={_REPO}
+            BH_GITHUB_APP_ID={_APP_ID}
+            BH_GITHUB_APP_INSTALLATION_ID={_INSTALL_ID}
+            """
+        )
+        env_file = _write_env(tmp_path, content)
+        run = _make_run_stub()
+
+        with pytest.raises(SandboxConfigError, match="missing required key"):
+            read_and_validate(env_file, run=run)
