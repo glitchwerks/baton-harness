@@ -25,7 +25,7 @@ Every failure path raises ``SandboxConfigError`` rather than returning a
 partial or empty result:
 
 - Missing config file raises before any parsing or subprocess call.
-- Missing required keys raise after parsing completes.
+- Missing required keys raise after env-override resolution completes.
 - Invalid values raise with the line number and offending value.
 - Non-zero ``gh api`` validation raises with the target repo slug.
 """
@@ -262,10 +262,6 @@ def read_and_validate(
 
         parsed[key] = value
 
-    for required_key in _REQUIRED_KEYS:
-        if required_key not in parsed:
-            raise SandboxConfigError(f"missing required key: {required_key}")
-
     # Resolve each overridable key: a non-empty os.environ value wins
     # over the file's value (empty env is treated as absent). The
     # resolved value is validated with the same per-key rule used for
@@ -282,6 +278,10 @@ def read_and_validate(
             resolved[key] = env_value
         else:
             resolved[key] = parsed.get(key, "")
+
+    for required_key in _REQUIRED_KEYS:
+        if not resolved.get(required_key):
+            raise SandboxConfigError(f"missing required key: {required_key}")
 
     owner = resolved["BH_REPO_OWNER"]
     repo = resolved["BH_REPO_NAME"]
