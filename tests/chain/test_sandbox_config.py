@@ -1307,5 +1307,8 @@ class TestRequiredKeySourcedOnlyFromEnv:
         env_file = _write_env(tmp_path, content)
         run = _make_run_stub()
 
-        with pytest.raises(SandboxConfigError, match="missing required key"):
+        with pytest.raises(
+            SandboxConfigError,
+            match=r"missing required key: BWS_PEM_SECRET_ID",
+        ):
             read_and_validate(env_file, run=run)
