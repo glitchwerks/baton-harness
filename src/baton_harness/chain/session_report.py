@@ -221,6 +221,28 @@ class SessionReport:
         issue.picked_up_at = picked_up_at
         self._picked_up_numbers.add(number)
 
+    def record_skipped_blocked(
+        self,
+        number: int,
+        *,
+        repo: str,
+        title: str,
+        skipped_at: str,
+    ) -> None:
+        """Create or update an issue skipped before dispatch.
+
+        Args:
+            number: GitHub issue number.
+            repo: Repository containing the issue.
+            title: Issue title.
+            skipped_at: Caller-supplied skip timestamp.
+        """
+        issue = self._get_issue(number)
+        issue.repo = repo
+        issue.title = title
+        issue.picked_up_at = skipped_at
+        issue.outcome = "skipped_blocked"
+
     def record_label_edit(
         self,
         number: int,

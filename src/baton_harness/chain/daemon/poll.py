@@ -558,14 +558,20 @@ async def _poll_and_run(
     # lookup so `patch.object(daemon_mod, "_DISPATCH_EXCLUDE_LABELS",
     # ...)` in existing tests keeps intercepting it) so the mid-drain
     # re-check, the tick-start live re-check, and this snapshot gate all
-    # share a single definition.
-    ready_issues = [
-        i
-        for i in issues_raw
-        if _daemon_mod._DISPATCH_EXCLUDE_LABELS.isdisjoint(
-            {lbl["name"].lower() for lbl in i.get("labels", [])}
-        )
-    ]
+    # share a single definition.  Excluded issues are recorded in the
+    # session report without being dispatched or counted as picked up.
+    ready_issues: list[dict[str, Any]] = []
+    for issue in issues_raw:
+        labels = {lbl["name"].lower() for lbl in issue.get("labels", [])}
+        if _daemon_mod._DISPATCH_EXCLUDE_LABELS.isdisjoint(labels):
+            ready_issues.append(issue)
+        elif report is not None:
+            report.record_skipped_blocked(
+                issue["number"],
+                repo=f"{owner}/{repo}",
+                title=issue.get("title", ""),
+                skipped_at=datetime.now(timezone.utc).isoformat(),
+            )
 
     # Live blocked re-check (#128): the snapshot above may race with a
     # concurrent label update.  For each snapshot-ready issue, re-read
