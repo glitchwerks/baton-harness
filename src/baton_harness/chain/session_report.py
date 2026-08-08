@@ -96,6 +96,7 @@ class IssueRecord:
         repo: Repository containing the issue.
         title: Issue title.
         picked_up_at: Caller-supplied pickup timestamp.
+        skipped_at: Caller-supplied skip timestamp.
         label_transitions: Ordered label edits for the issue.
         outcome: Final issue outcome, when known.
         park_reason: Human-readable reason for parking the issue.
@@ -109,6 +110,7 @@ class IssueRecord:
     repo: str | None = None
     title: str | None = None
     picked_up_at: str | None = None
+    skipped_at: str | None = None
     label_transitions: list[LabelTransition] = field(default_factory=list)
     outcome: str | None = None
     park_reason: str | None = None
@@ -220,6 +222,28 @@ class SessionReport:
         issue.title = title
         issue.picked_up_at = picked_up_at
         self._picked_up_numbers.add(number)
+
+    def record_skipped_blocked(
+        self,
+        number: int,
+        *,
+        repo: str,
+        title: str,
+        skipped_at: str,
+    ) -> None:
+        """Create or update an issue skipped before dispatch.
+
+        Args:
+            number: GitHub issue number.
+            repo: Repository containing the issue.
+            title: Issue title.
+            skipped_at: Caller-supplied skip timestamp.
+        """
+        issue = self._get_issue(number)
+        issue.repo = repo
+        issue.title = title
+        issue.skipped_at = skipped_at
+        issue.outcome = "skipped_blocked"
 
     def record_label_edit(
         self,
@@ -508,6 +532,7 @@ class SessionReport:
             "repo": issue.repo,
             "title": issue.title,
             "picked_up_at": issue.picked_up_at,
+            "skipped_at": issue.skipped_at,
             "label_transitions": [
                 {
                     "ts": transition.ts,
