@@ -314,6 +314,10 @@ def test_solo_agent_ready_and_blocked_issue_records_skipped_blocked(
     data = json.loads(report_path.read_text(encoding="utf-8"))
     issues = data["issues"]
 
+    assert data["totals"]["issues_picked_up"] == 0, (
+        "a dispatch-excluded issue must not be counted as picked up; "
+        f"got totals={data['totals']!r}"
+    )
     assert len(issues) == 1, (
         "a dispatch-excluded agent-ready+blocked issue must leave exactly "
         f"one issues[] entry, not vanish from the report; got {issues!r}"
@@ -376,6 +380,10 @@ def test_skipped_blocked_issue_coexists_with_normally_merged_issue(
     data = json.loads(report_path.read_text(encoding="utf-8"))
     by_number = {i["number"]: i for i in data["issues"]}
 
+    assert data["totals"]["issues_picked_up"] == 1, (
+        "only the clean issue should be counted as picked up; "
+        f"got totals={data['totals']!r}"
+    )
     assert set(by_number) == {10, 20}, (
         "expected exactly issues #10 and #20 in the report; got "
         f"{sorted(by_number)!r}"
@@ -388,6 +396,78 @@ def test_skipped_blocked_issue_coexists_with_normally_merged_issue(
         "the dispatch-excluded issue must be recorded as "
         f"'skipped_blocked', not folded into or confused with #10's "
         f"record; got {by_number[20]!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Live re-check: an initially ready issue becomes blocked before dispatch.
+# ---------------------------------------------------------------------------
+
+
+def test_live_recheck_excluded_issue_records_skipped_blocked(
+    tmp_path: Path,
+) -> None:
+    """An issue blocked after the snapshot leaves a skipped record."""
+    report_path = tmp_path / "session-report.json"
+    ready_issues = [_make_issue(88, ["agent-ready"])]
+
+    def fake_fetch_labels(
+        owner: str,  # noqa: ARG001
+        repo: str,  # noqa: ARG001
+        issue: int,  # noqa: ARG001
+        installation_token: str = "",  # noqa: ARG001
+    ) -> set[str]:
+        """Return the torn live state reached after the initial snapshot."""
+        return {"agent-ready", "blocked"}
+
+    with (
+        patch.object(
+            daemon_mod,
+            "_run",
+            side_effect=_make_run_side_effect(
+                ready_issues=ready_issues,
+                issue_branch_by_number={},
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon._fetch_issue_labels",
+            side_effect=fake_fetch_labels,
+        ),
+        _common_success_patches()(),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg(tmp_path)],
+                once=True,
+                poll_interval_s=0,
+                report_path=report_path,
+            )
+        )
+
+    data = json.loads(report_path.read_text(encoding="utf-8"))
+    issues = data["issues"]
+
+    assert data["totals"]["issues_picked_up"] == 0, (
+        "an issue excluded by the live re-check must not be counted as "
+        f"picked up; got totals={data['totals']!r}"
+    )
+    assert len(issues) == 1, (
+        "an issue excluded by the live re-check must leave exactly one "
+        f"issues[] entry; got {issues!r}"
+    )
+    assert issues[0]["number"] == 88
+    assert issues[0]["outcome"] == "skipped_blocked", (
+        "the live-excluded issue must be recorded as 'skipped_blocked'; "
+        f"got {issues[0]!r}"
+    )
+    assert issues[0]["skipped_at"] is not None, (
+        "the live-excluded issue must record when it was skipped; "
+        f"got {issues[0]!r}"
+    )
+    assert issues[0]["picked_up_at"] is None, (
+        "the live-excluded issue was never dispatched and must not have a "
+        f"pickup timestamp; got {issues[0]!r}"
     )
 
 

@@ -603,6 +603,13 @@ async def _poll_and_run(
                 " this poll cycle",
                 n,
             )
+            if report is not None:
+                report.record_skipped_blocked(
+                    n,
+                    repo=f"{owner}/{repo}",
+                    title=issue.get("title", ""),
+                    skipped_at=datetime.now(timezone.utc).isoformat(),
+                )
             # Malformed multi-state: blocked + ≥2 state labels is a
             # genuine invariant violation — page the operator.
             if len(live_labels & STATE_LABELS) >= 2:
