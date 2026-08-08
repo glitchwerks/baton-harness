@@ -732,6 +732,12 @@ if [[ "${DEFAULT_BRANCH_FROM_GH}" == 1 ]]; then
     fi
 
     _git_output=""
+    _git_output="$(git -C "${BH_PROJECT_ROOT}" merge-base --is-ancestor HEAD "origin/${DEFAULT_BRANCH}" 2>&1)" || {
+        echo "baton-harness: error: local '${DEFAULT_BRANCH}' contains commits not present in origin/${DEFAULT_BRANCH}: ${_git_output}" >&2
+        exit 1
+    }
+
+    _git_output=""
     _git_output="$(git -C "${BH_PROJECT_ROOT}" merge --ff-only "origin/${DEFAULT_BRANCH}" 2>&1)" || {
         echo "baton-harness: error: failed to fast-forward '${DEFAULT_BRANCH}' to origin/${DEFAULT_BRANCH}: ${_git_output}" >&2
         exit 1
