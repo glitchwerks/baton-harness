@@ -541,6 +541,62 @@ def test_cannot_cleanly_reach_default_branch_fails_without_committing(
     )
 
 
+def test_local_default_ahead_of_origin_never_publishes_unreviewed_commit(
+    tmp_path: Path,
+) -> None:
+    """A local-only commit already on the default branch must never ship.
+
+    The dangerous case CodeRabbit flagged on PR #350
+    (``bin/init-sandbox.sh:738``): the working tree is *already* on the
+    default branch (so the wrong-branch checkout guard above never even
+    runs), but the local default branch itself is ahead of
+    ``origin/<default>`` -- it has a commit that was never pushed (e.g.
+    a stray operator commit, or a prior run that committed but crashed
+    before pushing). ``git merge --ff-only origin/<default>`` only fails
+    on genuine divergence; when local is a strict descendant of origin
+    it is a trivial no-op ("Already up to date"), so that unreviewed
+    local-only commit survives unnoticed. The script must then not
+    proceed to commit the stub CI workflow on top and push, which would
+    publish the unreviewed commit's content onto the default branch
+    alongside it -- it must independently verify HEAD is an ancestor of
+    ``origin/<default>`` (not just that a fast-forward *to* origin is
+    possible) and refuse before ever pushing.
+    """
+    origin, project_root = _make_origin_and_clone(tmp_path)
+
+    # Already on "main" (the clone's default checkout) -- no branch
+    # switch needed -- but with an extra commit never pushed to origin.
+    _write_commit(
+        project_root,
+        "unreviewed-local-drift.txt",
+        "unreviewed\n",
+        "unreviewed local-only commit",
+    )
+    origin_main_before = _rev(origin, "main")
+
+    proc = _run_init_sandbox(tmp_path, project_root, default_branch="main")
+
+    assert _rev(origin, "main") == origin_main_before, (
+        "nothing may be pushed to the default branch when the local "
+        "default branch has unreviewed commits origin doesn't have -- "
+        "`git merge --ff-only origin/<default>` silently no-ops in "
+        "this case and must not be trusted alone\n"
+        f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+    )
+    assert not _ref_contains_path(
+        origin, "main", "unreviewed-local-drift.txt"
+    ), (
+        "the unreviewed local-only commit's content must never reach "
+        "origin's default branch\n"
+        f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+    )
+    assert proc.returncode != 0, (
+        "init-sandbox.sh must fail loudly rather than silently publish "
+        "an unreviewed local-only commit on the default branch\n"
+        f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+    )
+
+
 def test_already_synced_default_branch_still_commits_and_pushes_workflow(
     tmp_path: Path,
 ) -> None:
