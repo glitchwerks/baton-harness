@@ -937,6 +937,42 @@ class TestCfgRequiredKeys:
         assert result.status == CheckStatus.FAIL
         assert "BWS_PEM_SECRET_ID" in result.detail
 
+    def test_passes_when_required_key_is_sourced_only_from_env(
+        self, tmp_path: Path
+    ) -> None:
+        """A valid required key supplied only by ctx.env PASSes."""
+        check = _get_check("CFG_REQUIRED_KEYS")
+        content = _VALID_CONFIG_ENV.replace(
+            "BWS_PEM_SECRET_ID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\n",
+            "",
+        )
+        _write_config_env(tmp_path, content)
+        result = check(
+            _make_ctx(
+                project_root=str(tmp_path),
+                env={
+                    "BWS_PEM_SECRET_ID": (
+                        "11111111-2222-3333-4444-555555555555"
+                    )
+                },
+            )
+        )
+        assert result.status == CheckStatus.PASS
+
+    def test_fails_when_required_key_is_absent_from_file_and_env(
+        self, tmp_path: Path
+    ) -> None:
+        """A required key absent from the file and ctx.env still FAILs."""
+        check = _get_check("CFG_REQUIRED_KEYS")
+        content = _VALID_CONFIG_ENV.replace(
+            "BWS_PEM_SECRET_ID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\n",
+            "",
+        )
+        _write_config_env(tmp_path, content)
+        result = check(_make_ctx(project_root=str(tmp_path), env={}))
+        assert result.status == CheckStatus.FAIL
+        assert "BWS_PEM_SECRET_ID is missing" in result.detail
+
     def test_fails_when_a_required_value_is_malformed(
         self, tmp_path: Path
     ) -> None:
@@ -1007,6 +1043,38 @@ class TestCfgOptionalSecretIds:
         result = check(_make_ctx(project_root=str(tmp_path)))
         assert result.status == CheckStatus.WARN
         assert result.severity == Severity.WARNING
+
+    def test_passes_when_optional_key_is_sourced_only_from_env(
+        self, tmp_path: Path
+    ) -> None:
+        """A valid optional secret ID supplied only by ctx.env PASSes."""
+        check = _get_check("CFG_OPTIONAL_SECRET_IDS")
+        _write_config_env(tmp_path, _VALID_CONFIG_ENV)
+        result = check(
+            _make_ctx(
+                project_root=str(tmp_path),
+                env={
+                    "BWS_GH_TOKEN_SECRET_ID": (
+                        "11111111-2222-3333-4444-555555555555"
+                    )
+                },
+            )
+        )
+        assert result.status == CheckStatus.PASS
+
+    def test_warns_when_env_sourced_optional_key_is_malformed(
+        self, tmp_path: Path
+    ) -> None:
+        """An invalid optional secret ID supplied only by ctx.env WARNs."""
+        check = _get_check("CFG_OPTIONAL_SECRET_IDS")
+        _write_config_env(tmp_path, _VALID_CONFIG_ENV)
+        result = check(
+            _make_ctx(
+                project_root=str(tmp_path),
+                env={"BWS_GH_TOKEN_SECRET_ID": "not-a-uuid"},
+            )
+        )
+        assert result.status == CheckStatus.WARN
 
 
 # ---------------------------------------------------------------------------
