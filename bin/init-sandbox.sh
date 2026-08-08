@@ -7,7 +7,7 @@
 #     existing trivial trigger + hello-feature DAG milestone)
 #   - Writes a stub CI workflow to the sandbox repo and pushes it
 #   - Writes .bh/config.env with repo/App/vault identifiers
-#   - Seeds .symphony/ into the sandbox repo's .gitignore and pushes it
+#   - Seeds .symphony/, .baton-harness/, and .bh/ into .gitignore and pushes it
 #
 # Usage:
 #   bin/init-sandbox.sh [--scenario <name>] [--help|-h]
@@ -35,7 +35,7 @@ print_safety_banner() {
     echo "    - Creates labels" >&2
     echo "    - Creates GitHub issues" >&2
     echo "    - Pushes a CI workflow file to the default branch" >&2
-    echo "    - Seeds .symphony/ into the sandbox repo's .gitignore" >&2
+    echo "    - Seeds .symphony/, .baton-harness/, and .bh/ into .gitignore" >&2
     echo "" >&2
     echo "  ONLY point it at a THROWAWAY SANDBOX repo — never a real project." >&2
     echo "  Target repo is read from BH_REPO_OWNER / BH_REPO_NAME." >&2
@@ -86,8 +86,8 @@ Steps performed:
   4. Write stub CI workflow (.github/workflows/ci.yml) to BH_PROJECT_ROOT
      and push to the sandbox default branch (idempotent if unchanged)
   5. Write BH_PROJECT_ROOT/.bh/config.env with sandbox repo/App/vault config
-  6. Seed .symphony/ into BH_PROJECT_ROOT/.gitignore and push
-     (idempotent — skipped if the entry is already present)
+  6. Seed .symphony/, .baton-harness/, and .bh/ into BH_PROJECT_ROOT/.gitignore
+     and push (idempotent — skipped if the entries are already present)
 
 Idempotency notes:
   - Labels: checked before creation; existing labels are skipped, not re-created.
@@ -676,10 +676,13 @@ esac
 echo "baton-harness: writing stub CI workflow to sandbox repo ..."
 
 # Resolve default branch of the sandbox repo
+DEFAULT_BRANCH_FROM_GH=0
 DEFAULT_BRANCH="$(gh repo view "${REPO_SLUG}" --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || true)"
 if [[ -z "${DEFAULT_BRANCH}" || "${DEFAULT_BRANCH}" == "null" ]]; then
     # Empty repo (no default-branch ref yet) — use the local clone's current (possibly unborn) branch.
     DEFAULT_BRANCH="$(git -C "${BH_PROJECT_ROOT}" symbolic-ref --short HEAD 2>/dev/null || true)"
+else
+    DEFAULT_BRANCH_FROM_GH=1
 fi
 if [[ -z "${DEFAULT_BRANCH}" ]]; then
     DEFAULT_BRANCH="main"
@@ -692,6 +695,53 @@ if ! git -C "${BH_PROJECT_ROOT}" symbolic-ref -q HEAD >/dev/null 2>&1; then
     echo "baton-harness: error: BH_PROJECT_ROOT is in detached-HEAD state — check out a branch before running this script" >&2
     echo "  Example: git -C \"${BH_PROJECT_ROOT}\" checkout ${DEFAULT_BRANCH}" >&2
     exit 1
+fi
+
+if [[ "${DEFAULT_BRANCH_FROM_GH}" == 1 ]]; then
+    _git_output=""
+    _git_output="$(git -C "${BH_PROJECT_ROOT}" fetch origin "+${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}" 2>&1)" || {
+        echo "baton-harness: error: failed to fetch origin/${DEFAULT_BRANCH}: ${_git_output}" >&2
+        exit 1
+    }
+
+    _current_branch=""
+    _current_branch="$(git -C "${BH_PROJECT_ROOT}" symbolic-ref --short HEAD 2>&1)" || {
+        echo "baton-harness: error: failed to determine the current branch: ${_current_branch}" >&2
+        exit 1
+    }
+
+    if [[ "${_current_branch}" != "${DEFAULT_BRANCH}" ]]; then
+        _local_default_branch=""
+        _local_default_branch="$(git -C "${BH_PROJECT_ROOT}" branch --list --format='%(refname:short)' -- "${DEFAULT_BRANCH}" 2>&1)" || {
+            echo "baton-harness: error: failed to inspect local branch '${DEFAULT_BRANCH}': ${_local_default_branch}" >&2
+            exit 1
+        }
+
+        _git_output=""
+        if [[ -n "${_local_default_branch}" ]]; then
+            _git_output="$(git -C "${BH_PROJECT_ROOT}" checkout "${DEFAULT_BRANCH}" 2>&1)" || {
+                echo "baton-harness: error: failed to check out default branch '${DEFAULT_BRANCH}': ${_git_output}" >&2
+                exit 1
+            }
+        else
+            _git_output="$(git -C "${BH_PROJECT_ROOT}" checkout -b "${DEFAULT_BRANCH}" "origin/${DEFAULT_BRANCH}" 2>&1)" || {
+                echo "baton-harness: error: failed to create default branch '${DEFAULT_BRANCH}' tracking origin/${DEFAULT_BRANCH}: ${_git_output}" >&2
+                exit 1
+            }
+        fi
+    fi
+
+    _git_output=""
+    _git_output="$(git -C "${BH_PROJECT_ROOT}" merge-base --is-ancestor HEAD "origin/${DEFAULT_BRANCH}" 2>&1)" || {
+        echo "baton-harness: error: local '${DEFAULT_BRANCH}' contains commits not present in origin/${DEFAULT_BRANCH}: ${_git_output}" >&2
+        exit 1
+    }
+
+    _git_output=""
+    _git_output="$(git -C "${BH_PROJECT_ROOT}" merge --ff-only "origin/${DEFAULT_BRANCH}" 2>&1)" || {
+        echo "baton-harness: error: failed to fast-forward '${DEFAULT_BRANCH}' to origin/${DEFAULT_BRANCH}: ${_git_output}" >&2
+        exit 1
+    }
 fi
 
 WORKFLOW_DIR="${BH_PROJECT_ROOT}/.github/workflows"
@@ -825,6 +875,18 @@ else
     GITIGNORE_SEEDED=1
 fi
 
+# Also seed .bh/ (sandbox config dir) into the sandbox .gitignore.
+if grep -qxF '.bh/' "${GITIGNORE_FILE}"; then
+    echo "baton-harness:   .bh/ already in .gitignore, skipping"
+else
+    if [[ -s "${GITIGNORE_FILE}" && -n "$(tail -c1 "${GITIGNORE_FILE}")" ]]; then
+        printf '\n' >> "${GITIGNORE_FILE}"
+    fi
+    printf '%s\n' '.bh/' >> "${GITIGNORE_FILE}"
+    echo "baton-harness:   .bh/ appended to .gitignore"
+    GITIGNORE_SEEDED=1
+fi
+
 if [[ "${GITIGNORE_SEEDED}" == 1 ]]; then
     git -C "${BH_PROJECT_ROOT}" add ".gitignore"
     if git -C "${BH_PROJECT_ROOT}" diff --cached --quiet -- ".gitignore"; then
@@ -912,7 +974,7 @@ case "${SCENARIO}" in
 esac
 echo "    - Stub CI workflow: .github/workflows/ci.yml"
 echo "    - Created .bh/config.env"
-echo "    - .symphony/ entry in: .gitignore"
+echo "    - .symphony/, .baton-harness/, and .bh/ entries in: .gitignore"
 echo ""
 echo "  Next steps:"
 echo "    1. Ensure BH_PROJECT_ROOT is set (bin/setup-env.sh writes it to host.env, or export it)"
