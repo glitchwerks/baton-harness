@@ -84,10 +84,11 @@ def bootstrap_secrets(
 
     - ``BWS_GH_TOKEN_SECRET_ID``: optional Bitwarden Secrets ID for a
       GitHub fine-grained PAT.  When set and ``GH_TOKEN`` is absent or
-      empty in the environment, fetches the PAT for immediate startup
-      validation without writing it into ``os.environ``.  If ``GH_TOKEN``
-      is already set to a non-empty value, the vault is not called
-      (operator override wins).
+      empty in the environment, fetches the PAT, holds it in the module
+      global, and threads it through ``Orchestrator.hook_env`` to the
+      ``before_run`` hook subprocess only. It is never written to the
+      daemon's ambient ``os.environ``. If ``GH_TOKEN`` is already set to a
+      non-empty value, the vault is not called (operator override wins).
     - ``BWS_HEARTBEAT_PING_URL_SECRET_ID``: optional Bitwarden Secrets ID
       for a heartbeat webhook URL.  When set and ``BH_HEARTBEAT_PING_URL``
       is absent or empty, fetches the URL and writes it to
@@ -491,9 +492,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     # Fail fast if a vault-configured GH_TOKEN resolved empty (issue #212).
+    worker_gh_pat = os.environ.get("GH_TOKEN", "") or _BOOTSTRAPPED_GH_TOKEN
     try:
         validate_gh_token(
-            os.environ.get("GH_TOKEN", "") or _BOOTSTRAPPED_GH_TOKEN,
+            worker_gh_pat,
             secret_id_configured=bool(
                 os.environ.get("BWS_GH_TOKEN_SECRET_ID")
             ),
@@ -527,6 +529,7 @@ def main(argv: list[str] | None = None) -> int:
                 once=args.once,
                 poll_interval_s=args.poll_interval,
                 installation_token=installation_token,
+                worker_gh_pat=worker_gh_pat,
                 report_path=report_path,
             )
         )

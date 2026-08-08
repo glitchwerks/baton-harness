@@ -62,6 +62,8 @@ class Orchestrator:
         worker: `Worker` that runs a single Claude turn.
         progress_cb: Optional `callable(issue_number, turn)` invoked after
             each turn starts; injected by the daemon for progress reporting.
+        hook_env: Optional environment overrides passed only to the
+            `before_run` hook subprocess.
     """
 
     def __init__(
@@ -104,6 +106,8 @@ class Orchestrator:
         self.progress_cb = (
             None  # VENDOR-PATCH VP-3: per-turn progress callback (issue #33)
         )
+        # VENDOR-PATCH: before_run hook environment override (issue #347)
+        self.hook_env: dict[str, str] | None = None
 
     def _should_dispatch(self, issue: Issue) -> bool:
         if self.state.is_claimed(issue.number):
@@ -199,6 +203,7 @@ class Orchestrator:
             self.config.hook_before_run,
             cwd=wt.path,
             timeout_ms=self.config.hook_timeout_ms,
+            env=self.hook_env,
         )
         if not ok:
             raise RuntimeError("before_run hook failed")

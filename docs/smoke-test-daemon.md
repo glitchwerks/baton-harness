@@ -134,11 +134,11 @@ To reset the per-host config, delete `~/.config/baton-harness/host.env` and re-r
 
 `BWS_ACCESS_TOKEN` is the Bitwarden machine-account access token. It is the only value that must reach the daemon from outside the repo. Provide it in a root-readable-only file (mode 600) and never commit it.
 
-`bootstrap_secrets()` pops this token from `os.environ` as its first operation after vault-fetching any optional secrets (`GH_TOKEN`, `BH_HEARTBEAT_PING_URL`). After that point the token is gone from the process environment — it is never re-added.
+`bootstrap_secrets()` pops this token from `os.environ` as its first operation after vault-fetching any optional secrets (`GH_TOKEN`, `BH_HEARTBEAT_PING_URL`). The fetched GitHub PAT is held in a module-global and threaded through `Orchestrator.hook_env` to the `before_run` hook subprocess only; it is never written to the daemon's ambient environment. After bootstrap, the Bitwarden access token is gone from the process environment — it is never re-added.
 
 **Vault-fetched at startup (no operator action required when the `BWS_*_SECRET_ID` is declared in `.bh/config.env`):**
 
-- `GH_TOKEN` — the GitHub fine-grained PAT used by `gh` CLI calls. If `BWS_GH_TOKEN_SECRET_ID` is set in `.bh/config.env` and `GH_TOKEN` is not already in the environment, `bootstrap_secrets()` fetches it from the vault and writes it to `os.environ`. If `GH_TOKEN` is already set (shell export, CI env), the vault is not called — operator override wins.
+- `GH_TOKEN` — the GitHub fine-grained PAT used by the `before_run` hook subprocess. If `BWS_GH_TOKEN_SECRET_ID` is set in `.bh/config.env` and `GH_TOKEN` is not already in the environment, `bootstrap_secrets()` fetches it from the vault, holds it in a module-global, and threads it through `Orchestrator.hook_env` to that subprocess only. It is never written to the daemon's ambient environment. If `GH_TOKEN` is already set (shell export, CI env), the vault is not called — operator override wins.
 - `BH_HEARTBEAT_PING_URL` — the dead-man's-switch heartbeat ping URL for per-launch preflight alerts (#144); a distinct credential from the Slack webhook URL (`BH_SLACK_WEBHOOK_URL`, see [docs/authentication.md § Slack](authentication.md#slack)). Same skip logic: vault-fetch only when `BWS_HEARTBEAT_PING_URL_SECRET_ID` is declared and the URL is not already in the environment. If neither source supplies the URL, no alerts are sent — preflight refusals log to daemon stderr only.
 
 Vault errors propagate as `BwsClientError` — fail-closed, never swallowed.

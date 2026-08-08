@@ -279,6 +279,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
     liveness_state: LivenessState | None = None,
     obs: ObsConfig | None = None,
     installation_token: InstallationTokenSource = "",
+    worker_gh_pat: str = "",
     report: SessionReport | None = None,
 ) -> None:
     """Run one work unit (one DAG) to completion.
@@ -317,6 +318,9 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
             (``ghs_`` prefix).  When non-empty, all ``gh`` subprocess
             calls use a per-call env copy with ``GH_TOKEN`` overridden —
             ``os.environ`` is never mutated.
+        worker_gh_pat: Vault-fetched executor PAT threaded through
+            ``Orchestrator.hook_env`` to the ``before_run`` hook subprocess
+            only. It is never written to ``os.environ``.
         report: Optional session report receiving work-unit activity.
     """
     owner = repo_cfg.owner
@@ -392,6 +396,11 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
             project_root=str(repo_root),
             state_path=state_path,
         )
+        if worker_gh_pat:
+            orch.hook_env = {
+                "GH_TOKEN": worker_gh_pat,
+                "GITHUB_TOKEN": worker_gh_pat,
+            }
 
         # P2 (#33): inject progress callback so per-turn liveness can detect a
         # hung worker.  The callback is best-effort: a callback exception is

@@ -174,6 +174,7 @@ async def run_daemon(
     ci_poll_interval: float = _DEFAULT_CI_POLL_INTERVAL,
     ci_timeout: float = _DEFAULT_CI_TIMEOUT,
     installation_token: InstallationTokenSource = "",
+    worker_gh_pat: str = "",
     report_path: Path | None = None,
 ) -> None:
     """Run the always-on serial daemon outer loop.
@@ -194,6 +195,9 @@ async def run_daemon(
             (``ghs_`` prefix).  Threaded to all ``gh`` subprocess
             calls via per-call env override.  ``os.environ`` is never
             mutated.  Pass ``""`` (default) to inherit ambient creds.
+        worker_gh_pat: Vault-fetched executor PAT threaded through
+            ``Orchestrator.hook_env`` to the ``before_run`` hook subprocess
+            only. It is never written to ``os.environ``.
         report_path: Optional destination for the daemon session report.
     """
     if poll_interval_s is None:
@@ -358,6 +362,7 @@ async def run_daemon(
                         liveness_state=liveness_state,
                         obs=obs,
                         installation_token=installation_token,
+                        worker_gh_pat=worker_gh_pat,
                         report=report,
                     )
                 except Exception as exc:
@@ -452,6 +457,7 @@ async def _poll_and_run(
     liveness_state: LivenessState | None = None,
     obs: ObsConfig | None = None,
     installation_token: InstallationTokenSource = "",
+    worker_gh_pat: str = "",
     report: SessionReport | None = None,
 ) -> set[int]:
     """Poll one repo for a ready work unit and run it if found.
@@ -498,6 +504,9 @@ async def _poll_and_run(
         installation_token: GitHub App installation access token
             (``ghs_`` prefix).  Threaded to all ``gh`` subprocess
             calls.  Pass ``""`` (default) to inherit ambient creds.
+        worker_gh_pat: Vault-fetched executor PAT threaded through
+            ``Orchestrator.hook_env`` to the ``before_run`` hook subprocess
+            only. It is never written to ``os.environ``.
         report: Optional session report receiving daemon activity.
 
     Returns:
@@ -794,6 +803,7 @@ async def _poll_and_run(
                 liveness_state=liveness_state,
                 obs=obs,
                 installation_token=installation_token,
+                worker_gh_pat=worker_gh_pat,
                 report=report,
             )
     else:
@@ -915,6 +925,7 @@ async def _poll_and_run(
             liveness_state=liveness_state,
             obs=obs,
             installation_token=installation_token,
+            worker_gh_pat=worker_gh_pat,
             report=report,
         )
 
