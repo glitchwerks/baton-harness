@@ -148,6 +148,8 @@ class TestBootstrapNeverWritesTokenToAmbientEnviron:
         """
         provider = _provider_mock()
 
+        import baton_harness.chain.cli as cli_mod
+
         with (
             patch(
                 "baton_harness.chain.bws_client.fetch_secret",
@@ -157,9 +159,15 @@ class TestBootstrapNeverWritesTokenToAmbientEnviron:
                 "baton_harness.chain.cli.build_installation_token_provider",
                 return_value=provider,
             ),
+            # bootstrap_secrets() sets the module-global
+            # _BOOTSTRAPPED_GH_TOKEN to the fetched PAT as a side
+            # effect. Scope that mutation to this test with
+            # patch.object so the original module state (empty string)
+            # is restored on exit — otherwise a later test that reads
+            # _BOOTSTRAPPED_GH_TOKEN could observe this test's fake PAT
+            # and become order-dependent.
+            patch.object(cli_mod, "_BOOTSTRAPPED_GH_TOKEN", ""),
         ):
-            import baton_harness.chain.cli as cli_mod
-
             cli_mod.bootstrap_secrets()
 
         assert "GH_TOKEN" not in os.environ, (

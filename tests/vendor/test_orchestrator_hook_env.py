@@ -206,10 +206,10 @@ class TestHookEnvWiredToBeforeRunOnly:
     def test_before_run_hook_receives_pat_via_hook_env(self) -> None:
         """before_run's run_hook call gets env={"GH_TOKEN": pat, ...}.
 
-        MUST FAIL today: ``_run_worker``'s before_run call site
-        (orchestrator.py ~L197-202) does not pass ``env=`` at all, so
-        ``env`` is absent from the captured kwargs regardless of
-        ``orch.hook_env``.
+        ``_run_worker``'s before_run call site (orchestrator.py
+        ~L197-202) forwards ``orch.hook_env`` as the ``env=`` kwarg on
+        its ``run_hook`` call, so the vault-fetched PAT reaches the
+        subprocess under both ``GH_TOKEN`` and ``GITHUB_TOKEN``.
         """
         orch = _make_orch()
         orch.hook_env = {"GH_TOKEN": _FAKE_PAT, "GITHUB_TOKEN": _FAKE_PAT}
@@ -239,12 +239,12 @@ class TestHookEnvWiredToBeforeRunOnly:
     def test_after_create_hook_does_not_receive_the_pat(self) -> None:
         """after_create's run_hook call must NOT receive the PAT.
 
-        MUST FAIL today for the wrong reason if a naive fix threads
-        ``orch.hook_env`` into every ``run_hook`` call site instead of
-        only ``before_run``. Currently passes vacuously (no env= is
-        passed anywhere yet); ``created_now=True`` ensures after_create
-        actually fires so this assertion is not vacuous once the fix
-        lands.
+        Guards against a naive fix that threads ``orch.hook_env`` into
+        every ``run_hook`` call site instead of only ``before_run``.
+        ``created_now=True`` ensures after_create actually fires so
+        this assertion is not vacuous. Checks both ``GH_TOKEN`` and
+        ``GITHUB_TOKEN`` — a fix that leaked the PAT via only one of
+        the two keys must still be caught.
         """
         orch = _make_orch()
         orch.hook_env = {"GH_TOKEN": _FAKE_PAT, "GITHUB_TOKEN": _FAKE_PAT}
@@ -264,13 +264,19 @@ class TestHookEnvWiredToBeforeRunOnly:
             "after_create must NOT receive the vault-fetched PAT — only "
             "before_run needs it for issue #347"
         )
+        assert "GITHUB_TOKEN" not in env, (
+            "after_create must NOT receive the vault-fetched PAT under "
+            "GITHUB_TOKEN either — only before_run needs it for #347"
+        )
 
     def test_after_run_hook_does_not_receive_the_pat(self) -> None:
         """after_run's run_hook call must NOT receive the PAT.
 
         after_run (orchestrator.py ~L387) fires unconditionally at the
         end of every ``_run_worker`` call, so this assertion is never
-        vacuous.
+        vacuous. Checks both ``GH_TOKEN`` and ``GITHUB_TOKEN`` — a fix
+        that leaked the PAT via only one of the two keys must still be
+        caught.
         """
         orch = _make_orch()
         orch.hook_env = {"GH_TOKEN": _FAKE_PAT, "GITHUB_TOKEN": _FAKE_PAT}
@@ -287,6 +293,10 @@ class TestHookEnvWiredToBeforeRunOnly:
             "after_run must NOT receive the vault-fetched PAT — only "
             "before_run needs it for issue #347"
         )
+        assert "GITHUB_TOKEN" not in env, (
+            "after_run must NOT receive the vault-fetched PAT under "
+            "GITHUB_TOKEN either — only before_run needs it for #347"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -297,16 +307,16 @@ class TestHookEnvWiredToBeforeRunOnly:
 class TestHookEnvUnsetDoesNotRegressBareConstruction:
     """An Orchestrator that never touches ``hook_env`` keeps working.
 
-    Authored-green today: no code path reads ``self.hook_env`` yet, so
-    ``before_run``'s ``env`` kwarg is simply absent and the run
-    completes normally. This guard pins the ``progress_cb`` precedent
-    for the fix: ``hook_env`` must be initialised to ``None`` in
-    ``Orchestrator.__init__`` (an attribute-injection default, not a
-    required constructor argument), so every pre-existing bare
+    ``hook_env`` is initialised to ``None`` in ``Orchestrator.__init__``
+    (an attribute-injection default, not a required constructor
+    argument, mirroring the ``progress_cb`` precedent), so when a
+    caller never assigns it, ``before_run``'s ``env`` kwarg stays
+    absent and the run completes normally. This guard pins that
+    default for every pre-existing bare
     ``Orchestrator(config=..., project_root=..., state_path=...)``
     construction — see ``test_exclude_labels_recheck.py`` and
     ``test_pr_exists_early_exit.py``, neither of which ever sets
-    ``hook_env`` — keeps working without an ``AttributeError``.
+    ``hook_env`` — so they keep working without an ``AttributeError``.
     """
 
     def test_bare_orchestrator_runs_before_run_with_no_env_override(
