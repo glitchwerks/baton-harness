@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
 
-from baton_harness.chain import ruleset_status
+from baton_harness.chain import ruleset_status, sandbox_config
 
 RunFn = Callable[..., subprocess.CompletedProcess[str]]
 FetchSecretFn = Callable[..., str]
@@ -438,8 +438,11 @@ def _check_required_keys(ctx: DoctorContext) -> CheckResult:
             fix,
         )
     parsed = _parse_config(path)
+    resolved = sandbox_config.resolve_overridable_keys(
+        parsed, ctx.env, _REQUIRED_KEYS
+    )
     for key in _REQUIRED_KEYS:
-        if key not in parsed:
+        if not resolved.get(key):
             return _result(
                 "CFG_REQUIRED_KEYS",
                 title,
@@ -448,7 +451,7 @@ def _check_required_keys(ctx: DoctorContext) -> CheckResult:
                 f"Required config key {key} is missing.",
                 fix,
             )
-        if not _is_valid(key, parsed[key]):
+        if not _is_valid(key, resolved[key]):
             return _result(
                 "CFG_REQUIRED_KEYS",
                 title,
@@ -489,8 +492,11 @@ def _check_optional_secret_ids(ctx: DoctorContext) -> CheckResult:
             fix,
         )
     parsed = _parse_config(path)
+    resolved = sandbox_config.resolve_overridable_keys(
+        parsed, ctx.env, _OPTIONAL_SECRET_IDS
+    )
     for key in _OPTIONAL_SECRET_IDS:
-        if key in parsed and not _is_valid(key, parsed[key]):
+        if resolved.get(key) and not _is_valid(key, resolved[key]):
             return _result(
                 "CFG_OPTIONAL_SECRET_IDS",
                 title,

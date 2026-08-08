@@ -35,7 +35,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from baton_harness.chain.identity import Identity, env_for
@@ -203,6 +203,32 @@ def _is_valid(key: str, value: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def resolve_overridable_keys(
+    parsed: Mapping[str, str],
+    env: Mapping[str, str],
+    keys: tuple[str, ...],
+) -> dict[str, str]:
+    """Resolve config values that may be overridden by the environment.
+
+    For each key, a non-empty environment value wins over the parsed
+    file value. An empty or missing environment value falls back to the
+    parsed value, which may itself be absent or empty.
+
+    Args:
+        parsed: Values parsed from the config file.
+        env: Environment values eligible to override the file values.
+        keys: Config keys to resolve.
+
+    Returns:
+        A fresh dictionary containing one resolved value for each key.
+    """
+    resolved: dict[str, str] = {}
+    for key in keys:
+        env_value = env.get(key, "")
+        resolved[key] = env_value if env_value else parsed.get(key, "")
+    return resolved
+
+
 def read_and_validate(
     path: str | os.PathLike[str],
     *,
@@ -267,7 +293,9 @@ def read_and_validate(
     # resolved value is validated with the same per-key rule used for
     # file-sourced values above, so a malformed env override is caught
     # too.
-    resolved: dict[str, str] = {}
+    resolved = resolve_overridable_keys(
+        parsed, os.environ, _ENV_OVERRIDABLE_KEYS
+    )
     for key in _ENV_OVERRIDABLE_KEYS:
         env_value = os.environ.get(key, "")
         if env_value:
@@ -275,9 +303,6 @@ def read_and_validate(
                 raise SandboxConfigError(
                     f"{key} invalid (from environment variable): {env_value!r}"
                 )
-            resolved[key] = env_value
-        else:
-            resolved[key] = parsed.get(key, "")
 
     for required_key in _REQUIRED_KEYS:
         if not resolved.get(required_key):
