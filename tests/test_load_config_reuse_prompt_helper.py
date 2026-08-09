@@ -429,6 +429,64 @@ def test_existing_config_file_interactive_reuse_choice_leaves_file_untouched(
     )
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "Python's pty module is POSIX-only; this test requires a real "
+        "tty on fd 0/1 to satisfy the interactivity check and cannot "
+        "run on this platform. Executes on CI (ubuntu-latest)."
+    ),
+)
+def test_existing_config_file_interactive_read_eof_fails_closed(
+    tmp_path: Path,
+) -> None:
+    """EOF while reading the interactive choice must fail closed."""
+    from tests._bh_pty import run_interactive
+
+    wrapper = _write_wrapper(tmp_path)
+    config_file = tmp_path / "host.env"
+    original_bytes = b"BH_EXISTING=preexisting\n"
+    config_file.write_bytes(original_bytes)
+    marker_file = tmp_path / "marker.txt"
+
+    env = _base_env(tmp_path)
+    env.pop("BH_SETUP_NO_PROMPT", None)
+
+    returncode, pty_output, stderr = run_interactive(
+        [
+            _BASH,
+            str(wrapper),
+            str(LOAD_CONFIG),
+            str(config_file),
+            str(marker_file),
+        ],
+        env,
+        input_text="\x04",
+        timeout=30,
+    )
+
+    assert returncode == 0, (
+        "the wrapper script itself always exits 0 (it captures the "
+        f"helper's own rc rather than propagating it); rc={returncode}\n"
+        f"pty_output:\n{pty_output}\nstderr:\n{stderr}"
+    )
+    helper_exit = _extract_helper_exit(pty_output)
+    assert helper_exit != 0, (
+        "an interactive session that cannot read the operator's choice "
+        "must fail closed (non-zero) rather than silently reusing the "
+        f"existing file; pty_output:\n{pty_output}\nstderr:\n{stderr}"
+    )
+    assert not marker_file.exists(), (
+        "the prompt-and-write callback must never be invoked when the "
+        "session cannot read the operator's choice; stderr:\n"
+        f"{stderr}"
+    )
+    assert config_file.read_bytes() == original_bytes, (
+        "an interactive read failure must never modify a pre-existing "
+        f"config file; stderr:\n{stderr}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Case 4: file present, interactive, operator chooses "overwrite"
 # ---------------------------------------------------------------------------
