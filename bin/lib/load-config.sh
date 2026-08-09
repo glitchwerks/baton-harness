@@ -96,6 +96,37 @@ _bh_source_env_preserving_overrides() {
 }
 
 # ---------------------------------------------------------------------------
+# _bh_resolve_config_with_reuse_prompt <config-file> <prompt-and-write-fn>
+#
+# Calls the named prompt-and-write function immediately when <config-file>
+# does not exist. If it does exist, an interactive operator may explicitly
+# choose "overwrite"; every other answer safely reuses the existing file.
+# A non-interactive session cannot make that choice and fails closed.
+# ---------------------------------------------------------------------------
+_bh_resolve_config_with_reuse_prompt() {
+    local _bh_config_file="$1"
+    local _bh_prompt_and_write_fn="$2"
+
+    if [[ ! -f "${_bh_config_file}" ]]; then
+        "${_bh_prompt_and_write_fn}"
+        return 0
+    fi
+
+    if [[ -t 0 && -t 1 && "${BH_SETUP_NO_PROMPT:-0}" != "1" ]]; then
+        local _bh_answer
+        read -r -p "baton-harness: existing config found at ${_bh_config_file}; type 'overwrite' to replace it, or press Enter to reuse it: " _bh_answer
+        _bh_answer="${_bh_answer,,}"
+        if [[ "${_bh_answer}" == "overwrite" ]]; then
+            "${_bh_prompt_and_write_fn}"
+        fi
+        return 0
+    else
+        echo "baton-harness: error: existing config ${_bh_config_file} requires an interactive overwrite-or-reuse choice" >&2
+        return 1
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # 1. Per-host config (written by bin/setup-env.sh) -> BH_PROJECT_ROOT
 # ---------------------------------------------------------------------------
 _BH_HOST_ENV="${XDG_CONFIG_HOME:-${HOME}/.config}/baton-harness/host.env"

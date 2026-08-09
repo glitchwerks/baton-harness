@@ -49,6 +49,8 @@ Steps performed:
      prints a non-fatal notice if it is missing
 
 Safe to re-run: venv creation is skipped when .venv already exists.
+If host.env already exists, an interactive re-run asks whether to overwrite
+it or reuse it unchanged; reuse is the safe default.
 No environment variables are required for this dev-setup script to run.
 BWS_ACCESS_TOKEN is required later by bh-daemon at runtime, but not by this
 script; setup-env.sh only checks whether it is present and never persists it.
@@ -497,30 +499,34 @@ echo ""
 HOST_CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/baton-harness"
 HOST_ENV="${HOST_CONFIG_DIR}/host.env"
 
-# Skip prompting in non-interactive contexts (CI, --no-prompt).
-if [[ -t 0 && -t 1 && "${BH_SETUP_NO_PROMPT:-0}" != "1" ]]; then
+_BH_LOAD_CONFIG="${SCRIPT_DIR}/lib/load-config.sh"
+if [[ -f "${_BH_LOAD_CONFIG}" ]]; then
+    # shellcheck disable=SC1090,SC1091
+    source "${_BH_LOAD_CONFIG}"
+fi
+unset _BH_LOAD_CONFIG
+
+_bh_prompt_and_write_host_config() {
+    local _bh_project_root
     echo ""
-    if [[ -f "${HOST_ENV}" ]]; then
-        echo "baton-harness: per-host config already present at ${HOST_ENV}"
-        echo "  (delete it and re-run bin/setup-env.sh to reset)"
+    echo "baton-harness: setting up per-host config at ${HOST_ENV}"
+    read -r -p "  BH_PROJECT_ROOT (absolute path to local sandbox clone): " _bh_project_root
+    if [[ -z "${_bh_project_root}" ]]; then
+        echo "  skipped — re-run bin/setup-env.sh to set it, or export BH_PROJECT_ROOT manually"
     else
-        echo "baton-harness: setting up per-host config at ${HOST_ENV}"
-        read -r -p "  BH_PROJECT_ROOT (absolute path to local sandbox clone): " _bh_project_root
-        if [[ -z "${_bh_project_root}" ]]; then
-            echo "  skipped — re-run bin/setup-env.sh to set it, or export BH_PROJECT_ROOT manually"
-        else
-            mkdir -p "${HOST_CONFIG_DIR}"
-            chmod 700 "${HOST_CONFIG_DIR}"
-            cat > "${HOST_ENV}" <<EOF
+        mkdir -p "${HOST_CONFIG_DIR}"
+        chmod 700 "${HOST_CONFIG_DIR}"
+        cat > "${HOST_ENV}" <<EOF
 # baton-harness per-host config — written by bin/setup-env.sh
 # Sourced automatically by bin/run-daemon.sh at startup.
 export BH_PROJECT_ROOT="${_bh_project_root}"
 EOF
-            chmod 600 "${HOST_ENV}"
-            echo "  wrote ${HOST_ENV} (mode 600)"
-        fi
+        chmod 600 "${HOST_ENV}"
+        echo "  wrote ${HOST_ENV} (mode 600)"
     fi
-fi
+}
+
+_bh_resolve_config_with_reuse_prompt "${HOST_ENV}" _bh_prompt_and_write_host_config || true
 
 # ---------------------------------------------------------------------------
 # Runtime preflight notice: BWS_ACCESS_TOKEN

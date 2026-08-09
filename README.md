@@ -314,7 +314,7 @@ It never merges to `main`.
 |---|---|
 | `BH_PROJECT_ROOT` | Absolute path to the local clone of the target repo |
 
-Repo identity (`BH_REPO_OWNER`, `BH_REPO_NAME`), GitHub App IDs, and vault secret IDs are read from `${BH_PROJECT_ROOT}/.bh/config.env` at startup — the operator does not export them by hand. `bin/init-sandbox.sh` writes that file interactively at provision time.
+Repo identity (`BH_REPO_OWNER`, `BH_REPO_NAME`), GitHub App IDs, and vault secret IDs are read from `${BH_PROJECT_ROOT}/.bh/config.env` at startup — the operator does not export them by hand. `bin/init-sandbox.sh` writes that file interactively at provision time and prompts to overwrite or reuse it on a re-run.
 
 **Quickstart (one tick, then exit):**
 
@@ -390,13 +390,14 @@ The four-step bringup sequence from [docs/smoke-test-daemon.md §"Fresh host bri
 ```bash
 # Step 1 — create the venv, install the package, and record BH_PROJECT_ROOT.
 #   Checks for bws; offers to auto-install on Linux/macOS when interactive.
-#   Writes BH_PROJECT_ROOT to ~/.config/baton-harness/host.env (mode 600).
+#   Writes BH_PROJECT_ROOT to ~/.config/baton-harness/host.env (mode 600),
+#   prompting to overwrite or reuse an existing file on a re-run.
 bin/setup-env.sh
 
 # Step 2 — provision the throwaway sandbox repo.
 #   Reads BH_REPO_OWNER, BH_REPO_NAME, BH_PROJECT_ROOT from the environment.
 #   Prompts interactively for the 5 App/vault identity values and writes
-#   ${BH_PROJECT_ROOT}/.bh/config.env.
+#   ${BH_PROJECT_ROOT}/.bh/config.env; re-runs prompt to overwrite or reuse it.
 #   Optional: --scenario hello|terminal-block|recovery (or BH_SCENARIO).
 export BH_REPO_OWNER=<owner>
 export BH_REPO_NAME=<repo>

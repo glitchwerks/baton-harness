@@ -63,6 +63,13 @@ if [[ -f "${_BH_LOAD_CONFIG}" ]]; then
 fi
 unset _BH_LOAD_CONFIG
 
+if [[ -z "${BH_PROJECT_ROOT:-}" ]]; then
+    if [[ -t 0 && -t 1 && "${BH_SETUP_NO_PROMPT:-0}" != "1" ]]; then
+        read -r -p "provision-ruleset: BH_PROJECT_ROOT (absolute path to local sandbox clone): " BH_PROJECT_ROOT
+        export BH_PROJECT_ROOT
+    fi
+fi
+
 # ---------------------------------------------------------------------------
 # Python resolver — mirrors after_create.py:L99-L106.
 # ---------------------------------------------------------------------------
