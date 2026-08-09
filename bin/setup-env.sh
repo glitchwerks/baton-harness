@@ -507,6 +507,10 @@ fi
 unset _BH_LOAD_CONFIG
 
 _bh_prompt_and_write_host_config() {
+    if [[ "${BH_SETUP_NO_PROMPT:-0}" == "1" || ! -t 0 || ! -t 1 ]]; then
+        echo "baton-harness: per-host config setup requires an interactive terminal; skipping host.env." >&2
+        return 0
+    fi
     local _bh_project_root
     echo ""
     echo "baton-harness: setting up per-host config at ${HOST_ENV}"
