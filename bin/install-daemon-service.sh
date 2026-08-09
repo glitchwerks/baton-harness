@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # bin/install-daemon-service.sh — One-shot systemd unit installer for bh-daemon (#208)
 #
-# Installs /etc/systemd/system/bh-daemon.service and /etc/bh-daemon/secrets.env,
-# then enables and starts the bh-daemon service. Interaction model: auto-detect
-# everything possible, print a summary, ask one [y/N] confirm; prompt only for
-# values that cannot be resolved automatically.
+# Installs /etc/systemd/system/bh-daemon.service and BH_DAEMON_SECRETS_PATH
+# (default: /etc/bh-daemon/secrets.env), then enables and starts the bh-daemon
+# service. Interaction model: auto-detect everything possible, print a summary,
+# ask one [y/N] confirm; prompt only for values that cannot be resolved
+# automatically.
 #
 # Usage:
 #   bin/install-daemon-service.sh [--no-start] [--print-unit]
@@ -26,7 +27,8 @@
 # Secret handling:
 #   BWS_ACCESS_TOKEN is read from the environment if exported, else prompted
 #   silently (read -r -s). Never echoed, logged, or exposed via `set -x`.
-#   Written to /etc/bh-daemon/secrets.env as a bare KEY=value line (mode 600).
+#   Written to BH_DAEMON_SECRETS_PATH (default: /etc/bh-daemon/secrets.env) as
+#   a bare KEY=value line (mode 600). The path is environment-overridable.
 #
 # Non-interactive mode (BH_SETUP_NO_PROMPT=1, or non-tty):
 #   Skips the confirm prompt and any interactive prompt. Fails closed with a
@@ -38,8 +40,9 @@
 #   the daemon hard-aborts at startup if it sees that key (deployment model
 #   mandates OAuth/subscription auth; see docs/smoke-test-daemon.md).
 #
-# Idempotent: an existing unit file or secrets.env is backed up
-# (<name>.bak.<timestamp>) before being overwritten.
+# Idempotent: an existing unit file or BH_DAEMON_SECRETS_PATH is backed up
+# (<name>.bak.<timestamp>) before being overwritten; an existing secrets file
+# may instead be reused unchanged.
 
 set -euo pipefail
 
@@ -70,12 +73,14 @@ Environment:
                           Read from the environment if exported; otherwise
                           prompted for silently. Required — the script fails
                           closed in non-interactive mode if unresolved.
+  BH_DAEMON_SECRETS_PATH  Secrets file path (default:
+                          /etc/bh-daemon/secrets.env).
   BH_SETUP_NO_PROMPT=1    Skip the confirm prompt and any interactive prompt
                           (same convention as bin/setup-env.sh). Non-tty
                           stdin/stdout is treated the same way.
 
 Writes:
-  /etc/bh-daemon/secrets.env           mode 600, EnvironmentFile= source
+  BH_DAEMON_SECRETS_PATH                mode 600, EnvironmentFile= source
   /etc/systemd/system/bh-daemon.service
 
 After activation, prints a reminder that bin/provision-ruleset.sh must be
@@ -292,31 +297,43 @@ _bh_reject_if_whitespace() {
     fi
 }
 
+BH_DAEMON_SECRETS_PATH="${BH_DAEMON_SECRETS_PATH:-/etc/bh-daemon/secrets.env}"
 _bh_reject_if_whitespace "HARNESS_DIR" "${HARNESS_DIR}"
 _bh_reject_if_whitespace "BH_DAEMON_BIN" "${BH_DAEMON_BIN}"
 _bh_reject_if_whitespace "WORKFLOW_FILE" "${WORKFLOW_FILE}"
 _bh_reject_if_whitespace "RUN_USER" "${RUN_USER}"
 _bh_reject_if_whitespace "BH_PROJECT_ROOT" "${BH_PROJECT_ROOT}"
 _bh_reject_if_whitespace "BWS_BIN_DIR" "${BWS_BIN_DIR}"
+_bh_reject_if_whitespace "BH_DAEMON_SECRETS_PATH" "${BH_DAEMON_SECRETS_PATH}"
 
 # ---------------------------------------------------------------------------
 # Resolve BWS_ACCESS_TOKEN (the single bootstrap secret written to
-# /etc/bh-daemon/secrets.env). Never echoed, logged, or exposed via set -x.
+# BH_DAEMON_SECRETS_PATH). Never echoed, logged, or exposed via set -x.
 # ---------------------------------------------------------------------------
 
-if [[ -n "${BWS_ACCESS_TOKEN:-}" ]]; then
-    _bh_token="${BWS_ACCESS_TOKEN}"
-elif _bh_interactive; then
-    read -r -s -p "baton-harness: BWS_ACCESS_TOKEN (Bitwarden Secrets CLI machine-account token): " _bh_token
-    echo ""
-    if [[ -z "${_bh_token}" ]]; then
-        echo "baton-harness: error: BWS_ACCESS_TOKEN is required and was not provided." >&2
+_bh_daemon_secrets_write_needed=0
+
+_bh_prompt_for_daemon_token() {
+    if [[ -n "${BWS_ACCESS_TOKEN:-}" ]]; then
+        _bh_token="${BWS_ACCESS_TOKEN}"
+    elif _bh_interactive; then
+        read -r -s -p "baton-harness: BWS_ACCESS_TOKEN (Bitwarden Secrets CLI machine-account token): " _bh_token
+        echo ""
+        if [[ -z "${_bh_token}" ]]; then
+            echo "baton-harness: error: BWS_ACCESS_TOKEN is required and was not provided." >&2
+            exit 1
+        fi
+    else
+        echo "baton-harness: error: BWS_ACCESS_TOKEN not set and session is non-interactive." >&2
+        echo "  Export BWS_ACCESS_TOKEN before running this installer, or run it" >&2
+        echo "  interactively without BH_SETUP_NO_PROMPT=1." >&2
         exit 1
     fi
-else
-    echo "baton-harness: error: BWS_ACCESS_TOKEN not set and session is non-interactive." >&2
-    echo "  Export BWS_ACCESS_TOKEN before running this installer, or run it" >&2
-    echo "  interactively without BH_SETUP_NO_PROMPT=1." >&2
+
+    _bh_daemon_secrets_write_needed=1
+}
+
+if ! _bh_resolve_config_with_reuse_prompt "${BH_DAEMON_SECRETS_PATH}" _bh_prompt_for_daemon_token; then
     exit 1
 fi
 
@@ -342,7 +359,7 @@ Type=simple
 User=${RUN_USER}
 Environment=BH_PROJECT_ROOT=${BH_PROJECT_ROOT}
 Environment=PATH=${BWS_BIN_DIR}:/usr/local/bin:/usr/bin:/bin
-EnvironmentFile=/etc/bh-daemon/secrets.env
+EnvironmentFile=${BH_DAEMON_SECRETS_PATH}
 ExecStart=${BH_DAEMON_BIN} --workflow ${WORKFLOW_FILE}
 Restart=on-failure
 RestartSec=15
@@ -369,7 +386,7 @@ echo "  BWS_ACCESS_TOKEN   = <resolved, not shown>"
 echo "  --no-start         = ${NO_START}"
 echo ""
 echo "  Will write:"
-echo "    /etc/bh-daemon/secrets.env"
+echo "    ${BH_DAEMON_SECRETS_PATH}"
 echo "    /etc/systemd/system/bh-daemon.service"
 echo ""
 
@@ -380,7 +397,7 @@ echo ""
 if [[ "${PRINT_UNIT}" == 1 ]]; then
     echo "baton-harness: --print-unit given, rendering to stdout (no writes performed)."
     echo ""
-    echo "--- /etc/bh-daemon/secrets.env ---"
+    echo "--- ${BH_DAEMON_SECRETS_PATH} ---"
     _render_secrets_preview
     echo "--- /etc/systemd/system/bh-daemon.service ---"
     _render_unit
@@ -418,8 +435,8 @@ _backup_if_exists() {
 }
 
 write_secrets_file() {
-    sudo mkdir -p /etc/bh-daemon
-    _backup_if_exists /etc/bh-daemon/secrets.env
+    sudo mkdir -p "$(dirname "${BH_DAEMON_SECRETS_PATH}")"
+    _backup_if_exists "${BH_DAEMON_SECRETS_PATH}"
 
     # Render the real token into a local 0600 tmp file, then install(1) it
     # into place at 0600 in one syscall — never a plain "tee then chmod",
@@ -432,11 +449,11 @@ write_secrets_file() {
     trap 'rm -f "${_bh_secrets_tmp}"' EXIT
     chmod 600 "${_bh_secrets_tmp}"
     (umask 077; printf 'BWS_ACCESS_TOKEN=%s\n' "${_bh_token}" > "${_bh_secrets_tmp}")
-    sudo install -m 600 "${_bh_secrets_tmp}" /etc/bh-daemon/secrets.env
+    sudo install -m 600 "${_bh_secrets_tmp}" "${BH_DAEMON_SECRETS_PATH}"
     rm -f "${_bh_secrets_tmp}"
     trap - EXIT
 
-    echo "baton-harness:   wrote /etc/bh-daemon/secrets.env (mode 600)"
+    echo "baton-harness:   wrote ${BH_DAEMON_SECRETS_PATH} (mode 600)"
 }
 
 write_unit_file() {
@@ -461,7 +478,11 @@ activate_service() {
 }
 
 echo "baton-harness: writing files ..."
-write_secrets_file
+if [[ "${_bh_daemon_secrets_write_needed}" == 1 ]]; then
+    write_secrets_file
+else
+    echo "baton-harness:   reusing existing ${BH_DAEMON_SECRETS_PATH}"
+fi
 write_unit_file
 activate_service
 
