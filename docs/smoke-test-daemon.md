@@ -363,13 +363,13 @@ When `required_checks` is not configured, the CI gate's green predicate requires
 - `Test (pytest)`
 - `Type check (mypy)`
 
-These names are a module constant in `src/baton_harness/chain/merge.py` (`REQUIRED_CHECKS`). If a required check is absent from the check-runs response, `evaluate_ci` treats it as NOT-YET and keeps polling until the 30-minute hard timeout elapses, then returns `CiResult.TIMEOUT` → `MergeOutcome.CI_TIMEOUT`. There is no vacuous pass: zero matching checks is a timeout, not green.
+These names are a module constant in `src/baton_harness/chain/merge.py` (`REQUIRED_CHECKS`). If a required check is absent from the check-runs response, `evaluate_ci` treats it as NOT-YET and keeps polling until the 30-minute hard timeout elapses, then returns `CiResult.TIMEOUT` → `MergeOutcome.CI_TIMEOUT`. There is no vacuous pass: zero matching checks is a timeout, not green. The resulting park comment reports which required checks were never observed, plus the poll count and elapsed time (#353).
 
 **Practical consequence for a sandbox repo:**
 
 | Sandbox CI setup | What happens |
 |---|---|
-| No CI workflow at all | Required checks never arrive → 30-minute wait → CI_TIMEOUT → issue parked |
+| No CI workflow at all | Required checks never arrive → 30-minute wait → CI_TIMEOUT → issue parked; the park comment names the never-observed checks and reports poll count and elapsed time |
 | CI workflow but check names differ | Same as above — name match is exact |
 | CI workflow with exactly those four check names | Full merge path exercised |
 

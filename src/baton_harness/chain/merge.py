@@ -93,6 +93,7 @@ import json
 import logging
 import subprocess
 import time
+from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
 
@@ -127,6 +128,16 @@ REQUIRED_CHECKS: list[str] = [
 # The daemon (P3) may override these via the function's keyword arguments.
 _DEFAULT_POLL_INTERVAL: float = 10.0  # seconds between check-runs queries
 _DEFAULT_TIMEOUT: float = 1800.0  # 30-minute hard ceiling
+_DIAG_NAME_CAP: int = 10  # max job names interpolated into a message
+
+
+def _render_name_list(names: tuple[str, ...]) -> str:
+    """Render a bounded comma-separated list of job names."""
+    rendered = ", ".join(names[:_DIAG_NAME_CAP])
+    remaining = len(names) - _DIAG_NAME_CAP
+    if remaining > 0:
+        rendered = f"{rendered}, +{remaining} more"
+    return rendered
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +175,95 @@ class MergeOutcome(Enum):
     CI_FAILED = auto()
     CI_TIMEOUT = auto()
     MERGE_CONFLICT = auto()
+
+
+@dataclass
+class CiDiagnostic:
+    """Structured facts about why a CI evaluation did not reach GREEN."""
+
+    required: tuple[str, ...] = ()
+    never_observed: tuple[str, ...] = ()
+    other_observed: tuple[str, ...] = ()
+    states: tuple[tuple[str, str], ...] = ()
+    failed: tuple[tuple[str, str], ...] = ()
+    polls: int = 0
+    elapsed_s: float = 0.0
+    populated: bool = False
+
+    def classifier(self) -> str:
+        """Return the fixed-vocabulary headline classifier."""
+        if not self.populated:
+            return ""
+        if self.never_observed == self.required:
+            if not self.other_observed:
+                return "no jobs observed"
+            return "required checks never appeared"
+        if self.never_observed:
+            return "required checks partially missing"
+        return "required checks never completed"
+
+    def describe(self) -> str:
+        """Render the operator-facing diagnostic block."""
+        if not self.populated:
+            return ""
+
+        classifier = self.classifier()
+        if classifier == "no jobs observed":
+            headline = (
+                "No GitHub Actions jobs were observed at all for this SHA "
+                f"(polls={self.polls}, elapsed={self.elapsed_s:.0f}s). The "
+                "branch may not contain a CI workflow file, the workflow's "
+                "trigger may not match this branch, or Actions may be "
+                "disabled for the repository."
+            )
+        elif classifier == "required checks never appeared":
+            headline = (
+                f"None of the {len(self.required)} required checks ever "
+                f"appeared, but {len(self.other_observed)} other job(s) did: "
+                f"{_render_name_list(self.other_observed)}. This is the "
+                "signature of a required-check name mismatch — compare "
+                "`required_checks:` in `config/WORKFLOW.md` against the "
+                "workflow's job names."
+            )
+        elif classifier == "required checks partially missing":
+            appeared = tuple(name for name, _state in self.states)
+            headline = (
+                f"{len(self.never_observed)} required check(s) never "
+                f"appeared: {_render_name_list(self.never_observed)}; "
+                f"{len(appeared)} appeared but never completed: "
+                f"{_render_name_list(appeared)}."
+            )
+        else:
+            rendered_states = tuple(
+                f"{name}={state}" for name, state in self.states
+            )
+            headline = (
+                f"All {len(self.required)} required checks appeared but did "
+                "not all reach a completed passing state: "
+                f"{_render_name_list(rendered_states)}."
+            )
+
+        state_by_name = dict(self.states)
+        required_lines = [f"Required checks ({len(self.required)}):"]
+        for name in self.required:
+            state = (
+                "never observed"
+                if name in self.never_observed
+                else state_by_name[name]
+            )
+            required_lines.append(f"  - {name}: {state}")
+
+        other_names = (
+            _render_name_list(self.other_observed)
+            if self.other_observed
+            else "none"
+        )
+        required_block = "\n".join(required_lines)
+        return (
+            f"{headline}\n\n"
+            f"{required_block}\n"
+            f"Other job names observed: {other_names}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -407,6 +507,87 @@ def _classify_check_runs(
     return CiResult.GREEN
 
 
+def _build_ci_diagnostic(
+    required: tuple[str, ...],
+    ever_observed: tuple[str, ...],
+    last_runs: list[dict[str, object]],
+    polls: int,
+    elapsed_s: float,
+    *,
+    red: bool,
+) -> CiDiagnostic:
+    """Reduce accumulated CI poll facts into an operator diagnostic.
+
+    Args:
+        required: Effective required check names.
+        ever_observed: Every job name observed across all polls.
+        last_runs: Job snapshot from the final poll.
+        polls: Number of completed polling iterations.
+        elapsed_s: Elapsed polling time in seconds.
+        red: Whether the gate reached a terminal RED result. Reserved for
+            the separately scoped RED-detail extension.
+
+    Returns:
+        A populated diagnostic describing missing and incomplete checks.
+    """
+    del red
+    observed = set(ever_observed)
+    required_set = set(required)
+    never_observed = tuple(name for name in required if name not in observed)
+    other_observed = tuple(
+        name for name in ever_observed if name not in required_set
+    )
+    final_by_name = {str(run.get("name", "")): run for run in last_runs}
+
+    states: list[tuple[str, str]] = []
+    for name in required:
+        if name not in observed:
+            continue
+        run = final_by_name.get(name)
+        if run is None:
+            state = "observed earlier, absent from final poll"
+        else:
+            status = str(run.get("status", ""))
+            conclusion = run.get("conclusion")
+            conclusion_text = "--" if conclusion is None else str(conclusion)
+            state = f"{status}/{conclusion_text}"
+        states.append((name, state))
+
+    return CiDiagnostic(
+        required=required,
+        never_observed=never_observed,
+        other_observed=other_observed,
+        states=tuple(states),
+        polls=polls,
+        elapsed_s=elapsed_s,
+        populated=True,
+    )
+
+
+def _populate_ci_diagnostic(
+    diagnostic: CiDiagnostic | None,
+    *,
+    required: tuple[str, ...],
+    ever_observed: tuple[str, ...],
+    last_runs: list[dict[str, object]],
+    polls: int,
+    elapsed_s: float,
+    red: bool,
+) -> None:
+    """Populate a caller-supplied diagnostic while preserving its identity."""
+    if diagnostic is None:
+        return
+    built = _build_ci_diagnostic(
+        required=required,
+        ever_observed=ever_observed,
+        last_runs=last_runs,
+        polls=polls,
+        elapsed_s=elapsed_s,
+        red=red,
+    )
+    diagnostic.__dict__.update(vars(built))
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -421,6 +602,7 @@ def evaluate_ci(
     timeout: float = _DEFAULT_TIMEOUT,
     *,
     installation_token: InstallationTokenSource = "",
+    diagnostic: CiDiagnostic | None = None,
 ) -> CiResult:
     """Evaluate the §3.3.1 CI green predicate for a commit SHA.
 
@@ -449,6 +631,8 @@ def evaluate_ci(
             (``ghs_`` prefix).  Threaded to ``_query_action_jobs`` for
             per-call env override.  Pass ``""`` (default) to inherit the
             ambient credential unchanged.
+        diagnostic: Optional mutable out-parameter populated on RED or
+            TIMEOUT. GREEN leaves it unchanged and unpopulated.
 
     Returns:
         ``CiResult.GREEN`` if all required checks pass, ``CiResult.RED`` if
@@ -458,23 +642,51 @@ def evaluate_ci(
     if required is None:
         required = REQUIRED_CHECKS
 
-    deadline = time.monotonic() + timeout
+    start = time.monotonic()
+    deadline = start + timeout
+    polls = 0
+    ever_observed: dict[str, None] = {}
+    last_runs: list[dict[str, object]] = []
 
     while True:
         runs = _query_action_jobs(
             owner, repo, sha, installation_token=installation_token
         )
+        polls += 1
+        last_runs = runs
+        for run in runs:
+            ever_observed[str(run.get("name", ""))] = None
         result = _classify_check_runs(runs, required)
 
         if result == CiResult.GREEN:
             return CiResult.GREEN
         if result == CiResult.RED:
+            if diagnostic is not None:
+                _populate_ci_diagnostic(
+                    diagnostic,
+                    required=tuple(required),
+                    ever_observed=tuple(ever_observed),
+                    last_runs=last_runs,
+                    polls=polls,
+                    elapsed_s=time.monotonic() - start,
+                    red=True,
+                )
             return CiResult.RED
 
         # NOT-YET: result is None (pending, absent, or unrecognised
         # conclusion).  Check deadline BEFORE sleeping to handle timeout=0.
-        if time.monotonic() >= deadline:
+        now = time.monotonic()
+        if now >= deadline:
             # Hard timeout elapsed — ci-timeout semantics.
+            _populate_ci_diagnostic(
+                diagnostic,
+                required=tuple(required),
+                ever_observed=tuple(ever_observed),
+                last_runs=last_runs,
+                polls=polls,
+                elapsed_s=now - start,
+                red=False,
+            )
             return CiResult.TIMEOUT
 
         if poll_interval > 0:
@@ -484,7 +696,17 @@ def evaluate_ci(
             # With timeout=0 the deadline was already past at entry, so the
             # check above fires on the second pass.  Ensure the loop exits by
             # re-checking immediately after the no-sleep pass.
-            if time.monotonic() >= deadline:
+            now = time.monotonic()
+            if now >= deadline:
+                _populate_ci_diagnostic(
+                    diagnostic,
+                    required=tuple(required),
+                    ever_observed=tuple(ever_observed),
+                    last_runs=last_runs,
+                    polls=polls,
+                    elapsed_s=now - start,
+                    red=False,
+                )
                 return CiResult.TIMEOUT
 
 
@@ -501,6 +723,7 @@ def merge_issue_branch(
     timeout: float = _DEFAULT_TIMEOUT,
     *,
     installation_token: InstallationTokenSource = "",
+    diagnostic: CiDiagnostic | None = None,
 ) -> MergeOutcome:
     """Evaluate CI and ``--no-ff`` merge if green; persist provenance.
 
@@ -534,6 +757,8 @@ def merge_issue_branch(
             ``gh`` subprocess calls in the provenance-write path via a
             per-call env copy — ``os.environ`` is never mutated.  Pass
             ``""`` (default) to inherit the ambient credential unchanged.
+        diagnostic: Optional mutable out-parameter forwarded to
+            ``evaluate_ci`` and populated when CI is RED or times out.
 
     Returns:
         ``MergeOutcome.MERGED`` on a successful green merge.
@@ -560,6 +785,7 @@ def merge_issue_branch(
         poll_interval=poll_interval,
         timeout=timeout,
         installation_token=installation_token,
+        diagnostic=diagnostic,
     )
 
     if ci_result == CiResult.RED:

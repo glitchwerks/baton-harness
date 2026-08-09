@@ -155,6 +155,8 @@ else (blocked label present, or no_pr):
     escalate
 ```
 
+For RED/TIMEOUT outcomes, the park alert and session-report escalation include a `CiDiagnostic` distinguishing never-observed required checks from observed-but-incomplete checks, plus other observed job names, poll count, and elapsed time (#353); the green predicate is unchanged.
+
 **Block vs fail:** `after_run` sets `blocked` for underspecified or impossible work; `no_pr` indicates agent failure. The daemon treats both identically for sub-tree propagation (parked), but distinguishes them in the escalation message (kind `"block"` vs `"debug"`).
 
 **`agent-in-progress` invariant (C-I4):** the `agent-in-progress` label MUST be cleared on every terminal branch — success and all park paths. This is enforced at every branch in `_run_work_unit`.
@@ -169,6 +171,8 @@ A per-issue branch may merge into the feature branch only after CI is green on t
 - **GREEN:** every required check has `status: completed` and `conclusion` in `{success, neutral, skipped}`.
 - **RED:** any required check with `conclusion` in `{failure, cancelled, timed_out, action_required}`.
 - **NOT-YET:** any required check is `queued`/`in_progress`, or a configured required check is absent. Poll with bounded backoff (default 10s interval, 30-minute ceiling). Hard timeout → RED (`CI_TIMEOUT`).
+
+On RED/TIMEOUT, the gate reports which required checks never appeared versus remained incomplete, other observed job names, poll count, and elapsed time in the park comment and session report (#353); `_classify_check_runs` itself is unchanged.
 
 **No vacuous green.** Zero matching checks → NOT-YET until hard timeout, then RED. An absent check never passes.
 

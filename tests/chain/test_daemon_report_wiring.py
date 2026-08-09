@@ -76,10 +76,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import baton_harness.chain.daemon as daemon_mod
+import baton_harness.chain.merge as merge_mod
 from baton_harness.chain.daemon import run_daemon
 from baton_harness.chain.merge import MergeOutcome
 from baton_harness.chain.recovery import RecoveryResult
 from baton_harness.chain.registry import RepoConfig
+from baton_harness.chain.session_report import SessionReport
 from baton_harness.vendor.symphony.config import WorkflowConfig
 
 # ---------------------------------------------------------------------------
@@ -102,6 +104,31 @@ def _ok(stdout: str = "") -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(
         args=[], returncode=0, stdout=stdout, stderr=""
     )
+
+
+def _green_required_jobs() -> list[dict[str, str | None]]:
+    """Build a jobs list where every ``REQUIRED_CHECKS`` entry is green.
+
+    Duplicated from ``tests/chain/test_daemon.py`` per this file's own
+    "duplicated rather than imported" convention (module docstring).
+    """
+    return [
+        {"name": name, "status": "completed", "conclusion": "success"}
+        for name in merge_mod.REQUIRED_CHECKS
+    ]
+
+
+def _extract_alert_summary(mock_alert: MagicMock) -> str:
+    """Pull the ``summary`` argument from the last call to a patched ``alert``.
+
+    Duplicated from ``tests/chain/test_daemon.py`` per this file's own
+    "duplicated rather than imported" convention (module docstring).
+    ``summary`` may be forwarded positionally (index 3) or as a keyword.
+    """
+    call = mock_alert.call_args_list[-1]
+    if "summary" in call.kwargs:
+        return call.kwargs["summary"]
+    return call.args[3]
 
 
 def _minimal_wf_config() -> WorkflowConfig:
@@ -899,3 +926,234 @@ def test_open_pr_already_exists_returns_stdout_url() -> None:
         )
 
     assert result == "https://github.com/o/r/pull/99"
+
+
+# ---------------------------------------------------------------------------
+# #353 — T4: CI-gate park detail lands in the report's escalations (D5/D7B)
+# ---------------------------------------------------------------------------
+# Plumbing-independent pins (mirrors the S7 pin tests above's direct-call
+# convention) driven through a real ``SessionReport`` instance rather than
+# a written ``report_path`` — the assertions concern record *shape*, not
+# the file-write plumbing already covered by
+# ``test_report_captures_pickup_label_transitions_pr_url_and_merge_gate``.
+
+
+def _new_report() -> SessionReport:
+    """Construct a bare ``SessionReport`` with fixed session metadata.
+
+    Mirrors ``tests/chain/test_session_report.py::_new_report``.
+    """
+    return SessionReport(
+        mode="once",
+        poll_interval_s=0.0,
+        registry=[{"owner": _OWNER, "repo": _REPO_NAME}],
+        started_at="2026-08-09T00:00:00.000000+00:00",
+    )
+
+
+class TestRunCiGateRecordsEscalationDetail:
+    """T4: ``_run_ci_gate`` records the park detail via ``record_escalation``.
+
+    Closes finding F4 — CI-gate parks fire ``alert`` today but never
+    ``report.record_escalation``, so they are invisible in
+    ``.baton-harness/session-report.json``'s ``escalations`` list.
+    """
+
+    def test_ci_timeout_park_records_one_debug_critical_escalation(
+        self,
+    ) -> None:
+        """A CI-timeout park records exactly one debug/critical escalation.
+
+        The recorded ``detail`` must be character-identical to the
+        summary passed to ``alert`` (D7 Decision B's "cannot mislead"
+        claim, checked at the code level rather than by convention).
+        """
+        mock_sched = MagicMock()
+        mock_sched.mark_done = MagicMock()
+        mock_sched.mark_parked = MagicMock()
+        mock_alert = MagicMock(return_value=True)
+        report = _new_report()
+        parked_reasons: dict[int, str] = {}
+
+        with (
+            patch.object(merge_mod, "_query_action_jobs", return_value=[]),
+            patch("baton_harness.chain.daemon.alert", mock_alert),
+            patch("baton_harness.chain.daemon._label_edit"),
+        ):
+            daemon_mod._run_ci_gate(
+                owner=_OWNER,
+                repo=_REPO_NAME,
+                n=30,
+                issue_branch="baton/issue-30-30",
+                pr_head_sha=_FEED_SHA,
+                repo_root=_REPO_ROOT,
+                branch_name="feature/test-slug",
+                sched=mock_sched,
+                liveness_state=None,
+                runlog=None,
+                merged_issues=[],
+                parked_reasons=parked_reasons,
+                ci_poll_interval=0,
+                ci_timeout=0,
+                report=report,
+            )
+
+        issues = report.to_dict()["issues"]
+        assert len(issues) == 1, (
+            f"expected exactly one issue record for #30; got {issues}"
+        )
+        issue = issues[0]
+        assert issue["number"] == 30
+
+        escalations = issue["escalations"]
+        assert len(escalations) == 1, (
+            "expected exactly one escalation record for a CI-timeout "
+            f"park; got {escalations}"
+        )
+        record = escalations[0]
+        assert record["kind"] == "debug", f"got {record!r}"
+        assert record["severity"] == "critical", f"got {record!r}"
+        assert (
+            "No GitHub Actions jobs were observed at all" in record["detail"]
+        ), f"got {record!r}"
+
+        summary = _extract_alert_summary(mock_alert)
+        assert record["detail"] == summary, (
+            "the recorded detail must be character-identical to the "
+            f"summary passed to alert; detail={record['detail']!r} "
+            f"summary={summary!r}"
+        )
+
+        totals = report.to_dict()["totals"]
+        assert totals["escalations"] == 1, f"got totals={totals!r}"
+
+        # D6/R-C — the classifier-suffixed parked_reasons text produced by
+        # THIS call (not a hand-written expectation) must not flip
+        # park_kind to "block" via session_report.py's substring
+        # derivation.
+        assert parked_reasons.get(30), (
+            "_run_ci_gate must have populated parked_reasons[30] for this "
+            "guard to exercise the real classifier-suffixed text"
+        )
+        report.set_outcomes(
+            merged_issues=[],
+            parked_reasons=parked_reasons,
+        )
+        [issue_after] = report.to_dict()["issues"]
+        assert issue_after["park_kind"] is None, (
+            f"a CI-gate park must never derive park_kind='block'; got "
+            f"{issue_after['park_kind']!r}"
+        )
+
+    def test_merge_conflict_park_escalation_detail_carries_no_ci_data(
+        self,
+    ) -> None:
+        """D7 Decision B — a MERGE_CONFLICT escalation carries no CI data.
+
+        The escalation record still fires (unconditional across all
+        three non-MERGED outcomes), but its ``detail`` is today's bare
+        one-line summary — no diagnostic block, no check names, no poll
+        counters — because the diagnostic is unpopulated by construction
+        on this arm (D7).
+        """
+        mock_sched = MagicMock()
+        mock_sched.mark_done = MagicMock()
+        mock_sched.mark_parked = MagicMock()
+        report = _new_report()
+
+        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if "checkout" in cmd:
+                return _ok()
+            if "merge" in cmd and "--no-ff" in cmd:
+                return subprocess.CompletedProcess(
+                    args=cmd,
+                    returncode=1,
+                    stdout="",
+                    stderr="CONFLICT (content): Merge conflict",
+                )
+            return _ok()
+
+        with (
+            patch.object(
+                merge_mod,
+                "_query_action_jobs",
+                return_value=_green_required_jobs(),
+            ),
+            patch.object(merge_mod, "_run", side_effect=fake_run),
+            patch("baton_harness.chain.daemon.alert", return_value=True),
+            patch("baton_harness.chain.daemon._label_edit"),
+        ):
+            outcome = daemon_mod._run_ci_gate(
+                owner=_OWNER,
+                repo=_REPO_NAME,
+                n=31,
+                issue_branch="baton/issue-31-31",
+                pr_head_sha=_FEED_SHA,
+                repo_root=_REPO_ROOT,
+                branch_name="feature/test-slug",
+                sched=mock_sched,
+                liveness_state=None,
+                runlog=None,
+                merged_issues=[],
+                parked_reasons={},
+                ci_poll_interval=0,
+                ci_timeout=1,
+                report=report,
+            )
+
+        assert outcome == MergeOutcome.MERGE_CONFLICT
+        issues = report.to_dict()["issues"]
+        assert len(issues) == 1
+        escalations = issues[0]["escalations"]
+        assert len(escalations) == 1, (
+            "D7 Decision B: the escalation record must fire "
+            f"unconditionally, including for MERGE_CONFLICT; got "
+            f"{escalations}"
+        )
+        detail = escalations[0]["detail"]
+        assert (
+            detail == "Issue #31 parked: merge conflict (MERGE_CONFLICT)."
+        ), f"got {detail!r}"
+        for forbidden in (
+            "polls=",
+            "elapsed=",
+            "never observed",
+            "Required checks",
+        ):
+            assert forbidden not in detail, (
+                f"MERGE_CONFLICT escalation detail must carry no CI data; "
+                f"found {forbidden!r} in {detail!r}"
+            )
+
+
+def test_merge_gate_record_serializes_exactly_outcome_merged_sha_ts() -> None:
+    """D5 regression guard: ``MergeGateRecord`` never gains a ``detail`` field.
+
+    Not itself new #353 behaviour (``_run_ci_gate`` never calls
+    ``record_merge_gate`` — F2 — so this exercises ``SessionReport``
+    directly rather than the CI gate). Recorded here, alongside the
+    escalation tests above, because it pins the specific alternative D5
+    rejects: a future contributor adding ``detail:`` to
+    ``MergeGateRecord`` instead of routing the park detail through
+    ``record_escalation``. Expected to pass both before and after this
+    plan's implementation — it guards against a design that must never
+    land, not against a gap this plan closes.
+    """
+    report = _new_report()
+    report.record_merge_gate(
+        number=30,
+        outcome="CI_TIMEOUT",
+        merged_sha=None,
+        ts="2026-08-09T00:01:00.000000+00:00",
+    )
+
+    [issue] = report.to_dict()["issues"]
+    assert set(issue["merge_gate"].keys()) == {
+        "outcome",
+        "merged_sha",
+        "ts",
+    }, (
+        "MergeGateRecord must not gain a 'detail' field (D5) -- the park "
+        "detail belongs on the escalation record instead; got "
+        f"{issue['merge_gate']!r}"
+    )

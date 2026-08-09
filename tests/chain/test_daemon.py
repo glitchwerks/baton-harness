@@ -43,6 +43,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import baton_harness.chain.daemon as daemon_mod
+import baton_harness.chain.merge as merge_mod
 from baton_harness.chain.daemon import run_daemon
 from baton_harness.chain.heartbeat import LivenessState
 from baton_harness.chain.label_ops import fetch_daemon_labels
@@ -65,6 +66,8 @@ from baton_harness.vendor.symphony.config import WorkflowConfig
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _OWNER = "glitchwerks"
 _REPO_NAME = "baton-harness"
+# Sentinel SHA for the #353 diagnostic tests below.
+_CI_GATE_SHA = "deadbeef" * 5
 
 
 def _ok(stdout: str = "") -> subprocess.CompletedProcess[str]:
@@ -79,6 +82,41 @@ def _fail(stderr: str = "error") -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(
         args=[], returncode=1, stdout="", stderr=stderr
     )
+
+
+def _green_required_jobs() -> list[dict[str, str | None]]:
+    """Build a jobs list where every ``REQUIRED_CHECKS`` entry is green.
+
+    Used by the #353 tests below to drive a real (unmocked)
+    ``merge_issue_branch`` to a GREEN CI result so the merge step itself
+    (checkout + ``git merge``) is what determines the outcome.
+    """
+    return [
+        {"name": name, "status": "completed", "conclusion": "success"}
+        for name in merge_mod.REQUIRED_CHECKS
+    ]
+
+
+def _extract_alert_summary(mock_alert: MagicMock) -> str:
+    """Pull the ``summary`` argument from the last call to a patched ``alert``.
+
+    ``escalation.alert``'s signature is
+    ``alert(owner, repo, issue, summary, *, severity=..., ...)``
+    (``tests/chain/test_escalation.py`` exercises it positionally) —
+    ``summary`` may be forwarded positionally (index 3) or as a keyword
+    by the call site under test, so both are checked rather than
+    assuming one calling convention.
+
+    Args:
+        mock_alert: The ``MagicMock`` patched in for ``alert``.
+
+    Returns:
+        The ``summary`` string from the most recent call.
+    """
+    call = mock_alert.call_args_list[-1]
+    if "summary" in call.kwargs:
+        return call.kwargs["summary"]
+    return call.args[3]
 
 
 def _minimal_wf_config() -> WorkflowConfig:
@@ -10390,3 +10428,289 @@ def test_unset_required_checks_falls_back_and_warns(
         " required-check set when required_checks is unset; WARNING"
         f" records seen: {[r.message for r in warning_records]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# #353 — CI-gate park diagnostics (T3: enriched alert + parked_reasons)
+# ---------------------------------------------------------------------------
+# These tests call ``daemon_mod._run_ci_gate`` directly, mirroring the
+# plumbing-independent convention already proven by
+# ``TestRunCiGateForwardsToken`` above. Most drive the REAL (unmocked)
+# ``merge_issue_branch`` -> ``evaluate_ci`` path — only
+# ``merge_mod._query_action_jobs`` (and, for the merge-conflict case,
+# ``merge_mod._run``) is patched — so a genuine ``CiDiagnostic`` is built
+# and threaded back to the alert call. The degradation-guard test is the
+# one exception: it patches ``daemon.merge_issue_branch`` itself with a
+# bare ``MagicMock``, matching the shape most of the existing daemon
+# suite already uses (F3/R-A), to pin that an unpopulated diagnostic
+# degrades to today's exact string.
+
+
+class TestRunCiGateDiagnosticEnrichment:
+    """T3: ``_run_ci_gate`` enriches the park alert with a ``CiDiagnostic``."""
+
+    def test_ci_timeout_on_empty_job_list_enriches_alert_with_no_jobs_headline(
+        self,
+    ) -> None:
+        """A real CI timeout on an empty job list appends the D3 case-1 block.
+
+        Pins D4's append-not-replace contract: the first line stays
+        byte-identical to today's, and the diagnostic is appended after
+        it — this is the literal PR #6 shape (F8).
+        """
+        mock_sched = MagicMock()
+        mock_sched.mark_done = MagicMock()
+        mock_sched.mark_parked = MagicMock()
+        mock_alert = MagicMock(return_value=True)
+
+        with (
+            patch.object(merge_mod, "_query_action_jobs", return_value=[]),
+            patch("baton_harness.chain.daemon.alert", mock_alert),
+            patch("baton_harness.chain.daemon._label_edit"),
+        ):
+            outcome = daemon_mod._run_ci_gate(
+                owner=_OWNER,
+                repo=_REPO_NAME,
+                n=10,
+                issue_branch="baton/issue-10-10",
+                pr_head_sha=_CI_GATE_SHA,
+                repo_root=_REPO_ROOT,
+                branch_name="feature/test-slug",
+                sched=mock_sched,
+                liveness_state=None,
+                runlog=None,
+                merged_issues=[],
+                parked_reasons={},
+                ci_poll_interval=0,
+                ci_timeout=0,
+            )
+
+        assert outcome == MergeOutcome.CI_TIMEOUT
+        assert mock_alert.call_args_list, "alert must have been called"
+        summary = _extract_alert_summary(mock_alert)
+        assert summary.startswith(
+            "Issue #10 parked: CI timed out (CI_TIMEOUT)."
+        ), (
+            "the first line must stay byte-identical to today's park "
+            f"message; got {summary!r}"
+        )
+        assert "No GitHub Actions jobs were observed at all" in summary, (
+            f"expected the D3 case-1 headline appended; got {summary!r}"
+        )
+        assert "never observed" in summary, (
+            f"expected per-check 'never observed' lines; got {summary!r}"
+        )
+
+    def test_parked_reasons_gains_classifier_suffix_when_populated(
+        self,
+    ) -> None:
+        """``parked_reasons[n]`` gains a ``(classifier)`` suffix (D6/D8)."""
+        mock_sched = MagicMock()
+        mock_sched.mark_done = MagicMock()
+        mock_sched.mark_parked = MagicMock()
+        parked_reasons: dict[int, str] = {}
+
+        with (
+            patch.object(merge_mod, "_query_action_jobs", return_value=[]),
+            patch("baton_harness.chain.daemon.alert", return_value=True),
+            patch("baton_harness.chain.daemon._label_edit"),
+        ):
+            daemon_mod._run_ci_gate(
+                owner=_OWNER,
+                repo=_REPO_NAME,
+                n=10,
+                issue_branch="baton/issue-10-10",
+                pr_head_sha=_CI_GATE_SHA,
+                repo_root=_REPO_ROOT,
+                branch_name="feature/test-slug",
+                sched=mock_sched,
+                liveness_state=None,
+                runlog=None,
+                merged_issues=[],
+                parked_reasons=parked_reasons,
+                ci_poll_interval=0,
+                ci_timeout=0,
+            )
+
+        assert (
+            parked_reasons[10] == "CI gate: CI_TIMEOUT (no jobs observed)"
+        ), f"got {parked_reasons.get(10)!r}"
+
+    def test_unpopulated_diagnostic_degrades_to_todays_exact_string(
+        self,
+    ) -> None:
+        """F3/R-A: a mocked ``merge_issue_branch`` degrades cleanly.
+
+        Most of the daemon suite patches ``merge_issue_branch`` with a
+        plain ``MagicMock`` that silently swallows the new
+        ``diagnostic=`` kwarg, so the resulting diagnostic is always
+        unpopulated in that shape. D4 requires this to degrade to
+        exactly today's one-line string — no trailing whitespace, no
+        empty parenthetical — rather than crash or interpolate
+        ``None``. Also pins AC6/AC8b's unpopulated half.
+        """
+        mock_sched = MagicMock()
+        mock_sched.mark_done = MagicMock()
+        mock_sched.mark_parked = MagicMock()
+        mock_alert = MagicMock(return_value=True)
+        parked_reasons: dict[int, str] = {}
+
+        with (
+            patch(
+                "baton_harness.chain.daemon.merge_issue_branch",
+                return_value=MergeOutcome.CI_TIMEOUT,
+            ),
+            patch("baton_harness.chain.daemon.alert", mock_alert),
+            patch("baton_harness.chain.daemon._label_edit"),
+        ):
+            daemon_mod._run_ci_gate(
+                owner=_OWNER,
+                repo=_REPO_NAME,
+                n=13,
+                issue_branch="baton/issue-13-13",
+                pr_head_sha=_CI_GATE_SHA,
+                repo_root=_REPO_ROOT,
+                branch_name="feature/test-slug",
+                sched=mock_sched,
+                liveness_state=None,
+                runlog=None,
+                merged_issues=[],
+                parked_reasons=parked_reasons,
+                ci_poll_interval=0,
+                ci_timeout=0,
+            )
+
+        summary = _extract_alert_summary(mock_alert)
+        assert summary == "Issue #13 parked: CI timed out (CI_TIMEOUT).", (
+            f"unpopulated diagnostic must degrade to today's exact "
+            f"one-line string; got {summary!r}"
+        )
+        assert summary == summary.rstrip(), (
+            "no trailing whitespace when the diagnostic is unpopulated"
+        )
+        assert parked_reasons[13] == "CI gate: CI_TIMEOUT", (
+            f"got {parked_reasons.get(13)!r}"
+        )
+
+    def test_populated_diagnostic_summary_is_reason_plus_separator_plus_detail(
+        self,
+    ) -> None:
+        """D8 Requirement 1 pin — the populated half of AC8b.
+
+        The alert body must be composed from two separately-addressable
+        locals (``park_reason_line`` / ``park_detail``) joined by the
+        module constant ``_PARK_DETAIL_SEP`` — never one interpolated
+        f-string — so #351's future ``park_issue(reason=..., detail=...)``
+        can absorb it unchanged.
+        """
+        import baton_harness.chain.daemon.gh_api_helpers as gh_api_helpers_mod
+
+        mock_sched = MagicMock()
+        mock_sched.mark_done = MagicMock()
+        mock_sched.mark_parked = MagicMock()
+        mock_alert = MagicMock(return_value=True)
+
+        with (
+            patch.object(merge_mod, "_query_action_jobs", return_value=[]),
+            patch("baton_harness.chain.daemon.alert", mock_alert),
+            patch("baton_harness.chain.daemon._label_edit"),
+        ):
+            daemon_mod._run_ci_gate(
+                owner=_OWNER,
+                repo=_REPO_NAME,
+                n=12,
+                issue_branch="baton/issue-12-12",
+                pr_head_sha=_CI_GATE_SHA,
+                repo_root=_REPO_ROOT,
+                branch_name="feature/test-slug",
+                sched=mock_sched,
+                liveness_state=None,
+                runlog=None,
+                merged_issues=[],
+                parked_reasons={},
+                ci_poll_interval=0,
+                ci_timeout=0,
+            )
+
+        summary = _extract_alert_summary(mock_alert)
+        sep = gh_api_helpers_mod._PARK_DETAIL_SEP
+        reason_line = "Issue #12 parked: CI timed out (CI_TIMEOUT)."
+        assert summary.startswith(reason_line + sep), (
+            "summary must be park_reason_line + _PARK_DETAIL_SEP + "
+            f"park_detail; got {summary!r}"
+        )
+        detail = summary[len(reason_line + sep) :]
+        assert detail, "park_detail must be non-empty when populated"
+
+    def test_merge_conflict_park_stays_byte_identical_and_carries_no_ci_data(
+        self,
+    ) -> None:
+        """D7 Decision A — a real ``MERGE_CONFLICT`` carries no diagnostic.
+
+        Drives CI to a genuine GREEN (all required checks succeed, per
+        ``_green_required_jobs``) and then fails the ``git merge --no-ff``
+        step with a conflict, mirroring
+        ``tests/chain/test_merge.py::TestMergeConflictAbortsCleanly``.
+        Pins that the park comment and ``parked_reasons`` entry stay
+        byte-identical to ``main`` — the failure mode a reviewer would
+        reasonably fear (CI data describing a *successful* run appended
+        to a merge-conflict park) cannot occur, and this is the test that
+        makes that claim checkable rather than merely argued.
+        """
+        mock_sched = MagicMock()
+        mock_sched.mark_done = MagicMock()
+        mock_sched.mark_parked = MagicMock()
+        mock_alert = MagicMock(return_value=True)
+        parked_reasons: dict[int, str] = {}
+
+        def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if "checkout" in cmd:
+                return _ok()
+            if "merge" in cmd and "--no-ff" in cmd:
+                return subprocess.CompletedProcess(
+                    args=cmd,
+                    returncode=1,
+                    stdout="",
+                    stderr="CONFLICT (content): Merge conflict",
+                )
+            return _ok()
+
+        with (
+            patch.object(
+                merge_mod,
+                "_query_action_jobs",
+                return_value=_green_required_jobs(),
+            ),
+            patch.object(merge_mod, "_run", side_effect=fake_run),
+            patch("baton_harness.chain.daemon.alert", mock_alert),
+            patch("baton_harness.chain.daemon._label_edit"),
+        ):
+            outcome = daemon_mod._run_ci_gate(
+                owner=_OWNER,
+                repo=_REPO_NAME,
+                n=11,
+                issue_branch="baton/issue-11-11",
+                pr_head_sha=_CI_GATE_SHA,
+                repo_root=_REPO_ROOT,
+                branch_name="feature/test-slug",
+                sched=mock_sched,
+                liveness_state=None,
+                runlog=None,
+                merged_issues=[],
+                parked_reasons=parked_reasons,
+                ci_poll_interval=0,
+                ci_timeout=1,
+            )
+
+        assert outcome == MergeOutcome.MERGE_CONFLICT
+        summary = _extract_alert_summary(mock_alert)
+        assert (
+            summary == "Issue #11 parked: merge conflict (MERGE_CONFLICT)."
+        ), (
+            f"MERGE_CONFLICT park must stay byte-identical to main; got "
+            f"{summary!r}"
+        )
+        assert summary == summary.rstrip(), "no trailing whitespace"
+        assert parked_reasons[11] == "CI gate: MERGE_CONFLICT", (
+            f"got {parked_reasons.get(11)!r}"
+        )

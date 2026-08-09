@@ -7,10 +7,10 @@ intercepted by patching the module-local ``_run`` seam; no live network or
 Design note — required-check set sourced from configuration (C-I2):
     The repo has no classic branch-protection required-check set (the API
     returns 404).  ``merge.py`` therefore takes the required-check set from
-    a module constant (``REQUIRED_CHECKS``) that defaults to the three actual
-    CI check names: ``Lint (ruff)``, ``Test (pytest)``, ``Type check (mypy)``.
-    A future wiring to config (WORKFLOW.md or similar) is noted as TODO in
-    the module.
+    a module constant (``REQUIRED_CHECKS``) that defaults to the four actual
+    CI check names: ``Lint (ruff)``, ``Lint (shellcheck)``, ``Test (pytest)``,
+    ``Type check (mypy)``.  A future wiring to config (WORKFLOW.md or
+    similar) is noted as TODO in the module.
 
     CRITICAL: "zero matching checks found" is NEVER green (no vacuous pass).
     If a configured required check is absent from the check-runs response,
@@ -69,6 +69,19 @@ Coverage:
 - ``merge_issue_branch`` — provenance persistence (label + comment).
 - Dependency-order merge list.
 - NEVER merges to main (hard constraint guard).
+- (#353) ``CiDiagnostic`` defaults — unpopulated, ``classifier()``/
+  ``describe()`` both ``""``.
+- (#353) ``_build_ci_diagnostic`` — the four D3 classification cases (no
+  jobs observed at all, only non-required jobs observed, required checks
+  present-but-pending, a partial mix of absent/pending required checks),
+  the "observed earlier, absent from final poll" per-check state, and the
+  ``_DIAG_NAME_CAP`` name-list truncation in ``describe()``.
+- (#353) ``evaluate_ci(diagnostic=...)`` — populates the supplied
+  ``CiDiagnostic`` on RED/TIMEOUT exits (including the literal PR #6
+  regression shape: empty job list, immediate timeout), leaves it
+  unpopulated on GREEN, and records ``polls``/``elapsed_s``.
+- (#353) ``merge_issue_branch(diagnostic=...)`` — threads the diagnostic
+  through to ``evaluate_ci``; omitting it leaves behaviour unchanged.
 """
 
 from __future__ import annotations
@@ -130,6 +143,39 @@ try:
     )
 except ImportError:
     _query_action_jobs = None  # type: ignore[assignment]
+
+# ---------------------------------------------------------------------------
+# Deferred imports for #353's CiDiagnostic surface.
+#
+# None of these exist in baton_harness.chain.merge yet (they are what T1
+# adds). Following the same collection-survives-import-failure convention
+# used above for CiAuthError / _query_action_jobs: a placeholder keeps the
+# whole module importable so unrelated tests in this file are unaffected,
+# while any test that actually uses CiDiagnostic / _build_ci_diagnostic /
+# _DIAG_NAME_CAP fails with a clear TypeError (calling None) rather than a
+# collection-time ImportError.
+# ---------------------------------------------------------------------------
+
+try:
+    from baton_harness.chain.merge import (
+        _DIAG_NAME_CAP,  # type: ignore[attr-defined]
+    )
+except ImportError:
+    _DIAG_NAME_CAP = None  # type: ignore[assignment]
+
+try:
+    from baton_harness.chain.merge import (
+        CiDiagnostic,  # type: ignore[attr-defined]
+    )
+except ImportError:
+    CiDiagnostic = None  # type: ignore[assignment,misc]
+
+try:
+    from baton_harness.chain.merge import (
+        _build_ci_diagnostic,  # type: ignore[attr-defined]
+    )
+except ImportError:
+    _build_ci_diagnostic = None  # type: ignore[assignment]
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1026,6 +1072,13 @@ class TestEvaluateCiPollingAndTimeout:
 
         CRITICAL: Zero matching jobs found is NEVER vacuously green.
         An absent required job → NOT-YET → non-green on timeout.
+
+        (#353) Also drives a supplied ``CiDiagnostic`` and asserts it
+        records the required checks as genuinely *absent* (never
+        observed), classified as a required-check name mismatch — not
+        conflated with "observed but still pending" (see the sibling
+        in-progress case in ``TestEvaluateCiPollingAndTimeout``, which
+        is the issue's core "indistinguishable" claim being falsified).
         """
         # Only return irrelevant jobs — none are required.
         irrelevant_jobs = [
@@ -1035,6 +1088,7 @@ class TestEvaluateCiPollingAndTimeout:
                 "conclusion": "success",
             }
         ]
+        diag = CiDiagnostic()
 
         with patch.object(
             merge_mod,
@@ -1047,18 +1101,35 @@ class TestEvaluateCiPollingAndTimeout:
                 _SHA,
                 poll_interval=0,
                 timeout=0,  # immediate timeout
+                diagnostic=diag,
             )
 
         assert result != CiResult.GREEN, (
             "An absent required job must NEVER produce a GREEN result"
         )
+        assert diag.populated is True
+        assert diag.never_observed == tuple(REQUIRED_CHECKS), (
+            "Every required check must be recorded as never observed, "
+            f"not merely pending; got {diag.never_observed!r}"
+        )
+        assert "Some unrelated check" in diag.other_observed
+        assert diag.classifier() == "required checks never appeared"
 
     def test_empty_jobs_list_is_not_vacuous_green(self) -> None:
         """Empty jobs list → NOT green (no vacuous pass).
 
         No jobs at all = every required job is absent = NOT-YET → not
         green on timeout.
+
+        (#353) This is the literal PR #6 regression shape (F8): zero
+        Actions jobs ever observed for the SHA. The supplied
+        ``CiDiagnostic`` must record every required check as absent and
+        classify this as "no jobs observed" — distinct from the
+        name-mismatch case above, where *some* (non-required) jobs were
+        seen.
         """
+        diag = CiDiagnostic()
+
         with patch.object(merge_mod, "_query_action_jobs", return_value=[]):
             result = evaluate_ci(
                 _OWNER,
@@ -1066,11 +1137,19 @@ class TestEvaluateCiPollingAndTimeout:
                 _SHA,
                 poll_interval=0,
                 timeout=0,
+                diagnostic=diag,
             )
 
         assert result != CiResult.GREEN, (
             "An empty jobs list must NEVER produce GREEN"
         )
+        assert diag.populated is True
+        assert diag.never_observed == tuple(REQUIRED_CHECKS), (
+            "Every required check must be recorded as never observed "
+            f"when zero jobs were ever seen; got {diag.never_observed!r}"
+        )
+        assert diag.other_observed == ()
+        assert diag.classifier() == "no jobs observed"
 
     def test_eventually_green_after_polling(self) -> None:
         """Jobs that are in_progress then complete → GREEN after polling."""
@@ -1228,6 +1307,425 @@ class TestEvaluateCiAuthErrorPropagation:
         assert raised, (
             "evaluate_ci must propagate CiAuthError, not return CiResult"
         )
+
+
+# ---------------------------------------------------------------------------
+# #353 — CiDiagnostic dataclass defaults
+# ---------------------------------------------------------------------------
+
+
+class TestCiDiagnosticDefaults:
+    """Tests for ``CiDiagnostic``'s unpopulated (default-constructed) state.
+
+    Per D4, an unpopulated diagnostic must degrade to nothing — no
+    trailing whitespace, no empty parenthetical — so every consumer that
+    forgets to pass ``diagnostic=`` (the common case per F3/R-A) gets
+    exactly today's behaviour.
+    """
+
+    def test_default_construction_is_unpopulated(self) -> None:
+        """A bare ``CiDiagnostic()`` starts with ``populated is False``."""
+        diag = CiDiagnostic()
+        assert diag.populated is False
+
+    def test_classifier_is_empty_string_when_unpopulated(self) -> None:
+        """``classifier()`` on an unpopulated diagnostic returns ``""``."""
+        assert CiDiagnostic().classifier() == ""
+
+    def test_describe_is_empty_string_when_unpopulated(self) -> None:
+        """``describe()`` on an unpopulated diagnostic returns ``""``."""
+        assert CiDiagnostic().describe() == ""
+
+
+# ---------------------------------------------------------------------------
+# #353 — _build_ci_diagnostic: the four-way D3 classification (pure)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildCiDiagnosticClassification:
+    """Pure unit tests for ``_build_ci_diagnostic``'s D3 classification.
+
+    ``_build_ci_diagnostic`` is a pure reduction (no I/O, no time calls —
+    F1) over the facts ``evaluate_ci`` already accumulates: the required
+    set, every job name ever observed across all polls, the final
+    snapshot, poll count, and elapsed time. These tests exercise it
+    directly, independent of the poll loop or any subprocess patching.
+    """
+
+    def test_zero_jobs_ever_observed_classifies_as_no_jobs_observed(
+        self,
+    ) -> None:
+        """D3 case 1 — nothing was ever observed for this SHA.
+
+        This is the literal PR #6 shape (F8): the branch's tree has no
+        workflow file, so no job can ever appear.
+        """
+        diag = _build_ci_diagnostic(
+            required=tuple(REQUIRED_CHECKS),
+            ever_observed=(),
+            last_runs=[],
+            polls=181,
+            elapsed_s=1801.0,
+            red=False,
+        )
+
+        assert diag.populated is True
+        assert diag.never_observed == tuple(REQUIRED_CHECKS)
+        assert diag.other_observed == ()
+        assert diag.classifier() == "no jobs observed"
+        assert diag.polls == 181
+        assert diag.elapsed_s == 1801.0
+
+    def test_only_non_required_jobs_observed_flags_name_mismatch(
+        self,
+    ) -> None:
+        """D3 case 2 — required checks never appeared, but others did.
+
+        This is the signature of a required-check name mismatch (one of
+        the two hypotheses F8 explicitly ruled out for PR #6, and the
+        second failure mode the issue names).
+        """
+        last_runs = [
+            {
+                "name": "Some unrelated check",
+                "status": "completed",
+                "conclusion": "success",
+            }
+        ]
+        diag = _build_ci_diagnostic(
+            required=tuple(REQUIRED_CHECKS),
+            ever_observed=("Some unrelated check",),
+            last_runs=last_runs,
+            polls=5,
+            elapsed_s=12.0,
+            red=False,
+        )
+
+        assert diag.never_observed == tuple(REQUIRED_CHECKS)
+        assert "Some unrelated check" in diag.other_observed
+        assert diag.classifier() == "required checks never appeared"
+
+    def test_all_required_present_but_pending_classifies_never_completed(
+        self,
+    ) -> None:
+        """D3 case 4 — every required check appeared but never completed.
+
+        (#353) This is the direct falsification of the issue's core
+        claim that absent and pending checks are indistinguishable: the
+        ``never_observed`` set is empty here (contrast the
+        ``no_jobs_observed`` / ``name_mismatch`` cases above, where it is
+        exactly ``REQUIRED_CHECKS``), and every per-check state is
+        ``"in_progress/--"`` rather than ``"never observed"``.
+        """
+        last_runs = [
+            {"name": name, "status": "in_progress", "conclusion": None}
+            for name in REQUIRED_CHECKS
+        ]
+        diag = _build_ci_diagnostic(
+            required=tuple(REQUIRED_CHECKS),
+            ever_observed=tuple(REQUIRED_CHECKS),
+            last_runs=last_runs,
+            polls=180,
+            elapsed_s=1800.0,
+            red=False,
+        )
+
+        assert diag.never_observed == ()
+        assert diag.states, "expected one state entry per required check"
+        assert len(diag.states) == len(REQUIRED_CHECKS)
+        for _name, state in diag.states:
+            assert state == "in_progress/--", (
+                f"a present-but-pending required check must render as "
+                f"'in_progress/--', not {state!r}"
+            )
+        assert diag.classifier() == "required checks never completed"
+
+    def test_partial_missing_and_pending_mix_classifies_as_partial(
+        self,
+    ) -> None:
+        """D3 case 3 — some required checks absent, others pending.
+
+        This mixed state is exactly what a single ``CiResult`` enum
+        member cannot express (D2) — it is a partition of the required
+        set, not a single fact.
+        """
+        present = tuple(REQUIRED_CHECKS[:2])
+        absent = tuple(REQUIRED_CHECKS[2:])
+        assert present and absent, (
+            "REQUIRED_CHECKS must have at least 2 entries on each side "
+            "for this test to exercise a genuine partial mix"
+        )
+        last_runs = [
+            {"name": name, "status": "in_progress", "conclusion": None}
+            for name in present
+        ]
+        diag = _build_ci_diagnostic(
+            required=tuple(REQUIRED_CHECKS),
+            ever_observed=present,
+            last_runs=last_runs,
+            polls=90,
+            elapsed_s=900.0,
+            red=False,
+        )
+
+        assert set(diag.never_observed) == set(absent)
+        assert diag.never_observed, "the absent half must be non-empty"
+        assert diag.states, "the pending half must be non-empty"
+        assert diag.classifier() == "required checks partially missing"
+
+    def test_observed_earlier_absent_from_final_poll_state(self) -> None:
+        """A name in ``ever_observed`` but missing from ``last_runs``.
+
+        Not hypothetical padding (per D3): this is the only honest state
+        for a workflow run deleted or re-created mid-poll, and without it
+        a "never completed" message could assert something false.
+        """
+        required = (REQUIRED_CHECKS[0],)
+        diag = _build_ci_diagnostic(
+            required=required,
+            ever_observed=(REQUIRED_CHECKS[0],),
+            last_runs=[],  # absent from the FINAL snapshot only
+            polls=10,
+            elapsed_s=100.0,
+            red=False,
+        )
+
+        assert diag.never_observed == (), (
+            "a name that was observed at least once must not be treated "
+            "as never observed, even if absent from the final snapshot"
+        )
+        [(name, state)] = diag.states
+        assert name == required[0]
+        assert state == "observed earlier, absent from final poll"
+
+    def test_diag_name_cap_bounds_other_job_names_in_rendered_message(
+        self,
+    ) -> None:
+        """``_DIAG_NAME_CAP`` truncates long non-required name lists.
+
+        A monorepo with dozens of matrix jobs must not blow up the
+        rendered park comment — capped at ``_DIAG_NAME_CAP`` entries plus
+        a ``"+K more"`` marker (D3).
+        """
+        # Zero-padded so no name is a substring of another (e.g. "job-1"
+        # would otherwise be a substring of "job-10") — a correct
+        # implementation could render either the first or the last
+        # _DIAG_NAME_CAP names, and an un-padded set would make the
+        # ``listed_count`` check below unreliable in either direction.
+        many_names = tuple(f"job-{i:03d}" for i in range(_DIAG_NAME_CAP + 5))
+        last_runs = [
+            {"name": n, "status": "completed", "conclusion": "success"}
+            for n in many_names
+        ]
+        diag = _build_ci_diagnostic(
+            required=tuple(REQUIRED_CHECKS),
+            ever_observed=many_names,
+            last_runs=last_runs,
+            polls=3,
+            elapsed_s=9.0,
+            red=False,
+        )
+
+        rendered = diag.describe()
+        assert "+5 more" in rendered, (
+            f"expected a '+5 more' truncation marker (K={len(many_names)}"
+            f" - _DIAG_NAME_CAP={_DIAG_NAME_CAP}); got: {rendered!r}"
+        )
+        listed_count = sum(1 for n in many_names if n in rendered)
+        assert listed_count <= _DIAG_NAME_CAP, (
+            f"expected at most {_DIAG_NAME_CAP} names interpolated into "
+            f"the rendered message; found {listed_count} in {rendered!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# #353 — evaluate_ci(diagnostic=...): accumulation across the poll loop
+# ---------------------------------------------------------------------------
+
+
+class TestEvaluateCiDiagnosticAccumulation:
+    """Tests for ``evaluate_ci``'s new ``diagnostic`` out-parameter (D1).
+
+    ``_build_ci_diagnostic`` is pure and tested in isolation above; these
+    tests exercise the accumulation *inside* ``evaluate_ci``'s real poll
+    loop (``ever_observed``, ``polls``, ``elapsed_s``) and the RED/TIMEOUT
+    -only population rule.
+    """
+
+    def test_populates_diagnostic_on_empty_jobs_timeout_pr6_regression(
+        self,
+    ) -> None:
+        """The literal PR #6 regression (F8): empty job list, timeout=0."""
+        diag = CiDiagnostic()
+
+        with patch.object(merge_mod, "_query_action_jobs", return_value=[]):
+            result = evaluate_ci(
+                _OWNER,
+                _REPO_NAME,
+                _SHA,
+                poll_interval=0,
+                timeout=0,
+                diagnostic=diag,
+            )
+
+        assert result != CiResult.GREEN
+        assert diag.populated is True
+        assert diag.never_observed == tuple(REQUIRED_CHECKS)
+        assert diag.other_observed == ()
+        assert diag.classifier() == "no jobs observed"
+
+    def test_populates_diagnostic_with_name_mismatch_for_irrelevant_jobs(
+        self,
+    ) -> None:
+        """Only non-required jobs observed → name-mismatch classifier."""
+        diag = CiDiagnostic()
+        irrelevant_jobs = [
+            {
+                "name": "Some unrelated check",
+                "status": "completed",
+                "conclusion": "success",
+            }
+        ]
+
+        with patch.object(
+            merge_mod, "_query_action_jobs", return_value=irrelevant_jobs
+        ):
+            evaluate_ci(
+                _OWNER,
+                _REPO_NAME,
+                _SHA,
+                poll_interval=0,
+                timeout=0,
+                diagnostic=diag,
+            )
+
+        assert "Some unrelated check" in diag.other_observed
+        assert diag.classifier() == "required checks never appeared"
+
+    def test_distinguishes_pending_required_checks_from_absent_ones(
+        self,
+    ) -> None:
+        """All required checks in_progress → distinct from "never observed".
+
+        (#353 core claim, falsified directly.) Contrast with the
+        empty-jobs and irrelevant-jobs tests above: there,
+        ``never_observed`` equals the full required set. Here it is
+        empty, and every state is ``"in_progress/--"`` — the exact
+        distinction the issue claims ``_classify_check_runs`` cannot
+        make.
+        """
+        diag = CiDiagnostic()
+        in_progress_jobs = [
+            {"name": name, "status": "in_progress", "conclusion": None}
+            for name in REQUIRED_CHECKS
+        ]
+
+        with patch.object(
+            merge_mod, "_query_action_jobs", return_value=in_progress_jobs
+        ):
+            evaluate_ci(
+                _OWNER,
+                _REPO_NAME,
+                _SHA,
+                poll_interval=0,
+                timeout=0,
+                diagnostic=diag,
+            )
+
+        assert diag.never_observed == ()
+        assert diag.states
+        for _name, state in diag.states:
+            assert state == "in_progress/--"
+        assert diag.classifier() == "required checks never completed"
+
+    def test_partial_mix_of_absent_and_pending_required_checks(
+        self,
+    ) -> None:
+        """Two required checks pending, two absent → partial classifier."""
+        diag = CiDiagnostic()
+        present = REQUIRED_CHECKS[:2]
+        absent = REQUIRED_CHECKS[2:]
+        assert present and absent
+        jobs = [
+            {"name": name, "status": "in_progress", "conclusion": None}
+            for name in present
+        ]
+
+        with patch.object(merge_mod, "_query_action_jobs", return_value=jobs):
+            evaluate_ci(
+                _OWNER,
+                _REPO_NAME,
+                _SHA,
+                poll_interval=0,
+                timeout=0,
+                diagnostic=diag,
+            )
+
+        assert set(diag.never_observed) == set(absent)
+        assert diag.classifier() == "required checks partially missing"
+
+    def test_green_exit_leaves_diagnostic_unpopulated(self) -> None:
+        """A GREEN result must not populate the diagnostic (D1/T1).
+
+        No consumer needs diagnostic detail on the happy path — only the
+        RED and TIMEOUT exits populate it.
+        """
+        diag = CiDiagnostic()
+
+        with patch.object(
+            merge_mod,
+            "_query_action_jobs",
+            return_value=_all_required_success(),
+        ):
+            result = evaluate_ci(
+                _OWNER,
+                _REPO_NAME,
+                _SHA,
+                poll_interval=0,
+                timeout=1,
+                diagnostic=diag,
+            )
+
+        assert result == CiResult.GREEN
+        assert diag.populated is False
+
+    def test_records_poll_count_and_elapsed_time(self) -> None:
+        """``polls`` and ``elapsed_s`` are recorded on the diagnostic."""
+        diag = CiDiagnostic()
+
+        with patch.object(merge_mod, "_query_action_jobs", return_value=[]):
+            evaluate_ci(
+                _OWNER,
+                _REPO_NAME,
+                _SHA,
+                poll_interval=0,
+                timeout=0,
+                diagnostic=diag,
+            )
+
+        assert diag.polls >= 1
+        assert diag.elapsed_s >= 0.0
+
+    def test_omitting_diagnostic_kwarg_leaves_behaviour_unchanged(
+        self,
+    ) -> None:
+        """``diagnostic=None`` (the default) must not change behaviour.
+
+        Every pre-existing ``evaluate_ci`` call site (and every test
+        above this one in the file) omits ``diagnostic=`` — this is the
+        explicit guard that omitting it raises nothing and returns the
+        same result as always.
+        """
+        with patch.object(merge_mod, "_query_action_jobs", return_value=[]):
+            result = evaluate_ci(
+                _OWNER,
+                _REPO_NAME,
+                _SHA,
+                poll_interval=0,
+                timeout=0,
+            )
+
+        assert result != CiResult.GREEN
 
 
 # ---------------------------------------------------------------------------
@@ -1532,6 +2030,58 @@ class TestMergeIssueBranch:
 # ---------------------------------------------------------------------------
 # Provenance persistence (agent-merged label + marker comment)
 # ---------------------------------------------------------------------------
+
+
+class TestMergeIssueBranchDiagnosticThreading:
+    """T2: ``merge_issue_branch`` threads ``diagnostic=`` to ``evaluate_ci``.
+
+    ``merge_issue_branch`` gains ``diagnostic: CiDiagnostic | None = None``
+    and forwards it unchanged to ``evaluate_ci`` (D1). Both TIMEOUT and
+    "no kwarg at all" behaviour are pinned.
+    """
+
+    def test_merge_issue_branch_populates_supplied_diagnostic_on_timeout(
+        self,
+    ) -> None:
+        """A supplied diagnostic is populated when the gate times out."""
+        diag = CiDiagnostic()
+
+        with patch.object(merge_mod, "_query_action_jobs", return_value=[]):
+            outcome = merge_issue_branch(
+                _REPO,
+                _OWNER,
+                _REPO_NAME,
+                issue=44,
+                pr_head_sha=_SHA,
+                issue_branch="baton/v2-daemon-44",
+                feature_branch=_FEATURE,
+                poll_interval=0,
+                timeout=0,
+                diagnostic=diag,
+            )
+
+        assert outcome == MergeOutcome.CI_TIMEOUT
+        assert diag.populated is True
+        assert diag.classifier() == "no jobs observed"
+
+    def test_merge_issue_branch_without_diagnostic_kwarg_is_unchanged(
+        self,
+    ) -> None:
+        """Omitting ``diagnostic=`` (the default) changes nothing."""
+        with patch.object(merge_mod, "_query_action_jobs", return_value=[]):
+            outcome = merge_issue_branch(
+                _REPO,
+                _OWNER,
+                _REPO_NAME,
+                issue=44,
+                pr_head_sha=_SHA,
+                issue_branch="baton/v2-daemon-44",
+                feature_branch=_FEATURE,
+                poll_interval=0,
+                timeout=0,
+            )
+
+        assert outcome == MergeOutcome.CI_TIMEOUT
 
 
 class TestProvenancePersistence:
