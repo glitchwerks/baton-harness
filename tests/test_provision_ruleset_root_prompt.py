@@ -1,42 +1,19 @@
-"""Failing tests for bin/provision-ruleset.sh BH_PROJECT_ROOT prompt (#352).
+"""Regression tests for provision-ruleset.sh's BH_PROJECT_ROOT prompt.
 
-Current behavior (confirmed by the existing
-``tests/test_provision_ruleset_missing_env_debug.py`` suite): when
-``BH_PROJECT_ROOT`` cannot be resolved via ``bin/lib/load-config.sh``'s
-chain, ``provision-ruleset.sh`` never prompts for it -- interactive or
-not -- it always falls straight through to the generic missing-required-
-vars fatal diagnostic, whose ``detail: BH_PROJECT_ROOT=`` line reports
-the literal ``(unset)``.
+When the shared config loader cannot resolve ``BH_PROJECT_ROOT``, an
+interactive session prompts once for an absolute project-root path.
+Non-interactive sessions and runs with ``BH_SETUP_NO_PROMPT=1`` continue
+to fail closed through the script's missing-environment diagnostic.
 
-Target behavior (issue #352, item 3): in an interactive session (the
-same ``[[ -t 0 && -t 1 && "${BH_SETUP_NO_PROMPT:-0}" != "1" ]]``-style
-check ``bin/install-daemon-service.sh`` already uses), the script should
-now prompt for ``BH_PROJECT_ROOT`` before falling through to that
-diagnostic. In a non-interactive session (or ``BH_SETUP_NO_PROMPT=1``),
-it must keep failing exactly as today (item 5).
+The interactive coverage verifies both that the prompted value reaches
+the diagnostic and that ``.bh/config.env`` is loaded from the newly known
+root before required variables are checked. The latter case supplies only
+``BH_REPO_OWNER`` in that file, proving the prompted-root config contributes
+resolved values without allowing the script to reach live GitHub calls.
 
-Two cases:
-
-  - ``test_non_interactive_unresolved_root_regression`` (regression
-    guard, green today): explicitly setting ``BH_SETUP_NO_PROMPT=1``
-    must not change today's fail-closed diagnostic.
-  - ``test_interactive_session_prompts_for_and_uses_project_root`` (RED,
-    POSIX-only via a real pty -- see ``tests/_bh_pty.py``): in an
-    interactive session, feeding an operator-supplied (but otherwise
-    still-incomplete, so the run still ultimately fails the same
-    generic diagnostic) path as the answer must cause the SAME
-    ``detail: BH_PROJECT_ROOT=`` line to report that fed path instead
-    of ``(unset)`` -- proof the script actually read and used a prompted
-    value, not just that it failed for the pre-existing reason. Today
-    this can never happen: no pty input is ever consumed for
-    ``BH_PROJECT_ROOT``, so the line is always ``(unset)`` regardless of
-    what is fed on stdin.
-
-The interactive case cannot be executed on this Windows host (Python's
-``pty`` module is POSIX-only) -- it is skipped locally and its "red for
-the right reason" cannot be verified from this machine. It will execute
-for real on the project's CI runner (``ubuntu-latest`` per
-``.github/workflows/ci.yml``). See the return summary for this caveat.
+The interactive cases use a real pty from ``tests/_bh_pty.py``. Python's
+``pty`` module is POSIX-only, so they are skipped on Windows and execute
+for real on the project's ``ubuntu-latest`` CI runner.
 """
 
 from __future__ import annotations
@@ -202,4 +179,54 @@ def test_interactive_session_prompts_for_and_uses_project_root(
     assert "detail: BH_PROJECT_ROOT=(unset)" not in stderr, (
         "the prompted value must replace the (unset) default; stderr "
         f"was:\n{stderr!r}"
+    )
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "Python's pty module is POSIX-only; this test requires a real "
+        "tty on fd 0/1 to satisfy the script's interactivity check and "
+        "cannot run on this platform. Executes on CI (ubuntu-latest)."
+    ),
+)
+def test_interactive_session_loads_config_env_from_prompted_root(
+    tmp_path: Path,
+) -> None:
+    """The prompted root's config.env must load before env validation."""
+    from tests._bh_pty import run_interactive
+
+    env = _isolated_env(tmp_path)
+    fed_root = tmp_path / "operator-entered-root"
+    config_dir = fed_root / ".bh"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.env").write_text(
+        "BH_REPO_OWNER=some-test-owner\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    returncode, _pty_output, stderr = run_interactive(
+        [_BASH, str(SCRIPT)],
+        env,
+        input_text=f"{fed_root.as_posix()}\n",
+        timeout=30,
+    )
+
+    assert returncode == 2, (
+        "the remaining undefined required vars must stop the script "
+        f"before any GitHub calls; rc={returncode}\nstderr:\n{stderr}"
+    )
+    idx = stderr.find("provision-ruleset: missing env vars:")
+    assert idx != -1, f"missing env vars line not found; stderr:\n{stderr!r}"
+    missing_line = stderr[idx:].splitlines()[0]
+    assert "BH_REPO_NAME" in missing_line, missing_line
+    assert "BH_GITHUB_APP_ID" in missing_line, missing_line
+    assert "BH_GITHUB_APP_INSTALLATION_ID" in missing_line, missing_line
+    assert "BH_REPO_OWNER" not in missing_line, missing_line
+
+    expected_config = f"{fed_root.as_posix()}/.bh/config.env"
+    assert f"detail: .bh/config.env={expected_config} (exists)" in stderr, (
+        "the diagnostic must identify config.env under the prompted "
+        f"root; stderr was:\n{stderr!r}"
     )

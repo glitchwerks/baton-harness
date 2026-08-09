@@ -61,14 +61,22 @@ if [[ -f "${_BH_LOAD_CONFIG}" ]]; then
     # shellcheck disable=SC1090,SC1091
     source "${_BH_LOAD_CONFIG}"
 fi
-unset _BH_LOAD_CONFIG
 
 if [[ -z "${BH_PROJECT_ROOT:-}" ]]; then
     if [[ -t 0 && -t 1 && "${BH_SETUP_NO_PROMPT:-0}" != "1" ]]; then
         read -r -p "provision-ruleset: BH_PROJECT_ROOT (absolute path to local sandbox clone): " BH_PROJECT_ROOT
+        if [[ -z "${BH_PROJECT_ROOT}" || "${BH_PROJECT_ROOT}" != /* ]]; then
+            echo "provision-ruleset: BH_PROJECT_ROOT must be a non-empty absolute path" >&2
+            exit 2
+        fi
         export BH_PROJECT_ROOT
+        if [[ -f "${_BH_LOAD_CONFIG}" ]]; then
+            # shellcheck disable=SC1090,SC1091
+            source "${_BH_LOAD_CONFIG}"
+        fi
     fi
 fi
+unset _BH_LOAD_CONFIG
 
 # ---------------------------------------------------------------------------
 # Python resolver — mirrors after_create.py:L99-L106.

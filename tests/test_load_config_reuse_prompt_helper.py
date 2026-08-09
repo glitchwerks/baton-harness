@@ -102,6 +102,24 @@ _bh_resolve_config_with_reuse_prompt "$CONFIG_FILE" stub_prompt_and_write \\
 echo "HELPER_EXIT=$rc"
 """
 
+_WRAPPER_SCRIPT_FAILING_CALLBACK = """#!/usr/bin/env bash
+set -euo pipefail
+source "$1"
+
+CONFIG_FILE="$2"
+MARKER_FILE="$3"
+
+stub_prompt_and_write() {
+    printf 'called\\n' >> "$MARKER_FILE"
+    return 3
+}
+
+rc=0
+_bh_resolve_config_with_reuse_prompt "$CONFIG_FILE" stub_prompt_and_write \\
+    || rc=$?
+echo "HELPER_EXIT=$rc"
+"""
+
 
 def _write_wrapper(tmp_path: Path) -> Path:
     """Write the shared reuse-prompt-helper driver wrapper script.
@@ -114,6 +132,22 @@ def _write_wrapper(tmp_path: Path) -> Path:
     """
     wrapper = tmp_path / "reuse_prompt_wrapper.sh"
     wrapper.write_text(_WRAPPER_SCRIPT, encoding="utf-8", newline="\n")
+    return wrapper
+
+
+def _write_failing_wrapper(tmp_path: Path) -> Path:
+    """Write a reuse-prompt driver whose callback returns non-zero.
+
+    Args:
+        tmp_path: Pytest-provided temp directory for this test.
+
+    Returns:
+        Path to the written wrapper script.
+    """
+    wrapper = tmp_path / "reuse_prompt_failing_callback_wrapper.sh"
+    wrapper.write_text(
+        _WRAPPER_SCRIPT_FAILING_CALLBACK, encoding="utf-8", newline="\n"
+    )
     return wrapper
 
 
@@ -218,6 +252,44 @@ def test_absent_config_file_calls_callback_once_and_succeeds(
         "the prompt-and-write callback must be invoked exactly once on "
         f"the fresh-init path; marker contents:\n"
         f"{marker_file.read_text(encoding='utf-8')!r}"
+    )
+
+
+def test_absent_config_file_propagates_callback_failure(
+    tmp_path: Path,
+) -> None:
+    """A failing fresh-init callback must make the helper fail."""
+    wrapper = _write_failing_wrapper(tmp_path)
+    config_file = tmp_path / "host.env"
+    marker_file = tmp_path / "marker.txt"
+
+    env = _base_env(tmp_path)
+    env["BH_SETUP_NO_PROMPT"] = "1"
+
+    proc = subprocess.run(
+        [
+            _BASH,
+            str(wrapper),
+            str(LOAD_CONFIG),
+            str(config_file),
+            str(marker_file),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        stdin=subprocess.DEVNULL,
+        timeout=30,
+    )
+
+    helper_exit = _extract_helper_exit(proc.stdout)
+    assert helper_exit != 0, (
+        "the helper must propagate a fresh-init callback failure; "
+        f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+    )
+    assert marker_file.read_text(encoding="utf-8") == "called\n", (
+        "the failing callback must still run exactly once; marker "
+        f"contents:\n{marker_file.read_text(encoding='utf-8')!r}"
     )
 
 
@@ -427,4 +499,54 @@ def test_existing_config_file_interactive_overwrite_choice_calls_callback(
     assert "overwrite" in stderr_lower or "existing" in stderr_lower, (
         "expected the interactive prompt to mention the choice being "
         f"made (overwrite vs existing); stderr:\n{stderr!r}"
+    )
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "Python's pty module is POSIX-only; this test requires a real "
+        "tty on fd 0/1 to satisfy the interactivity check and cannot "
+        "run on this platform. Executes on CI (ubuntu-latest)."
+    ),
+)
+def test_interactive_overwrite_propagates_callback_failure(
+    tmp_path: Path,
+) -> None:
+    """A failing overwrite callback must make the helper fail."""
+    from tests._bh_pty import run_interactive
+
+    wrapper = _write_failing_wrapper(tmp_path)
+    config_file = tmp_path / "host.env"
+    config_file.write_text("BH_EXISTING=preexisting\n", encoding="utf-8")
+    marker_file = tmp_path / "marker.txt"
+
+    env = _base_env(tmp_path)
+    env.pop("BH_SETUP_NO_PROMPT", None)
+
+    returncode, pty_output, stderr = run_interactive(
+        [
+            _BASH,
+            str(wrapper),
+            str(LOAD_CONFIG),
+            str(config_file),
+            str(marker_file),
+        ],
+        env,
+        input_text="overwrite\n",
+        timeout=30,
+    )
+
+    assert returncode == 0, (
+        "the wrapper captures the helper status instead of propagating "
+        f"it; rc={returncode}\npty_output:\n{pty_output}\nstderr:\n{stderr}"
+    )
+    helper_exit = _extract_helper_exit(pty_output)
+    assert helper_exit != 0, (
+        "the helper must propagate an interactive overwrite callback "
+        f"failure; pty_output:\n{pty_output}\nstderr:\n{stderr}"
+    )
+    assert marker_file.read_text(encoding="utf-8") == "called\n", (
+        "the failing callback must still run exactly once; marker "
+        f"contents:\n{marker_file.read_text(encoding='utf-8')!r}"
     )

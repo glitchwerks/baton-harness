@@ -109,16 +109,18 @@ _bh_resolve_config_with_reuse_prompt() {
 
     if [[ ! -f "${_bh_config_file}" ]]; then
         "${_bh_prompt_and_write_fn}"
-        return 0
+        return $?
     fi
 
     if [[ -t 0 && -t 1 && "${BH_SETUP_NO_PROMPT:-0}" != "1" ]]; then
         local _bh_answer
         read -r -p "baton-harness: existing config found at ${_bh_config_file}; type 'overwrite' to replace it, or press Enter to reuse it: " _bh_answer
-        _bh_answer="${_bh_answer,,}"
-        if [[ "${_bh_answer}" == "overwrite" ]]; then
-            "${_bh_prompt_and_write_fn}"
-        fi
+        case "${_bh_answer}" in
+            [Oo][Vv][Ee][Rr][Ww][Rr][Ii][Tt][Ee])
+                "${_bh_prompt_and_write_fn}"
+                return $?
+                ;;
+        esac
         return 0
     else
         echo "baton-harness: error: existing config ${_bh_config_file} requires an interactive overwrite-or-reuse choice" >&2
