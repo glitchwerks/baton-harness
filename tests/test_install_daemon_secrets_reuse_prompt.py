@@ -1,56 +1,36 @@
-"""Failing tests for install-daemon-service.sh secrets.env reuse (#355).
+"""Regression coverage for install-daemon-service.sh secrets reuse (#355).
 
-Today ``bin/install-daemon-service.sh`` always interactively re-prompts
-for ``BWS_ACCESS_TOKEN`` and always overwrites ``/etc/bh-daemon/
-secrets.env`` (with a timestamped backup), even when a valid
-``secrets.env`` already exists -- there is no reuse-vs-overwrite choice.
-Issue #355 asks for the same overwrite-vs-reuse UX the shared helper
-``_bh_resolve_config_with_reuse_prompt`` (``bin/lib/load-config.sh``,
-added in #352/PR #354, pinned by ``tests/
-test_load_config_reuse_prompt_helper.py``) already gives the other three
-setup scripts.
-
-Required testability seam (this test author's design choice -- not yet
-implemented, and the crux of why this suite needs a new env var rather
-than a pure PATH shim):
-
-    ``BH_DAEMON_SECRETS_PATH`` -- when set, overrides the hardcoded
-    ``/etc/bh-daemon/secrets.env`` path used *everywhere* that literal
-    string appears today (existence check, ``_backup_if_exists``
-    target, and the ``sudo install -m 600`` destination), the same way
-    ``--harness-dir``/``--project-root`` already override other
-    auto-detected values in this script.
+``bin/install-daemon-service.sh`` uses the shared
+``_bh_resolve_config_with_reuse_prompt`` helper from
+``bin/lib/load-config.sh`` to offer an overwrite-vs-reuse choice when
+its secrets file already exists. ``BH_DAEMON_SECRETS_PATH`` overrides
+the default ``/etc/bh-daemon/secrets.env`` location throughout the
+installer, including the existence check, backup target, install
+destination, and rendered systemd ``EnvironmentFile=`` entry. This
+suite exercises that existing override against writable temporary
+paths.
 
 Why a plain PATH shim over ``sudo``/``install`` cannot substitute for
 this: the reuse-vs-overwrite gate has to start with "does the config
-file already exist", and ``_bh_resolve_config_with_reuse_prompt`` (a
-frozen, already-tested helper this suite must not edit) answers that
+file already exist", and ``_bh_resolve_config_with_reuse_prompt`` (an
+already-tested shared helper this suite does not edit) answers that
 question with a bare ``[[ ! -f "$1" ]]`` -- a shell builtin. Builtins
 are resolved without ever touching ``$PATH``, so no fake ``sudo``/
 ``install``/``test`` executable can intercept it. Only an actual path
 override lets a test point that check at a writable ``tmp_path``
 location instead of the real, root-owned ``/etc`` tree. A fake ``sudo``
-is still used below (see ``_SUDO_STUB``) as defense in depth for the
-*other* privileged commands this script issues against literal
-``/etc/...`` paths regardless of the new override (e.g. the existing
-hardcoded ``sudo mkdir -p /etc/bh-daemon`` and the unit-file write to
-``/etc/systemd/system/bh-daemon.service``) -- it rewrites any ``/etc/``-
-rooted argument to live under a throwaway ``$FAKE_ROOT`` instead, so no
-scenario below can ever touch the real system ``/etc`` tree even if an
-implementation only partially threads the new override through.
+is still used below (see ``_SUDO_STUB``) as defense in depth for other
+privileged commands and the unit-file write. It rewrites any
+``/etc/``-rooted argument to live under a throwaway ``$FAKE_ROOT``, so
+no scenario below can touch the real system ``/etc`` tree.
 
-Assumed prompt ordering (this test author's design choice, since the
-spec does not pin exact call-site structure, and pty input is fed as
-one up-front block per ``tests/_bh_pty.py``): the new reuse-vs-overwrite
-prompt is embedded inside the existing "Resolve BWS_ACCESS_TOKEN" block
-(bin/install-daemon-service.sh lines ~302-321 today) -- the same place
-the bug already lives -- and therefore still runs *before* the
-script's unchanged, unconditional "proceed with install? [y/N]" confirm
-that follows later. This is the natural, minimal-diff placement (it is
-literally where the described bug already sits), but it is an
-assumption, not a confirmed contract; a correct implementation that
-orders things differently would need this suite adjusted (test-dispute
-loopback), per the same category of known gap already flagged in
+Assumed prompt ordering (this test author's design choice, since pty
+input is fed as one up-front block per ``tests/_bh_pty.py``): the
+reuse-vs-overwrite prompt runs inside the "Resolve BWS_ACCESS_TOKEN"
+block, before the later "proceed with install? [y/N]" confirmation.
+This remains an assumption rather than a public contract; an intentional
+reordering would require the suite to be adjusted, per the same category
+of known gap already flagged in
 ``tests/test_install_daemon_service_root_prompt_order.py``.
 
 Non-interactive-existing-file convention (this test author's choice,
@@ -63,45 +43,21 @@ already-pinned behavior verbatim (rather than inventing a bespoke force
 flag for this one script) keeps the four setup scripts consistent, per
 issue #352's own shared-helper intent.
 
-Confirmed red today via reading the unmodified ``bin/
-install-daemon-service.sh`` (BWS_ACCESS_TOKEN resolution block, lines
-302-321) and by running each scenario below against it: the script
-never references ``BH_DAEMON_SECRETS_PATH`` and has no existence check
-at all, so every "existing file" scenario below drives the *unmodified*
-always-prompt/always-overwrite code path today, for the following
-observed (not merely inferred) reasons:
+The scenarios verify the current behavior:
 
-  - **overwrite scenario**: absent any reuse gate, today's very first
-    interactive prompt is the token read itself, so the fed "overwrite"
-    line is consumed *as the token*, and the next fed line is consumed
-    by the unrelated, unchanged "proceed with install? [y/N]" confirm
-    (which it does not match) -- the install is cancelled before ever
-    reaching a write, so the test-controlled ``secrets_path`` file is
-    never touched and never gains the new-token content asserted below.
-  - **reuse scenario**: today's script has no way to skip the token
-    prompt, so the exact ``BWS_ACCESS_TOKEN (Bitwarden Secrets CLI
-    machine-account token)`` prompt text is written to stderr
-    regardless of the fed answer -- the assertion that this text must
-    be *absent* fails today.
-  - **EOF-on-reuse-prompt scenario**: there is no reuse prompt to fail
-    reading from yet, so EOF is instead delivered to the (ungated, not
-    ``||``-guarded) token ``read`` under ``set -euo pipefail``, aborting
-    the script without ever emitting the new helper's own "could not
-    read overwrite-or-reuse choice" message.
-  - **non-interactive-existing-file scenario**: today's script has no
-    existence check at all, so it reports its unchanged, unrelated
-    "BWS_ACCESS_TOKEN not set and session is non-interactive" message
-    instead of the shared helper's "requires an interactive
-    overwrite-or-reuse choice" message asserted below.
-  - **absent-file scenario** (see module note above the test itself):
-    this one is a documented green-today regression guard, not a red,
-    matching the precedent in ``tests/
-    test_init_sandbox_config_reuse_prompt.py``.
-
-None of the above touches any real ``/etc`` path on this machine: in
-every red scenario the unmodified script aborts (via cancelled confirm,
-``set -e``, or its own fail-closed branch) before ever reaching a
-privileged write.
+  - **overwrite** prompts for a new token, rewrites the secrets file,
+    preserves the prior contents in a timestamped backup, and completes
+    the installer successfully.
+  - **reuse** skips the token prompt, leaves the secrets file untouched,
+    and completes the installer successfully.
+  - **EOF on the reuse prompt** fails closed with the shared helper's
+    read-error message and leaves the existing file untouched.
+  - **non-interactive with an existing file** fails closed because no
+    overwrite-or-reuse choice can be obtained, leaving the file intact.
+  - **no existing file** retains the original fresh-init token-resolution
+    behavior without showing the reuse prompt.
+  - **relative path override** fails validation before any prompt or file
+    write because systemd requires an absolute ``EnvironmentFile=`` path.
 
 Interactive cases are driven via a real pty (see ``tests/_bh_pty.py``)
 and, per that helper's own POSIX-only constraint, are skipped (not
@@ -340,9 +296,11 @@ def test_absent_secrets_file_reaches_unchanged_token_prompt_noninteractively(
     script must still reach its existing, unchanged non-interactive
     BWS_ACCESS_TOKEN failure -- not some new reuse-related failure.
 
-    Green today: the unmodified script already goes straight to this
-    exact branch, since it has no notion of ``BH_DAEMON_SECRETS_PATH``
-    or any existence check at all yet.
+    Regression coverage: with ``BH_DAEMON_SECRETS_PATH`` pointed at a
+    location that has no file yet, the reuse-vs-overwrite existence
+    check in ``_bh_resolve_config_with_reuse_prompt`` finds nothing to
+    reuse and steps aside, leaving the script's existing fresh-init
+    token-resolution path to run exactly as before.
     """
     harness_dir = _build_harness_dir(tmp_path)
     project_root = tmp_path / "project"
@@ -447,6 +405,51 @@ def test_existing_secrets_file_noninteractive_fails_closed_untouched(
 
 
 # ---------------------------------------------------------------------------
+# Requirement 6: relative secrets.env override -> hard failure, no file.
+# ---------------------------------------------------------------------------
+
+
+def test_relative_secrets_path_fails_closed_without_writing(
+    tmp_path: Path,
+) -> None:
+    """A relative BH_DAEMON_SECRETS_PATH must fail before any write."""
+    harness_dir = _build_harness_dir(tmp_path)
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    fake_root = tmp_path / "fake_root"
+    stub_bin_dir = _build_stub_bin_dir(tmp_path)
+
+    env = _base_env(tmp_path, fake_root, stub_bin_dir)
+    env["BH_SETUP_NO_PROMPT"] = "1"
+    env["BH_DAEMON_SECRETS_PATH"] = "relative/secrets.env"
+
+    proc = subprocess.run(
+        _argv(harness_dir, project_root),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        stdin=subprocess.DEVNULL,
+        cwd=tmp_path,
+        timeout=30,
+    )
+
+    assert proc.returncode != 0, (
+        "a relative BH_DAEMON_SECRETS_PATH must fail closed\n"
+        f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+    )
+    assert "BH_DAEMON_SECRETS_PATH must be an absolute path" in proc.stderr, (
+        "expected a clear absolute-path validation error\n"
+        f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+    )
+    assert not list(tmp_path.rglob("secrets.env")), (
+        "a rejected relative path must not create a secrets.env anywhere "
+        f"under the working directory\nstdout:\n{proc.stdout}\n"
+        f"stderr:\n{proc.stderr}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Requirement 2: existing secrets.env + interactive + Enter (reuse) ->
 # no re-prompt for BWS_ACCESS_TOKEN, file untouched.
 # ---------------------------------------------------------------------------
@@ -494,6 +497,10 @@ def test_existing_secrets_file_interactive_reuse_skips_token_prompt(
         timeout=30,
     )
 
+    assert returncode == 0, (
+        "choosing to reuse must complete the installer successfully; "
+        f"rc={returncode}\npty_output:\n{pty_output}\nstderr:\n{stderr}"
+    )
     assert _TOKEN_PROMPT_TEXT not in stderr, (
         "choosing to reuse must never re-prompt for BWS_ACCESS_TOKEN\n"
         f"rc={returncode}\npty_output:\n{pty_output}\nstderr:\n{stderr}"
@@ -532,12 +539,8 @@ def test_existing_secrets_file_interactive_overwrite_rewrites_with_backup(
     Feeds "overwrite" for the reuse choice, a new token for the
     (silent) BWS_ACCESS_TOKEN prompt, then "y" for the script's
     unchanged, later install confirm -- see the module docstring's
-    "assumed prompt ordering" note. Per that same note, the primary
-    assertions below (file content, backup) are the ones this test's
-    intent hinges on; the overall exit code is intentionally not
-    asserted, so a downstream unit-file/systemctl fixture wrinkle in
-    this test's own PATH stubs cannot mask a correct secrets-handling
-    implementation (or vice versa).
+    "assumed prompt ordering" note. The full installer must complete
+    successfully after rewriting the secrets file and its backup.
     """
     from tests._bh_pty import run_interactive
 
@@ -564,6 +567,10 @@ def test_existing_secrets_file_interactive_overwrite_rewrites_with_backup(
         timeout=30,
     )
 
+    assert returncode == 0, (
+        "choosing to overwrite must complete the installer successfully; "
+        f"rc={returncode}\npty_output:\n{pty_output}\nstderr:\n{stderr}"
+    )
     assert _TOKEN_PROMPT_TEXT in stderr, (
         "choosing to overwrite must (re-)prompt for a new "
         f"BWS_ACCESS_TOKEN\nrc={returncode}\npty_output:\n"

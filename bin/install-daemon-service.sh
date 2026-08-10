@@ -298,6 +298,13 @@ _bh_reject_if_whitespace() {
 }
 
 BH_DAEMON_SECRETS_PATH="${BH_DAEMON_SECRETS_PATH:-/etc/bh-daemon/secrets.env}"
+if [[ "${BH_DAEMON_SECRETS_PATH}" != /* ]] && \
+    [[ ! "${BH_DAEMON_SECRETS_PATH}" =~ ^[A-Za-z]:[/\\] ]]; then
+    echo "baton-harness: error: BH_DAEMON_SECRETS_PATH must be an absolute path." >&2
+    echo "  Set it to a path beginning with '/' so systemd can load the" >&2
+    echo "  EnvironmentFile= entry." >&2
+    exit 1
+fi
 _bh_reject_if_whitespace "HARNESS_DIR" "${HARNESS_DIR}"
 _bh_reject_if_whitespace "BH_DAEMON_BIN" "${BH_DAEMON_BIN}"
 _bh_reject_if_whitespace "WORKFLOW_FILE" "${WORKFLOW_FILE}"
