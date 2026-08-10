@@ -114,7 +114,9 @@ args=()
 for a in "$@"; do
     case "$a" in
         /etc/*)
-            args+=("${FAKE_ROOT}${a}")
+            rewritten="${FAKE_ROOT}${a}"
+            mkdir -p "$(dirname "${rewritten}")"
+            args+=("${rewritten}")
             ;;
         *)
             args+=("$a")
