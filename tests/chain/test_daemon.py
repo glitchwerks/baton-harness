@@ -10714,3 +10714,73 @@ class TestRunCiGateDiagnosticEnrichment:
         assert parked_reasons[11] == "CI gate: MERGE_CONFLICT", (
             f"got {parked_reasons.get(11)!r}"
         )
+
+    def test_genuine_ci_failure_parked_reason_identifies_a_failure(
+        self,
+    ) -> None:
+        """#356 — a real CI-failed park reason must name the failure.
+
+        CodeRabbit flagged that ``_build_ci_diagnostic`` discards ``red``,
+        so a required check that reaches ``status=completed`` /
+        ``conclusion=failure`` produces the classifier "required checks
+        never completed" — which reads as still-pending, not failed. This
+        drives ``_run_ci_gate`` through a genuine CI_FAILED outcome (no
+        mocking of ``merge_issue_branch`` itself) and asserts the
+        resulting ``parked_reasons`` entry identifies an actual failure.
+        """
+        mock_sched = MagicMock()
+        mock_sched.mark_done = MagicMock()
+        mock_sched.mark_parked = MagicMock()
+        mock_alert = MagicMock(return_value=True)
+        parked_reasons: dict[int, str] = {}
+
+        failed_check = merge_mod.REQUIRED_CHECKS[0]
+        red_jobs = [
+            {
+                "name": failed_check,
+                "status": "completed",
+                "conclusion": "failure",
+            }
+        ] + [
+            {"name": name, "status": "completed", "conclusion": "success"}
+            for name in merge_mod.REQUIRED_CHECKS[1:]
+        ]
+
+        with (
+            patch.object(
+                merge_mod, "_query_action_jobs", return_value=red_jobs
+            ),
+            patch("baton_harness.chain.daemon.alert", mock_alert),
+            patch("baton_harness.chain.daemon._label_edit"),
+        ):
+            outcome = daemon_mod._run_ci_gate(
+                owner=_OWNER,
+                repo=_REPO_NAME,
+                n=14,
+                issue_branch="baton/issue-14-14",
+                pr_head_sha=_CI_GATE_SHA,
+                repo_root=_REPO_ROOT,
+                branch_name="feature/test-slug",
+                sched=mock_sched,
+                liveness_state=None,
+                runlog=None,
+                merged_issues=[],
+                parked_reasons=parked_reasons,
+                ci_poll_interval=0,
+                ci_timeout=1,
+            )
+
+        assert outcome == MergeOutcome.CI_FAILED
+        reason = parked_reasons.get(14, "")
+        assert "never completed" not in reason, (
+            "a genuine CI failure must not be reported with the "
+            f"pending-style 'never completed' classifier; got {reason!r}"
+        )
+        assert "failed" in reason, (
+            f"expected the parked reason to identify a failure; got {reason!r}"
+        )
+        summary = _extract_alert_summary(mock_alert)
+        assert failed_check in summary, (
+            "expected the failed check's name to appear in the park "
+            f"alert detail; got {summary!r}"
+        )

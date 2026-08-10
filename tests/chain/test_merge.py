@@ -1539,6 +1539,170 @@ class TestBuildCiDiagnosticClassification:
 
 
 # ---------------------------------------------------------------------------
+# #356 — _build_ci_diagnostic: genuine RED (terminal failure) classification
+#
+# CodeRabbit review on PR #356: ``_build_ci_diagnostic`` accepts ``red`` but
+# discards it (``del red``), so ``failed`` is always empty and a required
+# check with status="completed"/conclusion="failure" is misclassified with
+# the "required checks never completed" headline — indistinguishable from a
+# check that is merely still pending. These tests pin the correct, distinct
+# behaviour: ``failed`` is populated for terminal-failure required checks
+# and ``classifier()`` returns a new, dedicated "required check failed"
+# headline instead of the misleading pending-style one.
+# ---------------------------------------------------------------------------
+
+
+class TestBuildCiDiagnosticRedPathFailureClassification:
+    """Pure unit tests for the RED (terminal failure) branch of D3."""
+
+    def test_completed_failure_required_check_populates_failed_tuple(
+        self,
+    ) -> None:
+        """A required check with a failing conclusion lands in ``diag.failed``.
+
+        (#356) Before the fix, ``_build_ci_diagnostic`` does ``del red``
+        and never inspects individual conclusions for failure, so
+        ``failed`` stays ``()`` no matter what the snapshot contains.
+        """
+        failed_check = REQUIRED_CHECKS[0]
+        last_runs = [
+            {
+                "name": failed_check,
+                "status": "completed",
+                "conclusion": "failure",
+            }
+        ] + [
+            {"name": name, "status": "completed", "conclusion": "success"}
+            for name in REQUIRED_CHECKS[1:]
+        ]
+        diag = _build_ci_diagnostic(
+            required=tuple(REQUIRED_CHECKS),
+            ever_observed=tuple(REQUIRED_CHECKS),
+            last_runs=last_runs,
+            polls=3,
+            elapsed_s=30.0,
+            red=True,
+        )
+
+        assert diag.failed, (
+            "expected the terminal-failure required check to appear in "
+            f"diag.failed; got {diag.failed!r}"
+        )
+        failed_names = [name for name, _state in diag.failed]
+        assert failed_check in failed_names, (
+            f"expected {failed_check!r} in diag.failed names; got "
+            f"{failed_names!r}"
+        )
+        # The recorded state must reflect the actual failing conclusion,
+        # matching the "{status}/{conclusion}" convention already used by
+        # diag.states elsewhere in this module.
+        failed_state = dict(diag.failed)[failed_check]
+        assert failed_state == "completed/failure", (
+            f"expected the failed-check state to read 'completed/failure'; "
+            f"got {failed_state!r}"
+        )
+
+    def test_completed_failure_required_check_gets_dedicated_classifier(
+        self,
+    ) -> None:
+        """A failed required check must not reuse the pending classifier.
+
+        (#356) This is the false-classifier CodeRabbit flagged: a hard
+        failure is not the same fact as "appeared but still pending", and
+        conflating them misleads whoever reads ``parked_reasons``.
+        """
+        failed_check = REQUIRED_CHECKS[0]
+        last_runs = [
+            {
+                "name": failed_check,
+                "status": "completed",
+                "conclusion": "failure",
+            }
+        ] + [
+            {"name": name, "status": "completed", "conclusion": "success"}
+            for name in REQUIRED_CHECKS[1:]
+        ]
+        diag = _build_ci_diagnostic(
+            required=tuple(REQUIRED_CHECKS),
+            ever_observed=tuple(REQUIRED_CHECKS),
+            last_runs=last_runs,
+            polls=1,
+            elapsed_s=1.0,
+            red=True,
+        )
+
+        assert diag.classifier() == "required check failed", (
+            f"expected the dedicated RED classifier; got {diag.classifier()!r}"
+        )
+        assert diag.classifier() != "required checks never completed", (
+            "a genuine terminal failure must not be misclassified as "
+            "still-pending"
+        )
+
+    def test_multiple_failed_required_checks_all_appear_in_failed_tuple(
+        self,
+    ) -> None:
+        """More than one required check can fail in the same snapshot."""
+        first, second, *rest = REQUIRED_CHECKS
+        last_runs = [
+            {"name": first, "status": "completed", "conclusion": "failure"},
+            {"name": second, "status": "completed", "conclusion": "cancelled"},
+        ] + [
+            {"name": name, "status": "completed", "conclusion": "success"}
+            for name in rest
+        ]
+        diag = _build_ci_diagnostic(
+            required=tuple(REQUIRED_CHECKS),
+            ever_observed=tuple(REQUIRED_CHECKS),
+            last_runs=last_runs,
+            polls=1,
+            elapsed_s=1.0,
+            red=True,
+        )
+
+        failed_names = {name for name, _state in diag.failed}
+        assert failed_names == {first, second}, (
+            f"expected both failing required checks in diag.failed; got "
+            f"{failed_names!r}"
+        )
+        assert diag.classifier() == "required check failed"
+
+    def test_red_failure_headline_names_the_failed_check_in_describe(
+        self,
+    ) -> None:
+        """``describe()`` for the RED classifier must name the failed check."""
+        failed_check = REQUIRED_CHECKS[0]
+        last_runs = [
+            {
+                "name": failed_check,
+                "status": "completed",
+                "conclusion": "failure",
+            }
+        ] + [
+            {"name": name, "status": "completed", "conclusion": "success"}
+            for name in REQUIRED_CHECKS[1:]
+        ]
+        diag = _build_ci_diagnostic(
+            required=tuple(REQUIRED_CHECKS),
+            ever_observed=tuple(REQUIRED_CHECKS),
+            last_runs=last_runs,
+            polls=1,
+            elapsed_s=1.0,
+            red=True,
+        )
+
+        rendered = diag.describe()
+        assert failed_check in rendered, (
+            f"expected the failed check's name in the rendered describe() "
+            f"block; got {rendered!r}"
+        )
+        assert "did not all reach a completed passing state" not in rendered, (
+            "the RED/failure headline must not reuse the generic "
+            "still-pending wording; got " + repr(rendered)
+        )
+
+
+# ---------------------------------------------------------------------------
 # #353 — evaluate_ci(diagnostic=...): accumulation across the poll loop
 # ---------------------------------------------------------------------------
 

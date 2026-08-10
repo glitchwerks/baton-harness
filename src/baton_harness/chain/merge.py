@@ -194,6 +194,8 @@ class CiDiagnostic:
         """Return the fixed-vocabulary headline classifier."""
         if not self.populated:
             return ""
+        if self.failed:
+            return "required check failed"
         if self.never_observed == self.required:
             if not self.other_observed:
                 return "no jobs observed"
@@ -232,6 +234,14 @@ class CiDiagnostic:
                 f"appeared: {_render_name_list(self.never_observed)}; "
                 f"{len(appeared)} appeared but never completed: "
                 f"{_render_name_list(appeared)}."
+            )
+        elif classifier == "required check failed":
+            rendered_failures = tuple(
+                f"{name}={state}" for name, state in self.failed
+            )
+            headline = (
+                f"{len(self.failed)} required check(s) failed: "
+                f"{_render_name_list(rendered_failures)}."
             )
         else:
             rendered_states = tuple(
@@ -524,13 +534,11 @@ def _build_ci_diagnostic(
         last_runs: Job snapshot from the final poll.
         polls: Number of completed polling iterations.
         elapsed_s: Elapsed polling time in seconds.
-        red: Whether the gate reached a terminal RED result. Reserved for
-            the separately scoped RED-detail extension.
+        red: Whether the gate reached a terminal RED result.
 
     Returns:
         A populated diagnostic describing missing and incomplete checks.
     """
-    del red
     observed = set(ever_observed)
     required_set = set(required)
     never_observed = tuple(name for name in required if name not in observed)
@@ -540,6 +548,7 @@ def _build_ci_diagnostic(
     final_by_name = {str(run.get("name", "")): run for run in last_runs}
 
     states: list[tuple[str, str]] = []
+    failed: list[tuple[str, str]] = []
     for name in required:
         if name not in observed:
             continue
@@ -551,6 +560,12 @@ def _build_ci_diagnostic(
             conclusion = run.get("conclusion")
             conclusion_text = "--" if conclusion is None else str(conclusion)
             state = f"{status}/{conclusion_text}"
+            if (
+                red
+                and status == "completed"
+                and conclusion_text in _FAIL_CONCLUSIONS
+            ):
+                failed.append((name, state))
         states.append((name, state))
 
     return CiDiagnostic(
@@ -558,6 +573,7 @@ def _build_ci_diagnostic(
         never_observed=never_observed,
         other_observed=other_observed,
         states=tuple(states),
+        failed=tuple(failed),
         polls=polls,
         elapsed_s=elapsed_s,
         populated=True,
