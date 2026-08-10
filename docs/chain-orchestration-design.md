@@ -176,7 +176,7 @@ On RED/TIMEOUT, the gate reports which required checks never appeared versus rem
 
 **No vacuous green.** Zero matching checks → NOT-YET until hard timeout, then RED. An absent check never passes.
 
-**Required-check set:** defaults to `REQUIRED_CHECKS` in `merge.py` (`"Lint (ruff)"`, `"Test (pytest)"`, `"Type check (mypy)"`) — the repo exposes no branch-protection required-check API (returns 404). As of #225 (closed 2026-07-06, vendor-patch VP-8), operators can override the set via a top-level `required_checks:` key in `config/WORKFLOW.md` (`WorkflowConfig.required_checks` in `config.py`, resolved through `daemon._effective_required_checks`) without editing code; the hardcoded constant remains the fallback when no override is configured.
+**Required-check set:** defaults to `REQUIRED_CHECKS` in `merge.py` (`"Lint (ruff)"`, `"Lint (shellcheck)"`, `"Test (pytest)"`, `"Type check (mypy)"`) — the repo exposes no branch-protection required-check API (returns 404). As of #225 (closed 2026-07-06, vendor-patch VP-8), operators can override the set via a top-level `required_checks:` key in `config/WORKFLOW.md` (`WorkflowConfig.required_checks` in `config.py`, resolved through `daemon._effective_required_checks`) without editing code; the hardcoded constant remains the fallback when no override is configured.
 
 **CI trigger prerequisite.** `ci.yml` was extended to include the `feature/**` branch glob so PRs targeting the feature branch trigger CI. Without this extension, the CI gate would be unenforceable.
 
