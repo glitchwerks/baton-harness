@@ -272,7 +272,8 @@ class CiDiagnostic:
         return (
             f"{headline}\n\n"
             f"{required_block}\n"
-            f"Other job names observed: {other_names}"
+            f"Other job names observed: {other_names}\n"
+            f"Polls: {self.polls}, elapsed: {self.elapsed_s:.0f}s"
         )
 
 

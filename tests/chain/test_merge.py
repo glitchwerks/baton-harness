@@ -1702,6 +1702,160 @@ class TestBuildCiDiagnosticRedPathFailureClassification:
         )
 
 
+class TestCiDiagnosticDescribePollsElapsedTrailer:
+    """(#356) ``describe()`` must report polls/elapsed for every classifier.
+
+    Before the fix, only the "no jobs observed" branch embeds
+    ``polls=``/``elapsed=`` in its headline; every other classifier
+    (RED failure, partial-missing, never-completed) renders no polling
+    metrics at all even though ``CiDiagnostic.polls`` /
+    ``.elapsed_s`` are always populated. The fix contract: a single
+    common trailer line, ``f"Polls: {self.polls}, elapsed: "
+    f"{self.elapsed_s:.0f}s"``, appended once after the "Other job
+    names observed: ..." line, regardless of classifier.
+    """
+
+    def test_red_failure_describe_includes_polls_elapsed_trailer(
+        self,
+    ) -> None:
+        """The "required check failed" classifier must report polls/elapsed."""
+        failed_check = REQUIRED_CHECKS[0]
+        last_runs = [
+            {
+                "name": failed_check,
+                "status": "completed",
+                "conclusion": "failure",
+            }
+        ] + [
+            {"name": name, "status": "completed", "conclusion": "success"}
+            for name in REQUIRED_CHECKS[1:]
+        ]
+        diag = _build_ci_diagnostic(
+            required=tuple(REQUIRED_CHECKS),
+            ever_observed=tuple(REQUIRED_CHECKS),
+            last_runs=last_runs,
+            polls=7,
+            elapsed_s=123.4,
+            red=True,
+        )
+        assert diag.classifier() == "required check failed"
+
+        rendered = diag.describe()
+        expected_trailer = "Polls: 7, elapsed: 123s"
+        assert expected_trailer in rendered, (
+            "expected the common polls/elapsed trailer in describe() for "
+            f"the RED classifier; got {rendered!r}"
+        )
+        assert rendered.count("Polls:") == 1, (
+            "the polls/elapsed trailer must appear exactly once, not be "
+            f"duplicated per branch; got {rendered!r}"
+        )
+
+    def test_never_completed_describe_includes_polls_elapsed_trailer(
+        self,
+    ) -> None:
+        """The default "never completed" classifier reports polls/elapsed."""
+        last_runs = [
+            {"name": name, "status": "in_progress", "conclusion": None}
+            for name in REQUIRED_CHECKS
+        ]
+        diag = _build_ci_diagnostic(
+            required=tuple(REQUIRED_CHECKS),
+            ever_observed=tuple(REQUIRED_CHECKS),
+            last_runs=last_runs,
+            polls=180,
+            elapsed_s=1800.0,
+            red=False,
+        )
+        assert diag.classifier() == "required checks never completed"
+
+        rendered = diag.describe()
+        expected_trailer = "Polls: 180, elapsed: 1800s"
+        assert expected_trailer in rendered, (
+            "expected the common polls/elapsed trailer in describe() for "
+            f"the never-completed classifier; got {rendered!r}"
+        )
+        assert rendered.count("Polls:") == 1, (
+            "the polls/elapsed trailer must appear exactly once, not be "
+            f"duplicated per branch; got {rendered!r}"
+        )
+
+    def test_partially_missing_describe_includes_polls_elapsed_trailer(
+        self,
+    ) -> None:
+        """The "partially missing" classifier reports polls/elapsed too."""
+        present = tuple(REQUIRED_CHECKS[:2])
+        assert len(REQUIRED_CHECKS) > 2, (
+            "REQUIRED_CHECKS must have at least 3 entries for this test "
+            "to exercise a genuine partial mix"
+        )
+        last_runs = [
+            {"name": name, "status": "in_progress", "conclusion": None}
+            for name in present
+        ]
+        diag = _build_ci_diagnostic(
+            required=tuple(REQUIRED_CHECKS),
+            ever_observed=present,
+            last_runs=last_runs,
+            polls=90,
+            elapsed_s=900.0,
+            red=False,
+        )
+        assert diag.classifier() == "required checks partially missing"
+
+        rendered = diag.describe()
+        expected_trailer = "Polls: 90, elapsed: 900s"
+        assert expected_trailer in rendered, (
+            "expected the common polls/elapsed trailer in describe() for "
+            f"the partially-missing classifier; got {rendered!r}"
+        )
+        assert rendered.count("Polls:") == 1, (
+            "the polls/elapsed trailer must appear exactly once, not be "
+            f"duplicated per branch; got {rendered!r}"
+        )
+
+    def test_trailer_appears_after_other_job_names_line(self) -> None:
+        """The trailer is appended after "Other job names observed:".
+
+        Not interleaved per classifier headline — a single common
+        block appended once at the end of ``describe()``'s output.
+        """
+        failed_check = REQUIRED_CHECKS[0]
+        last_runs = [
+            {
+                "name": failed_check,
+                "status": "completed",
+                "conclusion": "failure",
+            }
+        ] + [
+            {"name": name, "status": "completed", "conclusion": "success"}
+            for name in REQUIRED_CHECKS[1:]
+        ]
+        diag = _build_ci_diagnostic(
+            required=tuple(REQUIRED_CHECKS),
+            ever_observed=tuple(REQUIRED_CHECKS),
+            last_runs=last_runs,
+            polls=2,
+            elapsed_s=20.0,
+            red=True,
+        )
+
+        rendered = diag.describe()
+        other_jobs_idx = rendered.find("Other job names observed:")
+        polls_idx = rendered.find("Polls:")
+        assert other_jobs_idx != -1, (
+            f"expected 'Other job names observed:' line in describe(); "
+            f"got {rendered!r}"
+        )
+        assert polls_idx != -1, (
+            f"expected a 'Polls:' trailer line in describe(); got {rendered!r}"
+        )
+        assert polls_idx > other_jobs_idx, (
+            "expected the polls/elapsed trailer to be appended after the "
+            f"'Other job names observed:' line; got {rendered!r}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # #353 — evaluate_ci(diagnostic=...): accumulation across the poll loop
 # ---------------------------------------------------------------------------
