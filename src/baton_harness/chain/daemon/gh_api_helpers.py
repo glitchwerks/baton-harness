@@ -21,12 +21,17 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 import baton_harness.chain.daemon as _daemon_mod
 from baton_harness.chain.app_auth import InstallationTokenSource, gh_env
 from baton_harness.chain.heartbeat import LivenessState
-from baton_harness.chain.merge import REQUIRED_CHECKS, MergeOutcome
+from baton_harness.chain.merge import (
+    REQUIRED_CHECKS,
+    CiDiagnostic,
+    MergeOutcome,
+)
 from baton_harness.chain.runlog import RunLog
 from baton_harness.chain.session_report import SessionReport
 from baton_harness.vendor.symphony.config import WorkflowConfig
@@ -45,6 +50,7 @@ _log = logging.getLogger("baton_harness.chain.daemon")
 # guard's owning function lives here), not once per merge/work-unit
 # within that run.
 _required_checks_warned = False
+_PARK_DETAIL_SEP = "\n\n"
 
 
 def _slugify(title: str) -> str:
@@ -364,6 +370,7 @@ def _run_ci_gate(
     Returns:
         The merge outcome applied to the issue.
     """
+    diag = CiDiagnostic()
     try:
         outcome = _daemon_mod.merge_issue_branch(
             repo_root=repo_root,
@@ -377,6 +384,7 @@ def _run_ci_gate(
             poll_interval=ci_poll_interval,
             timeout=ci_timeout,
             installation_token=installation_token,
+            diagnostic=diag,
         )
     except Exception as exc:
         _log.error(
@@ -436,7 +444,6 @@ def _run_ci_gate(
         if liveness_state is not None:
             liveness_state.clear()
         sched.mark_parked(n)
-        parked_reasons[n] = f"CI gate: {outcome.name}"
         reason = (
             "CI check failed"
             if outcome == MergeOutcome.CI_FAILED
@@ -444,16 +451,47 @@ def _run_ci_gate(
             if outcome == MergeOutcome.CI_TIMEOUT
             else "merge conflict"
         )
+        park_reason_line = f"Issue #{n} parked: {reason} ({outcome.name})."
+        park_detail = diag.describe() if diag.populated else ""
+        summary = (
+            f"{park_reason_line}{_PARK_DETAIL_SEP}{park_detail}"
+            if park_detail
+            else park_reason_line
+        )
+        classifier_suffix = f" ({diag.classifier()})" if diag.populated else ""
+        parked_reasons[n] = f"CI gate: {outcome.name}{classifier_suffix}"
+        if (
+            outcome
+            in {
+                MergeOutcome.CI_FAILED,
+                MergeOutcome.CI_TIMEOUT,
+            }
+            and not diag.populated
+        ):
+            _log.debug(
+                "daemon: CI-gate diagnostic not captured for issue #%d "
+                "outcome=%s",
+                n,
+                outcome.name,
+            )
         _daemon_mod.alert(
             owner,
             repo,
             n,
-            f"Issue #{n} parked: {reason} ({outcome.name}).",
+            summary,
             severity="critical",
             kind="debug",
             runlog=runlog,
             installation_token=installation_token,
         )
+        if report is not None:
+            report.record_escalation(
+                n,
+                kind="debug",
+                severity="critical",
+                detail=summary,
+                ts=datetime.now(timezone.utc).isoformat(),
+            )
     return outcome
 
 
