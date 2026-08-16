@@ -188,25 +188,39 @@ class Orchestrator:
 
         # 2. Run after_create hook if new
         if wt.created_now:
-            ok = await run_hook(
+            res = await run_hook(
                 "after_create",
                 self.config.hook_after_create,
                 cwd=wt.path,
                 timeout_ms=self.config.hook_timeout_ms,
             )
-            if not ok:
-                raise RuntimeError("after_create hook failed")
+            # VENDOR-PATCH VP-8 (#351 T3): getattr guard — res may be a
+            # bare bool (empty-script short circuit, or a test double
+            # with no .ok attribute) or a HookResult. A plain `if not
+            # res:` would never fire for a NamedTuple fake (always
+            # truthy), and `res.ok` would AttributeError on a bare bool.
+            if not getattr(res, "ok", res):
+                raise RuntimeError(
+                    "after_create hook failed "
+                    f"(rc={getattr(res, 'returncode', None)}): "
+                    f"{getattr(res, 'stderr_tail', '')}"
+                )
 
         # 3. Run before_run hook
-        ok = await run_hook(
+        res = await run_hook(
             "before_run",
             self.config.hook_before_run,
             cwd=wt.path,
             timeout_ms=self.config.hook_timeout_ms,
             env=self.hook_env,
         )
-        if not ok:
-            raise RuntimeError("before_run hook failed")
+        # VENDOR-PATCH VP-8 (#351 T3): see after_create guard note above.
+        if not getattr(res, "ok", res):
+            raise RuntimeError(
+                "before_run hook failed "
+                f"(rc={getattr(res, 'returncode', None)}): "
+                f"{getattr(res, 'stderr_tail', '')}"
+            )
 
         # 4. Parse issue-level skills
         issue_skills = parse_issue_skills(issue.body)
