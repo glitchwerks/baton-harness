@@ -19,6 +19,9 @@ Coverage:
 - Restart-survival: a fresh ``FailureTally`` constructed over the same
   path picks up the prior count and continues the sequence rather than
   resetting to zero.
+- ``set_alerted``/``has_alerted`` (#351 reconciliation gap T2): a
+  durable per-issue "already alerted" flag, independent per issue and
+  restart-surviving like the count above.
 
 Mirrors ``tests/chain/test_redispatch.py``'s structure and conventions
 (``tmp_path`` fixtures, ``unittest.mock.patch`` for write-failure
@@ -187,8 +190,7 @@ def test_reset_deletes_the_key(tmp_path: Path) -> None:
     tally.reset(issue=10)
 
     assert tally.peek(10) == 0, (
-        "reset must delete the per-issue key; peek must report 0 "
-        "afterwards"
+        "reset must delete the per-issue key; peek must report 0 afterwards"
     )
 
 
@@ -341,4 +343,66 @@ def test_state_survives_reinstantiation_after_reset(tmp_path: Path) -> None:
     assert tally_b.peek(7) == 0, (
         "instance B must see instance A's reset — the key must not "
         "reappear after a restart"
+    )
+
+
+# ---------------------------------------------------------------------------
+# #351 reconciliation gap (T2) — set_alerted / has_alerted
+# ---------------------------------------------------------------------------
+#
+# A durable per-issue flag so a later poll-loop alert fires at most once
+# per issue even across a daemon restart (#351 plan Q5, option b). Not
+# yet implemented — expect AttributeError until FailureTally grows
+# ``set_alerted(issue: int) -> None`` and ``has_alerted(issue: int) ->
+# bool``.
+
+
+def test_has_alerted_returns_false_before_set_alerted(
+    tmp_path: Path,
+) -> None:
+    """has_alerted reports False for an issue that was never alerted."""
+    tally = FailureTally(tmp_path / "failure-counts.json", max_count=2)
+    assert tally.has_alerted(10) is False
+
+
+def test_has_alerted_returns_true_after_set_alerted(tmp_path: Path) -> None:
+    """has_alerted reports True once set_alerted has recorded the issue."""
+    tally = FailureTally(tmp_path / "failure-counts.json", max_count=2)
+    tally.set_alerted(10)
+    assert tally.has_alerted(10) is True
+
+
+def test_alerted_flag_is_independent_per_issue(tmp_path: Path) -> None:
+    """set_alerted on one issue must not flag a different issue."""
+    tally = FailureTally(tmp_path / "failure-counts.json", max_count=2)
+    tally.set_alerted(10)
+    assert tally.has_alerted(11) is False, (
+        "set_alerted(10) must not leak into has_alerted(11) — the "
+        "alerted flag is per-issue, mirroring record_and_check's "
+        "per-issue independence"
+    )
+
+
+def test_alerted_flag_survives_reinstantiation_from_the_same_path(
+    tmp_path: Path,
+) -> None:
+    """set_alerted's flag persists across a fresh FailureTally instance.
+
+    Mirrors record_and_check's restart-survival guarantee (see
+    ``test_state_survives_reinstantiation_from_the_same_path`` above) —
+    simulates a daemon restart (``Restart=on-failure``): instance A
+    calls ``set_alerted`` for issue #55; instance B is constructed anew
+    over the same backing file and must see the alerted flag, so a
+    later poll-loop alert fires at most once per issue even across a
+    restart.
+    """
+    path = tmp_path / "failure-counts.json"
+
+    tally_a = FailureTally(path, max_count=2)
+    tally_a.set_alerted(55)
+
+    tally_b = FailureTally(path, max_count=2)
+    assert tally_b.has_alerted(55) is True, (
+        "a fresh FailureTally over the same path must see instance A's "
+        "set_alerted(55) call"
     )
