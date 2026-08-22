@@ -29,6 +29,9 @@ Coverage:
   ``merge_issue_branch`` as ``required=...``.
 - (issue #225) An unset ``required_checks`` falls back to
   ``merge.REQUIRED_CHECKS`` and logs a startup WARNING naming it.
+- (#351 D3 item 3) The invariant backstop does NOT treat an issue
+  carrying ``agent-failed`` as zero-state, and does not attempt
+  convergence to ``agent-done`` for it even when an open PR exists.
 """
 
 from __future__ import annotations
@@ -5427,6 +5430,136 @@ class TestBackstopConvergence:
             f" All emitted events: {[e.get('event') for e in emitted_events]}"
         )
 
+    # ------------------------------------------------------------------
+    # Test 8 (#351 D3 item 3): an ``agent-failed`` issue must NOT be
+    # treated as zero-state, so the backstop must not attempt
+    # convergence for it even when an open PR exists.
+    # ------------------------------------------------------------------
+
+    def test_backstop_does_not_converge_agent_failed_issue_with_open_pr(
+        self,
+    ) -> None:
+        """``agent-failed`` present → backstop must not converge to done.
+
+        Scenario (#351 D3 item 3 — a fourth state label):
+        - Post-worker labels = ``{agent-in-progress, agent-failed}``.
+          Once ``STATE_LABELS`` grows to four members and includes
+          ``agent-failed``, this is a single valid state (exactly one
+          member of ``STATE_LABELS`` present) — NOT the zero-state
+          condition the convergence branch exists for.
+        - ``_find_issue_pr`` is mocked to return an open PR, so if the
+          convergence branch were (incorrectly) entered it would have
+          "definite completion evidence" available and would converge.
+        - ``_run_worker`` returns ``"no_pr"`` (not ``"pr_created"``), so
+          the unrelated outcome-protocol branch at daemon.py:1266 (which
+          also calls ``_find_issue_pr`` on ``worker_result ==
+          "pr_created"``) cannot be the reason ``_find_issue_pr`` was or
+          was not called — isolating the assertion to the backstop's
+          convergence branch alone.
+
+        Expected behaviour (post-fix, once ``work_unit.py``'s hardcoded
+        three-label set at daemon.py:1101-1103 is replaced with
+        ``STATE_LABELS``):
+        - ``_find_issue_pr`` is never called from the backstop.
+        - No ``--add-label agent-done`` is issued.
+        - ``merge_issue_branch`` is never called.
+
+        This MUST FAIL on current code: today ``work_unit.py`` computes
+        zero-state against a hardcoded ``{agent-ready, agent-done,
+        blocked}`` set that does not know about ``agent-failed``, so
+        ``{agent-in-progress, agent-failed}`` is (wrongly) read as
+        zero-state, the convergence branch fires, ``_find_issue_pr`` is
+        called, ``agent-done`` is added, and ``merge_issue_branch`` runs
+        via the CI gate — exactly the bug this test guards against.
+        """
+        label_edits: list[list[str]] = []
+        mock_find_issue_pr = MagicMock(
+            return_value=("baton/issue-10-10", "abc123")
+        )
+        mock_merge_fn = MagicMock(return_value=MergeOutcome.MERGED)
+
+        with (
+            patch.object(
+                daemon_mod,
+                "_run",
+                side_effect=self._make_recording_run(label_edits),
+            ),
+            # Post-worker: agent-in-progress + agent-failed. Once
+            # agent-failed is a STATE_LABELS member this is a single
+            # valid state, not zero-state.
+            patch(
+                "baton_harness.chain.daemon._fetch_issue_labels",
+                return_value={"agent-in-progress", "agent-failed"},
+            ),
+            patch(
+                "baton_harness.chain.daemon._find_issue_pr",
+                mock_find_issue_pr,
+            ),
+            patch("baton_harness.chain.daemon.alert", return_value=True),
+            patch(
+                "baton_harness.chain.scheduler.IssueScheduler.mark_parked",
+                autospec=True,
+            ),
+            patch(
+                "baton_harness.chain.daemon.fetch_blocked_by",
+                return_value=[],
+            ),
+            patch("baton_harness.chain.branches.create_feature_branch"),
+            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch(
+                "baton_harness.chain.branches.record_cut_point",
+                return_value="deadbeef" * 5,
+            ),
+            patch(
+                "baton_harness.chain.recovery.reconstruct",
+                return_value=RecoveryResult(
+                    done=set(),
+                    parked_seed=set(),
+                    ci_gate_reentry=set(),
+                    redispatch=set(),
+                ),
+            ),
+            patch(
+                "baton_harness.chain.daemon.merge_issue_branch",
+                mock_merge_fn,
+            ),
+            # worker_result != "pr_created" so the unrelated outcome-
+            # protocol branch (daemon.py:1266) cannot call
+            # _find_issue_pr either — only the backstop convergence
+            # branch could reach it.
+            _patch_run_worker("no_pr"),
+        ):
+            asyncio.run(
+                run_daemon(
+                    _minimal_wf_config(),
+                    [_repo_cfg()],
+                    once=True,
+                    poll_interval_s=0,
+                )
+            )
+
+        assert mock_find_issue_pr.call_count == 0, (
+            "Backstop must NOT call _find_issue_pr for an issue carrying"
+            " agent-failed — agent-failed is a single valid state, not"
+            " zero-state, so the convergence branch must never be"
+            f" entered; call_count={mock_find_issue_pr.call_count}"
+        )
+
+        add_agent_done = [
+            c for c in label_edits if "--add-label" in c and "agent-done" in c
+        ]
+        assert not add_agent_done, (
+            "Backstop must NOT add agent-done for an issue carrying"
+            " agent-failed, even though an open PR exists;"
+            f" label_edits={label_edits}"
+        )
+
+        assert not mock_merge_fn.called, (
+            "Backstop must NOT call merge_issue_branch (via the CI gate)"
+            " for an issue carrying agent-failed — convergence must not"
+            " fire for it."
+        )
+
 
 # ---------------------------------------------------------------------------
 # Issue #31 P1 follow-up: _fetch_issue_labels None sentinel on fetch failure
@@ -7748,6 +7881,194 @@ def test_second_work_unit_skipped_on_non_blocked_exclude_label_mid_drain() -> (
     assert block_alerts, (
         f"alert must fire with kind='block' for the skipped unit; "
         f"alert_calls={alert_calls}"
+    )
+
+
+def test_agent_ready_and_agent_failed_issue_skipped_before_dispatch() -> None:
+    """An issue carrying both agent-ready and agent-failed is never run.
+
+    Regression test for #351 D3 item 5: once ``agent-failed`` joins
+    ``_DISPATCH_EXCLUDE_LABELS``, an issue that carries both
+    ``agent-ready`` (the only label the primary poll query filters on)
+    and ``agent-failed`` (a terminal, human-triage-required state) must
+    be excluded before any worker run is consumed — no
+    ``_run_worker`` call.
+
+    Setup:
+    - A single un-milestoned issue #77 whose initial ``gh issue list
+      --label agent-ready`` payload already carries both
+      ``agent-ready`` and ``agent-failed`` — the primary poll query
+      filters only on ``agent-ready``, so a torn/human-relabelled issue
+      like this is exactly what reaches the daemon (D3 item 5).
+    - ``_fetch_issue_labels`` always returns ``{agent-ready,
+      agent-failed}`` for #77, at every re-check checkpoint
+      (``_DISPATCH_EXCLUDE_LABELS`` gates the tick-start snapshot
+      filter, the tick-start live re-check, and the mid-drain live
+      re-check — all three must exclude it).
+    - ``once=True`` — one poll tick.
+
+    Expected: ``_run_worker`` is never called for #77 — this is D3 item
+    5's whole point, closing the "wasted agent run" trap the plan
+    describes.
+
+    This MUST FAIL on current code because ``_DISPATCH_EXCLUDE_LABELS``
+    is ``frozenset({"blocked"})`` today — ``agent-failed`` is not yet a
+    member, so #77 is (wrongly) dispatched.
+    """
+    _issue_n = 77
+    ready_issues = [
+        {
+            "number": _issue_n,
+            "title": "Torn issue — agent-ready + agent-failed",
+            "state": "open",
+            "body": "",
+            "url": f"https://github.com/o/r/issues/{_issue_n}",
+            "labels": [
+                {"name": "agent-ready"},
+                {"name": "agent-failed"},
+            ],
+            "milestone": None,
+            "assignees": [],
+        },
+    ]
+
+    worker_calls: list[int] = []
+
+    async def fake_run_worker(issue: Any) -> str:  # noqa: ANN401
+        """Record dispatched issue numbers (must stay empty)."""
+        worker_calls.append(issue.number)
+        return "pr_created"
+
+    def fake_fetch_labels(
+        owner: str,
+        repo: str,
+        n: int,
+        installation_token: str = "",
+    ) -> set[str] | None:
+        """Always return the torn agent-ready + agent-failed label set."""
+        if n == _issue_n:
+            return {"agent-ready", "agent-failed"}
+        return {"agent-ready"}
+
+    def run_side_effect(
+        cmd: list[str],
+        env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        """Stub gh/git calls for the single-issue exclusion scenario."""
+        import json as _json
+
+        cmd_str = " ".join(cmd)
+        if (
+            "issue" in cmd_str
+            and "list" in cmd_str
+            and "agent-ready" in cmd_str
+        ):
+            return _ok(_json.dumps(ready_issues))
+        if (
+            "issue" in cmd_str
+            and "list" in cmd_str
+            and "agent-in-progress" in cmd_str
+        ):
+            return _ok(_json.dumps([]))
+        if "issue" in cmd_str and "view" in cmd_str and "edit" not in cmd_str:
+            return _ok(
+                _json.dumps(
+                    {
+                        "number": _issue_n,
+                        "title": "Torn issue",
+                        "state": "open",
+                        "body": "",
+                        "url": f"https://github.com/o/r/issues/{_issue_n}",
+                        "labels": [
+                            {"name": "agent-ready"},
+                            {"name": "agent-failed"},
+                        ],
+                        "assignees": [],
+                    }
+                )
+            )
+        if "issue" in cmd_str and "edit" in cmd_str:
+            return _ok()
+        if "pr" in cmd_str and "list" in cmd_str:
+            return _ok(_json.dumps([]))
+        if "ls-remote" in cmd_str:
+            return _ok("")
+        if "rev-parse" in cmd_str:
+            return _ok("abc123\n")
+        return _ok()
+
+    alert_calls: list[dict[str, Any]] = []
+
+    def fake_alert(
+        owner: str,
+        repo: str,
+        issue: int,
+        message: str,
+        *,
+        severity: str = "critical",
+        kind: str = "block",
+        runlog: Any = None,  # noqa: ANN401
+        installation_token: str = "",
+    ) -> bool:
+        """Capture alert calls."""
+        alert_calls.append(
+            {"issue": issue, "severity": severity, "kind": kind}
+        )
+        return True
+
+    with (
+        patch.object(daemon_mod, "_run", side_effect=run_side_effect),
+        patch(
+            "baton_harness.chain.daemon._fetch_issue_labels",
+            side_effect=fake_fetch_labels,
+        ),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            return_value=[],
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch(
+            "baton_harness.chain.daemon.alert",
+            side_effect=fake_alert,
+        ),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.Orchestrator"
+            "._run_worker",
+            side_effect=fake_run_worker,
+        ),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+            )
+        )
+
+    assert _issue_n not in worker_calls, (
+        f"Issue #{_issue_n} carries both agent-ready and agent-failed and"
+        " must NEVER be dispatched — agent-failed must join"
+        " _DISPATCH_EXCLUDE_LABELS (#351 D3 item 5) so no worker run is"
+        f" consumed while it is present; worker_calls={worker_calls}"
     )
 
 

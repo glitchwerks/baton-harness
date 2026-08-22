@@ -1,18 +1,29 @@
 """Tests for baton_harness.chain.labels — state constants and invariant check.
 
 Coverage:
-- Constant string values for the three state labels.
-- STATE_LABELS contains exactly {agent-ready, agent-done, blocked}.
+- Constant string values for the four state labels (#351 D3 adds
+  ``agent-failed`` as a fourth mutually-exclusive state label).
+- STATE_LABELS contains exactly
+  {agent-ready, agent-done, blocked, agent-failed}.
 - assert_single_state returns None for each single-state input.
 - assert_single_state returns a non-empty violation string for zero labels.
 - assert_single_state returns a non-empty violation string for two labels.
-- assert_single_state returns a non-empty violation string for all three.
+- assert_single_state returns a non-empty violation string for all four.
 - Non-state labels are ignored: one state + extras yields None.
 - assert_single_state never raises on odd input types.
+- (#351 D3 item 5) ``LABEL_AGENT_FAILED`` is a member of
+  ``_DISPATCH_EXCLUDE_LABELS`` (the behavioral "no worker run is
+  consumed" coverage for an ``{agent-ready, agent-failed}`` issue lives
+  in ``tests/chain/test_daemon.py`` alongside the other
+  ``_DISPATCH_EXCLUDE_LABELS`` plumbing tests). The backstop
+  convergence coverage for D3 item 3 also lives in
+  ``tests/chain/test_daemon.py`` (``TestBackstopConvergence``),
+  alongside its existing convergence-path fixtures.
 """
 
 from __future__ import annotations
 
+import baton_harness.chain.daemon as daemon_mod
 from baton_harness.chain.labels import (
     LABEL_AGENT_DONE,
     LABEL_AGENT_READY,
@@ -48,7 +59,11 @@ class TestConstants:
 
 
 class TestStateLabels:
-    """STATE_LABELS is exactly the set of three state label strings."""
+    """STATE_LABELS is exactly the set of four state label strings.
+
+    #351 D3: ``agent-failed`` joins the taxonomy as a fourth
+    mutually-exclusive state label (not a marker like ``agent-merged``).
+    """
 
     def test_state_labels_contains_agent_ready(self) -> None:
         """STATE_LABELS contains 'agent-ready'."""
@@ -62,20 +77,69 @@ class TestStateLabels:
         """STATE_LABELS contains 'blocked'."""
         assert "blocked" in STATE_LABELS
 
-    def test_state_labels_has_exactly_three_members(self) -> None:
-        """STATE_LABELS contains exactly three members."""
-        assert len(STATE_LABELS) == 3
+    def test_state_labels_contains_agent_failed(self) -> None:
+        """STATE_LABELS contains 'agent-failed' (#351 D3)."""
+        assert "agent-failed" in STATE_LABELS
+
+    def test_state_labels_has_exactly_four_members(self) -> None:
+        """STATE_LABELS contains exactly four members (#351 D3)."""
+        assert len(STATE_LABELS) == 4, (
+            "STATE_LABELS must grow to four members with the addition "
+            f"of agent-failed; got {sorted(STATE_LABELS)!r}"
+        )
 
     def test_state_labels_contains_no_extra_members(self) -> None:
-        """STATE_LABELS has no members beyond the three state labels."""
-        expected = {"agent-ready", "agent-done", "blocked"}
+        """STATE_LABELS has no members beyond the four state labels."""
+        expected = {"agent-ready", "agent-done", "blocked", "agent-failed"}
         assert set(STATE_LABELS) == expected
 
     def test_state_labels_constants_match_collection(self) -> None:
-        """The three constant objects are members of STATE_LABELS."""
+        """The four constant objects are members of STATE_LABELS."""
+        from baton_harness.chain.labels import LABEL_AGENT_FAILED
+
         assert LABEL_AGENT_READY in STATE_LABELS
         assert LABEL_AGENT_DONE in STATE_LABELS
         assert LABEL_BLOCKED in STATE_LABELS
+        assert LABEL_AGENT_FAILED in STATE_LABELS
+
+    def test_label_agent_failed_value(self) -> None:
+        """LABEL_AGENT_FAILED equals 'agent-failed' (#351 D3)."""
+        from baton_harness.chain.labels import LABEL_AGENT_FAILED
+
+        assert LABEL_AGENT_FAILED == "agent-failed"
+
+
+# ---------------------------------------------------------------------------
+# #351 D3 item 5 — agent-failed joins _DISPATCH_EXCLUDE_LABELS
+# ---------------------------------------------------------------------------
+
+
+class TestDispatchExcludeLabels:
+    """agent-failed must join daemon._DISPATCH_EXCLUDE_LABELS (#351 D3-5).
+
+    Without this, the primary poll query (which filters only on
+    ``agent-ready``) would dispatch a worker for an issue that also
+    carries ``agent-failed`` — the "wasted agent run" trap D3 item 5
+    exists to close. The behavioral "zero worker invocations" coverage
+    for this lives in ``tests/chain/test_daemon.py``, alongside the
+    other ``_DISPATCH_EXCLUDE_LABELS`` plumbing tests.
+    """
+
+    def test_agent_failed_is_in_dispatch_exclude_labels(self) -> None:
+        """LABEL_AGENT_FAILED is a member of _DISPATCH_EXCLUDE_LABELS.
+
+        Deferred import so a missing ``LABEL_AGENT_FAILED`` constant
+        surfaces as this test's own failure rather than a collection
+        error for the whole module.
+        """
+        from baton_harness.chain.labels import LABEL_AGENT_FAILED
+
+        assert LABEL_AGENT_FAILED in daemon_mod._DISPATCH_EXCLUDE_LABELS, (
+            "agent-failed must join _DISPATCH_EXCLUDE_LABELS (#351 D3"
+            " item 5) so an {agent-ready, agent-failed} issue is"
+            " excluded pre-dispatch; _DISPATCH_EXCLUDE_LABELS="
+            f"{daemon_mod._DISPATCH_EXCLUDE_LABELS!r}"
+        )
 
 
 # ---------------------------------------------------------------------------

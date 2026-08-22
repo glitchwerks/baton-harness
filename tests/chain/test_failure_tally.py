@@ -372,6 +372,16 @@ def test_has_alerted_returns_true_after_set_alerted(tmp_path: Path) -> None:
     assert tally.has_alerted(10) is True
 
 
+def test_reset_also_clears_the_alerted_flag(tmp_path: Path) -> None:
+    """reset clears the issue's alerted flag for a future failure streak."""
+    tally = FailureTally(tmp_path / "failure-counts.json", max_count=2)
+    tally.set_alerted(10)
+
+    tally.reset(10)
+
+    assert tally.has_alerted(10) is False
+
+
 def test_alerted_flag_is_independent_per_issue(tmp_path: Path) -> None:
     """set_alerted on one issue must not flag a different issue."""
     tally = FailureTally(tmp_path / "failure-counts.json", max_count=2)

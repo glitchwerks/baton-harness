@@ -61,7 +61,10 @@ from baton_harness.chain import branches
 from baton_harness.chain.app_auth import InstallationTokenSource
 from baton_harness.chain.dag import build_dag
 from baton_harness.chain.heartbeat import LivenessState
-from baton_harness.chain.labels import target_state_from_observed
+from baton_harness.chain.labels import (
+    STATE_LABELS,
+    target_state_from_observed,
+)
 from baton_harness.chain.merge import MergeOutcome
 from baton_harness.chain.obs_config import ObsConfig
 from baton_harness.chain.recovery import RecoveryResult
@@ -1098,9 +1101,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 # 60s kill between after_run's remove-agent-ready and
                 # add-agent-done leaves the issue in {agent-in-progress}
                 # only.
-                _state_labels_present = post_labels & set(
-                    ["agent-ready", "agent-done", "blocked"]
-                )
+                _state_labels_present = post_labels & STATE_LABELS
                 _zero_state = len(_state_labels_present) == 0
                 if _zero_state and not has_blocked:
                     _conv_branch, _conv_sha = _daemon_mod._find_issue_pr(
