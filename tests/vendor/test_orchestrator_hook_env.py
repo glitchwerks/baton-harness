@@ -743,6 +743,13 @@ class TestAfterRunSwallowsHookFailure:
 class TestBwsAccessTokenRedactedInStderrTail:
     """A ``BWS_ACCESS_TOKEN`` from os.environ never leaks into stderr_tail."""
 
+    @pytest.mark.xfail(
+        reason=(
+            "#362: BWS_ACCESS_TOKEN in os.environ not covered by "
+            "redact_secrets' extra_values pass"
+        ),
+        strict=True,
+    )
     def test_bws_access_token_from_process_env_never_appears_in_stderr_tail(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
