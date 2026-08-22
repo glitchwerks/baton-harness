@@ -26,9 +26,17 @@ def redact_secrets(text: str, *, extra_values: Iterable[str] = ()) -> str:
     try:
         result = _URL_USERINFO_PATTERN.sub(_REDACTION_MARKER, result)
         result = _TOKEN_PATTERN.sub(_REDACTION_MARKER, result)
-        for value in extra_values:
+    except Exception:  # noqa: BLE001
+        # Fail CLOSED: this is security-critical redaction, so an
+        # exception mid-substitution must never hand back the raw
+        # (possibly still secret-bearing) input text.
+        return _REDACTION_MARKER
+    for value in extra_values:
+        try:
             if value:
                 result = result.replace(value, _REDACTION_MARKER)
-    except Exception:  # noqa: BLE001
-        return result
+        except Exception:  # noqa: BLE001
+            # One bad extra_values entry (e.g. a non-string) must not
+            # abort redaction of the remaining entries in the iterable.
+            continue
     return result

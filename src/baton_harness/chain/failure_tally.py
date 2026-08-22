@@ -146,6 +146,7 @@ class FailureTally:
                 os.fsync(file_handle.fileno())
             os.replace(tmp_path, self.path)
             replaced = True
+            self._fsync_parent_dir()
         except Exception:  # noqa: BLE001
             _log.debug(
                 "failure tally persist failed for %s; continuing",
@@ -155,4 +156,31 @@ class FailureTally:
                 try:
                     os.unlink(tmp_path)
                 except Exception:  # noqa: BLE001
+                    pass
+
+    def _fsync_parent_dir(self) -> None:
+        """Fsync the parent directory so the rename itself is durable.
+
+        ``os.replace`` in ``_persist`` makes the new file's *contents*
+        durable, but on POSIX the directory-entry update (the rename)
+        is not itself guaranteed durable across a crash until the
+        containing directory's file descriptor is fsynced too.  This
+        is best-effort bookkeeping: platforms that cannot open a
+        directory via ``os.open`` (e.g. Windows) and any OS-level
+        failure are swallowed silently so a durability nicety never
+        interrupts daemon operation.
+        """
+        if os.name != "posix":
+            return
+        dir_fd: int | None = None
+        try:
+            dir_fd = os.open(str(self.path.parent), os.O_RDONLY)
+            os.fsync(dir_fd)
+        except (OSError, NotImplementedError):
+            pass
+        finally:
+            if dir_fd is not None:
+                try:
+                    os.close(dir_fd)
+                except OSError:
                     pass

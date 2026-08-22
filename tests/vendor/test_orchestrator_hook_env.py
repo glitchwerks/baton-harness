@@ -159,9 +159,9 @@ def _run_worker_capturing_hook_calls(
 
     async def fake_run_hook(  # noqa: ANN401
         name: str, script: object, **kwargs: object
-    ) -> bool:
+    ) -> hooks_mod.HookResult:
         calls.append((name, kwargs))
-        return True
+        return hooks_mod.HookResult(ok=True, returncode=0, stderr_tail="")
 
     fake_wt = MagicMock()
     fake_wt.created_now = created_now

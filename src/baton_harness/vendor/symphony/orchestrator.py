@@ -194,16 +194,13 @@ class Orchestrator:
                 cwd=wt.path,
                 timeout_ms=self.config.hook_timeout_ms,
             )
-            # VENDOR-PATCH VP-8 (#351 T3): getattr guard — res may be a
-            # bare bool (empty-script short circuit, or a test double
-            # with no .ok attribute) or a HookResult. A plain `if not
-            # res:` would never fire for a NamedTuple fake (always
-            # truthy), and `res.ok` would AttributeError on a bare bool.
-            if not getattr(res, "ok", res):
+            # VENDOR-PATCH VP-8 (#351 T3): run_hook always returns a real
+            # HookResult now (the empty-script short circuit does too),
+            # so direct attribute access is safe here.
+            if not res.ok:
                 raise RuntimeError(
-                    "after_create hook failed "
-                    f"(rc={getattr(res, 'returncode', None)}): "
-                    f"{getattr(res, 'stderr_tail', '')}"
+                    f"after_create hook failed (rc={res.returncode}): "
+                    f"{res.stderr_tail}"
                 )
 
         # 3. Run before_run hook
@@ -215,11 +212,10 @@ class Orchestrator:
             env=self.hook_env,
         )
         # VENDOR-PATCH VP-8 (#351 T3): see after_create guard note above.
-        if not getattr(res, "ok", res):
+        if not res.ok:
             raise RuntimeError(
-                "before_run hook failed "
-                f"(rc={getattr(res, 'returncode', None)}): "
-                f"{getattr(res, 'stderr_tail', '')}"
+                f"before_run hook failed (rc={res.returncode}): "
+                f"{res.stderr_tail}"
             )
 
         # 4. Parse issue-level skills

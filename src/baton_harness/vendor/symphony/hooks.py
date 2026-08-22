@@ -39,7 +39,7 @@ async def run_hook(
     timeout_ms: int = 60000,
     # VENDOR-PATCH VP-1: run_hook env= threading (merged into os.environ)
     env: dict[str, str] | None = None,
-) -> bool | HookResult:
+) -> HookResult:
     """Run a shell hook script.
 
     Args:
@@ -52,12 +52,13 @@ async def run_hook(
             hook subprocess.
 
     Returns:
-        ``True`` if ``script`` is empty/whitespace-only (no subprocess
-        spawned). Otherwise a ``HookResult`` carrying whether the hook
-        succeeded, its real returncode, and a redacted stderr tail.
+        A ``HookResult`` carrying whether the hook succeeded, its real
+        returncode, and a redacted stderr tail. An empty/whitespace-only
+        ``script`` short-circuits to a success ``HookResult`` (``ok=True,
+        returncode=None, stderr_tail=""``) without spawning a subprocess.
     """
     if not script or not script.strip():
-        return True
+        return HookResult(ok=True, returncode=None, stderr_tail="")
 
     # VENDOR-PATCH VP-1: run_hook env= threading (merged into os.environ)
     # Merge caller-supplied overrides INTO os.environ so that PATH, HOME, and
@@ -95,7 +96,7 @@ async def run_hook(
         stderr_tail = redact_secrets(
             stderr.decode(errors="replace"),
             extra_values=(env or {}).values(),
-        )[:_STDERR_TAIL_MAX_CHARS]
+        )[-_STDERR_TAIL_MAX_CHARS:]
 
         if proc.returncode != 0:
             log.error(
@@ -127,5 +128,5 @@ async def run_hook(
             returncode=None,
             stderr_tail=redact_secrets(
                 str(e), extra_values=(env or {}).values()
-            )[:_STDERR_TAIL_MAX_CHARS],
+            )[-_STDERR_TAIL_MAX_CHARS:],
         )

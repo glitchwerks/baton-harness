@@ -62,6 +62,7 @@ from baton_harness.chain.app_auth import InstallationTokenSource
 from baton_harness.chain.dag import build_dag
 from baton_harness.chain.heartbeat import LivenessState
 from baton_harness.chain.labels import (
+    LABEL_AGENT_READY,
     STATE_LABELS,
     target_state_from_observed,
 )
@@ -812,6 +813,71 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                     liveness_state.clear()
                 sched.mark_parked(n)
                 parked_reasons[n] = "label fetch failed pre-dispatch"
+                continue
+
+            # Pre-dispatch exclude-label race (CodeRabbit review, PR #363):
+            # the fetch above only guarded against ``None`` (unreadable)
+            # labels -- a non-``None`` result that has since acquired an
+            # exclude label (e.g. ``agent-failed``) sailed straight through
+            # to the label transition and worker dispatch.  Re-check the
+            # freshly-fetched live labels against the same
+            # ``_DISPATCH_EXCLUDE_LABELS`` set used by the tick-start
+            # live re-check (poll.py L~603-609), including its
+            # ``LABEL_AGENT_READY`` co-presence guard -- both checks are
+            # validating the same "torn snapshot" invariant (a
+            # since-added exclude label alongside a still-live
+            # ``agent-ready``), just at different points in the same
+            # tick.  Unlike the ``is None`` branch above, the issue is
+            # already correctly labeled (its terminal/exclude label is
+            # exactly what we just observed) -- this is a late-arriving
+            # exclude condition, not a fetch failure, so we must NOT
+            # touch its labels here.
+            if (
+                not _daemon_mod._DISPATCH_EXCLUDE_LABELS.isdisjoint(
+                    _pre_dispatch_labels
+                )
+                and LABEL_AGENT_READY in _pre_dispatch_labels
+            ):
+                _matched_exclude_labels = sorted(
+                    _daemon_mod._DISPATCH_EXCLUDE_LABELS & _pre_dispatch_labels
+                )
+                _log.info(
+                    "daemon: #%d acquired an exclude label (%s) before"
+                    " dispatch; skipping this poll cycle (pre-dispatch"
+                    " race, CodeRabbit #363)",
+                    n,
+                    _matched_exclude_labels,
+                )
+                escalation_detail = (
+                    f"Issue #{n} acquired an exclude label"
+                    f" ({_matched_exclude_labels}) between the tick-start"
+                    " re-check and the final pre-dispatch fetch; skipping"
+                    " this poll cycle (pre-dispatch race, CodeRabbit #363)."
+                )
+                _daemon_mod.alert(
+                    owner,
+                    repo,
+                    n,
+                    escalation_detail,
+                    severity="critical",
+                    kind="block",
+                    runlog=runlog,
+                    installation_token=installation_token,
+                )
+                if report is not None:
+                    report.record_escalation(
+                        n,
+                        kind="block",
+                        severity="critical",
+                        detail=escalation_detail,
+                        ts=datetime.now(timezone.utc).isoformat(),
+                    )
+                if liveness_state is not None:
+                    liveness_state.clear()
+                sched.mark_parked(n)
+                parked_reasons[n] = (
+                    "exclude label race on final pre-dispatch fetch"
+                )
                 continue
 
             # Checkout feature branch (HEAD = feature branch, §3.4).
