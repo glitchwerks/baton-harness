@@ -32,6 +32,7 @@ directive.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -289,6 +290,104 @@ def test_reset_persist_failure_does_not_raise(tmp_path: Path) -> None:
                 "FailureTally.reset must swallow OSError from a failed "
                 "persist — write is best-effort"
             )
+
+
+# ---------------------------------------------------------------------------
+# #351 CodeRabbit finding (PR #363): directory fsync durability
+# ---------------------------------------------------------------------------
+#
+# After os.replace(tmp_path, self.path), the directory entry update is not
+# itself durable on POSIX until the containing directory's file descriptor
+# is fsynced -- a crash immediately after os.replace can leave the rename
+# unpersisted, so a fresh FailureTally reading the same path after a
+# crash-restart could see stale (pre-replace) state. os.open/os.fsync/
+# os.close are fully mocked (not exercised for real) so the test stays
+# meaningful on this Windows dev machine, where opening a directory via
+# os.open is not supported the same way as on POSIX -- os.name and
+# sys.platform are forced to their POSIX values for the duration so any
+# platform guard the fix adds takes the directory-fsync branch under test.
+
+
+def _same_dir(candidate: object, target_dir: Path) -> bool:
+    """Compare a raw ``os.open`` path argument to ``target_dir``.
+
+    Normalises separators and case so the comparison is stable across
+    however the implementation stringifies ``self.path.parent`` (``str``
+    vs ``Path``, trailing separator, drive-letter case on Windows).
+
+    Args:
+        candidate: The first positional argument a patched ``os.open``
+            call received.
+        target_dir: The directory the test expects that call to target.
+
+    Returns:
+        True if ``candidate`` refers to ``target_dir``.
+    """
+    try:
+        return os.path.normcase(
+            os.path.normpath(str(candidate))
+        ) == os.path.normcase(os.path.normpath(str(target_dir)))
+    except (OSError, ValueError):
+        return False
+
+
+def test_persist_fsyncs_the_parent_directory_after_replace(
+    tmp_path: Path,
+) -> None:
+    """_persist fsyncs the parent directory's fd after os.replace.
+
+    Regression test for the CodeRabbit review finding on PR #363:
+    ``_persist`` only fsyncs the temp file handle before ``os.replace`` --
+    it never fsyncs the containing directory afterwards, so the rename
+    itself is not guaranteed durable across a crash.
+    """
+    dir_fd_sentinel = 999999
+    path = tmp_path / "failure-counts.json"
+    tally = FailureTally(path, max_count=2)
+
+    real_os_open = os.open
+    real_os_fsync = os.fsync
+    real_os_close = os.close
+
+    open_calls: list[tuple[str, int]] = []
+    fsync_calls: list[int] = []
+    close_calls: list[int] = []
+
+    def fake_os_open(
+        file: object, flags: int, *args: object, **kwargs: object
+    ) -> int:
+        open_calls.append((str(file), flags))
+        if _same_dir(file, path.parent):
+            return dir_fd_sentinel
+        return real_os_open(file, flags, *args, **kwargs)  # type: ignore[arg-type]
+
+    def fake_os_fsync(fd: int) -> None:
+        fsync_calls.append(fd)
+        if fd == dir_fd_sentinel:
+            return None
+        return real_os_fsync(fd)
+
+    def fake_os_close(fd: int) -> None:
+        close_calls.append(fd)
+        if fd == dir_fd_sentinel:
+            return None
+        return real_os_close(fd)
+
+    with (
+        patch("os.name", "posix"),
+        patch("sys.platform", "linux"),
+        patch("os.open", side_effect=fake_os_open),
+        patch("os.fsync", side_effect=fake_os_fsync),
+        patch("os.close", side_effect=fake_os_close),
+    ):
+        tally.record_and_check(issue=10)
+
+    assert dir_fd_sentinel in fsync_calls, (
+        "_persist must fsync the parent directory's file descriptor "
+        "after os.replace, in addition to the existing file-handle "
+        f"fsync (CodeRabbit #363 durability finding); "
+        f"fsync_calls={fsync_calls}, open_calls={open_calls}"
+    )
 
 
 # ---------------------------------------------------------------------------

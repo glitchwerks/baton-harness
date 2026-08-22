@@ -11105,3 +11105,232 @@ class TestRunCiGateDiagnosticEnrichment:
             "expected the failed check's name to appear in the park "
             f"alert detail; got {summary!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Issue #351 CodeRabbit finding (PR #363): pre-dispatch exclude-label race
+# in work_unit.py ``_run_work_unit`` (~L769). The final pre-dispatch label
+# fetch immediately before the agent-ready -> agent-in-progress transition
+# and worker dispatch only guards against a ``None`` (unreadable) result --
+# it does NOT check whether the freshly-fetched labels intersect
+# ``_DISPATCH_EXCLUDE_LABELS``. If an issue's labels flip to include an
+# exclude label (e.g. ``agent-failed``) in the window between the
+# tick-start live re-check (poll.py L~594) and this final fetch, the
+# daemon still transitions labels and dispatches a worker -- reopening the
+# "wasted agent run" trap #351's dispatch-exclusion mechanism exists to
+# prevent.
+#
+# Mirrors ``test_second_work_unit_skipped_when_blocked_mid_drain``'s
+# call-counting ``_fetch_issue_labels`` side-effect pattern above, but
+# targets the work_unit.py-internal pre-dispatch fetch on the FIRST (only)
+# work unit of the tick, not the poll.py mid-drain re-check (which only
+# fires for the second-and-later unit of a multi-unit drain, i.e.
+# ``_drain_idx > 0``).
+# ---------------------------------------------------------------------------
+
+
+def test_pre_dispatch_race_excludes_label_on_final_fetch() -> None:
+    """Final pre-dispatch label fetch must re-check the exclude-label set.
+
+    Regression test for the CodeRabbit review finding on PR #363.
+    ``_run_work_unit``'s pre-dispatch fetch (work_unit.py ~L769) only
+    checks ``is None`` -- a non-``None`` result containing
+    ``agent-failed`` (or any other ``_DISPATCH_EXCLUDE_LABELS`` member)
+    sails straight through to the label transition and worker dispatch.
+
+    Setup:
+    - A single un-milestoned ready issue (#5), clean at the tick-start
+      live re-check (first ``_fetch_issue_labels`` call for #5).
+    - The SAME issue's labels flip to include ``agent-failed`` by the
+      time ``_run_work_unit``'s own pre-dispatch fetch runs (second
+      ``_fetch_issue_labels`` call for #5) -- simulating a label change
+      landing in the race window between the two checks.
+    - ``once=True`` -- one poll tick, a single work unit, so the
+      mid-drain re-check (``_drain_idx > 0``) never fires; only the
+      tick-start live re-check and ``_run_work_unit``'s own fetch run
+      for #5.
+
+    Expected (currently FAILS -- this is the bug):
+    - ``Orchestrator._run_worker`` is never called for #5.
+    - The ``agent-ready`` -> ``agent-in-progress`` label transition
+      (``_label_edit(..., add=["agent-in-progress"],
+      remove=["agent-ready"], ...)``) never fires for #5.
+    """
+    ready_issues = [
+        {
+            "number": 5,
+            "title": "Issue #5 -- exclude label lands in the race window",
+            "state": "open",
+            "body": "",
+            "url": "https://github.com/o/r/issues/5",
+            "labels": [{"name": "agent-ready"}],
+            "milestone": None,
+            "assignees": [],
+        },
+    ]
+
+    worker_calls: list[int] = []
+
+    async def fake_run_worker(issue: Any) -> str:  # noqa: ANN401
+        """Record dispatched issue numbers."""
+        worker_calls.append(issue.number)
+        return "pr_created"
+
+    # First call to _fetch_issue_labels for #5 is the tick-start live
+    # re-check (poll.py L~594) -- clean. Second call is
+    # _run_work_unit's own pre-dispatch fetch (work_unit.py L~769) --
+    # this is where the race lands an exclude label.
+    fetch_calls_for_5: list[int] = []
+
+    def fake_fetch_labels(
+        owner: str,
+        repo: str,
+        n: int,
+        installation_token: str = "",
+    ) -> set[str] | None:
+        """Return live labels; #5 acquires agent-failed on the 2nd fetch."""
+        if n == 5:
+            fetch_calls_for_5.append(n)
+            if len(fetch_calls_for_5) >= 2:
+                # Final pre-dispatch fetch inside _run_work_unit: dirty.
+                return {"agent-ready", "agent-failed"}
+            # Tick-start live re-check: clean.
+            return {"agent-ready"}
+        return {"agent-ready"}
+
+    label_edit_calls: list[dict[str, Any]] = []
+
+    def fake_label_edit(
+        owner: str,
+        repo: str,
+        issue: int,
+        *,
+        add: list[str] | None = None,
+        remove: list[str] | None = None,
+        installation_token: Any = "",  # noqa: ANN401
+        report: Any = None,  # noqa: ANN401
+    ) -> None:
+        """Record label-edit calls without touching the network."""
+        label_edit_calls.append(
+            {
+                "issue": issue,
+                "add": list(add or []),
+                "remove": list(remove or []),
+            }
+        )
+
+    def run_side_effect(
+        cmd: list[str],
+        env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        """Stub gh/git calls for the single-work-unit race scenario."""
+        import json as _json
+
+        cmd_str = " ".join(cmd)
+        if (
+            "issue" in cmd_str
+            and "list" in cmd_str
+            and "agent-ready" in cmd_str
+        ):
+            return _ok(_json.dumps(ready_issues))
+        if (
+            "issue" in cmd_str
+            and "list" in cmd_str
+            and "agent-in-progress" in cmd_str
+        ):
+            return _ok(_json.dumps([]))
+        if "issue" in cmd_str and "view" in cmd_str and "edit" not in cmd_str:
+            nums = [p for p in cmd if p.isdigit()]
+            n = int(nums[0]) if nums else 5
+            return _ok(
+                _json.dumps(
+                    {
+                        "number": n,
+                        "title": f"Issue {n}",
+                        "state": "open",
+                        "body": "",
+                        "url": f"https://github.com/o/r/issues/{n}",
+                        "labels": [{"name": "agent-done"}],
+                        "assignees": [],
+                    }
+                )
+            )
+        if "issue" in cmd_str and "edit" in cmd_str:
+            return _ok()
+        if "pr" in cmd_str and "list" in cmd_str:
+            return _ok(_json.dumps([]))
+        if "pr" in cmd_str and "create" in cmd_str:
+            return _ok("https://github.com/o/r/pull/99")
+        if "git" in cmd_str and "push" in cmd_str:
+            return _ok()
+        if "ls-remote" in cmd_str:
+            return _ok("")
+        if "rev-parse" in cmd_str:
+            return _ok("abc123\n")
+        return _ok()
+
+    with (
+        patch.object(daemon_mod, "_run", side_effect=run_side_effect),
+        patch(
+            "baton_harness.chain.daemon._fetch_issue_labels",
+            side_effect=fake_fetch_labels,
+        ),
+        patch(
+            "baton_harness.chain.daemon._label_edit",
+            side_effect=fake_label_edit,
+        ),
+        patch(
+            "baton_harness.chain.daemon.fetch_blocked_by",
+            return_value=[],
+        ),
+        patch("baton_harness.chain.branches.create_feature_branch"),
+        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch(
+            "baton_harness.chain.branches.record_cut_point",
+            return_value="deadbeef" * 5,
+        ),
+        patch(
+            "baton_harness.chain.recovery.reconstruct",
+            return_value=RecoveryResult(
+                done=set(),
+                parked_seed=set(),
+                ci_gate_reentry=set(),
+                redispatch=set(),
+            ),
+        ),
+        patch(
+            "baton_harness.chain.daemon.merge_issue_branch",
+            return_value=MergeOutcome.MERGED,
+        ),
+        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.Orchestrator"
+            "._run_worker",
+            side_effect=fake_run_worker,
+        ),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [_repo_cfg()],
+                once=True,
+                poll_interval_s=0,
+                installation_token="ghs_TESTTOKEN_xxxxxxx",
+            )
+        )
+
+    assert 5 not in worker_calls, (
+        "Issue #5 acquired an exclude label ('agent-failed') on the final "
+        "pre-dispatch fetch and must NOT be dispatched (pre-dispatch "
+        f"race, CodeRabbit #363); worker_calls={worker_calls}"
+    )
+    dispatch_transitions = [
+        c
+        for c in label_edit_calls
+        if c["issue"] == 5 and "agent-in-progress" in c["add"]
+    ]
+    assert not dispatch_transitions, (
+        "the agent-ready -> agent-in-progress label transition must not "
+        "fire for an issue excluded by the final pre-dispatch fetch; "
+        f"label_edit_calls={label_edit_calls}"
+    )

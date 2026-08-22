@@ -25,6 +25,9 @@ Coverage:
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock, patch
+
+from baton_harness import redact as redact_mod
 from baton_harness.redact import redact_secrets
 
 # ---------------------------------------------------------------------------
@@ -315,3 +318,93 @@ class TestNeverRaises:
         """Calling with only the required ``text`` positional arg is safe."""
         result = redact_secrets("plain text")
         assert result == "plain text"
+
+
+# ---------------------------------------------------------------------------
+# #351 CodeRabbit finding (PR #363): fail CLOSED, not open
+# ---------------------------------------------------------------------------
+
+
+class TestFailsClosedOnPatternSubstitutionException:
+    """An exception during pattern substitution must not leak raw text.
+
+    ``redact_secrets``'s ``try/except Exception: return result`` around
+    the pattern-substitution passes currently returns the ORIGINAL
+    (unredacted) ``result`` on any exception -- a fail-OPEN bug for a
+    security-critical redaction function. It must fail CLOSED instead
+    (return something that does not contain the raw secret-bearing
+    text), never the untouched input.
+    """
+
+    def test_pattern_sub_exception_does_not_return_the_raw_secret_text(
+        self,
+    ) -> None:
+        """A raising ``_TOKEN_PATTERN.sub`` must not leak the raw secret.
+
+        Forces the exact exception path CodeRabbit flagged by making the
+        token pattern's own ``.sub`` raise mid-substitution, then asserts
+        the caller never sees the original unredacted text back.
+        ``_TOKEN_PATTERN`` is a compiled ``re.Pattern`` (read-only
+        attributes -- ``.sub`` cannot be patched in place), so the whole
+        module-level pattern object is swapped for a stand-in whose
+        ``.sub`` raises.
+        """
+        secret = "ghp_" + "A" * 40
+        text = f"leaking {secret} right here"
+
+        raising_pattern = MagicMock()
+        raising_pattern.sub = MagicMock(side_effect=RuntimeError("boom"))
+
+        with patch.object(redact_mod, "_TOKEN_PATTERN", raising_pattern):
+            result = redact_secrets(text)
+
+        assert result != text, (
+            "redact_secrets must not return the original, unredacted "
+            f"text when pattern substitution raises; got {result!r}"
+        )
+        assert secret not in result, (
+            "the raw secret must not survive a fail-open exception path "
+            f"(CodeRabbit #363); got {result!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# #351 CodeRabbit finding (PR #363): extra_values per-entry isolation
+# ---------------------------------------------------------------------------
+
+
+class TestExtraValuesPerEntryIsolation:
+    """One bad ``extra_values`` entry must not skip later entries.
+
+    ``for value in extra_values: result = result.replace(value,
+    _REDACTION_MARKER)`` is not isolated per-entry -- a non-string entry
+    (e.g. an ``int``, which ``str.replace`` cannot accept) aborts the
+    whole loop, silently skipping every subsequent entry in the
+    iterable rather than just the one bad entry.
+    """
+
+    def test_bad_entry_before_a_real_secret_does_not_skip_it(self) -> None:
+        """A non-string entry ahead of a real secret must not shield it.
+
+        ``12345`` (an ``int``) is placed BEFORE a real secret string in
+        ``extra_values``. Per-entry isolation requires the real secret
+        still be redacted despite the earlier bad entry.
+        """
+        real_secret = "zzzz-real-secret-that-must-be-redacted-000111"
+        text = f"before marker; leaked secret: {real_secret}"
+
+        try:
+            result = redact_secrets(text, extra_values=[12345, real_secret])  # type: ignore[list-item]
+        except Exception as exc:  # noqa: BLE001
+            raise AssertionError(
+                "redact_secrets must isolate a bad extra_values entry "
+                "per-item (CodeRabbit #363) rather than raise; got "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+
+        assert real_secret not in result, (
+            "a non-string extra_values entry (12345) placed before a "
+            "real secret must not prevent the real secret from being "
+            f"redacted (per-entry isolation, CodeRabbit #363); got "
+            f"{result!r}"
+        )
