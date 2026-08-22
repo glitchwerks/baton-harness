@@ -285,8 +285,9 @@ class TestNeverRaises:
     """redact_secrets is a hard gate — it must never itself raise."""
 
     def test_does_not_raise_on_extra_values_containing_none(self) -> None:
-        """A stray ``None`` in extra_values (e.g. from ``dict.values()``)
-        must not crash the redaction pass — callers may pass
+        """A stray ``None`` in extra_values (e.g. from ``dict.values()``).
+
+        Must not crash the redaction pass — callers may pass
         ``env.values()`` verbatim, and a missing env var can legitimately
         surface as ``None`` in some call shapes.
         """

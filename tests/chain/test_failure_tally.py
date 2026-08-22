@@ -124,7 +124,7 @@ def test_record_and_check_tracks_issues_independently(
 
 
 def test_exhausted_is_false_below_max_count(tmp_path: Path) -> None:
-    """count == max_count - 1 -> not yet exhausted (auto-retry allowed).
+    """Count == max_count - 1 -> not yet exhausted (auto-retry allowed).
 
     D2: N=2 means one auto-retry, terminal on the second failure. The
     first charged failure (count=1, N-1) must retry, not terminalise.
@@ -139,7 +139,7 @@ def test_exhausted_is_false_below_max_count(tmp_path: Path) -> None:
 
 
 def test_exhausted_is_true_at_max_count(tmp_path: Path) -> None:
-    """count == max_count -> exhausted (terminal, agent-failed).
+    """Count == max_count -> exhausted (terminal, agent-failed).
 
     D2: the second charged failure (count=2, N) is the terminal one.
     """
@@ -154,7 +154,7 @@ def test_exhausted_is_true_at_max_count(tmp_path: Path) -> None:
 
 
 def test_exhausted_stays_true_above_max_count(tmp_path: Path) -> None:
-    """count == max_count + 1 -> still exhausted (no un-terminalising).
+    """Count == max_count + 1 -> still exhausted (no un-terminalising).
 
     In normal operation ``reset`` fires as soon as the terminal state is
     written (D5), so a count should never actually reach N+1 in
@@ -180,7 +180,7 @@ def test_exhausted_stays_true_above_max_count(tmp_path: Path) -> None:
 
 
 def test_reset_deletes_the_key(tmp_path: Path) -> None:
-    """reset removes the issue's count entirely (peek returns 0 after)."""
+    """Reset removes the issue's count entirely (peek returns 0 after)."""
     path = tmp_path / "failure-counts.json"
     tally = FailureTally(path, max_count=2)
     tally.record_and_check(issue=10)
@@ -195,7 +195,7 @@ def test_reset_deletes_the_key(tmp_path: Path) -> None:
 
 
 def test_reset_persists_the_deletion(tmp_path: Path) -> None:
-    """reset's deletion survives being read back from the backing file."""
+    """Reset's deletion survives being read back from the backing file."""
     path = tmp_path / "failure-counts.json"
     tally = FailureTally(path, max_count=2)
     tally.record_and_check(issue=10)
@@ -238,7 +238,7 @@ def test_reset_on_an_issue_with_no_prior_record_does_not_raise(
 
 
 def test_peek_returns_zero_for_an_unknown_issue(tmp_path: Path) -> None:
-    """peek on an issue never recorded returns 0."""
+    """Peek on an issue never recorded returns 0."""
     tally = FailureTally(tmp_path / "failure-counts.json", max_count=2)
     assert tally.peek(42) == 0
 
@@ -373,7 +373,7 @@ def test_has_alerted_returns_true_after_set_alerted(tmp_path: Path) -> None:
 
 
 def test_reset_also_clears_the_alerted_flag(tmp_path: Path) -> None:
-    """reset clears the issue's alerted flag for a future failure streak."""
+    """Reset clears the issue's alerted flag for a future failure streak."""
     tally = FailureTally(tmp_path / "failure-counts.json", max_count=2)
     tally.set_alerted(10)
 

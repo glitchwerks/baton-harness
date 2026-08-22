@@ -373,9 +373,10 @@ class TestHookEnvUnsetDoesNotRegressBareConstruction:
 
 
 class _FakeSubprocess:
-    """Minimal asyncio.subprocess stub, duplicated from
-    ``tests/vendor/test_run_hook_env.py`` per this package's stated
-    "duplicate helpers rather than cross-import between test files"
+    """Minimal asyncio.subprocess stub.
+
+    Duplicated from ``tests/vendor/test_run_hook_env.py`` per this package's
+    stated "duplicate helpers rather than cross-import between test files"
     convention.
     """
 
@@ -524,9 +525,11 @@ class TestRunHookStderrTailIsRedacted:
 
 
 class _FakeHookResult(NamedTuple):
-    """Local stand-in for hooks.HookResult, for tests that only need to
-    control Orchestrator._run_worker's consumption of the return value
-    (not run_hook's own construction of it — covered above).
+    """Local stand-in for hooks.HookResult.
+
+    For tests that only need to control Orchestrator._run_worker's
+    consumption of the return value (not run_hook's own construction of it —
+    covered above).
     """
 
     ok: bool
