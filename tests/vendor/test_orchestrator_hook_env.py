@@ -638,8 +638,17 @@ class TestAfterRunSwallowsHookFailure:
     once it becomes a HookResult.
     """
 
-    def test_after_run_success_path_swallows_hook_failure(self) -> None:
-        """A failing after_run hook on the success path does not raise."""
+    def test_after_run_is_invoked_on_the_success_path(self) -> None:
+        """after_run fires on the success path via the shared harness.
+
+        ``_run_worker_capturing_hook_calls``'s ``fake_run_hook`` always
+        returns ``True`` (no failure), so this only confirms that
+        ``after_run`` is invoked when the hook succeeds — it does not
+        exercise failure-swallowing. Failure-swallowing behavior is
+        covered separately by
+        ``test_after_run_success_path_swallows_failing_hookresult``
+        below, which injects a failing ``HookResult``.
+        """
         orch = _make_orch()
         issue = _fake_issue()
 
@@ -649,10 +658,6 @@ class TestAfterRunSwallowsHookFailure:
         assert after_run_calls, (
             "after_run hook was never invoked (test setup issue)"
         )
-        # If we got here without an exception, the success-path call site
-        # already tolerates fake_run_hook's plain bool return — this test
-        # locks that the same tolerance holds once fake_run_hook returns
-        # a failing HookResult instead (see the dedicated harness below).
 
     def test_after_run_success_path_swallows_failing_hookresult(
         self,

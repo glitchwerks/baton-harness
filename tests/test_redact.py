@@ -236,7 +236,7 @@ class TestExtraValuesRedaction:
         """
         text = "perfectly ordinary log line with no secrets"
         result = redact_secrets(text, extra_values=["", "another-secret"])
-        assert result == text or "another-secret" not in text, (
+        assert result == text, (
             "an empty extra_values entry must not mangle unrelated text; "
             f"got {result!r}"
         )
