@@ -101,8 +101,7 @@ class TestTokenPrefixRedaction:
         text = f"error: could not read Username for '{token}'"
         result = redact_secrets(text)
         assert token not in result, (
-            f"github_pat_ token leaked through redact_secrets; "
-            f"got {result!r}"
+            f"github_pat_ token leaked through redact_secrets; got {result!r}"
         )
 
     def test_redaction_leaves_a_marker_not_silence(self) -> None:
@@ -140,8 +139,7 @@ class TestTokenBearingUrlRedaction:
         )
         result = redact_secrets(text)
         assert secret_part not in result, (
-            f"credential-bearing URL leaked through redaction; "
-            f"got {result!r}"
+            f"credential-bearing URL leaked through redaction; got {result!r}"
         )
         # The surrounding context (host, path) is not required to survive,
         # but the redaction must not raise and must alter the input.
