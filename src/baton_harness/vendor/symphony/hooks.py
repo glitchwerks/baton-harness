@@ -93,9 +93,15 @@ async def run_hook(
         # merged_env, which is dominated by unrelated os.environ noise) as
         # the extra_values pass so an injected token that lacks a known
         # prefix (e.g. echoed into a remote URL) is still caught (F5).
+        # VENDOR-PATCH VP-9 (#362): also redact BWS_ACCESS_TOKEN, which
+        # lives in the daemon's ambient os.environ and is never threaded
+        # through `env=` (hook_env only ever carries GH_TOKEN/GITHUB_TOKEN).
         stderr_tail = redact_secrets(
             stderr.decode(errors="replace"),
-            extra_values=(env or {}).values(),
+            extra_values=[
+                *(env or {}).values(),
+                os.environ.get("BWS_ACCESS_TOKEN", ""),
+            ],
         )[-_STDERR_TAIL_MAX_CHARS:]
 
         if proc.returncode != 0:
@@ -127,6 +133,10 @@ async def run_hook(
             ok=False,
             returncode=None,
             stderr_tail=redact_secrets(
-                str(e), extra_values=(env or {}).values()
+                str(e),
+                extra_values=[
+                    *(env or {}).values(),
+                    os.environ.get("BWS_ACCESS_TOKEN", ""),
+                ],
             )[-_STDERR_TAIL_MAX_CHARS:],
         )
