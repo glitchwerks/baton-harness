@@ -188,25 +188,35 @@ class Orchestrator:
 
         # 2. Run after_create hook if new
         if wt.created_now:
-            ok = await run_hook(
+            res = await run_hook(
                 "after_create",
                 self.config.hook_after_create,
                 cwd=wt.path,
                 timeout_ms=self.config.hook_timeout_ms,
             )
-            if not ok:
-                raise RuntimeError("after_create hook failed")
+            # VENDOR-PATCH VP-8 (#351 T3): run_hook always returns a real
+            # HookResult now (the empty-script short circuit does too),
+            # so direct attribute access is safe here.
+            if not res.ok:
+                raise RuntimeError(
+                    f"after_create hook failed (rc={res.returncode}): "
+                    f"{res.stderr_tail}"
+                )
 
         # 3. Run before_run hook
-        ok = await run_hook(
+        res = await run_hook(
             "before_run",
             self.config.hook_before_run,
             cwd=wt.path,
             timeout_ms=self.config.hook_timeout_ms,
             env=self.hook_env,
         )
-        if not ok:
-            raise RuntimeError("before_run hook failed")
+        # VENDOR-PATCH VP-8 (#351 T3): see after_create guard note above.
+        if not res.ok:
+            raise RuntimeError(
+                f"before_run hook failed (rc={res.returncode}): "
+                f"{res.stderr_tail}"
+            )
 
         # 4. Parse issue-level skills
         issue_skills = parse_issue_skills(issue.body)

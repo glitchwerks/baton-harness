@@ -1,6 +1,6 @@
 """State-label constants and single-state invariant checker for the chain.
 
-Defines the three mutually-exclusive GitHub state labels that drive the
+Defines the four mutually-exclusive GitHub state labels that drive the
 baton-harness issue-state machine, and provides a pure checker that
 asserts exactly one of them is present on a given issue at any time.
 
@@ -26,13 +26,17 @@ LABEL_AGENT_DONE: str = "agent-done"
 #: Label applied when the agent or daemon detects a blocking condition.
 LABEL_BLOCKED: str = "blocked"
 
+#: Label applied when an issue's charged-failure budget is exhausted and
+#: the issue has been parked for human triage (#351 D3).
+LABEL_AGENT_FAILED: str = "agent-failed"
+
 #: The complete set of mutually-exclusive state labels.
 #:
 #: Exactly one member of this set must be present on every tracked issue
 #: at all times.  Membership here defines what ``assert_single_state``
 #: counts.
 STATE_LABELS: frozenset[str] = frozenset(
-    {LABEL_AGENT_READY, LABEL_AGENT_DONE, LABEL_BLOCKED}
+    {LABEL_AGENT_READY, LABEL_AGENT_DONE, LABEL_BLOCKED, LABEL_AGENT_FAILED}
 )
 
 
@@ -108,7 +112,13 @@ def target_state_from_observed(blocked: bool, pr_open: bool) -> str:
     3. ``blocked=False, pr_open=False`` → ``LABEL_AGENT_READY`` (no PR,
        no block; the issue is ready for another agent run).
 
-    The return value is always a member of ``STATE_LABELS``.
+    The return value is always a member of ``STATE_LABELS``, but it is
+    never ``LABEL_AGENT_FAILED``: this function only accepts two boolean
+    inputs (``blocked``, ``pr_open``), so it has no way to construct
+    that outcome. ``agent-failed`` is written only by the (not yet
+    implemented — T5, tracked separately) ``park_issue`` helper, when an
+    issue's charged-failure budget is exhausted; that is a distinct
+    event this reconciler is not consulted for.
 
     Args:
         blocked: Whether the ``blocked`` label is currently present on
@@ -119,7 +129,8 @@ def target_state_from_observed(blocked: bool, pr_open: bool) -> str:
     Returns:
         The single-state label string the issue should carry given the
         supplied observable facts.  Always one of ``LABEL_BLOCKED``,
-        ``LABEL_AGENT_DONE``, or ``LABEL_AGENT_READY``.
+        ``LABEL_AGENT_DONE``, or ``LABEL_AGENT_READY`` — never
+        ``LABEL_AGENT_FAILED`` (see above).
     """
     if blocked:
         return LABEL_BLOCKED

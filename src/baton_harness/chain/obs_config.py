@@ -49,6 +49,16 @@ BH_REDISPATCH_COUNTS_PATH : str, optional
     (or CWD-relative ``.baton-harness/dispatch-counts.json`` when
     ``BH_PROJECT_ROOT`` is unset).
 
+BH_MAX_ISSUE_FAILURES : int, optional
+    Maximum number of consecutive charged failures allowed per issue.
+    Default: ``2``.
+
+BH_FAILURE_COUNTS_PATH : str, optional
+    Absolute path for the durable issue-failure tally JSON file.
+    Default: ``${BH_PROJECT_ROOT}/.baton-harness/failure-counts.json``
+    (or CWD-relative ``.baton-harness/failure-counts.json`` when
+    ``BH_PROJECT_ROOT`` is unset).
+
 BH_WORKTREE_GC : str, optional
     Worktree orphan-GC mode.  Accepted values: ``detect`` (default),
     ``reclaim``.  ``detect`` logs orphans but never removes them (safe
@@ -82,8 +92,10 @@ _BH_HARNESS_DIR = ".baton-harness"
 _DEFAULT_RUNLOG_NAME = "runlog.jsonl"
 _DEFAULT_HEARTBEAT_NAME = "heartbeat"
 _DEFAULT_DISPATCH_COUNTS_NAME = "dispatch-counts.json"
+_DEFAULT_FAILURE_COUNTS_NAME = "failure-counts.json"
 _DEFAULT_REDISPATCH_WINDOW_TICKS = 10
 _DEFAULT_REDISPATCH_MAX = 3
+_DEFAULT_MAX_ISSUE_FAILURES = 2
 _DEFAULT_HEARTBEAT_STALL_S = 7200.0
 _DEFAULT_WORKTREE_GC: Literal["detect", "reclaim"] = "detect"
 _VALID_WORKTREE_GC = frozenset({"detect", "reclaim"})
@@ -113,6 +125,9 @@ class ObsConfig:
         heartbeat_ping_url: Optional URL pinged on each heartbeat write.
         redispatch_counts_path: Path to the durable re-dispatch tally
             JSON file used for loop detection.
+        max_issue_failures: Maximum consecutive charged failures per issue.
+        failure_counts_path: Path to the durable issue-failure tally JSON
+            file.
         worktree_gc: Worktree orphan-GC mode.  ``"detect"`` (default)
             logs orphans only; ``"reclaim"`` enables opt-in cleanup.
         worker_progress_stall_s: Seconds without a turn-progress signal
@@ -130,6 +145,12 @@ class ObsConfig:
     redispatch_counts_path: Path
     worktree_gc: Literal["detect", "reclaim"] = "detect"
     worker_progress_stall_s: float = 1800.0
+    max_issue_failures: int = _DEFAULT_MAX_ISSUE_FAILURES
+    failure_counts_path: Path = dataclasses.field(
+        default_factory=lambda: (
+            Path(_BH_HARNESS_DIR) / _DEFAULT_FAILURE_COUNTS_NAME
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -161,11 +182,17 @@ def load_obs_config() -> ObsConfig:
         _default_dispatch_counts = (
             _root / _BH_HARNESS_DIR / _DEFAULT_DISPATCH_COUNTS_NAME
         )
+        _default_failure_counts = (
+            _root / _BH_HARNESS_DIR / _DEFAULT_FAILURE_COUNTS_NAME
+        )
     else:
         _default_runlog = Path(_BH_HARNESS_DIR) / _DEFAULT_RUNLOG_NAME
         _default_heartbeat = Path(_BH_HARNESS_DIR) / _DEFAULT_HEARTBEAT_NAME
         _default_dispatch_counts = (
             Path(_BH_HARNESS_DIR) / _DEFAULT_DISPATCH_COUNTS_NAME
+        )
+        _default_failure_counts = (
+            Path(_BH_HARNESS_DIR) / _DEFAULT_FAILURE_COUNTS_NAME
         )
 
     # Explicit path overrides always win over derived defaults.
@@ -214,6 +241,21 @@ def load_obs_config() -> ObsConfig:
     else:
         redispatch_max = _DEFAULT_REDISPATCH_MAX
 
+    _mif_raw = os.environ.get("BH_MAX_ISSUE_FAILURES")
+    if _mif_raw is not None:
+        try:
+            max_issue_failures = int(_mif_raw)
+        except ValueError:
+            _log.warning(
+                "load_obs_config: BH_MAX_ISSUE_FAILURES=%r is not a valid "
+                "integer; using default %d",
+                _mif_raw,
+                _DEFAULT_MAX_ISSUE_FAILURES,
+            )
+            max_issue_failures = _DEFAULT_MAX_ISSUE_FAILURES
+    else:
+        max_issue_failures = _DEFAULT_MAX_ISSUE_FAILURES
+
     _hbs_raw = os.environ.get("BH_HEARTBEAT_STALL_S")
     if _hbs_raw is not None:
         try:
@@ -236,6 +278,12 @@ def load_obs_config() -> ObsConfig:
     _rdc_raw = os.environ.get("BH_REDISPATCH_COUNTS_PATH")
     redispatch_counts_path = (
         Path(_rdc_raw) if _rdc_raw is not None else _default_dispatch_counts
+    )
+
+    # Durable issue-failure tally path (env override wins; else derived).
+    _fc_raw = os.environ.get("BH_FAILURE_COUNTS_PATH")
+    failure_counts_path = (
+        Path(_fc_raw) if _fc_raw is not None else _default_failure_counts
     )
 
     # Worktree orphan-GC mode (detect | reclaim).  Unrecognised values log
@@ -281,6 +329,8 @@ def load_obs_config() -> ObsConfig:
         heartbeat_stall_s=heartbeat_stall_s,
         heartbeat_ping_url=heartbeat_ping_url,
         redispatch_counts_path=redispatch_counts_path,
+        max_issue_failures=max_issue_failures,
+        failure_counts_path=failure_counts_path,
         worktree_gc=worktree_gc,
         worker_progress_stall_s=worker_progress_stall_s,
     )

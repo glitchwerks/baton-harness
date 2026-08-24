@@ -20,7 +20,8 @@ import asyncio
 import os
 from unittest.mock import patch
 
-from baton_harness.vendor.symphony.hooks import run_hook
+from baton_harness.vendor.symphony import hooks as hooks_mod
+from baton_harness.vendor.symphony.hooks import HookResult, run_hook
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -81,30 +82,100 @@ class _FakeProcess:
 
 
 class TestRunHookSignature:
-    """run_hook accepts the env= keyword argument (VP-1 signature check)."""
+    """run_hook accepts the env= keyword argument (VP-1 signature check).
+
+    Empty/whitespace-only script assertions were updated for the #351
+    CodeRabbit (PR #363) finding: ``run_hook`` must return a
+    ``HookResult`` unconditionally, never a bare ``bool``, even for the
+    empty-script early return -- see ``TestEmptyScriptReturnsHookResult``
+    below for the dedicated regression coverage.
+    """
 
     def test_accepts_env_keyword_none(self) -> None:
         """run_hook(env=None) does not raise TypeError."""
-        # Empty script → returns True without spawning a process.
+        # Empty script → returns a HookResult without spawning a process.
         result = _run_sync(run_hook("test", None, cwd="/tmp", env=None))
-        assert result is True
+        assert isinstance(result, HookResult)
+        assert result.ok is True
 
     def test_accepts_env_keyword_dict(self) -> None:
         """run_hook(env={...}) does not raise TypeError."""
         result = _run_sync(
             run_hook("test", None, cwd="/tmp", env={"KEY": "value"})
         )
-        assert result is True
+        assert isinstance(result, HookResult)
+        assert result.ok is True
 
     def test_empty_script_returns_true_without_env(self) -> None:
-        """Empty script returns True; no subprocess is spawned."""
+        """Empty script returns ok=True; no subprocess is spawned."""
         result = _run_sync(run_hook("test", "", cwd="/tmp"))
-        assert result is True
+        assert isinstance(result, HookResult)
+        assert result.ok is True
 
     def test_whitespace_script_returns_true(self) -> None:
-        """Whitespace-only script returns True; no subprocess is spawned."""
+        """Whitespace-only script returns ok=True; no subprocess spawned."""
         result = _run_sync(run_hook("test", "   ", cwd="/tmp"))
-        assert result is True
+        assert isinstance(result, HookResult)
+        assert result.ok is True
+
+
+# ---------------------------------------------------------------------------
+# #351 CodeRabbit finding (PR #363): empty script must return a HookResult,
+# never a bare bool
+# ---------------------------------------------------------------------------
+
+
+class TestEmptyScriptReturnsHookResult:
+    """run_hook(empty/whitespace script) returns a full HookResult.
+
+    Before this fix, an empty/whitespace-only ``script`` made ``run_hook``
+    ``return True`` (a bare ``bool``) instead of ``HookResult(ok=True,
+    returncode=None, stderr_tail="")`` -- forcing every caller to guard
+    both possible return shapes (``getattr(res, "ok", res)`` in
+    ``orchestrator.py``). This is the dedicated regression test CodeRabbit
+    asked for.
+    """
+
+    def test_empty_script_returns_hookresult_not_bare_bool(self) -> None:
+        """An empty script's return value is a HookResult, not `True`."""
+        result = _run_sync(run_hook("before_run", "", cwd="/tmp"))
+
+        assert isinstance(result, HookResult), (
+            "run_hook must return a HookResult even when the script is "
+            f"empty (CodeRabbit #363); got {result!r} "
+            f"({type(result).__name__})"
+        )
+        assert result.ok is True
+        assert result.returncode is None
+        assert result.stderr_tail == ""
+
+    def test_whitespace_only_script_returns_hookresult_not_bare_bool(
+        self,
+    ) -> None:
+        """A whitespace-only script's return value is a HookResult too."""
+        result = _run_sync(run_hook("before_run", "   \n\t  ", cwd="/tmp"))
+
+        assert isinstance(result, HookResult), (
+            "run_hook must return a HookResult even when the script is "
+            f"whitespace-only (CodeRabbit #363); got {result!r} "
+            f"({type(result).__name__})"
+        )
+        assert result.ok is True
+        assert result.returncode is None
+        assert result.stderr_tail == ""
+
+    def test_none_script_returns_hookresult_not_bare_bool(self) -> None:
+        """A ``None`` script's return value is a HookResult too."""
+        result = _run_sync(run_hook("before_run", None, cwd="/tmp"))
+
+        assert isinstance(result, HookResult), (
+            "run_hook must return a HookResult even when the script is "
+            f"None (CodeRabbit #363); got {result!r} "
+            f"({type(result).__name__})"
+        )
+        assert result.ok is True
+        assert result.returncode is None
+        assert result.stderr_tail == ""
 
 
 # ---------------------------------------------------------------------------
@@ -334,4 +405,55 @@ class TestRunHookEnvDefault:
         # Both calls should produce identical env dicts.
         assert captured_envs[0] == captured_envs[1], (
             "env=None must be identical to omitting the env argument"
+        )
+
+
+# ---------------------------------------------------------------------------
+# #351 CodeRabbit finding (PR #363): stderr_tail keeps the wrong end
+# ---------------------------------------------------------------------------
+
+
+class TestStderrTailKeepsTheLastCharacters:
+    """``stderr_tail`` must keep the LAST N characters, not the first N.
+
+    The module docstring promises "the last `_STDERR_TAIL_MAX_CHARS`
+    characters" but the implementation truncates with
+    ``[:_STDERR_TAIL_MAX_CHARS]`` (the FIRST N chars) instead of
+    ``[-_STDERR_TAIL_MAX_CHARS:]`` -- a tail should keep what happened
+    most recently (the end of the output), not what happened first.
+    """
+
+    def test_marker_only_in_the_final_chars_survives_truncation(
+        self,
+    ) -> None:
+        """A marker placed only past the max-chars boundary is kept.
+
+        The marker sits well after the first
+        ``_STDERR_TAIL_MAX_CHARS`` characters of stderr, so a
+        head-truncating implementation drops it entirely, while a
+        correct tail-truncating implementation keeps it.
+        """
+        max_chars = hooks_mod._STDERR_TAIL_MAX_CHARS
+        marker = "TAIL-ONLY-MARKER-6f19d2"
+        filler = "x" * (max_chars * 2)
+        raw_stderr = (filler + marker).encode()
+
+        async def fake_create_subprocess_exec(
+            *args: object, **kwargs: object
+        ) -> _FakeProcess:
+            return _FakeProcess(returncode=1, stderr=raw_stderr)
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            side_effect=fake_create_subprocess_exec,
+        ):
+            result = _run_sync(run_hook("before_run", "false", cwd="/tmp"))
+
+        assert isinstance(result, HookResult)
+        assert marker in result.stderr_tail, (
+            "stderr_tail must keep the LAST _STDERR_TAIL_MAX_CHARS "
+            "characters (a true tail), not the first -- the module "
+            "docstring promises 'the last N characters' but a "
+            "head-truncating [:max_chars] slice drops this tail-only "
+            f"marker; got {result.stderr_tail!r}"
         )

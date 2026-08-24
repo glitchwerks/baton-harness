@@ -98,7 +98,7 @@ from baton_harness.chain.label_ops import (
 # their only usage was inside _poll_and_run.  LABEL_BLOCKED stays: it
 # builds _DISPATCH_EXCLUDE_LABELS below, which stays defined in THIS
 # module (see that constant's own comment for why).
-from baton_harness.chain.labels import LABEL_BLOCKED
+from baton_harness.chain.labels import LABEL_AGENT_FAILED, LABEL_BLOCKED
 
 # assert_single_state: `as assert_single_state` self-reexport (#276,
 # Phase 6d) so mypy --strict's no_implicit_reexport treats
@@ -321,8 +321,9 @@ _fetch_issue_labels = _fetch_issue_labels_impl
 #: Labels that disqualify an issue from dispatch.  Used by both the
 #: tick-start snapshot filter, the tick-start live re-check, and the
 #: mid-drain live re-check so all three gates share a single definition.
-#: Currently contains only ``LABEL_BLOCKED`` (``"blocked"``); adding an
-#: entry here automatically applies to all three gates.
+#: Contains ``LABEL_BLOCKED`` (``"blocked"``) and ``LABEL_AGENT_FAILED``
+#: (``"agent-failed"``, #351 D3 item 5); adding an entry here
+#: automatically applies to all three gates.
 #:
 #: Stays defined in THIS module rather than moving to poll.py with its
 #: three consumers (#277, Phase 6e): test_daemon.py does
@@ -330,7 +331,9 @@ _fetch_issue_labels = _fetch_issue_labels_impl
 #: only rebinds THIS module's attribute -- poll.py's `_poll_and_run`
 #: reaches it via `_daemon_mod._DISPATCH_EXCLUDE_LABELS`, a live
 #: attribute lookup, so that patch keeps intercepting it.
-_DISPATCH_EXCLUDE_LABELS: frozenset[str] = frozenset({LABEL_BLOCKED})
+_DISPATCH_EXCLUDE_LABELS: frozenset[str] = frozenset(
+    {LABEL_BLOCKED, LABEL_AGENT_FAILED}
+)
 
 
 # _GENERIC_CHECKS_DETAIL, _COMPARATOR_TIMEOUT_SECONDS,

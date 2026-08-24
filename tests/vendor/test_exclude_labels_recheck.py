@@ -24,6 +24,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from baton_harness.vendor.symphony.config import WorkflowConfig
+from baton_harness.vendor.symphony.hooks import HookResult
 from baton_harness.vendor.symphony.orchestrator import Orchestrator
 from baton_harness.vendor.symphony.tracker import Issue
 
@@ -120,8 +121,8 @@ def test_blocked_label_terminates_turn_loop_early() -> None:
     # run_hook always succeeds.
     async def fake_run_hook(  # noqa: ANN401
         name: str, script: object, **kwargs: object
-    ) -> bool:
-        return True
+    ) -> HookResult:
+        return HookResult(ok=True, returncode=0, stderr_tail="")
 
     with (
         patch.object(
@@ -194,8 +195,8 @@ def test_running_guard_does_not_raise_when_state_missing() -> None:
 
     async def fake_run_hook(  # noqa: ANN401
         name: str, script: object, **kwargs: object
-    ) -> bool:
-        return True
+    ) -> HookResult:
+        return HookResult(ok=True, returncode=0, stderr_tail="")
 
     with (
         patch.object(
@@ -265,8 +266,8 @@ def test_normal_run_without_block_runs_all_turns() -> None:
 
     async def fake_run_hook(  # noqa: ANN401
         name: str, script: object, **kwargs: object
-    ) -> bool:
-        return True
+    ) -> HookResult:
+        return HookResult(ok=True, returncode=0, stderr_tail="")
 
     with (
         patch.object(

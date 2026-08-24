@@ -1,5 +1,18 @@
 """Tests for issue #347: thread the vault-fetched GitHub PAT to hooks.
 
+Also carries #351's T3 coverage — hook diagnostics threading (D6 steps
+2-3): ``run_hook`` returns a ``HookResult`` carrying the real
+``returncode`` and a redacted ``stderr_tail`` on failure, the
+``before_run`` ``RuntimeError`` embeds both, and the two best-effort
+``after_run`` call sites (F4: orchestrator.py ~L274-279 and ~L387-397)
+continue to swallow hook failures rather than propagate them. These
+tests import ``baton_harness.vendor.symphony.hooks`` as a module (not
+``from ... import HookResult``) so the pre-existing #347 tests above
+keep collecting and passing independently of the new #351 symbol —
+only the new tests below fail (cleanly, via ``AttributeError`` on
+``hooks_mod.HookResult``) until T1 (redact.py) and T3 (hooks.py /
+orchestrator.py) land.
+
 The PAT reaches the ``before_run`` hook subprocess via
 ``Orchestrator.hook_env``, without ever writing it into the daemon's
 own ambient ``os.environ``.
@@ -40,9 +53,13 @@ async calls are driven with ``asyncio.run`` (no pytest-asyncio dep).
 
 from __future__ import annotations
 
-from typing import Any
+import asyncio
+from typing import Any, NamedTuple
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
+from baton_harness.vendor.symphony import hooks as hooks_mod
 from baton_harness.vendor.symphony.config import WorkflowConfig
 from baton_harness.vendor.symphony.orchestrator import Orchestrator
 from baton_harness.vendor.symphony.tracker import Issue
@@ -142,9 +159,9 @@ def _run_worker_capturing_hook_calls(
 
     async def fake_run_hook(  # noqa: ANN401
         name: str, script: object, **kwargs: object
-    ) -> bool:
+    ) -> hooks_mod.HookResult:
         calls.append((name, kwargs))
-        return True
+        return hooks_mod.HookResult(ok=True, returncode=0, stderr_tail="")
 
     fake_wt = MagicMock()
     fake_wt.created_now = created_now
@@ -347,4 +364,437 @@ class TestHookEnvUnsetDoesNotRegressBareConstruction:
         assert env is None, (
             "before_run's env kwarg must be None when hook_env was never "
             f"set on the Orchestrator; got {env!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# #351 T3 — run_hook returns HookResult (D6 step 2)
+# ---------------------------------------------------------------------------
+
+
+class _FakeSubprocess:
+    """Minimal asyncio.subprocess stub.
+
+    Duplicated from ``tests/vendor/test_run_hook_env.py`` per this package's
+    stated "duplicate helpers rather than cross-import between test files"
+    convention.
+    """
+
+    def __init__(
+        self,
+        returncode: int = 0,
+        stdout: bytes = b"",
+        stderr: bytes = b"",
+    ) -> None:
+        self.returncode = returncode
+        self._communicate_result = (stdout, stderr)
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        return self._communicate_result
+
+    def kill(self) -> None:
+        """No-op kill for the timeout path."""
+
+
+def _run_sync(coro: object) -> object:
+    """Run an async coroutine synchronously for test use."""
+    return asyncio.run(coro)  # type: ignore[arg-type]
+
+
+class TestRunHookReturnsHookResult:
+    """``run_hook`` returns a ``HookResult`` (ok, returncode, stderr_tail)."""
+
+    def test_run_hook_result_carries_real_returncode_on_failure(self) -> None:
+        """A non-zero exit code is preserved on the returned HookResult."""
+
+        async def fake_create_subprocess_exec(
+            *args: object, **kwargs: object
+        ) -> _FakeSubprocess:
+            return _FakeSubprocess(returncode=17, stderr=b"boom")
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            side_effect=fake_create_subprocess_exec,
+        ):
+            result = _run_sync(
+                hooks_mod.run_hook("before_run", "false", cwd="/tmp")
+            )
+
+        assert isinstance(result, hooks_mod.HookResult), (
+            f"run_hook must return a HookResult on failure; got "
+            f"{result!r} ({type(result).__name__})"
+        )
+        assert result.ok is False
+        assert result.returncode == 17, (
+            f"HookResult.returncode must carry the real exit code; got "
+            f"{result.returncode!r}"
+        )
+
+    def test_run_hook_result_ok_true_on_success(self) -> None:
+        """A zero exit code produces HookResult(ok=True, returncode=0, ...)."""
+
+        async def fake_create_subprocess_exec(
+            *args: object, **kwargs: object
+        ) -> _FakeSubprocess:
+            return _FakeSubprocess(returncode=0, stderr=b"")
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            side_effect=fake_create_subprocess_exec,
+        ):
+            result = _run_sync(
+                hooks_mod.run_hook("before_run", "true", cwd="/tmp")
+            )
+
+        assert isinstance(result, hooks_mod.HookResult)
+        assert result.ok is True
+        assert result.returncode == 0
+
+
+class TestRunHookStderrTailIsRedacted:
+    """``HookResult.stderr_tail`` is redacted before it reaches a caller."""
+
+    def test_stderr_tail_redacts_a_prefixed_token(self) -> None:
+        """A ghp_-prefixed token in raw stderr is redacted in stderr_tail."""
+        secret = "ghp_" + "A" * 40
+
+        async def fake_create_subprocess_exec(
+            *args: object, **kwargs: object
+        ) -> _FakeSubprocess:
+            return _FakeSubprocess(
+                returncode=1,
+                stderr=f"fatal: bad credentials: {secret}".encode(),
+            )
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            side_effect=fake_create_subprocess_exec,
+        ):
+            result = _run_sync(
+                hooks_mod.run_hook("before_run", "false", cwd="/tmp")
+            )
+
+        assert secret not in result.stderr_tail, (
+            f"a raw token must never survive into stderr_tail; got "
+            f"{result.stderr_tail!r}"
+        )
+
+    def test_gh_token_env_value_never_appears_in_stderr_tail(self) -> None:
+        """A GH_TOKEN value passed via env= never appears in stderr_tail.
+
+        Simulates a failing git/gh invocation that echoes the injected
+        token verbatim (no gh*_ prefix survives the echo, e.g. it is
+        embedded in a remote URL) — the value-based redaction pass
+        (extra_values=env.values()) must catch what the pattern pass
+        cannot (#351 F5).
+        """
+        injected_pat = "s3cr3t-injected-value-without-a-known-prefix"
+
+        async def fake_create_subprocess_exec(
+            *args: object, **kwargs: object
+        ) -> _FakeSubprocess:
+            return _FakeSubprocess(
+                returncode=1,
+                stderr=(
+                    f"remote: Invalid credentials for {injected_pat}"
+                ).encode(),
+            )
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            side_effect=fake_create_subprocess_exec,
+        ):
+            result = _run_sync(
+                hooks_mod.run_hook(
+                    "before_run",
+                    "false",
+                    cwd="/tmp",
+                    env={"GH_TOKEN": injected_pat},
+                )
+            )
+
+        assert injected_pat not in result.stderr_tail, (
+            "a GH_TOKEN value passed via env= must never appear in "
+            f"stderr_tail; got {result.stderr_tail!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# #351 T3 — before_run's RuntimeError carries rc + tail (D6 step 3)
+# ---------------------------------------------------------------------------
+
+
+class _FakeHookResult(NamedTuple):
+    """Local stand-in for hooks.HookResult.
+
+    For tests that only need to control Orchestrator._run_worker's
+    consumption of the return value (not run_hook's own construction of it —
+    covered above).
+    """
+
+    ok: bool
+    returncode: int | None
+    stderr_tail: str
+
+
+def _run_worker_expecting_runtime_error(
+    orch: Orchestrator,
+    issue: Issue,
+    *,
+    before_run_result: _FakeHookResult,
+) -> Exception | None:
+    """Run ``orch._run_worker(issue)`` and capture a raised RuntimeError.
+
+    Args:
+        orch: The Orchestrator under test.
+        issue: The fake issue to run.
+        before_run_result: The HookResult-shaped value the patched
+            ``run_hook`` returns for the ``before_run`` call.
+
+    Returns:
+        The raised exception, or ``None`` if no exception propagated.
+    """
+
+    async def fake_run_hook(  # noqa: ANN401
+        name: str, script: object, **kwargs: object
+    ) -> _FakeHookResult:
+        if name == "before_run":
+            return before_run_result
+        return _FakeHookResult(ok=True, returncode=0, stderr_tail="")
+
+    fake_wt = MagicMock()
+    fake_wt.created_now = True
+    fake_wt.path = "/fake/wt"
+
+    async def fake_fetch_issue_state(num: int) -> str:
+        return "open"
+
+    with (
+        patch.object(
+            orch.workspace,
+            "ensure_worktree",
+            new_callable=AsyncMock,
+            return_value=fake_wt,
+        ),
+        patch.object(
+            orch.tracker,
+            "fetch_issue_state",
+            side_effect=fake_fetch_issue_state,
+        ),
+        patch(
+            "baton_harness.vendor.symphony.orchestrator.run_hook",
+            side_effect=fake_run_hook,
+        ),
+    ):
+        try:
+            asyncio.run(orch._run_worker(issue))
+        except RuntimeError as exc:  # noqa: BLE001
+            return exc
+    return None
+
+
+class TestBeforeRunRuntimeErrorCarriesDiagnostics:
+    """before_run's RuntimeError embeds the hook's rc and stderr_tail."""
+
+    def test_runtime_error_message_contains_returncode_and_tail(
+        self,
+    ) -> None:
+        """The raised RuntimeError names the returncode and stderr tail."""
+        orch = _make_orch()
+        issue = _fake_issue()
+        failing = _FakeHookResult(
+            ok=False, returncode=17, stderr_tail="boom xyz"
+        )
+
+        exc = _run_worker_expecting_runtime_error(
+            orch, issue, before_run_result=failing
+        )
+
+        assert exc is not None, (
+            "before_run hook failure must raise a RuntimeError, "
+            "not silently continue"
+        )
+        message = str(exc)
+        assert "17" in message, (
+            f"RuntimeError message must carry the returncode (17); "
+            f"got {message!r}"
+        )
+        assert "boom xyz" in message, (
+            f"RuntimeError message must carry the stderr_tail; got {message!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# #351 T3 — after_run's two best-effort call sites swallow failures (F4)
+# ---------------------------------------------------------------------------
+
+
+class TestAfterRunSwallowsHookFailure:
+    """after_run's run_hook call sites never propagate a hook failure.
+
+    F4: orchestrator.py has two after_run call sites — a success-path
+    one (~L387-397) and a failure-path one (~L274-279) — both of which
+    discard run_hook's return value today and must continue to do so
+    once it becomes a HookResult.
+    """
+
+    def test_after_run_is_invoked_on_the_success_path(self) -> None:
+        """after_run fires on the success path via the shared harness.
+
+        ``_run_worker_capturing_hook_calls``'s ``fake_run_hook`` always
+        returns ``True`` (no failure), so this only confirms that
+        ``after_run`` is invoked when the hook succeeds — it does not
+        exercise failure-swallowing. Failure-swallowing behavior is
+        covered separately by
+        ``test_after_run_success_path_swallows_failing_hookresult``
+        below, which injects a failing ``HookResult``.
+        """
+        orch = _make_orch()
+        issue = _fake_issue()
+
+        calls = _run_worker_capturing_hook_calls(orch, issue, created_now=True)
+
+        after_run_calls = [kw for (name, kw) in calls if name == "after_run"]
+        assert after_run_calls, (
+            "after_run hook was never invoked (test setup issue)"
+        )
+
+    def test_after_run_success_path_swallows_failing_hookresult(
+        self,
+    ) -> None:
+        """A HookResult(ok=False, ...) from after_run must not propagate."""
+        orch = _make_orch()
+        issue = _fake_issue()
+
+        async def fake_run_hook(  # noqa: ANN401
+            name: str, script: object, **kwargs: object
+        ) -> _FakeHookResult:
+            if name == "after_run":
+                return _FakeHookResult(
+                    ok=False, returncode=3, stderr_tail="after_run boom"
+                )
+            return _FakeHookResult(ok=True, returncode=0, stderr_tail="")
+
+        fake_wt = MagicMock()
+        fake_wt.created_now = True
+        fake_wt.path = "/fake/wt"
+
+        fake_turn_result = MagicMock()
+        fake_turn_result.success = True
+        fake_turn_result.error = None
+
+        async def fake_run_turn(**kwargs: Any) -> Any:  # noqa: ANN401
+            return fake_turn_result
+
+        async def fake_fetch_issue_state(num: int) -> str:
+            return "open"
+
+        with (
+            patch.object(
+                orch.workspace,
+                "ensure_worktree",
+                new_callable=AsyncMock,
+                return_value=fake_wt,
+            ),
+            patch.object(
+                orch.worker,
+                "run_turn",
+                side_effect=fake_run_turn,
+            ),
+            patch.object(
+                orch.tracker,
+                "fetch_issue_state",
+                side_effect=fake_fetch_issue_state,
+            ),
+            patch(
+                "baton_harness.vendor.symphony.orchestrator.run_hook",
+                side_effect=fake_run_hook,
+            ),
+            patch.object(
+                orch.tracker,
+                "check_pr_exists",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+        ):
+            try:
+                asyncio.run(orch._run_worker(issue))
+            except Exception as exc:  # noqa: BLE001
+                raise AssertionError(
+                    "after_run's success-path call site must swallow a "
+                    f"failing HookResult, not raise; got "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+
+
+# ---------------------------------------------------------------------------
+# #351 reconciliation gap (T1) — BWS_ACCESS_TOKEN value-pass coverage
+# ---------------------------------------------------------------------------
+#
+# ``run_hook`` calls ``redact_secrets(stderr_text,
+# extra_values=(env or {}).values())`` at its stderr-redaction call
+# site(s) (hooks.py ~L95, ~L128). The ``env`` dict there is whatever the
+# caller passed via ``env=`` — in production, ``orch.hook_env``, which
+# only ever holds ``GH_TOKEN``/``GITHUB_TOKEN`` (see
+# ``TestHookEnvWiredToBeforeRunOnly`` above). ``BWS_ACCESS_TOKEN`` lives
+# in the daemon's ambient ``os.environ`` and is never threaded through
+# ``env=``, so a hook whose stderr echoes that value verbatim is NOT
+# covered by the value pass today. The test below proves the gap against
+# the real call site (not just that ``redact_secrets`` *can* redact a
+# value if handed it — see ``tests/test_redact.py`` for that, already
+# covered by ``TestExtraValuesRedaction``).
+
+
+class TestBwsAccessTokenRedactedInStderrTail:
+    """A ``BWS_ACCESS_TOKEN`` from os.environ never leaks into stderr_tail."""
+
+    @pytest.mark.xfail(
+        reason=(
+            "#362: BWS_ACCESS_TOKEN in os.environ not covered by "
+            "redact_secrets' extra_values pass"
+        ),
+        strict=True,
+    )
+    def test_bws_access_token_from_process_env_never_appears_in_stderr_tail(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A BWS_ACCESS_TOKEN set only in os.environ is redacted.
+
+        The sentinel deliberately has no recognisable ``gh*_`` prefix and
+        is not shaped like a credential-bearing URL, so ``redact_secrets``'s
+        pattern pass cannot catch it independently — only a value pass
+        that includes ``os.environ["BWS_ACCESS_TOKEN"]`` in its
+        ``extra_values`` would. ``env=`` is given a realistic
+        ``hook_env``-shaped dict (``GH_TOKEN`` only, no
+        ``BWS_ACCESS_TOKEN`` key) to mirror production, where the vault
+        token is never threaded through ``env=`` at all — it is set via
+        ``monkeypatch.setenv`` on the process environment instead.
+        """
+        sentinel = "bws-sentinel-no-known-prefix-A1B2C3D4"
+        monkeypatch.setenv("BWS_ACCESS_TOKEN", sentinel)
+
+        async def fake_create_subprocess_exec(
+            *args: object, **kwargs: object
+        ) -> _FakeSubprocess:
+            return _FakeSubprocess(
+                returncode=1,
+                stderr=f"vault error: bad secret {sentinel}".encode(),
+            )
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            side_effect=fake_create_subprocess_exec,
+        ):
+            result = _run_sync(
+                hooks_mod.run_hook(
+                    "before_run",
+                    "false",
+                    cwd="/tmp",
+                    env={"GH_TOKEN": "unrelated-gh-token-value"},
+                )
+            )
+
+        assert sentinel not in result.stderr_tail, (  # type: ignore[attr-defined]
+            "BWS_ACCESS_TOKEN (set only in os.environ, never in env=) "
+            f"leaked into stderr_tail; got {result.stderr_tail!r}"  # type: ignore[attr-defined]
         )

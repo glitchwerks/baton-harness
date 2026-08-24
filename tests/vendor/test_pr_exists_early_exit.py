@@ -46,6 +46,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from baton_harness.vendor.symphony.config import WorkflowConfig
+from baton_harness.vendor.symphony.hooks import HookResult
 from baton_harness.vendor.symphony.orchestrator import Orchestrator
 from baton_harness.vendor.symphony.tracker import Issue
 from baton_harness.vendor.symphony.workspace import WorkspaceError
@@ -174,8 +175,8 @@ def test_pr_exists_mid_loop_terminates_early() -> None:
 
     async def fake_run_hook(  # noqa: ANN401
         name: str, script: object, **kwargs: object
-    ) -> bool:
-        return True
+    ) -> HookResult:
+        return HookResult(ok=True, returncode=0, stderr_tail="")
 
     with (
         patch.object(
@@ -264,8 +265,8 @@ def test_no_pr_runs_all_turns() -> None:
 
     async def fake_run_hook(  # noqa: ANN401
         name: str, script: object, **kwargs: object
-    ) -> bool:
-        return True
+    ) -> HookResult:
+        return HookResult(ok=True, returncode=0, stderr_tail="")
 
     with (
         patch.object(
@@ -363,8 +364,8 @@ def test_closed_issue_precedes_pr_check() -> None:
 
     async def fake_run_hook(  # noqa: ANN401
         name: str, script: object, **kwargs: object
-    ) -> bool:
-        return True
+    ) -> HookResult:
+        return HookResult(ok=True, returncode=0, stderr_tail="")
 
     with (
         patch.object(
@@ -463,8 +464,8 @@ def test_check_pr_exists_error_is_best_effort() -> None:
 
     async def fake_run_hook(  # noqa: ANN401
         name: str, script: object, **kwargs: object
-    ) -> bool:
-        return True
+    ) -> HookResult:
+        return HookResult(ok=True, returncode=0, stderr_tail="")
 
     async def raising_check_pr_exists(issue_number: int) -> bool:
         raise RuntimeError("simulated tracker failure")
@@ -566,8 +567,8 @@ def test_mid_loop_true_then_post_loop_raise_returns_pr_created() -> None:
 
     async def fake_run_hook(  # noqa: ANN401
         name: str, script: object, **kwargs: object
-    ) -> bool:
-        return True
+    ) -> HookResult:
+        return HookResult(ok=True, returncode=0, stderr_tail="")
 
     with (
         patch.object(
@@ -667,8 +668,8 @@ def test_mid_loop_true_then_post_loop_false_returns_pr_created() -> None:
 
     async def fake_run_hook(  # noqa: ANN401
         name: str, script: object, **kwargs: object
-    ) -> bool:
-        return True
+    ) -> HookResult:
+        return HookResult(ok=True, returncode=0, stderr_tail="")
 
     with (
         patch.object(
@@ -770,8 +771,8 @@ def test_pr_appears_on_later_turn_stops_there() -> None:
 
     async def fake_run_hook(  # noqa: ANN401
         name: str, script: object, **kwargs: object
-    ) -> bool:
-        return True
+    ) -> HookResult:
+        return HookResult(ok=True, returncode=0, stderr_tail="")
 
     with (
         patch.object(
@@ -880,8 +881,8 @@ def test_dirty_worktree_does_not_early_exit() -> None:
 
     async def fake_run_hook(  # noqa: ANN401
         name: str, script: object, **kwargs: object
-    ) -> bool:
-        return True
+    ) -> HookResult:
+        return HookResult(ok=True, returncode=0, stderr_tail="")
 
     dirty_status = " M src/foo.py\n"
 
@@ -1008,8 +1009,8 @@ def test_clean_worktree_early_exits() -> None:
 
     async def fake_run_hook(  # noqa: ANN401
         name: str, script: object, **kwargs: object
-    ) -> bool:
-        return True
+    ) -> HookResult:
+        return HookResult(ok=True, returncode=0, stderr_tail="")
 
     with (
         patch.object(
@@ -1094,8 +1095,8 @@ def test_git_status_includes_untracked_files() -> None:
 
     async def fake_run_hook(  # noqa: ANN401
         name: str, script: object, **kwargs: object
-    ) -> bool:
-        return True
+    ) -> HookResult:
+        return HookResult(ok=True, returncode=0, stderr_tail="")
 
     with (
         patch.object(
@@ -1213,8 +1214,8 @@ def test_run_cmd_failure_continues_conservatively() -> None:
 
     async def fake_run_hook(  # noqa: ANN401
         name: str, script: object, **kwargs: object
-    ) -> bool:
-        return True
+    ) -> HookResult:
+        return HookResult(ok=True, returncode=0, stderr_tail="")
 
     with (
         patch.object(
@@ -1343,8 +1344,8 @@ def test_clean_but_unpushed_commits_does_not_early_exit() -> None:
 
     async def fake_run_hook(  # noqa: ANN401
         name: str, script: object, **kwargs: object
-    ) -> bool:
-        return True
+    ) -> HookResult:
+        return HookResult(ok=True, returncode=0, stderr_tail="")
 
     def _arg_aware_run_cmd(args: list[str], **kwargs: object) -> str:
         r"""Return git output keyed on which subcommand is being called.
