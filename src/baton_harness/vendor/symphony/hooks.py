@@ -67,6 +67,17 @@ async def run_hook(
     # git/gh unresolvable (CONCERN-1 in issue #42).
     merged_env: dict[str, str] = {**os.environ, **(env or {})}
 
+    # VENDOR-PATCH VP-9 (#362, CodeRabbit follow-up): capture the vault
+    # token ONCE, here, at the same moment merged_env is built — this is
+    # the value the subprocess actually runs with. Reading
+    # os.environ.get("BWS_ACCESS_TOKEN", "") again later (after
+    # communicate()) is a TOCTOU race: if the parent rotates the token
+    # mid-run, a fresh late read redacts the NEW value while the
+    # subprocess (and its stderr) ran with the OLD one, so the value
+    # that actually leaked slips through unredacted. Both redaction call
+    # sites below must reuse this single captured value.
+    bws_access_token = os.environ.get("BWS_ACCESS_TOKEN", "")
+
     log.info(f"hook:{name} starting in {cwd}")
     try:
         # VENDOR-PATCH VP-7: non-login shell ("-c", not "-lc") — a login
@@ -96,11 +107,14 @@ async def run_hook(
         # VENDOR-PATCH VP-9 (#362): also redact BWS_ACCESS_TOKEN, which
         # lives in the daemon's ambient os.environ and is never threaded
         # through `env=` (hook_env only ever carries GH_TOKEN/GITHUB_TOKEN).
+        # Reuse the value captured at merged_env construction time (see
+        # above) rather than re-reading os.environ here — avoids the
+        # TOCTOU race described there.
         stderr_tail = redact_secrets(
             stderr.decode(errors="replace"),
             extra_values=[
                 *(env or {}).values(),
-                os.environ.get("BWS_ACCESS_TOKEN", ""),
+                bws_access_token,
             ],
         )[-_STDERR_TAIL_MAX_CHARS:]
 
@@ -136,7 +150,7 @@ async def run_hook(
                 str(e),
                 extra_values=[
                     *(env or {}).values(),
-                    os.environ.get("BWS_ACCESS_TOKEN", ""),
+                    bws_access_token,
                 ],
             )[-_STDERR_TAIL_MAX_CHARS:],
         )

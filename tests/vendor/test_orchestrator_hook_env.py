@@ -791,3 +791,73 @@ class TestBwsAccessTokenRedactedInStderrTail:
             "BWS_ACCESS_TOKEN (set only in os.environ, never in env=) "
             f"leaked into stderr_tail; got {result.stderr_tail!r}"  # type: ignore[attr-defined]
         )
+
+    def test_bws_access_token_rotated_mid_run_still_redacts_the_leaked_value(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A BWS_ACCESS_TOKEN that rotates mid-run must still be redacted.
+
+        ``merged_env`` is built early in ``run_hook`` (before the
+        subprocess is spawned) from the process's ``os.environ`` at
+        that moment — this is the token value the subprocess actually
+        runs with, and the value it could echo into stderr. The
+        stderr-redaction call site(s) run AFTER ``await
+        proc.communicate()`` and independently call
+        ``os.environ.get("BWS_ACCESS_TOKEN", "")`` again at that later
+        point. If the parent process's token value rotates in between
+        subprocess spawn and this later read, the redaction pass
+        scrubs the NEW value while the subprocess (and its echoed
+        stderr) actually ran with the OLD one — so the token that
+        genuinely leaked slips through unredacted.
+
+        This test rotates the REAL ``os.environ["BWS_ACCESS_TOKEN"]``
+        (via ``monkeypatch.setenv``) at the exact moment the mocked
+        ``asyncio.create_subprocess_exec`` is invoked — the true spawn
+        boundary. This is deliberately accessor-agnostic: whatever
+        read constructs ``merged_env`` (dict-spread, ``.get()``,
+        subscript — any of them) happens strictly before this point
+        and observes the OLD value; any read of
+        ``os.environ["BWS_ACCESS_TOKEN"]`` performed AFTER this point
+        (i.e. after ``communicate()``, at the redaction call site)
+        observes the NEW value regardless of which accessor it uses.
+        A correct fix must capture the token's value once, at
+        ``merged_env`` construction time, and reuse that captured
+        value at the redaction call site(s) — merely swapping
+        ``os.environ.get(...)`` for a different accessor at the same
+        (late) call site would still fail this test. The fake
+        subprocess's stderr echoes the OLD value, mirroring what a
+        real credential leak during the hook's actual execution would
+        look like.
+        """
+        monkeypatch.setenv("BWS_ACCESS_TOKEN", "old-token-value")
+
+        async def fake_create_subprocess_exec(
+            *args: object, **kwargs: object
+        ) -> _FakeSubprocess:
+            # The parent process's token rotates at the instant the
+            # child is spawned. merged_env (built just before this
+            # call, from whatever os.environ held a moment ago) has
+            # already captured the OLD value by this point -- only a
+            # *later* read of os.environ observes the NEW one.
+            monkeypatch.setenv("BWS_ACCESS_TOKEN", "new-token-value")
+            return _FakeSubprocess(
+                returncode=1,
+                stderr=b"vault error: bad secret old-token-value",
+            )
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            side_effect=fake_create_subprocess_exec,
+        ):
+            result = _run_sync(
+                hooks_mod.run_hook("before_run", "false", cwd="/tmp")
+            )
+
+        assert "old-token-value" not in result.stderr_tail, (  # type: ignore[attr-defined]
+            "the token value LIVE during subprocess execution (the OLD, "
+            "pre-rotation value actually echoed into stderr) must be the "
+            "one that gets redacted — not whatever a fresh read of "
+            "os.environ['BWS_ACCESS_TOKEN'] returns at the later, "
+            "independent redaction call site after the token has "
+            f"rotated; got stderr_tail={result.stderr_tail!r}"  # type: ignore[attr-defined]
+        )
