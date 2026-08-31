@@ -132,7 +132,7 @@ def _request_json(request: urllib_request.Request) -> dict[str, object]:
     try:
         with urllib_request.urlopen(request, timeout=15) as response:
             payload = json.load(response)
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise PolicyRuntimeError(
             "GitHub issue metadata request failed"
         ) from exc
@@ -165,7 +165,15 @@ def fetch_issue_has_milestone(
             "X-GitHub-Api-Version": "2022-11-28",
         },
     )
-    return _request_json(request).get("milestone") is not None
+    metadata = _request_json(request)
+    if "milestone" not in metadata:
+        raise PolicyRuntimeError("GitHub issue metadata is missing milestone")
+    milestone = metadata["milestone"]
+    if milestone is None:
+        return False
+    if not isinstance(milestone, dict):
+        raise PolicyRuntimeError("GitHub issue metadata has invalid milestone")
+    return True
 
 
 def load_pull_request_event(path: Path) -> PullRequestEvent:
@@ -182,7 +190,10 @@ def load_pull_request_event(path: Path) -> PullRequestEvent:
         json.JSONDecodeError: If the event file is not valid JSON.
         OSError: If the event file cannot be read.
     """
-    payload: object = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        payload: object = json.loads(path.read_text(encoding="utf-8"))
+    except UnicodeDecodeError as exc:
+        raise PolicyRuntimeError("GitHub event read failed") from exc
     if not isinstance(payload, dict):
         raise PolicyRuntimeError("GitHub event was not a JSON object")
     repository_payload = payload.get("repository")

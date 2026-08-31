@@ -59,6 +59,13 @@ def test_load_pull_request_event(tmp_path: Path) -> None:
     )
 
 
+def test_load_pull_request_event_normalizes_null_body(tmp_path: Path) -> None:
+    """Normalize an absent GitHub pull-request body to empty text."""
+    event_path = _write_event(tmp_path, body=None)
+
+    assert load_pull_request_event(event_path).body == ""
+
+
 def test_load_pull_request_event_rejects_malformed_json(
     tmp_path: Path,
 ) -> None:
@@ -70,15 +77,61 @@ def test_load_pull_request_event_rejects_malformed_json(
         load_pull_request_event(event_path)
 
 
+def test_main_rejects_invalid_utf8_event_without_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Translate undecodable event bytes to a token-safe runtime error."""
+    token = "private-token"
+    event_path = tmp_path / "event.json"
+    event_path.write_bytes(b"\x80")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+    monkeypatch.setenv("GITHUB_TOKEN", token)
+
+    assert main([]) == 1
+    output = capsys.readouterr().err
+    assert output == "PR policy: GitHub event read failed\n"
+    assert token not in output
+
+
 def test_fetch_issue_has_milestone(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Treat a milestone object in issue metadata as a milestone assignment."""
+    """Create the required GET request and accept an object milestone."""
+    observed: dict[str, object] = {}
+    token = "test-token"
+
+    def request_json(request: urllib_request.Request) -> dict[str, object]:
+        """Capture token-safe request properties and return issue metadata."""
+        observed.update(
+            {
+                "method": request.get_method(),
+                "url": request.full_url,
+                "accept": request.get_header("Accept"),
+                "authorization_is_expected": request.get_header(
+                    "Authorization"
+                )
+                == f"Bearer {token}",
+                "api_version": request.get_header("X-github-api-version"),
+            }
+        )
+        return {"milestone": {"number": 10}}
+
     monkeypatch.setattr(
         pr_policy,
         "_request_json",
-        lambda request: {"milestone": {"number": 10}},
+        request_json,
     )
 
-    assert fetch_issue_has_milestone("glitchwerks/baton-harness", 365, "token")
+    assert fetch_issue_has_milestone(
+        "glitchwerks/baton-harness", 365, token
+    )
+    assert observed == {
+        "method": "GET",
+        "url": "https://api.github.com/repos/glitchwerks/baton-harness/issues/365",
+        "accept": "application/vnd.github+json",
+        "authorization_is_expected": True,
+        "api_version": "2022-11-28",
+    }
 
 
 def test_fetch_issue_has_no_milestone(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -92,6 +145,73 @@ def test_fetch_issue_has_no_milestone(monkeypatch: pytest.MonkeyPatch) -> None:
     assert not fetch_issue_has_milestone(
         "glitchwerks/baton-harness", 365, "token"
     )
+
+
+@pytest.mark.parametrize(
+    ("metadata", "message"),
+    [
+        ({}, "GitHub issue metadata is missing milestone"),
+        (
+            {"milestone": "assigned"},
+            "GitHub issue metadata has invalid milestone",
+        ),
+        ({"milestone": []}, "GitHub issue metadata has invalid milestone"),
+        ({"milestone": True}, "GitHub issue metadata has invalid milestone"),
+    ],
+)
+def test_fetch_issue_has_milestone_rejects_invalid_metadata(
+    metadata: dict[str, object],
+    message: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reject missing and malformed milestone fields from GitHub metadata."""
+    monkeypatch.setattr(pr_policy, "_request_json", lambda request: metadata)
+
+    with pytest.raises(pr_policy.PolicyRuntimeError, match=message):
+        fetch_issue_has_milestone(
+            "glitchwerks/baton-harness", 365, "test-token"
+        )
+
+
+def test_main_rejects_invalid_utf8_api_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Translate undecodable API bytes to a token-safe runtime error."""
+    class Response:
+        """Minimal HTTP response that supplies undecodable bytes."""
+
+        def __enter__(self) -> Response:
+            """Enter the response context."""
+            return self
+
+        def __exit__(
+            self,
+            exc_type: object,
+            exc_value: object,
+            traceback: object,
+        ) -> None:
+            """Exit the response context."""
+
+        def read(self) -> bytes:
+            """Return bytes that cannot be decoded as UTF-8."""
+            return b"\x80"
+
+    token = "private-token"
+    event_path = _write_event(tmp_path, body="Closes #365")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+    monkeypatch.setenv("GITHUB_TOKEN", token)
+    monkeypatch.setattr(
+        urllib_request,
+        "urlopen",
+        lambda *args, **kwargs: Response(),
+    )
+
+    assert main([]) == 1
+    output = capsys.readouterr().err
+    assert output == "PR policy: GitHub issue metadata request failed\n"
+    assert token not in output
 
 
 def test_main_rejects_non_object_api_json(
@@ -163,12 +283,30 @@ def test_main_hides_http_error_details(
     assert token not in output
 
 
-def test_main_rejects_missing_github_environment(
+def test_main_rejects_missing_event_path(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Report a concise error when workflow environment values are absent."""
+    """Report a concise error when the event path is absent."""
     monkeypatch.delenv("GITHUB_EVENT_PATH", raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+
+    assert main([]) == 1
+    assert capsys.readouterr().err == (
+        "PR policy: required GitHub environment is missing\n"
+    )
+
+
+def test_main_rejects_missing_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Report a concise error when the GitHub token is absent."""
+    monkeypatch.setenv(
+        "GITHUB_EVENT_PATH",
+        str(_write_event(tmp_path, body="")),
+    )
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
 
     assert main([]) == 1
@@ -201,12 +339,21 @@ def test_main_prints_all_policy_errors(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Print every policy violation produced from one pull-request event."""
-    event_path = _write_event(tmp_path, body="Related #365")
+    event_path = _write_event(tmp_path, body="Closes #366\nResolves #367")
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
     monkeypatch.setenv("GITHUB_TOKEN", "token")
+    monkeypatch.setattr(
+        pr_policy,
+        "fetch_issue_has_milestone",
+        lambda repository, issue_number, token: False,
+    )
 
     assert main([]) == 1
-    assert "closing directive" in capsys.readouterr().err
+    assert capsys.readouterr().err == (
+        "PR policy: branch issue #365 is not closed by the PR body\n"
+        "PR policy: closing issue #366 has no milestone\n"
+        "PR policy: closing issue #367 has no milestone\n"
+    )
 
 
 @pytest.mark.parametrize(
