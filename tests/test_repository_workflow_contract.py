@@ -8,6 +8,10 @@ from typing import Any
 import yaml
 
 HARNESS = Path(__file__).resolve().parents[1]
+ISSUE_TEMPLATE_DIRECTORY = ".github/ISSUE_TEMPLATE"
+SECURITY_ADVISORY_URL = (
+    "https://github.com/glitchwerks/baton-harness/security/advisories/new"
+)
 
 
 def _load_yaml(relative_path: str) -> dict[str, Any]:
@@ -21,6 +25,87 @@ def _load_yaml(relative_path: str) -> dict[str, Any]:
     """
     path = HARNESS / relative_path
     return yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+
+
+def _form_fields(form: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return form body entries that accept user input.
+
+    Args:
+        form: Parsed GitHub issue form.
+
+    Returns:
+        The input-bearing form fields.
+    """
+    return [field for field in form["body"] if "id" in field]
+
+
+def _assert_issue_form_contract(
+    filename: str,
+    expected_labels: list[str],
+) -> None:
+    """Assert the structural contract shared by all issue forms.
+
+    Args:
+        filename: Issue-form filename in the template directory.
+        expected_labels: Labels GitHub should apply to created issues.
+    """
+    form = _load_yaml(f"{ISSUE_TEMPLATE_DIRECTORY}/{filename}")
+
+    assert all(form[key] for key in ("name", "description", "title", "body"))
+    assert form["labels"] == expected_labels
+
+    fields = _form_fields(form)
+    field_ids = [field["id"] for field in fields]
+    assert len(field_ids) == len(set(field_ids))
+
+    acceptance_criteria = next(
+        field for field in fields if field["id"] == "acceptance-criteria"
+    )
+    assert acceptance_criteria["type"] == "textarea"
+    assert acceptance_criteria["validations"]["required"] == "true"
+    description = acceptance_criteria["attributes"]["description"].lower()
+    assert "before merge" in description
+    assert "do not include post-merge" in description
+
+
+def test_issue_form_contract() -> None:
+    """Issue forms expose the labels and acceptance-criteria boundary."""
+    _assert_issue_form_contract("bug.yml", ["bug"])
+    _assert_issue_form_contract("feature.yml", ["enhancement"])
+    _assert_issue_form_contract("work-item.yml", [])
+
+
+def test_issue_template_config_contract() -> None:
+    """Issue-template configuration routes security reports without blanks."""
+    config = _load_yaml(f"{ISSUE_TEMPLATE_DIRECTORY}/config.yml")
+    assert config["blank_issues_enabled"] == "false"
+    assert config["contact_links"] == [
+        {
+            "name": "Report a security vulnerability",
+            "url": SECURITY_ADVISORY_URL,
+            "about": (
+                "Report security issues privately instead of opening a public "
+                "issue."
+            ),
+        }
+    ]
+
+
+def test_pull_request_template_contract() -> None:
+    """Default PR template contains the required sections and fields."""
+    template = (HARNESS / ".github/PULL_REQUEST_TEMPLATE.md").read_text(
+        encoding="utf-8"
+    )
+
+    for required_value in (
+        "Closes #",
+        "## Tests",
+        "## Documentation",
+        "## Review decision",
+        "needs-review",
+        "post-merge",
+    ):
+        assert required_value in template
 
 
 def test_pr_policy_workflow_contract() -> None:

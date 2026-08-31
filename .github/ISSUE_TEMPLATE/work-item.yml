@@ -1,0 +1,36 @@
+name: Work item
+description: Track a bounded maintenance, documentation, or operational task.
+title: "[Work]: "
+labels: []
+body:
+  - type: textarea
+    id: work
+    attributes:
+      label: Work to complete
+      description: Describe the bounded work that needs to be completed.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Intended outcome
+      description: Describe the observable outcome of the work.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add references, constraints, or other relevant context.
+    validations:
+      required: false
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance criteria
+      description: >-
+        List outcomes that must be true before merge. Do not include post-merge work.
+      placeholder: |
+        - [ ] Observable pre-merge outcome
+    validations:
+      required: true
