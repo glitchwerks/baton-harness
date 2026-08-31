@@ -5,10 +5,21 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 HARNESS = Path(__file__).resolve().parents[1]
 ISSUE_TEMPLATE_DIRECTORY = ".github/ISSUE_TEMPLATE"
+FAST_MARKER_DESCRIPTION = (
+    "fast: branch-level smoke, CLI, policy, and workflow contract tests"
+)
+SUPPORTED_BRANCHES = [
+    "feature/**",
+    "bug/**",
+    "docs/**",
+    "chore/**",
+    "refactor/**",
+]
 SECURITY_ADVISORY_URL = (
     "https://github.com/glitchwerks/baton-harness/security/advisories/new"
 )
@@ -38,6 +49,7 @@ EXPECTED_FORM_LABELS: dict[str, list[str]] = {
     "feature.yml": ["enhancement"],
     "work-item.yml": [],
 }
+pytestmark = pytest.mark.fast
 
 
 def _load_yaml(relative_path: str) -> dict[str, Any]:
@@ -143,6 +155,39 @@ def test_coderabbit_is_label_opt_in_only() -> None:
     auto_review = config["reviews"]["auto_review"]
     assert auto_review["enabled"] == "false"
     assert auto_review["labels"] == ["needs-review"]
+
+
+def test_fast_marker_registration(pytestconfig: pytest.Config) -> None:
+    """The branch-fast marker has one exact registered description."""
+    fast_markers = [
+        marker
+        for marker in pytestconfig.getini("markers")
+        if marker.startswith("fast:")
+    ]
+    assert fast_markers == [FAST_MARKER_DESCRIPTION]
+
+
+def test_fast_validation_workflow_contract() -> None:
+    """Fast validation runs only the branch-level checks on work pushes."""
+    workflow = _load_yaml(".github/workflows/fast-validation.yml")
+    assert workflow["on"]["push"]["branches"] == SUPPORTED_BRANCHES
+    assert set(workflow["on"]) == {"push"}
+    job = workflow["jobs"]["fast"]
+    assert job["name"] == "Fast validation"
+    assert job["permissions"] == {"contents": "read"}
+    commands = [step["run"] for step in job["steps"] if "run" in step]
+    assert commands == [
+        ".venv/bin/python -m ruff check .",
+        ".venv/bin/python -m ruff format --check .",
+        "shellcheck bin/*.sh bin/lib/*.sh",
+        ".venv/bin/python -m pytest -m fast",
+    ]
+
+
+def test_full_ci_only_targets_main_pull_requests() -> None:
+    """Full CI runs only for pull requests targeting main."""
+    workflow = _load_yaml(".github/workflows/ci.yml")
+    assert workflow["on"] == {"pull_request": {"branches": ["main"]}}
 
 
 def test_pr_policy_workflow_contract() -> None:

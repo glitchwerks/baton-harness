@@ -21,6 +21,8 @@ from baton_harness.pr_policy import (
     parse_closing_issues,
 )
 
+pytestmark = pytest.mark.fast
+
 
 def _write_event(tmp_path: Path, *, body: str | None) -> Path:
     """Write a minimal GitHub pull-request event fixture.
