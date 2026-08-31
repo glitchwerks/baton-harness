@@ -18,3 +18,12 @@ Two external systems inform this harness's design. Draw on both when reasoning a
 
 - **`mraza007/baton`** (`symphony`) — the original orchestrator, now vendored. Source of the core poll-issue → run-agent → open-PR loop. Dormant upstream (see § Upstream dependency above).
 - **[`nexu-io/looper`](https://github.com/nexu-io/looper)** — actively-maintained Go system with the same core idea (poll GitHub for labeled issues/PRs, run pluggable AI agents, produce PRs), but architecturally deeper: five agent roles (Coordinator → Planner → Reviewer ↔ Fixer → Worker), parallel goroutines, goal-based termination via a stdout result marker, optional auto-merge, and 11 ADRs. **Design reference, not a dependency** — borrow patterns, keep our Python stack and no-merge guardrails (the daemon opens a ready-for-review PR but never merges to `main`). Full comparison and the rationale for *not* adopting it wholesale: `docs/research/2026-06-21-looper-vs-baton-harness.md`. Active borrow-candidates tracked under milestone **Looper-inspired enhancements** (#139 goal-based termination, #140 automated review pass, #141 durable-authority discipline).
+
+## Repository work workflow
+
+- Create or update a GitHub issue before starting work. A milestone is optional at issue creation and required before issue closure. Keep acceptance criteria to outcomes that must be complete before merge; do not include post-merge acceptance criteria.
+- Start from current `main` and use a dedicated `<type>/<issue-number>-<slug>` branch, where type is `feature`, `bug`, `docs`, `chore`, or `refactor`. Large-feature sub-branches target the primary feature branch; the primary feature branch targets `main`.
+- Run fast validation while working on a branch. Pull requests to `main` run the full integration suite and the PR-policy check.
+- Every PR to `main` must include `Closes #N`, `Fixes #N`, or `Resolves #N`. The branch issue number must be among the closing issues, and every closing issue must have a milestone.
+- Add the PR-only `needs-review` label to every feature PR and never to a docs-only PR. For bug, chore, and refactor PRs, add it when the change touches security, authorization, identity, secrets, permissions, persistence, concurrency, or another comparably high-risk boundary. CodeRabbit feedback is advisory.
+- Never push or merge directly to `main`. Merge only after all required checks pass.
