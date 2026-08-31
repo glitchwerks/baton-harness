@@ -149,6 +149,13 @@ def test_pull_request_template_contract() -> None:
         assert required_value in template
 
 
+def test_agent_policy_files_are_byte_identical() -> None:
+    """AGENTS.md and CLAUDE.md provide the same harness policy bytes."""
+    assert (HARNESS / "AGENTS.md").read_bytes() == (
+        HARNESS / "CLAUDE.md"
+    ).read_bytes()
+
+
 def test_coderabbit_is_label_opt_in_only() -> None:
     """CodeRabbit reviews are advisory and opt in through one PR label."""
     config = _load_yaml(".coderabbit.yaml")
