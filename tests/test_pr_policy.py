@@ -82,3 +82,45 @@ def test_evaluate_pr_policy_reports_all_missing_milestones() -> None:
         "closing issue #365 has no milestone",
         "closing issue #366 has no milestone",
     ]
+
+
+def test_evaluate_pr_policy_reports_unverified_milestone_for_absent_issue(
+) -> None:
+    """Distinguish an absent milestone result from a confirmed absence."""
+    errors = evaluate_pr_policy(
+        "feature/365-good",
+        "Closes #365",
+        "glitchwerks/baton-harness",
+        {},
+    )
+    assert errors == ["unable to verify milestone for closing issue #365"]
+
+
+def test_evaluate_pr_policy_orders_invalid_branch_before_missing_directive(
+) -> None:
+    """Report invalid branch before a missing closing directive."""
+    errors = evaluate_pr_policy(
+        "topic/365-bad",
+        "Related #365",
+        "glitchwerks/baton-harness",
+        {},
+    )
+    assert errors == [
+        "invalid source branch: topic/365-bad",
+        "PR body has no closing directive for this repository",
+    ]
+
+
+def test_evaluate_pr_policy_orders_mismatch_before_milestone_errors() -> None:
+    """Report branch mismatch before missing milestones in issue order."""
+    errors = evaluate_pr_policy(
+        "feature/365-good",
+        "Closes #366\nResolves #367",
+        "glitchwerks/baton-harness",
+        {366: False, 367: False},
+    )
+    assert errors == [
+        "branch issue #365 is not closed by the PR body",
+        "closing issue #366 has no milestone",
+        "closing issue #367 has no milestone",
+    ]
