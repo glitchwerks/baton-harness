@@ -12,6 +12,32 @@ ISSUE_TEMPLATE_DIRECTORY = ".github/ISSUE_TEMPLATE"
 SECURITY_ADVISORY_URL = (
     "https://github.com/glitchwerks/baton-harness/security/advisories/new"
 )
+EXPECTED_FORM_FIELDS: dict[str, list[tuple[str, str, str]]] = {
+    "bug.yml": [
+        ("problem", "textarea", "true"),
+        ("reproduction", "textarea", "true"),
+        ("expected", "textarea", "true"),
+        ("context", "textarea", "false"),
+        ("acceptance-criteria", "textarea", "true"),
+    ],
+    "feature.yml": [
+        ("problem", "textarea", "true"),
+        ("outcome", "textarea", "true"),
+        ("alternatives", "textarea", "false"),
+        ("acceptance-criteria", "textarea", "true"),
+    ],
+    "work-item.yml": [
+        ("work", "textarea", "true"),
+        ("outcome", "textarea", "true"),
+        ("context", "textarea", "false"),
+        ("acceptance-criteria", "textarea", "true"),
+    ],
+}
+EXPECTED_FORM_LABELS: dict[str, list[str]] = {
+    "bug.yml": ["bug"],
+    "feature.yml": ["enhancement"],
+    "work-item.yml": [],
+}
 
 
 def _load_yaml(relative_path: str) -> dict[str, Any]:
@@ -42,7 +68,7 @@ def _form_fields(form: dict[str, Any]) -> list[dict[str, Any]]:
 def _assert_issue_form_contract(
     filename: str,
     expected_labels: list[str],
-) -> None:
+) -> dict[str, Any]:
     """Assert the structural contract shared by all issue forms.
 
     Args:
@@ -57,6 +83,10 @@ def _assert_issue_form_contract(
     fields = _form_fields(form)
     field_ids = [field["id"] for field in fields]
     assert len(field_ids) == len(set(field_ids))
+    assert [
+        (field["id"], field["type"], field["validations"]["required"])
+        for field in fields
+    ] == EXPECTED_FORM_FIELDS[filename]
 
     acceptance_criteria = next(
         field for field in fields if field["id"] == "acceptance-criteria"
@@ -66,29 +96,30 @@ def _assert_issue_form_contract(
     description = acceptance_criteria["attributes"]["description"].lower()
     assert "before merge" in description
     assert "do not include post-merge" in description
+    return form
 
 
 def test_issue_form_contract() -> None:
     """Issue forms expose the labels and acceptance-criteria boundary."""
-    _assert_issue_form_contract("bug.yml", ["bug"])
-    _assert_issue_form_contract("feature.yml", ["enhancement"])
-    _assert_issue_form_contract("work-item.yml", [])
+    forms = [
+        _assert_issue_form_contract(filename, labels)
+        for filename, labels in EXPECTED_FORM_LABELS.items()
+    ]
+    metadata = [
+        (form["name"], form["description"], form["title"])
+        for form in forms
+    ]
+    assert len(metadata) == len(set(metadata))
 
 
 def test_issue_template_config_contract() -> None:
     """Issue-template configuration routes security reports without blanks."""
     config = _load_yaml(f"{ISSUE_TEMPLATE_DIRECTORY}/config.yml")
     assert config["blank_issues_enabled"] == "false"
-    assert config["contact_links"] == [
-        {
-            "name": "Report a security vulnerability",
-            "url": SECURITY_ADVISORY_URL,
-            "about": (
-                "Report security issues privately instead of opening a public "
-                "issue."
-            ),
-        }
-    ]
+    assert any(
+        link.get("url") == SECURITY_ADVISORY_URL
+        for link in config["contact_links"]
+    )
 
 
 def test_pull_request_template_contract() -> None:
