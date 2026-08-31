@@ -124,9 +124,7 @@ def test_fetch_issue_has_milestone(monkeypatch: pytest.MonkeyPatch) -> None:
         request_json,
     )
 
-    assert fetch_issue_has_milestone(
-        "glitchwerks/baton-harness", 365, token
-    )
+    assert fetch_issue_has_milestone("glitchwerks/baton-harness", 365, token)
     assert observed == {
         "method": "GET",
         "url": "https://api.github.com/repos/glitchwerks/baton-harness/issues/365",
@@ -181,6 +179,7 @@ def test_main_rejects_invalid_utf8_api_json(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Translate undecodable API bytes to a token-safe runtime error."""
+
     class Response:
         """Minimal HTTP response that supplies undecodable bytes."""
 
@@ -377,9 +376,10 @@ def test_parse_branch_issue(branch: str, expected: int | None) -> None:
 def test_parse_closing_issues_accepts_local_and_qualified_references() -> None:
     """Parse local and same-repository qualified closing references."""
     body = "Closes #365\nFixes glitchwerks/baton-harness#366"
-    assert parse_closing_issues(
-        body, "glitchwerks/baton-harness"
-    ) == (365, 366)
+    assert parse_closing_issues(body, "glitchwerks/baton-harness") == (
+        365,
+        366,
+    )
 
 
 def test_parse_closing_issues_ignores_plain_and_foreign_references() -> None:
@@ -431,8 +431,9 @@ def test_evaluate_pr_policy_reports_all_missing_milestones() -> None:
     ]
 
 
-def test_evaluate_pr_policy_reports_unverified_milestone_for_absent_issue(
-) -> None:
+def test_evaluate_pr_policy_reports_unverified_milestone_for_absent_issue() -> (  # noqa: E501
+    None  # noqa: E501
+):
     """Distinguish an absent milestone result from a confirmed absence."""
     errors = evaluate_pr_policy(
         "feature/365-good",
@@ -443,8 +444,9 @@ def test_evaluate_pr_policy_reports_unverified_milestone_for_absent_issue(
     assert errors == ["unable to verify milestone for closing issue #365"]
 
 
-def test_evaluate_pr_policy_orders_invalid_branch_before_missing_directive(
-) -> None:
+def test_evaluate_pr_policy_orders_invalid_branch_before_missing_directive() -> (  # noqa: E501
+    None  # noqa: E501
+):
     """Report invalid branch before a missing closing directive."""
     errors = evaluate_pr_policy(
         "topic/365-bad",
