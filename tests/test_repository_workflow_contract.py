@@ -27,6 +27,12 @@ def test_pr_policy_workflow_contract() -> None:
     """PR policy workflow exposes the required trigger and check contract."""
     workflow = _load_yaml(".github/workflows/pr-policy.yml")
     assert workflow["on"]["pull_request"]["branches"] == ["main"]
+    assert workflow["on"]["pull_request"]["types"] == [
+        "opened",
+        "synchronize",
+        "reopened",
+        "edited",
+    ]
     assert workflow["concurrency"] == {
         "group": "pr-policy-${{ github.event.pull_request.number }}",
         "cancel-in-progress": "true",
@@ -38,5 +44,12 @@ def test_pr_policy_workflow_contract() -> None:
         "pull-requests": "read",
     }
     assert job["name"] == "PR policy"
-    run_steps = [step["run"] for step in job["steps"] if "run" in step]
-    assert run_steps == [".venv/bin/python -m baton_harness.pr_policy"]
+    assert job["steps"] == [
+        {"uses": "actions/checkout@v4"},
+        {"uses": "./.github/actions/setup"},
+        {
+            "name": "Validate pull request policy",
+            "env": {"GITHUB_TOKEN": "${{ secrets.GITHUB_TOKEN }}"},
+            "run": ".venv/bin/python -m baton_harness.pr_policy",
+        },
+    ]
