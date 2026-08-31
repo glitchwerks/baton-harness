@@ -2,13 +2,211 @@
 
 from __future__ import annotations
 
+import json
+import urllib.request as urllib_request
+from email.message import Message
+from pathlib import Path
+from urllib.error import HTTPError
+
 import pytest
 
+import baton_harness.pr_policy as pr_policy
 from baton_harness.pr_policy import (
+    PullRequestEvent,
     evaluate_pr_policy,
+    fetch_issue_has_milestone,
+    load_pull_request_event,
+    main,
     parse_branch_issue,
     parse_closing_issues,
 )
+
+
+def _write_event(tmp_path: Path, *, body: str | None) -> Path:
+    """Write a minimal GitHub pull-request event fixture.
+
+    Args:
+        tmp_path: Pytest-provided temporary directory.
+        body: Pull-request body included in the event.
+
+    Returns:
+        Path to the JSON event fixture.
+    """
+    event_path = tmp_path / "event.json"
+    event_path.write_text(
+        json.dumps(
+            {
+                "repository": {"full_name": "glitchwerks/baton-harness"},
+                "pull_request": {
+                    "body": body,
+                    "head": {"ref": "feature/365-workflow"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return event_path
+
+
+def test_load_pull_request_event(tmp_path: Path) -> None:
+    """Decode the repository, source branch, and body from an event."""
+    event_path = _write_event(tmp_path, body="Closes #365")
+
+    assert load_pull_request_event(event_path) == PullRequestEvent(
+        head_ref="feature/365-workflow",
+        body="Closes #365",
+        repository="glitchwerks/baton-harness",
+    )
+
+
+def test_load_pull_request_event_rejects_malformed_json(
+    tmp_path: Path,
+) -> None:
+    """Reject an event file whose JSON cannot be decoded."""
+    event_path = tmp_path / "event.json"
+    event_path.write_text("{", encoding="utf-8")
+
+    with pytest.raises(json.JSONDecodeError):
+        load_pull_request_event(event_path)
+
+
+def test_fetch_issue_has_milestone(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Treat a milestone object in issue metadata as a milestone assignment."""
+    monkeypatch.setattr(
+        pr_policy,
+        "_request_json",
+        lambda request: {"milestone": {"number": 10}},
+    )
+
+    assert fetch_issue_has_milestone("glitchwerks/baton-harness", 365, "token")
+
+
+def test_fetch_issue_has_no_milestone(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Treat a null milestone in issue metadata as no milestone assignment."""
+    monkeypatch.setattr(
+        pr_policy,
+        "_request_json",
+        lambda request: {"milestone": None},
+    )
+
+    assert not fetch_issue_has_milestone(
+        "glitchwerks/baton-harness", 365, "token"
+    )
+
+
+def test_main_rejects_non_object_api_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Report a concise error for issue metadata that is not an object."""
+
+    class Response:
+        """Minimal context-managed HTTP response fixture."""
+
+        def __enter__(self) -> Response:
+            """Enter the response context."""
+            return self
+
+        def __exit__(
+            self,
+            exc_type: object,
+            exc_value: object,
+            traceback: object,
+        ) -> None:
+            """Exit the response context."""
+
+    event_path = _write_event(tmp_path, body="Closes #365")
+    token = "private-token"
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+    monkeypatch.setenv("GITHUB_TOKEN", token)
+    monkeypatch.setattr(
+        urllib_request,
+        "urlopen",
+        lambda *args, **kwargs: Response(),
+    )
+    monkeypatch.setattr(json, "load", lambda response: [])
+
+    assert main([]) == 1
+    output = capsys.readouterr().err
+    assert output == "PR policy: GitHub issue metadata was not a JSON object\n"
+    assert token not in output
+
+
+def test_main_hides_http_error_details(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Replace an HTTP failure with a token-safe runtime error."""
+    token = "private-token"
+
+    def raise_http_error(*args: object, **kwargs: object) -> object:
+        """Raise the HTTP failure used by this boundary test."""
+        del args, kwargs
+        raise HTTPError(
+            "https://example.test",
+            401,
+            "Bearer private-token",
+            Message(),
+            None,
+        )
+
+    monkeypatch.setattr(urllib_request, "urlopen", raise_http_error)
+    event_path = _write_event(tmp_path, body="Closes #365")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+    monkeypatch.setenv("GITHUB_TOKEN", token)
+
+    assert main([]) == 1
+    output = capsys.readouterr().err
+    assert output == "PR policy: GitHub issue metadata request failed\n"
+    assert token not in output
+
+
+def test_main_rejects_missing_github_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Report a concise error when workflow environment values are absent."""
+    monkeypatch.delenv("GITHUB_EVENT_PATH", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+    assert main([]) == 1
+    assert capsys.readouterr().err == (
+        "PR policy: required GitHub environment is missing\n"
+    )
+
+
+def test_main_reports_malformed_event_without_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Report event decoding failures without disclosing the access token."""
+    token = "private-token"
+    event_path = tmp_path / "event.json"
+    event_path.write_text("{", encoding="utf-8")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+    monkeypatch.setenv("GITHUB_TOKEN", token)
+
+    assert main([]) == 1
+    output = capsys.readouterr().err
+    assert output.startswith("PR policy: ")
+    assert token not in output
+
+
+def test_main_prints_all_policy_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Print every policy violation produced from one pull-request event."""
+    event_path = _write_event(tmp_path, body="Related #365")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    assert main([]) == 1
+    assert "closing directive" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
