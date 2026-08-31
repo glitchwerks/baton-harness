@@ -105,11 +105,9 @@ def test_issue_form_contract() -> None:
         _assert_issue_form_contract(filename, labels)
         for filename, labels in EXPECTED_FORM_LABELS.items()
     ]
-    metadata = [
-        (form["name"], form["description"], form["title"])
-        for form in forms
-    ]
-    assert len(metadata) == len(set(metadata))
+    for metadata_field in ("name", "description", "title"):
+        values = [form[metadata_field] for form in forms]
+        assert len(values) == len(set(values))
 
 
 def test_issue_template_config_contract() -> None:
