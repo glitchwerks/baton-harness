@@ -137,6 +137,14 @@ def test_pull_request_template_contract() -> None:
         assert required_value in template
 
 
+def test_coderabbit_is_label_opt_in_only() -> None:
+    """CodeRabbit reviews are advisory and opt in through one PR label."""
+    config = _load_yaml(".coderabbit.yaml")
+    auto_review = config["reviews"]["auto_review"]
+    assert auto_review["enabled"] == "false"
+    assert auto_review["labels"] == ["needs-review"]
+
+
 def test_pr_policy_workflow_contract() -> None:
     """PR policy workflow exposes the required trigger and check contract."""
     workflow = _load_yaml(".github/workflows/pr-policy.yml")
