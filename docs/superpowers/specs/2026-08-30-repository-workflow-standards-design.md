@@ -1,6 +1,6 @@
 # Repository Workflow Standards Design
 
-**Status:** Approved conversational design; awaiting written-spec review
+**Status:** Approved 2026-08-30
 
 **Issue:** #365
 
