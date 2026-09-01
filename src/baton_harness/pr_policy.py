@@ -236,10 +236,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         event = load_pull_request_event(Path(event_path))
         closing_issues = parse_closing_issues(event.body, event.repository)
-        milestones = {
-            number: fetch_issue_has_milestone(event.repository, number, token)
-            for number in closing_issues
-        }
+        milestones: dict[int, bool] = {}
+        for number in closing_issues:
+            try:
+                milestones[number] = fetch_issue_has_milestone(
+                    event.repository,
+                    number,
+                    token,
+                )
+            except PolicyRuntimeError:
+                continue
         errors = evaluate_pr_policy(
             event.head_ref,
             event.body,

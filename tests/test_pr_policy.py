@@ -24,12 +24,18 @@ from baton_harness.pr_policy import (
 pytestmark = pytest.mark.fast
 
 
-def _write_event(tmp_path: Path, *, body: str | None) -> Path:
+def _write_event(
+    tmp_path: Path,
+    *,
+    body: str | None,
+    head_ref: str = "feature/365-workflow",
+) -> Path:
     """Write a minimal GitHub pull-request event fixture.
 
     Args:
         tmp_path: Pytest-provided temporary directory.
         body: Pull-request body included in the event.
+        head_ref: Pull-request source branch included in the event.
 
     Returns:
         Path to the JSON event fixture.
@@ -41,7 +47,7 @@ def _write_event(tmp_path: Path, *, body: str | None) -> Path:
                 "repository": {"full_name": "glitchwerks/baton-harness"},
                 "pull_request": {
                     "body": body,
-                    "head": {"ref": "feature/365-workflow"},
+                    "head": {"ref": head_ref},
                 },
             }
         ),
@@ -173,12 +179,12 @@ def test_fetch_issue_has_milestone_rejects_invalid_metadata(
         )
 
 
-def test_main_rejects_invalid_utf8_api_json(
+def test_main_reports_unverified_issue_for_invalid_utf8_api_json(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Translate undecodable API bytes to a token-safe runtime error."""
+    """Report the affected issue when API bytes cannot be decoded."""
 
     class Response:
         """Minimal HTTP response that supplies undecodable bytes."""
@@ -211,16 +217,18 @@ def test_main_rejects_invalid_utf8_api_json(
 
     assert main([]) == 1
     output = capsys.readouterr().err
-    assert output == "PR policy: GitHub issue metadata request failed\n"
+    assert output == (
+        "PR policy: unable to verify milestone for closing issue #365\n"
+    )
     assert token not in output
 
 
-def test_main_rejects_non_object_api_json(
+def test_main_reports_unverified_issue_for_non_object_api_json(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Report a concise error for issue metadata that is not an object."""
+    """Report the affected issue when API JSON is not an object."""
 
     class Response:
         """Minimal context-managed HTTP response fixture."""
@@ -250,16 +258,18 @@ def test_main_rejects_non_object_api_json(
 
     assert main([]) == 1
     output = capsys.readouterr().err
-    assert output == "PR policy: GitHub issue metadata was not a JSON object\n"
+    assert output == (
+        "PR policy: unable to verify milestone for closing issue #365\n"
+    )
     assert token not in output
 
 
-def test_main_hides_http_error_details(
+def test_main_reports_unverified_issue_without_http_error_details(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Replace an HTTP failure with a token-safe runtime error."""
+    """Report the affected issue without exposing HTTP failure details."""
     token = "private-token"
 
     def raise_http_error(*args: object, **kwargs: object) -> object:
@@ -280,7 +290,9 @@ def test_main_hides_http_error_details(
 
     assert main([]) == 1
     output = capsys.readouterr().err
-    assert output == "PR policy: GitHub issue metadata request failed\n"
+    assert output == (
+        "PR policy: unable to verify milestone for closing issue #365\n"
+    )
     assert token not in output
 
 
@@ -357,6 +369,45 @@ def test_main_prints_all_policy_errors(
     )
 
 
+def test_main_reports_structural_errors_and_each_failed_issue_lookup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Continue policy evaluation after each issue metadata failure."""
+    event_path = _write_event(
+        tmp_path,
+        body="Closes #366\nResolves #367",
+        head_ref="topic/365-invalid",
+    )
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    def fail_issue_lookup(
+        repository: str,
+        issue_number: int,
+        token: str,
+    ) -> bool:
+        """Fail every live issue lookup without leaking API details."""
+        del repository, token
+        raise pr_policy.PolicyRuntimeError(f"private failure {issue_number}")
+
+    monkeypatch.setattr(
+        pr_policy,
+        "fetch_issue_has_milestone",
+        fail_issue_lookup,
+    )
+
+    assert main([]) == 1
+    output = capsys.readouterr().err
+    assert output == (
+        "PR policy: invalid source branch: topic/365-invalid\n"
+        "PR policy: unable to verify milestone for closing issue #366\n"
+        "PR policy: unable to verify milestone for closing issue #367\n"
+    )
+    assert "private failure" not in output
+
+
 @pytest.mark.parametrize(
     ("branch", "expected"),
     [
@@ -366,6 +417,8 @@ def test_main_prints_all_policy_errors(
         ("feature/no-issue", None),
         ("feature/365_Bad", None),
         ("feat/365-short", None),
+        ("feature/0-zero", None),
+        ("feature/0365-leading-zero", None),
     ],
 )
 def test_parse_branch_issue(branch: str, expected: int | None) -> None:
