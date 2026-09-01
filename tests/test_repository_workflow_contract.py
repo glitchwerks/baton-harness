@@ -113,6 +113,17 @@ def _assert_issue_form_contract(
 
 def test_issue_form_contract() -> None:
     """Issue forms expose the labels and acceptance-criteria boundary."""
+    expected_forms = set(EXPECTED_FORM_LABELS)
+    assert set(EXPECTED_FORM_FIELDS) == expected_forms
+
+    template_directory = HARNESS / ISSUE_TEMPLATE_DIRECTORY
+    actual_forms = {
+        path.name
+        for path in template_directory.glob("*.yml")
+        if path.name != "config.yml"
+    }
+    assert actual_forms == expected_forms
+
     forms = [
         _assert_issue_form_contract(filename, labels)
         for filename, labels in EXPECTED_FORM_LABELS.items()

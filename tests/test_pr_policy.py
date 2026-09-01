@@ -408,6 +408,29 @@ def test_main_reports_structural_errors_and_each_failed_issue_lookup(
     assert "private failure" not in output
 
 
+def test_main_accepts_compliant_pull_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Return success without diagnostics for compliant live metadata."""
+    event_path = _write_event(
+        tmp_path,
+        body="Closes #365",
+        head_ref="feature/365-good",
+    )
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+    monkeypatch.setattr(
+        pr_policy,
+        "fetch_issue_has_milestone",
+        lambda repository, issue_number, token: True,
+    )
+
+    assert main([]) == 0
+    assert capsys.readouterr().err == ""
+
+
 @pytest.mark.parametrize(
     ("branch", "expected"),
     [
@@ -439,6 +462,19 @@ def test_parse_closing_issues_ignores_plain_and_foreign_references() -> None:
     """Ignore references without directives and foreign repositories."""
     body = "Related: #365\nCloses another/repository#99"
     assert parse_closing_issues(body, "glitchwerks/baton-harness") == ()
+
+
+def test_evaluate_pr_policy_accepts_compliant_pull_request() -> None:
+    """Return no violations for matching branch, directive, and milestone."""
+    assert (
+        evaluate_pr_policy(
+            "feature/365-good",
+            "Closes #365",
+            "glitchwerks/baton-harness",
+            {365: True},
+        )
+        == []
+    )
 
 
 @pytest.mark.parametrize(
