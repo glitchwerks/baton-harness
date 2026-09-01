@@ -20,7 +20,10 @@ target the primary feature branch; the primary feature pull request targets `mai
 
 Run fast validation on the work branch while iterating. Before integrating a pull request
 to `main`, run the full integration validation suite; it is the boundary for the complete
-quality gate.
+quality gate. If `PR policy` fails because a linked issue has no milestone, add or correct
+the milestone, open the existing PR-policy run from GitHub Actions or the PR Checks view,
+and choose **Re-run failed jobs**. The re-run reads current issue metadata, so an empty
+commit is not required.
 
 ## Pull requests
 
@@ -41,4 +44,6 @@ concurrency before deciding whether to apply the label. CodeRabbit feedback is a
 Merge only after all required checks pass. Acceptance criteria are pre-merge requirements;
 do not leave post-merge acceptance criteria. Never merge directly to `main`.
 
-Sources: #365; [approved repository workflow standards design](superpowers/specs/2026-08-30-repository-workflow-standards-design.md).
+Sources: #365; [approved repository workflow standards design](superpowers/specs/2026-08-30-repository-workflow-standards-design.md);
+[GitHub workflow re-run documentation](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs?tool=webui)
+(fetched 2026-08-31).

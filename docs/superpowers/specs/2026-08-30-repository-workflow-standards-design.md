@@ -12,18 +12,21 @@ Standardize how work is proposed, branched, validated, reviewed, and merged in t
 repository. The durable policy covers issue forms, the pull-request template, repository
 labels, branch naming, fast branch validation, full integration validation, review-bot
 selection, and the required PR-policy check. The approved requirements are recorded in
-#365.
+issue `#365`.
 
 This design does not add public-contributor process, approval-count requirements,
 automatic merging, or automatic reopening of manually closed issues. Those are explicit
 non-goals in #365.
 
-## Current State
+## Pre-change Current State
+
+This section records the repository baseline at commit `ade7809`; it does not describe
+the post-implementation feature branch. At that baseline:
 
 - The single `CI` workflow runs for pushes and pull requests targeting `main` and
   `feature/**`; it exposes four independent jobs named `Lint (ruff)`, `Type check
   (mypy)`, `Test (pytest)`, and `Lint (shellcheck)`
-  (`.github/workflows/ci.yml:L1-L62`).
+  (`ade7809:.github/workflows/ci.yml:L1-L62`).
 - A contract test currently requires the CI job names, daemon merge wait list, and
   checked-in target-sandbox ruleset to match exactly
   (`tests/test_required_checks_match_ci_yml.py:L1-L12`,
@@ -124,6 +127,8 @@ The existing `ci.yml` becomes the full integration workflow for PRs to `main`. I
 the four existing check names and continues to run full Ruff, ShellCheck, mypy, and pytest.
 Preserving those names avoids breaking the current three-source contract documented by
 `tests/test_required_checks_match_ci_yml.py:L1-L12` and the live CI ruleset cited above.
+The workflow declares `contents: read` at workflow scope because all four jobs require
+only repository checkout access (`.github/workflows/ci.yml:L7-L65`).
 
 GitHub Actions supports branch filters on `push` and `pull_request` events; the workflows
 will use those filters to make the base-branch boundary explicit
@@ -140,7 +145,7 @@ events; #365 requires both the check and automated coverage.
 The check fails when any of these conditions is true:
 
 1. The head branch does not match
-   `^(feature|bug|docs|chore|refactor)/[0-9]+-[a-z0-9]+(?:-[a-z0-9]+)*$`.
+   `^(feature|bug|docs|chore|refactor)/[1-9][0-9]*-[a-z0-9]+(?:-[a-z0-9]+)*$`.
 2. The PR body has no explicit `Closes`, `Fixes`, or `Resolves` directive for an issue in
    this repository.
 3. The issue number encoded in the branch name is not among those closing directives.
@@ -148,8 +153,20 @@ The check fails when any of these conditions is true:
 
 The workflow receives read-only pull-request and issue access and does not mutate PRs,
 issues, labels, or milestones. It reports every detected policy violation in one run so the
-author can correct them together. These enforcement rules and the read-only posture are
-approved in #365.
+author can correct them together. A failed issue-metadata lookup is reported as an
+unverified milestone for that issue without suppressing structural errors or other issue
+lookups (`src/baton_harness/pr_policy.py:L208-L239`,
+`tests/test_pr_policy.py:L372-L411`). These enforcement rules and the read-only posture
+are approved in #365.
+
+When the author adds or corrects a linked issue milestone after a failed check, they re-run
+the failed job from the existing PR-policy workflow run in GitHub Actions or the PR Checks
+view. The adapter then fetches current issue metadata again; no `workflow_dispatch` trigger
+is added because this check consumes pull-request event metadata
+(`.github/workflows/pr-policy.yml:L1-L26`, `src/baton_harness/pr_policy.py:L204-L239`).
+GitHub documents the **Re-run failed jobs** path for an existing workflow run
+([GitHub workflow re-run documentation](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs?tool=webui),
+fetched 2026-08-31).
 
 After the workflow has produced its check on the implementation PR, the live repository
 CI ruleset will add `PR policy` as a required status check. GitHub rulesets can require
@@ -211,10 +228,12 @@ documents target-repository runtime prerequisites (`README.md:L247-L266`).
 
 Implementation is complete only after all of the following pass:
 
-1. Unit tests for valid and invalid branch names, closing-directive parsing, branch/issue
-   matching, multiple closing issues, and missing milestones.
+1. Unit tests for valid and invalid branch names (including zero and leading-zero issue
+   numbers), closing-directive parsing, branch/issue matching, multiple closing issues,
+   and missing milestones.
 2. Contract tests for issue forms, the PR template, workflow triggers, stable full-CI check
-   names, the registered `fast` marker, and CodeRabbit opt-in configuration.
+   names, explicit read-only full-CI permissions, the registered `fast` marker, and
+   CodeRabbit opt-in configuration.
 3. Fast validation locally, followed by the complete existing test suite and static checks.
 4. A GitHub pull request showing the four existing full-CI checks plus a successful
    `PR policy` check on the actual head commit.

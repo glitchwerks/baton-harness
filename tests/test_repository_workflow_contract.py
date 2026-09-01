@@ -192,9 +192,10 @@ def test_fast_validation_workflow_contract() -> None:
 
 
 def test_full_ci_only_targets_main_pull_requests() -> None:
-    """Full CI runs only for pull requests targeting main."""
+    """Full CI runs only for main PRs with read-only token access."""
     workflow = _load_yaml(".github/workflows/ci.yml")
     assert workflow["on"] == {"pull_request": {"branches": ["main"]}}
+    assert workflow["permissions"] == {"contents": "read"}
 
 
 def test_pr_policy_workflow_contract() -> None:
