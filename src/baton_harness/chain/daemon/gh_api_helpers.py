@@ -21,7 +21,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 import baton_harness.chain.daemon as _daemon_mod
@@ -478,14 +477,6 @@ def _run_ci_gate(
             severity="critical",
             kind="debug",
         )
-        if report is not None:
-            report.record_escalation(
-                n,
-                kind="debug",
-                severity="critical",
-                detail=summary,
-                ts=datetime.now(timezone.utc).isoformat(),
-            )
     return outcome
 
 
