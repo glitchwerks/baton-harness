@@ -66,21 +66,20 @@ def park_issue(
     )
     add: list[str] = []
     remove = ["agent-in-progress"]
+    exhausted = False
 
-    if (
-        park_class in {ParkClass.CHARGED, ParkClass.TERMINAL}
-        and labels is not None
-    ):
-        remove.extend(sorted(labels & STATE_LABELS))
-        if park_class is ParkClass.TERMINAL:
-            add = [LABEL_AGENT_FAILED]
-        elif context.failure_tally is not None:
+    if park_class is ParkClass.CHARGED:
+        if context.failure_tally is not None:
             _, exhausted = context.failure_tally.record_and_check(issue)
-            add = [LABEL_AGENT_FAILED if exhausted else LABEL_AGENT_READY]
-            if exhausted:
-                context.failure_tally.reset(issue)
-        else:
-            add = [LABEL_AGENT_READY]
+        if labels is not None:
+            remove.extend(sorted(labels & STATE_LABELS))
+            add = [
+                LABEL_AGENT_FAILED if exhausted else LABEL_AGENT_READY
+            ]
+    elif park_class is ParkClass.TERMINAL:
+        if labels is not None:
+            remove.extend(sorted(labels & STATE_LABELS))
+            add = [LABEL_AGENT_FAILED]
     elif park_class is ParkClass.UNCHARGED and labels is not None:
         if not labels & STATE_LABELS:
             add = [LABEL_AGENT_READY]
@@ -92,7 +91,7 @@ def park_issue(
     }
     if add:
         edit_kwargs["add"] = add
-    _daemon_mod._label_edit(
+    edit_succeeded = _daemon_mod._label_edit(
         context.owner,
         context.repo,
         issue,
@@ -136,6 +135,13 @@ def park_issue(
         )
         return
     violation = _daemon_mod.assert_single_state(post_labels)
+    if (
+        exhausted
+        and edit_succeeded
+        and post_labels & STATE_LABELS == {LABEL_AGENT_FAILED}
+        and context.failure_tally is not None
+    ):
+        context.failure_tally.reset(issue)
     if violation is not None:
         _daemon_mod.alert(
             context.owner,

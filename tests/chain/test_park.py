@@ -158,6 +158,66 @@ def test_postcondition_violation_emits_critical_alert(tmp_path: Path) -> None:
     assert "UNCHARGED" in alert.call_args.args[3]
 
 
+def test_unreadable_charged_park_retains_exhausted_count(
+    tmp_path: Path,
+) -> None:
+    """Unreadable labels do not erase state or grant a fresh budget."""
+    context = _context(tmp_path, count=1)
+    with (
+        patch(
+            "baton_harness.chain.daemon._fetch_issue_labels",
+            side_effect=[None, None],
+        ),
+        patch("baton_harness.chain.daemon._label_edit") as edit,
+        patch("baton_harness.chain.daemon.alert", return_value=True),
+    ):
+        park_issue(
+            context,
+            7,
+            ParkClass.CHARGED,
+            reason="worker exception",
+            detail="worker failed",
+            severity="warn",
+            kind="debug",
+        )
+
+    edit.assert_called_once()
+    assert edit.call_args.kwargs["remove"] == ["agent-in-progress"]
+    assert "add" not in edit.call_args.kwargs
+    assert context.failure_tally is not None
+    assert context.failure_tally.peek(7) == 2
+
+
+def test_failed_terminal_label_edit_retains_exhausted_count(
+    tmp_path: Path,
+) -> None:
+    """The failure budget resets only after terminal state is confirmed."""
+    context = _context(tmp_path, count=1)
+    with (
+        patch(
+            "baton_harness.chain.daemon._fetch_issue_labels",
+            side_effect=[{"agent-done"}, {"agent-done"}],
+        ),
+        patch(
+            "baton_harness.chain.daemon._label_edit", return_value=False
+        ) as edit,
+        patch("baton_harness.chain.daemon.alert", return_value=True),
+    ):
+        park_issue(
+            context,
+            7,
+            ParkClass.CHARGED,
+            reason="worker exception",
+            detail="worker failed",
+            severity="warn",
+            kind="debug",
+        )
+
+    assert edit.call_args.kwargs["add"] == ["agent-failed"]
+    assert context.failure_tally is not None
+    assert context.failure_tally.peek(7) == 2
+
+
 def test_successful_ci_gate_resets_failure_tally(tmp_path: Path) -> None:
     """Every successful merge begins a fresh failure budget."""
     context = _context(tmp_path, count=1)
@@ -198,6 +258,8 @@ def test_all_scheduler_park_exits_route_through_shared_helper() -> None:
         root / "src/baton_harness/chain/daemon/work_unit.py",
         root / "src/baton_harness/chain/daemon/gh_api_helpers.py",
     ]
+    park_calls: list[ast.Call] = []
+    direct_progress_clears: list[ast.Call] = []
     for path in paths:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         direct_calls = [
@@ -208,6 +270,38 @@ def test_all_scheduler_park_exits_route_through_shared_helper() -> None:
             and node.func.attr == "mark_parked"
         ]
         assert not direct_calls, f"direct park exit remains in {path.name}"
+        park_calls.extend(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "park_issue"
+        )
+        direct_progress_clears.extend(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "_label_edit"
+            and any(
+                kw.arg == "remove"
+                and isinstance(kw.value, ast.List)
+                and len(kw.value.elts) == 1
+                and isinstance(kw.value.elts[0], ast.Constant)
+                and kw.value.elts[0].value == "agent-in-progress"
+                for kw in node.keywords
+            )
+        )
+
+    assert len(park_calls) == 18
+    for call in park_calls:
+        declared = call.args[2]
+        assert isinstance(declared, ast.Attribute)
+        assert isinstance(declared.value, ast.Attribute)
+        assert declared.value.attr == "ParkClass"
+    assert len(direct_progress_clears) == 1, (
+        "only orphan cleanup before redispatch may directly clear progress"
+    )
 
 
 def test_both_ci_gate_callers_thread_park_context() -> None:

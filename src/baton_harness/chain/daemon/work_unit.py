@@ -1235,21 +1235,27 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                     if has_blocked
                     else "no PR created (agent may have failed)"
                 )
-                park_class = (
-                    _daemon_mod.ParkClass.STATE_INTACT
-                    if has_blocked
-                    else _daemon_mod.ParkClass.CHARGED
-                )
                 escalation_detail = f"Issue #{n} parked: {reason_text}."
-                _daemon_mod.park_issue(
-                    park_context,
-                    n,
-                    park_class,
-                    reason=reason_text,
-                    detail=escalation_detail,
-                    severity="warn",
-                    kind=kind,
-                )
+                if has_blocked:
+                    _daemon_mod.park_issue(
+                        park_context,
+                        n,
+                        _daemon_mod.ParkClass.STATE_INTACT,
+                        reason=reason_text,
+                        detail=escalation_detail,
+                        severity="warn",
+                        kind=kind,
+                    )
+                else:
+                    _daemon_mod.park_issue(
+                        park_context,
+                        n,
+                        _daemon_mod.ParkClass.CHARGED,
+                        reason=reason_text,
+                        detail=escalation_detail,
+                        severity="warn",
+                        kind=kind,
+                    )
 
         # --- Step 3: completion. ---
         _complete_work_unit(
