@@ -67,7 +67,8 @@ bin/init-sandbox.sh
 What it does, in order:
 
 1. Preflight (`gh auth status`, `git`, `BH_PROJECT_ROOT` is a git repo)
-2. Creates the five required harness labels (idempotent)
+2. Creates the six required harness labels, including the terminal
+   `agent-failed` state (idempotent)
 3. Creates a trivial trigger issue (`agent-ready`, no milestone)
 4. Creates a `hello-feature` milestone with two DAG-ordered issues (B `blocked_by` A) plus
    a third issue exercising the body-marker dependency fallback

@@ -761,6 +761,7 @@ def _check_labels_present(ctx: DoctorContext) -> CheckResult:
     required = {
         "agent-ready",
         "agent-done",
+        "agent-failed",
         "blocked",
         "agent-in-progress",
         "agent-merged",
