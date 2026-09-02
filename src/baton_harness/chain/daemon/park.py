@@ -86,9 +86,7 @@ def park_issue(
             if labels is not None
             else STATE_LABELS - {LABEL_AGENT_FAILED}
         )
-        remove.extend(
-            sorted(state_labels_to_remove - {LABEL_AGENT_FAILED})
-        )
+        remove.extend(sorted(state_labels_to_remove - {LABEL_AGENT_FAILED}))
     elif park_class is ParkClass.UNCHARGED and labels is not None:
         if not labels & STATE_LABELS:
             add = [LABEL_AGENT_READY]

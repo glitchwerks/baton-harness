@@ -1181,9 +1181,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                         "parking",
                         n,
                     )
-                    detail = (
-                        f"Issue #{n} returned pr_created but no PR found."
-                    )
+                    detail = f"Issue #{n} returned pr_created but no PR found."
                     _daemon_mod.park_issue(
                         park_context,
                         n,
