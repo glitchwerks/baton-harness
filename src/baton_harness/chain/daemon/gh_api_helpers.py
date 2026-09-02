@@ -22,7 +22,7 @@ import json
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import baton_harness.chain.daemon as _daemon_mod
 from baton_harness.chain.app_auth import InstallationTokenSource, gh_env
@@ -36,6 +36,9 @@ from baton_harness.chain.runlog import RunLog
 from baton_harness.chain.session_report import SessionReport
 from baton_harness.vendor.symphony.config import WorkflowConfig
 from baton_harness.vendor.symphony.tracker import Issue
+
+if TYPE_CHECKING:
+    from baton_harness.chain.daemon.park import ParkContext
 
 # Hard-coded: preserves the pre-split "baton_harness.chain.daemon" logger
 # name (plan §3.2) rather than the submodule's own __name__, so log
@@ -316,6 +319,7 @@ def _run_ci_gate(
     ci_poll_interval: float,
     ci_timeout: float,
     required_checks: list[str] | None = None,
+    park_context: ParkContext | None = None,
     installation_token: InstallationTokenSource = "",
     report: SessionReport | None = None,
 ) -> MergeOutcome:
@@ -363,6 +367,7 @@ def _run_ci_gate(
             (forwarded to ``merge_issue_branch`` as-is, which falls back
             to ``REQUIRED_CHECKS`` itself) for callers that predate
             issue #225.
+        park_context: Shared park transition dependencies and failure tally.
         installation_token: Optional GitHub App installation access token
             (``ghs_`` prefix).  Threaded to ``_label_edit`` calls.
         report: Optional session report receiving successful label edits.
@@ -370,6 +375,18 @@ def _run_ci_gate(
     Returns:
         The merge outcome applied to the issue.
     """
+    if park_context is None:
+        park_context = _daemon_mod.ParkContext(
+            owner=owner,
+            repo=repo,
+            installation_token=installation_token,
+            report=report,
+            runlog=runlog,
+            sched=sched,
+            liveness_state=liveness_state,
+            parked_reasons=parked_reasons,
+            failure_tally=None,
+        )
     diag = CiDiagnostic()
     try:
         outcome = _daemon_mod.merge_issue_branch(
@@ -392,27 +409,14 @@ def _run_ci_gate(
             n,
             exc,
         )
-        _daemon_mod._label_edit(
-            owner,
-            repo,
+        _daemon_mod.park_issue(
+            park_context,
             n,
-            remove=["agent-in-progress"],
-            installation_token=installation_token,
-            report=report,
-        )
-        if liveness_state is not None:
-            liveness_state.clear()
-        sched.mark_parked(n)
-        parked_reasons[n] = f"merge exception: {exc}"
-        _daemon_mod.alert(
-            owner,
-            repo,
-            n,
-            f"Issue #{n} merge raised an exception: {exc}",
+            _daemon_mod.ParkClass.STATE_INTACT,
+            reason=f"merge exception: {exc}",
+            detail=f"Issue #{n} merge raised an exception: {exc}",
             severity="warn",
             kind="debug",
-            runlog=runlog,
-            installation_token=installation_token,
         )
         # No dedicated outcome represents an exception from the gate.
         return MergeOutcome.CI_FAILED
@@ -431,19 +435,10 @@ def _run_ci_gate(
             liveness_state.clear()
         sched.mark_done(n)
         merged_issues.append(n)
+        if park_context.failure_tally is not None:
+            park_context.failure_tally.reset(n)
         _log.info("daemon: issue #%d merged into %r", n, branch_name)
     else:
-        _daemon_mod._label_edit(
-            owner,
-            repo,
-            n,
-            remove=["agent-in-progress"],
-            installation_token=installation_token,
-            report=report,
-        )
-        if liveness_state is not None:
-            liveness_state.clear()
-        sched.mark_parked(n)
         reason = (
             "CI check failed"
             if outcome == MergeOutcome.CI_FAILED
@@ -459,7 +454,7 @@ def _run_ci_gate(
             else park_reason_line
         )
         classifier_suffix = f" ({diag.classifier()})" if diag.populated else ""
-        parked_reasons[n] = f"CI gate: {outcome.name}{classifier_suffix}"
+        park_reason = f"CI gate: {outcome.name}{classifier_suffix}"
         if (
             outcome
             in {
@@ -474,15 +469,14 @@ def _run_ci_gate(
                 n,
                 outcome.name,
             )
-        _daemon_mod.alert(
-            owner,
-            repo,
+        _daemon_mod.park_issue(
+            park_context,
             n,
-            summary,
+            _daemon_mod.ParkClass.STATE_INTACT,
+            reason=park_reason,
+            detail=summary,
             severity="critical",
             kind="debug",
-            runlog=runlog,
-            installation_token=installation_token,
         )
         if report is not None:
             report.record_escalation(

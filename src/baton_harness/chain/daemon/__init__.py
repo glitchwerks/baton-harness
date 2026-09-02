@@ -167,6 +167,10 @@ from baton_harness.chain.runlog import RunLog as RunLog
 from baton_harness.chain.session_report import SessionReport
 from baton_harness.chain.subproc import run_cmd
 
+from .park import ParkClass as ParkClass
+from .park import ParkContext as ParkContext
+from .park import park_issue as park_issue
+
 # gh_api_helpers.py cluster (#274, Phase 6b): re-exported so
 # `baton_harness.chain.daemon._fetch_full_milestone_members` keeps
 # resolving for tests that access them via the package path.
