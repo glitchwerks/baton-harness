@@ -21,6 +21,8 @@ import pytest
 
 from baton_harness._cli import err, log, resolve_issue_number
 
+pytestmark = pytest.mark.fast
+
 # ---------------------------------------------------------------------------
 # resolve_issue_number
 # ---------------------------------------------------------------------------

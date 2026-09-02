@@ -1,12 +1,15 @@
 name: CI
 
 on:
-  push:
-    # feature/** covers daemon-orchestration chain sub-PRs / per-issue
-    # branches (spec §3.6 / OQ-4); see harness-design.md for branch model.
-    branches: [main, "feature/**"]
   pull_request:
-    branches: [main, "feature/**"]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 # Four independent jobs run in parallel so a failure in one still runs
 # and reports the others — each surfaces its own named check in the PR UI.

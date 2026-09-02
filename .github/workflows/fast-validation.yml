@@ -1,0 +1,27 @@
+name: Fast validation
+
+on:
+  push:
+    branches: ["feature/**", "bug/**", "docs/**", "chore/**", "refactor/**"]
+
+concurrency:
+  group: fast-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fast:
+    name: Fast validation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - name: Lint
+        run: .venv/bin/python -m ruff check .
+      - name: Format check
+        run: .venv/bin/python -m ruff format --check .
+      - name: ShellCheck
+        run: shellcheck bin/*.sh bin/lib/*.sh
+      - name: Selected tests
+        run: .venv/bin/python -m pytest -m fast

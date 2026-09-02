@@ -113,6 +113,11 @@ baton-harness/
     └── ...
 ```
 
+## Contributing
+
+See [the contribution workflow](docs/contributing.md). Start from an issue, work on a
+dedicated branch, and use a pull request to integrate changes into `main`.
+
 ## Python development
 
 ### Prerequisites

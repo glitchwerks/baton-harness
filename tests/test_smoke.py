@@ -4,7 +4,11 @@ These tests intentionally contain no logic: if they pass, the package is
 importable and the declared version is present.
 """
 
+import pytest
+
 import baton_harness
+
+pytestmark = pytest.mark.fast
 
 
 def test_version_is_string() -> None:
