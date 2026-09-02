@@ -158,15 +158,15 @@ def test_postcondition_violation_emits_critical_alert(tmp_path: Path) -> None:
     assert "UNCHARGED" in alert.call_args.args[3]
 
 
-def test_unreadable_charged_park_retains_exhausted_count(
+def test_unreadable_charged_park_converges_to_terminal_state(
     tmp_path: Path,
 ) -> None:
-    """Unreadable labels do not erase state or grant a fresh budget."""
+    """Unreadable labels still converge without granting a fresh budget."""
     context = _context(tmp_path, count=1)
     with (
         patch(
             "baton_harness.chain.daemon._fetch_issue_labels",
-            side_effect=[None, None],
+            side_effect=[None, {"agent-failed"}],
         ),
         patch("baton_harness.chain.daemon._label_edit") as edit,
         patch("baton_harness.chain.daemon.alert", return_value=True),
@@ -182,10 +182,15 @@ def test_unreadable_charged_park_retains_exhausted_count(
         )
 
     edit.assert_called_once()
-    assert edit.call_args.kwargs["remove"] == ["agent-in-progress"]
-    assert "add" not in edit.call_args.kwargs
+    assert edit.call_args.kwargs["add"] == ["agent-failed"]
+    assert set(edit.call_args.kwargs["remove"]) == {
+        "agent-in-progress",
+        "agent-ready",
+        "agent-done",
+        "blocked",
+    }
     assert context.failure_tally is not None
-    assert context.failure_tally.peek(7) == 2
+    assert context.failure_tally.peek(7) == 0
 
 
 def test_failed_terminal_label_edit_retains_exhausted_count(

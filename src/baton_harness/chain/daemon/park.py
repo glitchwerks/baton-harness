@@ -71,15 +71,24 @@ def park_issue(
     if park_class is ParkClass.CHARGED:
         if context.failure_tally is not None:
             _, exhausted = context.failure_tally.record_and_check(issue)
-        if labels is not None:
-            remove.extend(sorted(labels & STATE_LABELS))
-            add = [
-                LABEL_AGENT_FAILED if exhausted else LABEL_AGENT_READY
-            ]
+        target = LABEL_AGENT_FAILED if exhausted else LABEL_AGENT_READY
+        add = [target]
+        state_labels_to_remove = (
+            labels & STATE_LABELS
+            if labels is not None
+            else STATE_LABELS - {target}
+        )
+        remove.extend(sorted(state_labels_to_remove - {target}))
     elif park_class is ParkClass.TERMINAL:
-        if labels is not None:
-            remove.extend(sorted(labels & STATE_LABELS))
-            add = [LABEL_AGENT_FAILED]
+        add = [LABEL_AGENT_FAILED]
+        state_labels_to_remove = (
+            labels & STATE_LABELS
+            if labels is not None
+            else STATE_LABELS - {LABEL_AGENT_FAILED}
+        )
+        remove.extend(
+            sorted(state_labels_to_remove - {LABEL_AGENT_FAILED})
+        )
     elif park_class is ParkClass.UNCHARGED and labels is not None:
         if not labels & STATE_LABELS:
             add = [LABEL_AGENT_READY]
