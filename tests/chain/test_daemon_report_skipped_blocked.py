@@ -297,6 +297,7 @@ def test_solo_agent_ready_and_blocked_issue_records_skipped_blocked(
             ),
         ),
         _common_success_patches()(),
+        patch("baton_harness.chain.daemon.alert") as mock_alert,
     ):
         asyncio.run(
             run_daemon(
@@ -327,6 +328,7 @@ def test_solo_agent_ready_and_blocked_issue_records_skipped_blocked(
         "the excluded issue's outcome must be recorded as "
         f"'skipped_blocked'; got {issues[0]['outcome']!r}"
     )
+    mock_alert.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

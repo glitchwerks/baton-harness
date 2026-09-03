@@ -1577,6 +1577,7 @@ class TestRulesetChecks:
 _REQUIRED_LABELS = {
     "agent-ready",
     "agent-done",
+    "agent-failed",
     "blocked",
     "agent-in-progress",
     "agent-merged",
@@ -1615,14 +1616,14 @@ def _fake_gh_label_runner(
 
 
 class TestLabelsPresent:
-    """5 required harness labels exist in the target repo (CRITICAL).
+    """Six required harness labels exist in the target repo (CRITICAL).
 
     Modeled on ``bin/run-daemon.sh:177-213``'s
     ``gh label list -R <slug> --json name --jq '.[].name'`` preflight.
     """
 
-    def test_passes_when_all_five_labels_present(self) -> None:
-        """All 5 required labels present in the target repo PASSes."""
+    def test_passes_when_all_six_labels_present(self) -> None:
+        """All six required labels present in the target repo PASSes."""
         check = _get_check("LABELS_PRESENT")
         runner = _fake_gh_label_runner(_REQUIRED_LABELS)
 
@@ -1634,7 +1635,11 @@ class TestLabelsPresent:
     def test_fails_and_names_each_missing_label(self) -> None:
         """Missing labels FAIL and are named individually in the detail."""
         check = _get_check("LABELS_PRESENT")
-        present = _REQUIRED_LABELS - {"blocked", "agent-merged"}
+        present = _REQUIRED_LABELS - {
+            "blocked",
+            "agent-failed",
+            "agent-merged",
+        }
         runner = _fake_gh_label_runner(present)
 
         result = check(_make_ctx(env=_PHASE_4_ENV, runner=runner))
@@ -1642,7 +1647,15 @@ class TestLabelsPresent:
         assert result.status == CheckStatus.FAIL
         assert result.severity == Severity.CRITICAL
         assert "blocked" in result.detail
+        assert "agent-failed" in result.detail
         assert "agent-merged" in result.detail
+
+    def test_init_sandbox_provisions_agent_failed_in_deep_red(self) -> None:
+        """Sandbox initialization creates the terminal failure label."""
+        script = (
+            Path(__file__).resolve().parents[2] / "bin/init-sandbox.sh"
+        ).read_text(encoding="utf-8")
+        assert '_create_label "agent-failed"      "b60205"' in script
 
     def test_fails_when_gh_cli_call_errors(self) -> None:
         """A ``gh`` CLI failure (non-zero exit) FAILs, never crashes."""

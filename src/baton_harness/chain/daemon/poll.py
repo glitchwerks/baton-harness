@@ -76,8 +76,10 @@ from typing import Any
 
 import baton_harness.chain.daemon as _daemon_mod
 from baton_harness.chain.app_auth import InstallationTokenSource, gh_env
+from baton_harness.chain.failure_tally import FailureTally
 from baton_harness.chain.heartbeat import LivenessState, run_heartbeat_loop
 from baton_harness.chain.labels import (
+    LABEL_AGENT_FAILED,
     LABEL_AGENT_READY,
     LABEL_BLOCKED,
     STATE_LABELS,
@@ -176,6 +178,7 @@ async def run_daemon(
     installation_token: InstallationTokenSource = "",
     worker_gh_pat: str = "",
     report_path: Path | None = None,
+    failure_tally: FailureTally | None = None,
 ) -> None:
     """Run the always-on serial daemon outer loop.
 
@@ -199,6 +202,8 @@ async def run_daemon(
             ``Orchestrator.hook_env`` to the ``before_run`` hook subprocess
             only. It is never written to ``os.environ``.
         report_path: Optional destination for the daemon session report.
+        failure_tally: Optional durable issue-failure tally.  When omitted,
+            one is constructed from observability configuration.
     """
     if poll_interval_s is None:
         poll_interval_s = config.poll_interval_ms / 1000
@@ -265,6 +270,17 @@ async def run_daemon(
     except Exception as exc:  # noqa: BLE001
         _log.warning("daemon: redispatch tally init failed: %s", exc)
         tally = None
+
+    try:
+        if failure_tally is None:
+            obs_for_failures = obs or _daemon_mod.load_obs_config()
+            failure_tally = FailureTally(
+                obs_for_failures.failure_counts_path,
+                max_count=obs_for_failures.max_issue_failures,
+            )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("daemon: failure tally init failed: %s", exc)
+        failure_tally = None
 
     # --- Startup reconciliation sweep (G3 creds, G2 marker, G1 orphans). ---
     # reconcile_startup may raise SystemExit on fatal credential failure —
@@ -359,6 +375,7 @@ async def run_daemon(
                         ci_timeout=ci_timeout,
                         runlog=runlog,
                         tally=tally,
+                        failure_tally=failure_tally,
                         liveness_state=liveness_state,
                         obs=obs,
                         installation_token=installation_token,
@@ -454,6 +471,7 @@ async def _poll_and_run(
     ci_timeout: float,
     runlog: RunLog | None = None,
     tally: RedispatchTally | None = None,
+    failure_tally: FailureTally | None = None,
     liveness_state: LivenessState | None = None,
     obs: ObsConfig | None = None,
     installation_token: InstallationTokenSource = "",
@@ -496,6 +514,8 @@ async def _poll_and_run(
             emission.  When ``None``, all emission is a no-op.
         tally: Optional ``RedispatchTally`` for re-dispatch loop
             detection.  When ``None``, loop detection is skipped.
+        failure_tally: Optional durable failure tally used to suppress
+            duplicate operator alerts across daemon restarts.
         liveness_state: Optional ``LivenessState`` shared with the
             heartbeat monitor.  Passed through to ``_run_work_unit``.
         obs: Optional loaded ``ObsConfig`` used to read
@@ -574,13 +594,38 @@ async def _poll_and_run(
         labels = {lbl["name"].lower() for lbl in issue.get("labels", [])}
         if _daemon_mod._DISPATCH_EXCLUDE_LABELS.isdisjoint(labels):
             ready_issues.append(issue)
-        elif report is not None:
-            report.record_skipped_blocked(
-                issue["number"],
-                repo=f"{owner}/{repo}",
-                title=issue.get("title", ""),
-                skipped_at=datetime.now(timezone.utc).isoformat(),
-            )
+        else:
+            issue_number = issue["number"]
+            if (
+                LABEL_AGENT_READY in labels
+                and LABEL_AGENT_FAILED in labels
+                and (
+                    failure_tally is None
+                    or not failure_tally.has_alerted(issue_number)
+                )
+            ):
+                alerted = _daemon_mod.alert(
+                    owner,
+                    repo,
+                    issue_number,
+                    f"Issue #{issue_number} is excluded from dispatch by "
+                    f"{LABEL_AGENT_FAILED!r}. Remove the "
+                    f"{LABEL_AGENT_FAILED!r} label after operator triage "
+                    "to re-enable dispatch.",
+                    severity="critical",
+                    kind="debug",
+                    runlog=runlog,
+                    installation_token=installation_token,
+                )
+                if alerted and failure_tally is not None:
+                    failure_tally.set_alerted(issue_number)
+            if report is not None:
+                report.record_skipped_blocked(
+                    issue_number,
+                    repo=f"{owner}/{repo}",
+                    title=issue.get("title", ""),
+                    skipped_at=datetime.now(timezone.utc).isoformat(),
+                )
 
     # Live blocked re-check (#128): the snapshot above may race with a
     # concurrent label update.  For each snapshot-ready issue, re-read
@@ -800,6 +845,7 @@ async def _poll_and_run(
                 ci_timeout=ci_timeout,
                 runlog=runlog,
                 tally=tally,
+                failure_tally=failure_tally,
                 liveness_state=liveness_state,
                 obs=obs,
                 installation_token=installation_token,
@@ -922,6 +968,7 @@ async def _poll_and_run(
             ci_timeout=ci_timeout,
             runlog=runlog,
             tally=tally,
+            failure_tally=failure_tally,
             liveness_state=liveness_state,
             obs=obs,
             installation_token=installation_token,

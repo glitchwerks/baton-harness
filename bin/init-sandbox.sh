@@ -2,7 +2,7 @@
 # bin/init-sandbox.sh — Target sandbox repo initialisation (smoke-test ready)
 #
 # Prepares a throwaway sandbox GitHub repository for a bh-daemon smoke test:
-#   - Creates the five required harness labels (idempotent)
+#   - Creates the six required harness labels (idempotent)
 #   - Seeds scenario-specific issues (the default hello scenario creates the
 #     existing trivial trigger + hello-feature DAG milestone)
 #   - Writes a stub CI workflow to the sandbox repo and pushes it
@@ -268,6 +268,7 @@ _create_label() {
 
 _create_label "agent-ready"       "0075ca"
 _create_label "agent-done"        "0e8a16"
+_create_label "agent-failed"      "b60205"
 _create_label "blocked"           "e4e669"
 _create_label "agent-in-progress" "d93f0b"
 _create_label "agent-merged"      "5319e7"

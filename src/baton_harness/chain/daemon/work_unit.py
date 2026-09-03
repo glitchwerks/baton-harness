@@ -60,6 +60,7 @@ import baton_harness.chain.daemon as _daemon_mod
 from baton_harness.chain import branches
 from baton_harness.chain.app_auth import InstallationTokenSource
 from baton_harness.chain.dag import build_dag
+from baton_harness.chain.failure_tally import FailureTally
 from baton_harness.chain.heartbeat import LivenessState
 from baton_harness.chain.labels import (
     LABEL_AGENT_READY,
@@ -280,6 +281,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
     ci_timeout: float = _DEFAULT_CI_TIMEOUT,
     runlog: RunLog | None = None,
     tally: RedispatchTally | None = None,
+    failure_tally: FailureTally | None = None,
     liveness_state: LivenessState | None = None,
     obs: ObsConfig | None = None,
     installation_token: InstallationTokenSource = "",
@@ -310,6 +312,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
             emission.  When ``None``, all emission is a no-op.
         tally: Optional ``RedispatchTally`` for re-dispatch loop
             detection.  When ``None``, loop detection is skipped.
+        failure_tally: Durable per-issue charged-failure accounting.
         liveness_state: Optional ``LivenessState`` shared with the
             heartbeat monitor.  When provided, this function calls
             ``mark_in_progress`` before dispatching a worker and
@@ -383,6 +386,18 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                     ts=datetime.now(timezone.utc).isoformat(),
                 )
             return
+
+        park_context = _daemon_mod.ParkContext(
+            owner=owner,
+            repo=repo,
+            installation_token=installation_token,
+            report=report,
+            runlog=runlog,
+            sched=sched,
+            liveness_state=liveness_state,
+            parked_reasons=parked_reasons,
+            failure_tally=failure_tally,
+        )
 
         # --- Step 1: create or resume the feature branch. ---
         recovery_result = _setup_feature_branch(
@@ -498,16 +513,15 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 continue
 
             if n in recovery_result.parked_seed:
-                _daemon_mod._label_edit(
-                    owner,
-                    repo,
+                _daemon_mod.park_issue(
+                    park_context,
                     n,
-                    remove=["agent-in-progress"],
-                    installation_token=installation_token,
-                    report=report,
+                    _daemon_mod.ParkClass.STATE_INTACT,
+                    reason="blocked (recovery)",
+                    detail=None,
+                    severity="warn",
+                    kind="block",
                 )
-                sched.mark_parked(n)
-                parked_reasons[n] = "blocked (recovery)"
                 continue
 
             if n in recovery_result.ci_gate_reentry:
@@ -524,38 +538,19 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                         " parking",
                         n,
                     )
-                    _daemon_mod._label_edit(
-                        owner,
-                        repo,
-                        n,
-                        remove=["agent-in-progress"],
-                        installation_token=installation_token,
-                        report=report,
-                    )
-                    sched.mark_parked(n)
-                    parked_reasons[n] = "ci_gate_reentry: no open PR"
                     detail = (
                         f"Issue #{n} needs CI-gate re-entry but has no "
                         "open PR."
                     )
-                    _daemon_mod.alert(
-                        owner,
-                        repo,
+                    _daemon_mod.park_issue(
+                        park_context,
                         n,
-                        detail,
+                        _daemon_mod.ParkClass.UNCHARGED,
+                        reason="ci_gate_reentry: no open PR",
+                        detail=detail,
                         severity="critical",
                         kind="debug",
-                        runlog=runlog,
-                        installation_token=installation_token,
                     )
-                    if report is not None:
-                        report.record_escalation(
-                            n,
-                            kind="debug",
-                            severity="critical",
-                            detail=detail,
-                            ts=datetime.now(timezone.utc).isoformat(),
-                        )
                     continue
 
                 # Liveness tracking: mark in-progress so heartbeat_monitor
@@ -596,39 +591,18 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                         n,
                         exc,
                     )
-                    _daemon_mod._label_edit(
-                        owner,
-                        repo,
-                        n,
-                        remove=["agent-in-progress"],
-                        installation_token=installation_token,
-                        report=report,
-                    )
-                    if liveness_state is not None:
-                        liveness_state.clear()
-                    sched.mark_parked(n)
-                    parked_reasons[n] = f"merge exception (ci_gate): {exc}"
                     detail = (
                         f"Issue #{n} merge failed (ci_gate_reentry): {exc}"
                     )
-                    _daemon_mod.alert(
-                        owner,
-                        repo,
+                    _daemon_mod.park_issue(
+                        park_context,
                         n,
-                        detail,
+                        _daemon_mod.ParkClass.UNCHARGED,
+                        reason=f"merge exception (ci_gate): {exc}",
+                        detail=detail,
                         severity="warn",
                         kind="debug",
-                        runlog=runlog,
-                        installation_token=installation_token,
                     )
-                    if report is not None:
-                        report.record_escalation(
-                            n,
-                            kind="debug",
-                            severity="warn",
-                            detail=detail,
-                            ts=datetime.now(timezone.utc).isoformat(),
-                        )
                     continue
 
                 if outcome == MergeOutcome.MERGED:
@@ -644,40 +618,21 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                         liveness_state.clear()
                     sched.mark_done(n)
                     merged_issues.append(n)
+                    if failure_tally is not None:
+                        failure_tally.reset(n)
                 else:
-                    _daemon_mod._label_edit(
-                        owner,
-                        repo,
-                        n,
-                        remove=["agent-in-progress"],
-                        installation_token=installation_token,
-                        report=report,
+                    detail = (
+                        f"Issue #{n} CI-gate re-entry failed: {outcome.name}"
                     )
-                    if liveness_state is not None:
-                        liveness_state.clear()
-                    sched.mark_parked(n)
-                    parked_reasons[n] = f"ci_gate_reentry: {outcome.name}"
-                    _daemon_mod.alert(
-                        owner,
-                        repo,
+                    _daemon_mod.park_issue(
+                        park_context,
                         n,
-                        f"Issue #{n} CI-gate re-entry failed: {outcome.name}",
+                        _daemon_mod.ParkClass.UNCHARGED,
+                        reason=f"ci_gate_reentry: {outcome.name}",
+                        detail=detail,
                         severity="critical",
                         kind="debug",
-                        runlog=runlog,
-                        installation_token=installation_token,
                     )
-                    if report is not None:
-                        report.record_escalation(
-                            n,
-                            kind="debug",
-                            severity="critical",
-                            detail=(
-                                f"Issue #{n} CI-gate re-entry failed: "
-                                f"{outcome.name}"
-                            ),
-                            ts=datetime.now(timezone.utc).isoformat(),
-                        )
                 continue
 
             # --- Fresh dispatch (or 3b redispatch). ---
@@ -735,16 +690,15 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                             detail=escalation_detail,
                             ts=datetime.now(timezone.utc).isoformat(),
                         )
-                    _daemon_mod._label_edit(
-                        owner,
-                        repo,
+                    _daemon_mod.park_issue(
+                        park_context,
                         n,
-                        remove=["agent-in-progress"],
-                        installation_token=installation_token,
-                        report=report,
+                        _daemon_mod.ParkClass.TERMINAL,
+                        reason="redispatch loop",
+                        detail=None,
+                        severity="critical",
+                        kind="block",
                     )
-                    sched.mark_parked(n)
-                    parked_reasons[n] = "redispatch loop"
                     continue
 
                 # Clear orphan agent-in-progress before re-dispatch (C1).
@@ -783,36 +737,15 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                     f"Issue #{n} labels unreadable before dispatch;"
                     " skipping this poll cycle."
                 )
-                _daemon_mod.alert(
-                    owner,
-                    repo,
+                _daemon_mod.park_issue(
+                    park_context,
                     n,
-                    escalation_detail,
+                    _daemon_mod.ParkClass.UNCHARGED,
+                    reason="label fetch failed pre-dispatch",
+                    detail=escalation_detail,
                     severity="critical",
                     kind="block",
-                    runlog=runlog,
-                    installation_token=installation_token,
                 )
-                if report is not None:
-                    report.record_escalation(
-                        n,
-                        kind="block",
-                        severity="critical",
-                        detail=escalation_detail,
-                        ts=datetime.now(timezone.utc).isoformat(),
-                    )
-                _daemon_mod._label_edit(
-                    owner,
-                    repo,
-                    n,
-                    remove=["agent-in-progress"],
-                    installation_token=installation_token,
-                    report=report,
-                )
-                if liveness_state is not None:
-                    liveness_state.clear()
-                sched.mark_parked(n)
-                parked_reasons[n] = "label fetch failed pre-dispatch"
                 continue
 
             # Pre-dispatch exclude-label race (CodeRabbit review, PR #363):
@@ -854,29 +787,14 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                     " re-check and the final pre-dispatch fetch; skipping"
                     " this poll cycle (pre-dispatch race, CodeRabbit #363)."
                 )
-                _daemon_mod.alert(
-                    owner,
-                    repo,
+                _daemon_mod.park_issue(
+                    park_context,
                     n,
-                    escalation_detail,
+                    _daemon_mod.ParkClass.STATE_INTACT,
+                    reason="exclude label race on final pre-dispatch fetch",
+                    detail=escalation_detail,
                     severity="critical",
                     kind="block",
-                    runlog=runlog,
-                    installation_token=installation_token,
-                )
-                if report is not None:
-                    report.record_escalation(
-                        n,
-                        kind="block",
-                        severity="critical",
-                        detail=escalation_detail,
-                        ts=datetime.now(timezone.utc).isoformat(),
-                    )
-                if liveness_state is not None:
-                    liveness_state.clear()
-                sched.mark_parked(n)
-                parked_reasons[n] = (
-                    "exclude label race on final pre-dispatch fetch"
                 )
                 continue
 
@@ -919,39 +837,18 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
             )
             if issue_obj is None:
                 _log.error("daemon: could not fetch issue #%d; parking", n)
-                _daemon_mod._label_edit(
-                    owner,
-                    repo,
-                    n,
-                    remove=["agent-in-progress"],
-                    installation_token=installation_token,
-                    report=report,
-                )
-                if liveness_state is not None:
-                    liveness_state.clear()
-                sched.mark_parked(n)
-                parked_reasons[n] = "issue fetch failed"
                 escalation_detail = (
                     f"Issue #{n} could not be fetched; worker not dispatched."
                 )
-                _daemon_mod.alert(
-                    owner,
-                    repo,
+                _daemon_mod.park_issue(
+                    park_context,
                     n,
-                    escalation_detail,
+                    _daemon_mod.ParkClass.UNCHARGED,
+                    reason="issue fetch failed",
+                    detail=escalation_detail,
                     severity="warn",
                     kind="debug",
-                    runlog=runlog,
-                    installation_token=installation_token,
                 )
-                if report is not None:
-                    report.record_escalation(
-                        n,
-                        kind="debug",
-                        severity="warn",
-                        detail=escalation_detail,
-                        ts=datetime.now(timezone.utc).isoformat(),
-                    )
                 continue
 
             # Dispatch the worker.
@@ -983,18 +880,19 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                     _app_id,
                     "set" if obs is not None else "None",
                 )
-                _daemon_mod._label_edit(
-                    owner,
-                    repo,
-                    n,
-                    remove=["agent-in-progress"],
-                    installation_token=installation_token,
-                    report=report,
+                escalation_detail = (
+                    f"Issue #{n} preflight cannot run: app_id={_app_id!r}, "
+                    f"observability={'set' if obs is not None else 'missing'}."
                 )
-                if liveness_state is not None:
-                    liveness_state.clear()
-                sched.mark_parked(n)
-                parked_reasons[n] = "preflight refused"
+                _daemon_mod.park_issue(
+                    park_context,
+                    n,
+                    _daemon_mod.ParkClass.UNCHARGED,
+                    reason="preflight refused",
+                    detail=escalation_detail,
+                    severity="critical",
+                    kind="debug",
+                )
                 continue
             try:
                 worker_result = await _daemon_mod._launch_one_issue(
@@ -1010,39 +908,18 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 )
             except Exception as exc:
                 _log.error("daemon: _run_worker raised for #%d: %s", n, exc)
-                _daemon_mod._label_edit(
-                    owner,
-                    repo,
-                    n,
-                    remove=["agent-in-progress"],
-                    installation_token=installation_token,
-                    report=report,
-                )
-                if liveness_state is not None:
-                    liveness_state.clear()
-                sched.mark_parked(n)
-                parked_reasons[n] = f"worker exception: {exc}"
                 escalation_detail = (
                     f"Issue #{n} worker raised an exception: {exc}"
                 )
-                _daemon_mod.alert(
-                    owner,
-                    repo,
+                _daemon_mod.park_issue(
+                    park_context,
                     n,
-                    escalation_detail,
+                    _daemon_mod.ParkClass.CHARGED,
+                    reason=f"worker exception: {exc}",
+                    detail=escalation_detail,
                     severity="warn",
                     kind="debug",
-                    runlog=runlog,
-                    installation_token=installation_token,
                 )
-                if report is not None:
-                    report.record_escalation(
-                        n,
-                        kind="debug",
-                        severity="warn",
-                        detail=escalation_detail,
-                        ts=datetime.now(timezone.utc).isoformat(),
-                    )
                 continue
 
             # Preflight refused: _launch_one_issue returns None when
@@ -1050,12 +927,16 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
             if worker_result is None:
                 _log.warning("daemon: preflight refused issue #%d; parking", n)
                 # Labels (restore agent-ready, remove agent-in-progress) are
-                # handled inside _launch_one_issue's refusal branch — outer
-                # loop only needs to park the scheduler state.
-                if liveness_state is not None:
-                    liveness_state.clear()
-                sched.mark_parked(n)
-                parked_reasons[n] = "preflight refused"
+                # handled inside _launch_one_issue's refusal branch.
+                _daemon_mod.park_issue(
+                    park_context,
+                    n,
+                    _daemon_mod.ParkClass.STATE_INTACT,
+                    reason="preflight refused",
+                    detail=None,
+                    severity="warn",
+                    kind="debug",
+                )
                 continue
 
             # Emit outcome event (best-effort; never raises into the loop).
@@ -1115,42 +996,19 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                         )
                     except Exception:  # noqa: BLE001
                         pass
-                _daemon_mod.alert(
-                    owner,
-                    repo,
+                escalation_detail = (
+                    f"Issue #{n} labels unreadable; cannot verify"
+                    " single-state invariant — parking."
+                )
+                _daemon_mod.park_issue(
+                    park_context,
                     n,
-                    (
-                        f"Issue #{n} labels unreadable; cannot verify"
-                        " single-state invariant — parking."
-                    ),
+                    _daemon_mod.ParkClass.UNKNOWN_STATE,
+                    reason="labels unreadable",
+                    detail=escalation_detail,
                     severity="critical",
                     kind="block",
-                    runlog=runlog,
-                    installation_token=installation_token,
                 )
-                if report is not None:
-                    report.record_escalation(
-                        n,
-                        kind="block",
-                        severity="critical",
-                        detail=(
-                            f"Issue #{n} labels unreadable; cannot verify"
-                            " single-state invariant — parking."
-                        ),
-                        ts=datetime.now(timezone.utc).isoformat(),
-                    )
-                _daemon_mod._label_edit(
-                    owner,
-                    repo,
-                    n,
-                    remove=["agent-in-progress"],
-                    installation_token=installation_token,
-                    report=report,
-                )
-                if liveness_state is not None:
-                    liveness_state.clear()
-                sched.mark_parked(n)
-                parked_reasons[n] = "labels unreadable"
                 continue
 
             has_blocked = "blocked" in post_labels
@@ -1253,6 +1111,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                             ci_poll_interval=ci_poll_interval,
                             ci_timeout=ci_timeout,
                             required_checks=required_checks,
+                            park_context=park_context,
                             installation_token=installation_token,
                             report=report,
                         )
@@ -1295,37 +1154,14 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                     f"Issue #{n} failed the single-state"
                     f" label invariant: {_inv_violation}"
                 )
-                _daemon_mod.alert(
-                    owner,
-                    repo,
+                _daemon_mod.park_issue(
+                    park_context,
                     n,
-                    escalation_detail,
+                    _daemon_mod.ParkClass.UNKNOWN_STATE,
+                    reason=f"label invariant violation: {_inv_violation}",
+                    detail=escalation_detail,
                     severity="critical",
                     kind="block",
-                    runlog=runlog,
-                    installation_token=installation_token,
-                )
-                if report is not None:
-                    report.record_escalation(
-                        n,
-                        kind="block",
-                        severity="critical",
-                        detail=escalation_detail,
-                        ts=datetime.now(timezone.utc).isoformat(),
-                    )
-                _daemon_mod._label_edit(
-                    owner,
-                    repo,
-                    n,
-                    remove=["agent-in-progress"],
-                    installation_token=installation_token,
-                    report=report,
-                )
-                if liveness_state is not None:
-                    liveness_state.clear()
-                sched.mark_parked(n)
-                parked_reasons[n] = (
-                    f"label invariant violation: {_inv_violation}"
                 )
                 continue
 
@@ -1345,39 +1181,16 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                         "parking",
                         n,
                     )
-                    _daemon_mod._label_edit(
-                        owner,
-                        repo,
+                    detail = f"Issue #{n} returned pr_created but no PR found."
+                    _daemon_mod.park_issue(
+                        park_context,
                         n,
-                        remove=["agent-in-progress"],
-                        installation_token=installation_token,
-                        report=report,
-                    )
-                    if liveness_state is not None:
-                        liveness_state.clear()
-                    sched.mark_parked(n)
-                    parked_reasons[n] = "pr_created but no PR located"
-                    _daemon_mod.alert(
-                        owner,
-                        repo,
-                        n,
-                        f"Issue #{n} returned pr_created but no PR found.",
+                        _daemon_mod.ParkClass.CHARGED,
+                        reason="pr_created but no PR located",
+                        detail=detail,
                         severity="warn",
                         kind="debug",
-                        runlog=runlog,
-                        installation_token=installation_token,
                     )
-                    if report is not None:
-                        report.record_escalation(
-                            n,
-                            kind="debug",
-                            severity="warn",
-                            detail=(
-                                f"Issue #{n} returned pr_created but no PR "
-                                "found."
-                            ),
-                            ts=datetime.now(timezone.utc).isoformat(),
-                        )
                     continue
 
                 _outcome = _daemon_mod._run_ci_gate(
@@ -1396,6 +1209,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                     ci_poll_interval=ci_poll_interval,
                     ci_timeout=ci_timeout,
                     required_checks=required_checks,
+                    park_context=park_context,
                     installation_token=installation_token,
                     report=report,
                 )
@@ -1419,36 +1233,26 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                     if has_blocked
                     else "no PR created (agent may have failed)"
                 )
-                _daemon_mod._label_edit(
-                    owner,
-                    repo,
-                    n,
-                    remove=["agent-in-progress"],
-                    installation_token=installation_token,
-                    report=report,
-                )
-                if liveness_state is not None:
-                    liveness_state.clear()
-                sched.mark_parked(n)
-                parked_reasons[n] = reason_text
                 escalation_detail = f"Issue #{n} parked: {reason_text}."
-                _daemon_mod.alert(
-                    owner,
-                    repo,
-                    n,
-                    escalation_detail,
-                    severity="warn",
-                    kind=kind,
-                    runlog=runlog,
-                    installation_token=installation_token,
-                )
-                if report is not None:
-                    report.record_escalation(
+                if has_blocked:
+                    _daemon_mod.park_issue(
+                        park_context,
                         n,
-                        kind=kind,
-                        severity="warn",
+                        _daemon_mod.ParkClass.STATE_INTACT,
+                        reason=reason_text,
                         detail=escalation_detail,
-                        ts=datetime.now(timezone.utc).isoformat(),
+                        severity="warn",
+                        kind=kind,
+                    )
+                else:
+                    _daemon_mod.park_issue(
+                        park_context,
+                        n,
+                        _daemon_mod.ParkClass.CHARGED,
+                        reason=reason_text,
+                        detail=escalation_detail,
+                        severity="warn",
+                        kind=kind,
                     )
 
         # --- Step 3: completion. ---

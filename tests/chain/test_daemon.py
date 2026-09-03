@@ -48,6 +48,7 @@ import pytest
 import baton_harness.chain.daemon as daemon_mod
 import baton_harness.chain.merge as merge_mod
 from baton_harness.chain.daemon import run_daemon
+from baton_harness.chain.failure_tally import FailureTally
 from baton_harness.chain.heartbeat import LivenessState
 from baton_harness.chain.label_ops import fetch_daemon_labels
 from baton_harness.chain.merge import MergeOutcome
@@ -7884,8 +7885,10 @@ def test_second_work_unit_skipped_on_non_blocked_exclude_label_mid_drain() -> (
     )
 
 
-def test_agent_ready_and_agent_failed_issue_skipped_before_dispatch() -> None:
-    """An issue carrying both agent-ready and agent-failed is never run.
+def test_agent_ready_and_agent_failed_issue_alerts_once_across_restarts(
+    tmp_path: Path,
+) -> None:
+    """A silently excluded agent-failed issue raises one durable alert.
 
     Regression test for #351 D3 item 5: once ``agent-failed`` joins
     ``_DISPATCH_EXCLUDE_LABELS``, an issue that carries both
@@ -7907,13 +7910,10 @@ def test_agent_ready_and_agent_failed_issue_skipped_before_dispatch() -> None:
       re-check — all three must exclude it).
     - ``once=True`` — one poll tick.
 
-    Expected: ``_run_worker`` is never called for #77 — this is D3 item
-    5's whole point, closing the "wasted agent run" trap the plan
-    describes.
-
-    This MUST FAIL on current code because ``_DISPATCH_EXCLUDE_LABELS``
-    is ``frozenset({"blocked"})`` today — ``agent-failed`` is not yet a
-    member, so #77 is (wrongly) dispatched.
+    Expected: ``_run_worker`` is never called for #77, and a critical
+    operator alert explains how to restore dispatch.  Reconstructing the
+    tally from disk and running another poll tick must not emit a duplicate
+    alert.
     """
     _issue_n = 77
     ready_issues = [
@@ -8012,7 +8012,12 @@ def test_agent_ready_and_agent_failed_issue_skipped_before_dispatch() -> None:
     ) -> bool:
         """Capture alert calls."""
         alert_calls.append(
-            {"issue": issue, "severity": severity, "kind": kind}
+            {
+                "issue": issue,
+                "message": message,
+                "severity": severity,
+                "kind": kind,
+            }
         )
         return True
 
@@ -8055,14 +8060,17 @@ def test_agent_ready_and_agent_failed_issue_skipped_before_dispatch() -> None:
             side_effect=fake_run_worker,
         ),
     ):
-        asyncio.run(
-            run_daemon(
-                _minimal_wf_config(),
-                [_repo_cfg()],
-                once=True,
-                poll_interval_s=0,
+        tally_path = tmp_path / "failure-counts.json"
+        for _ in range(2):
+            asyncio.run(
+                run_daemon(
+                    _minimal_wf_config(),
+                    [_repo_cfg()],
+                    once=True,
+                    poll_interval_s=0,
+                    failure_tally=FailureTally(tally_path, max_count=2),
+                )
             )
-        )
 
     assert _issue_n not in worker_calls, (
         f"Issue #{_issue_n} carries both agent-ready and agent-failed and"
@@ -8070,6 +8078,14 @@ def test_agent_ready_and_agent_failed_issue_skipped_before_dispatch() -> None:
         " _DISPATCH_EXCLUDE_LABELS (#351 D3 item 5) so no worker run is"
         f" consumed while it is present; worker_calls={worker_calls}"
     )
+    assert len(alert_calls) == 1, (
+        "agent-failed exclusion must alert exactly once across daemon "
+        f"restarts; alert_calls={alert_calls}"
+    )
+    assert alert_calls[0]["issue"] == _issue_n
+    assert alert_calls[0]["severity"] == "critical"
+    assert "remove" in alert_calls[0]["message"].lower()
+    assert "agent-failed" in alert_calls[0]["message"]
 
 
 def test_second_work_unit_skipped_when_agent_ready_removed_mid_drain() -> None:

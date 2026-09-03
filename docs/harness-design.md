@@ -129,12 +129,28 @@ Source for each project's `CLAUDE.md`. Because CLAUDE.md is irreducibly project-
 The harness owns GitHub label transitions, because Baton does not (spike F3 — Baton tracks run state internally and does not mutate GitHub labels). The human-facing states:
 
 ```
-agent-ready ──▶ (run) ──▶ agent-done       (PR opened; pilot: human verifies CI at review)
-                      └──▶ blocked          (agent needs input; single source of truth)
-                      └──▶ agent-ready      (retryable failure; left for Baton's own retry)
+agent-ready ──▶ agent-in-progress ──▶ agent-done    (PR opened)
+                              ├─────▶ blocked       (agent needs input)
+                              └─────▶ charged failure
+                                         ├── count < 2 ──▶ agent-ready
+                                         └── count = 2 ──▶ agent-failed
 ```
 
-Reconciliation is enforced in `after_run.py` to maintain a single state label (the H1 bug — both `agent-ready` and `blocked` present — is the open implementation issue to fix here). `_reconcile_labels` is idempotent: re-running it against any label set, including a torn or zero-state set left by a mid-run kill, converges to the correct single state (#31). A pure helper `labels.target_state_from_observed(blocked, pr_open) -> str` re-derives the target single-state label from observable facts independent of which hook last ran (#31).
+`agent-failed` is a terminal, human-triage-required state. It belongs to both
+`STATE_LABELS` and the daemon's dispatch-exclusion set; an operator restores an
+issue by removing `agent-failed` and adding `agent-ready`. Charged failures use
+the `BH_MAX_ISSUE_FAILURES` budget; uncharged infrastructure failures restore
+readiness without consuming it. The shared park transition enforces exactly one
+state label after each park (#351,
+`src/baton_harness/chain/daemon/park.py:L50-L163`).
+
+Reconciliation is enforced in `after_run.py` to maintain a single state label.
+`_reconcile_labels` is idempotent: re-running it against any label set,
+including a torn or zero-state set left by a mid-run kill, converges to the
+correct single state (#31). A pure helper
+`labels.target_state_from_observed(blocked, pr_open) -> str` re-derives the
+target single-state label from observable facts independent of which hook last
+ran (#31).
 
 ---
 
@@ -144,7 +160,7 @@ These come from the spike and must be honoured by the harness as it grows. The f
 
 - **C1 — single-writer claim authority.** When the async CI/review layer is added, exactly one component may mutate claim/state. (Deferred — not in pilot.)
 - **C2 — provenance allowlist.** The harness acts only on agent-authored branches/PRs and owner-labeled issues; never on arbitrary-author content. (Deferred — not in pilot, since the pilot has no event-driven trigger.)
-- **C3 — bounded rework with escalation.** Every autonomous retry loop needs a budget and a human-escalation exit. (Deferred — pilot reviews PRs manually.)
+- **C3 — bounded rework with escalation.** Charged agent failures retry within `BH_MAX_ISSUE_FAILURES`, then transition to `agent-failed` for human triage; the separate crash redispatch loop remains bounded by `BH_REDISPATCH_MAX` (`src/baton_harness/chain/daemon/park.py:L71-L91`, `src/baton_harness/chain/redispatch.py:L29-L90`, #351).
 - **Cost note (H-note).** A block costs up to `max_turns` full agent runs in the external-process pilot. The #6 dry run (T2) confirmed that the external-process Baton did not re-check `exclude_labels` between turns. Under vendoring [implemented, VP-2, P3], the `_run_worker` turn-loop patch makes a block terminal — retiring the `max_turns: 2` cost workaround. Issue #23 (tracking this fix) is closed. See §8 for the full terminal-block decision record.
 - **Outcome ≠ green CI (F10).** "PR opened" is not "correct." In the pilot, the human is the CI gate at review; automating this is a later phase.
 

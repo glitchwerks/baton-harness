@@ -238,6 +238,9 @@ from .launch_gate import (
 from .launch_gate import (
     reconstruct as reconstruct,
 )
+from .park import ParkClass as ParkClass
+from .park import ParkContext as ParkContext
+from .park import park_issue as park_issue
 
 # poll.py cluster (#277, Phase 6e -- the FINAL sub-phase of the #268
 # daemon.py -> daemon/ package split): run_daemon and
@@ -443,7 +446,7 @@ def _label_edit(
     remove: list[str] | None = None,
     installation_token: InstallationTokenSource = "",
     report: SessionReport | None = None,
-) -> None:
+) -> bool:
     """Edit labels on a GitHub issue.
 
     Args:
@@ -458,6 +461,9 @@ def _label_edit(
         report: Optional session report receiving successful label edits.
             Edits touching the ``blocked`` label are intentionally not
             recorded: they are not daemon-attested transitions.
+
+    Returns:
+        ``True`` when GitHub accepted the edit; otherwise ``False``.
     """
     cmd = ["gh", "issue", "edit", str(issue), "--repo", f"{owner}/{repo}"]
     for lbl in add or []:
@@ -489,6 +495,7 @@ def _label_edit(
             removed=list(remove or []),
             ts=datetime.now(timezone.utc).isoformat(),
         )
+    return proc.returncode == 0
 
 
 # _find_issue_pr, _fetch_issue_obj, _fetch_full_milestone_members,

@@ -237,7 +237,7 @@ checklist — what to install and export before a first run.
   particular) are Linux-only.
 - `config/WORKFLOW.md` present in this repo (already committed — see `config/`)
 - The target project repo cloned locally (`BH_PROJECT_ROOT`)
-- The target project repo must have all five harness state labels (see
+- The target project repo must have all six harness labels (see
   [Required GitHub labels](#required-github-labels) below)
 - The target project repo must have `.symphony/` in its `.gitignore` — `bin/run-daemon.sh`
   enforces this with a preflight check and aborts ("this repo is not ready for harness work")
@@ -251,7 +251,7 @@ The separate `baton` pip install is **not required** — `symphony` is vendored 
 
 ## Required GitHub labels
 
-The target project repo must have all five harness state labels before running
+The target project repo must have all six harness labels before running
 `bin/run-daemon.sh`. The launcher runs a preflight check and exits non-zero with
 actionable instructions if any are absent. It does not auto-create labels — label creation
 is an operator action.
@@ -261,14 +261,18 @@ is an operator action.
 | `agent-ready` | Issue is eligible for an agent run |
 | `agent-in-progress` | Agent is actively running against this issue |
 | `agent-done` | Agent has opened a PR (human reviews) |
+| `agent-failed` | Charged failure budget exhausted; human triage required |
 | `agent-merged` | Per-issue branch merged into the feature branch by the daemon (CI-gated) |
 | `blocked` | Agent needs human input; sub-tree is parked |
 
-To create all five labels, see the exact `gh label create` commands in
+To create all six labels, see the exact `gh label create` commands in
 [docs/smoke-test-daemon.md §"Required labels"](docs/smoke-test-daemon.md) (kept in sync
 with the runbook; duplicating them here risks drift). The commands are also printed by
 `bin/run-daemon.sh` when it detects a missing label. `bin/init-sandbox.sh` creates all
-five automatically when provisioning a throwaway sandbox.
+six automatically when provisioning a throwaway sandbox.
+
+To retry an `agent-failed` issue after triage, remove `agent-failed` and add
+`agent-ready`. Do not leave both labels applied.
 
 ## GitHub token: least-privilege setup
 
@@ -366,6 +370,8 @@ bh-daemon           # continuous
 | `BH_HEARTBEAT_FILE` | `${BH_PROJECT_ROOT}/.baton-harness/heartbeat` | Path for the local liveness file written on each heartbeat tick. Override to direct the file to a location convenient for your monitoring setup. |
 | `BH_WORKER_PROGRESS_STALL_S` | `1800` | Seconds without a turn-progress signal during the worker-active phase (fresh dispatch) before a progress-stall alert fires. 1800 s is 6× the 300 s per-turn timeout. Non-numeric value logs a WARNING and falls back to the default. |
 | `BH_WORKTREE_GC` | `detect` | Worktree orphan-GC mode. `detect` logs orphaned worktrees without removing them (safe default). `reclaim` additionally removes confirmed orphans. Unrecognised value logs a WARNING and falls back to `detect`. |
+| `BH_MAX_ISSUE_FAILURES` | `2` | Consecutive charged worker failures allowed before the issue becomes `agent-failed`. This is lower than `BH_REDISPATCH_MAX` because it counts consumed worker runs, while redispatch counts crash-recovery attempts. |
+| `BH_FAILURE_COUNTS_PATH` | `${BH_PROJECT_ROOT}/.baton-harness/failure-counts.json` | Durable charged-failure counts and one-time alert state. |
 
 `bin/init-sandbox.sh` provisions a throwaway sandbox repo for a smoke test. Its
 `--scenario <name>` flag (or `BH_SCENARIO`) selects `hello` (the existing default),
