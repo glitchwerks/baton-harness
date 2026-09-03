@@ -19,6 +19,12 @@ Two external systems inform this harness's design. Draw on both when reasoning a
 - **`mraza007/baton`** (`symphony`) — the original orchestrator, now vendored. Source of the core poll-issue → run-agent → open-PR loop. Dormant upstream (see § Upstream dependency above).
 - **[`nexu-io/looper`](https://github.com/nexu-io/looper)** — actively-maintained Go system with the same core idea (poll GitHub for labeled issues/PRs, run pluggable AI agents, produce PRs), but architecturally deeper: five agent roles (Coordinator → Planner → Reviewer ↔ Fixer → Worker), parallel goroutines, goal-based termination via a stdout result marker, optional auto-merge, and 11 ADRs. **Design reference, not a dependency** — borrow patterns, keep our Python stack and no-merge guardrails (the daemon opens a ready-for-review PR but never merges to `main`). Full comparison and the rationale for *not* adopting it wholesale: `docs/research/2026-06-21-looper-vs-baton-harness.md`. Active borrow-candidates tracked under milestone **Looper-inspired enhancements** (#139 goal-based termination, #140 automated review pass, #141 durable-authority discipline).
 
+## CodeGraph
+
+This repository is CodeGraph-enabled. Use the `mcp__codegraph__*` tools first for symbol discovery, architecture exploration, caller/callee tracing, and change-impact analysis. Start broad codebase investigations with `codegraph_context`.
+
+Use `rg` and direct file reads for exact-text searches, configuration and other non-code content, or when the CodeGraph index is unavailable or stale. Do not initialize or rebuild a missing or stale index without explicit user authorization; report its status instead.
+
 ## Repository work workflow
 
 - Create or update a GitHub issue before starting work. A milestone is optional at issue creation and required before issue closure. Keep acceptance criteria to outcomes that must be complete before merge; do not include post-merge acceptance criteria.
