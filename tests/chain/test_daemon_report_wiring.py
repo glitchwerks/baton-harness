@@ -118,14 +118,22 @@ def _green_required_jobs() -> list[dict[str, str | None]]:
     ]
 
 
-def _extract_alert_summary(mock_alert: MagicMock) -> str:
-    """Pull the ``summary`` argument from the last call to a patched ``alert``.
+def _extract_debug_alert_summary(mock_alert: MagicMock) -> str:
+    """Pull the ``summary`` argument from the sole debug alert call.
 
     Duplicated from ``tests/chain/test_daemon.py`` per this file's own
     "duplicated rather than imported" convention (module docstring).
     ``summary`` may be forwarded positionally (index 3) or as a keyword.
     """
-    call = mock_alert.call_args_list[-1]
+    debug_calls = [
+        call
+        for call in mock_alert.call_args_list
+        if call.kwargs.get("kind") == "debug"
+    ]
+    assert len(debug_calls) == 1, (
+        f"expected exactly one debug alert; got {debug_calls!r}"
+    )
+    call = debug_calls[0]
     if "summary" in call.kwargs:
         return call.kwargs["summary"]
     return call.args[3]
@@ -979,6 +987,10 @@ class TestRunCiGateRecordsEscalationDetail:
             patch.object(merge_mod, "_query_action_jobs", return_value=[]),
             patch("baton_harness.chain.daemon.alert", mock_alert),
             patch("baton_harness.chain.daemon._label_edit"),
+            patch(
+                "baton_harness.chain.daemon._fetch_issue_labels",
+                return_value={"agent-done"},
+            ),
         ):
             daemon_mod._run_ci_gate(
                 owner=_OWNER,
@@ -1017,7 +1029,7 @@ class TestRunCiGateRecordsEscalationDetail:
             "No GitHub Actions jobs were observed at all" in record["detail"]
         ), f"got {record!r}"
 
-        summary = _extract_alert_summary(mock_alert)
+        summary = _extract_debug_alert_summary(mock_alert)
         assert record["detail"] == summary, (
             "the recorded detail must be character-identical to the "
             f"summary passed to alert; detail={record['detail']!r} "
@@ -1082,6 +1094,10 @@ class TestRunCiGateRecordsEscalationDetail:
             patch.object(merge_mod, "_run", side_effect=fake_run),
             patch("baton_harness.chain.daemon.alert", return_value=True),
             patch("baton_harness.chain.daemon._label_edit"),
+            patch(
+                "baton_harness.chain.daemon._fetch_issue_labels",
+                return_value={"agent-done"},
+            ),
         ):
             outcome = daemon_mod._run_ci_gate(
                 owner=_OWNER,
