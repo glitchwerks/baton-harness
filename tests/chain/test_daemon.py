@@ -101,8 +101,8 @@ def _green_required_jobs() -> list[dict[str, str | None]]:
     ]
 
 
-def _extract_alert_summary(mock_alert: MagicMock) -> str:
-    """Pull the ``summary`` argument from the last call to a patched ``alert``.
+def _extract_debug_alert_summary(mock_alert: MagicMock) -> str:
+    """Pull the ``summary`` argument from the sole debug alert call.
 
     ``escalation.alert``'s signature is
     ``alert(owner, repo, issue, summary, *, severity=..., ...)``
@@ -115,9 +115,17 @@ def _extract_alert_summary(mock_alert: MagicMock) -> str:
         mock_alert: The ``MagicMock`` patched in for ``alert``.
 
     Returns:
-        The ``summary`` string from the most recent call.
+        The ``summary`` string from the debug alert call.
     """
-    call = mock_alert.call_args_list[-1]
+    debug_calls = [
+        call
+        for call in mock_alert.call_args_list
+        if call.kwargs.get("kind") == "debug"
+    ]
+    assert len(debug_calls) == 1, (
+        f"expected exactly one debug alert; got {debug_calls!r}"
+    )
+    call = debug_calls[0]
     if "summary" in call.kwargs:
         return call.kwargs["summary"]
     return call.args[3]
@@ -10804,6 +10812,10 @@ class TestRunCiGateDiagnosticEnrichment:
             patch.object(merge_mod, "_query_action_jobs", return_value=[]),
             patch("baton_harness.chain.daemon.alert", mock_alert),
             patch("baton_harness.chain.daemon._label_edit"),
+            patch(
+                "baton_harness.chain.daemon._fetch_issue_labels",
+                return_value={"agent-done"},
+            ),
         ):
             outcome = daemon_mod._run_ci_gate(
                 owner=_OWNER,
@@ -10824,7 +10836,7 @@ class TestRunCiGateDiagnosticEnrichment:
 
         assert outcome == MergeOutcome.CI_TIMEOUT
         assert mock_alert.call_args_list, "alert must have been called"
-        summary = _extract_alert_summary(mock_alert)
+        summary = _extract_debug_alert_summary(mock_alert)
         assert summary.startswith(
             "Issue #10 parked: CI timed out (CI_TIMEOUT)."
         ), (
@@ -10851,6 +10863,10 @@ class TestRunCiGateDiagnosticEnrichment:
             patch.object(merge_mod, "_query_action_jobs", return_value=[]),
             patch("baton_harness.chain.daemon.alert", return_value=True),
             patch("baton_harness.chain.daemon._label_edit"),
+            patch(
+                "baton_harness.chain.daemon._fetch_issue_labels",
+                return_value={"agent-done"},
+            ),
         ):
             daemon_mod._run_ci_gate(
                 owner=_OWNER,
@@ -10899,6 +10915,10 @@ class TestRunCiGateDiagnosticEnrichment:
             ),
             patch("baton_harness.chain.daemon.alert", mock_alert),
             patch("baton_harness.chain.daemon._label_edit"),
+            patch(
+                "baton_harness.chain.daemon._fetch_issue_labels",
+                return_value={"agent-done"},
+            ),
         ):
             daemon_mod._run_ci_gate(
                 owner=_OWNER,
@@ -10917,7 +10937,7 @@ class TestRunCiGateDiagnosticEnrichment:
                 ci_timeout=0,
             )
 
-        summary = _extract_alert_summary(mock_alert)
+        summary = _extract_debug_alert_summary(mock_alert)
         assert summary == "Issue #13 parked: CI timed out (CI_TIMEOUT).", (
             f"unpopulated diagnostic must degrade to today's exact "
             f"one-line string; got {summary!r}"
@@ -10951,6 +10971,10 @@ class TestRunCiGateDiagnosticEnrichment:
             patch.object(merge_mod, "_query_action_jobs", return_value=[]),
             patch("baton_harness.chain.daemon.alert", mock_alert),
             patch("baton_harness.chain.daemon._label_edit"),
+            patch(
+                "baton_harness.chain.daemon._fetch_issue_labels",
+                return_value={"agent-done"},
+            ),
         ):
             daemon_mod._run_ci_gate(
                 owner=_OWNER,
@@ -10969,7 +10993,7 @@ class TestRunCiGateDiagnosticEnrichment:
                 ci_timeout=0,
             )
 
-        summary = _extract_alert_summary(mock_alert)
+        summary = _extract_debug_alert_summary(mock_alert)
         sep = gh_api_helpers_mod._PARK_DETAIL_SEP
         reason_line = "Issue #12 parked: CI timed out (CI_TIMEOUT)."
         assert summary.startswith(reason_line + sep), (
@@ -11021,6 +11045,10 @@ class TestRunCiGateDiagnosticEnrichment:
             patch.object(merge_mod, "_run", side_effect=fake_run),
             patch("baton_harness.chain.daemon.alert", mock_alert),
             patch("baton_harness.chain.daemon._label_edit"),
+            patch(
+                "baton_harness.chain.daemon._fetch_issue_labels",
+                return_value={"agent-done"},
+            ),
         ):
             outcome = daemon_mod._run_ci_gate(
                 owner=_OWNER,
@@ -11040,7 +11068,7 @@ class TestRunCiGateDiagnosticEnrichment:
             )
 
         assert outcome == MergeOutcome.MERGE_CONFLICT
-        summary = _extract_alert_summary(mock_alert)
+        summary = _extract_debug_alert_summary(mock_alert)
         assert (
             summary == "Issue #11 parked: merge conflict (MERGE_CONFLICT)."
         ), (
@@ -11089,6 +11117,10 @@ class TestRunCiGateDiagnosticEnrichment:
             ),
             patch("baton_harness.chain.daemon.alert", mock_alert),
             patch("baton_harness.chain.daemon._label_edit"),
+            patch(
+                "baton_harness.chain.daemon._fetch_issue_labels",
+                return_value={"agent-done"},
+            ),
         ):
             outcome = daemon_mod._run_ci_gate(
                 owner=_OWNER,
@@ -11116,7 +11148,7 @@ class TestRunCiGateDiagnosticEnrichment:
         assert "failed" in reason, (
             f"expected the parked reason to identify a failure; got {reason!r}"
         )
-        summary = _extract_alert_summary(mock_alert)
+        summary = _extract_debug_alert_summary(mock_alert)
         assert failed_check in summary, (
             "expected the failed check's name to appear in the park "
             f"alert detail; got {summary!r}"
