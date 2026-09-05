@@ -1319,19 +1319,33 @@ class TestEnvBwsAccessToken:
         assert result.status == CheckStatus.FAIL
 
     def test_passes_when_set_and_never_leaks_the_value(
-        self, tmp_path: Path
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """A non-empty token PASSes; the value never appears anywhere."""
+        """A token PASSes without exposing its value or length in reports."""
         check = _get_check("ENV_BWS_ACCESS_TOKEN")
         _write_config_env(tmp_path, _VALID_CONFIG_ENV)
-        result = check(
-            _make_ctx(
-                project_root=str(tmp_path),
-                env={"BWS_ACCESS_TOKEN": _FAKE_BWS_TOKEN},
-            )
+        ctx = _make_ctx(
+            project_root=str(tmp_path),
+            env={"BWS_ACCESS_TOKEN": _FAKE_BWS_TOKEN},
         )
+        result = check(ctx)
         assert result.status == CheckStatus.PASS
+        assert result.check_id == "ENV_BWS_ACCESS_TOKEN"
+        assert result.severity is Severity.CRITICAL
         _assert_no_secret_leak(result, _FAKE_BWS_TOKEN)
+        with (
+            patch.object(doctor, "CATALOG", [check]),
+            patch.object(doctor, "DoctorContext", return_value=ctx),
+        ):
+            assert main(["--doctor"]) == 0
+        captured = capsys.readouterr()
+        serialized = json.dumps(
+            dataclasses.asdict(result), default=lambda item: item.name
+        )
+        for output in (serialized, captured.out + captured.err):
+            assert _FAKE_BWS_TOKEN not in output
+            assert str(len(_FAKE_BWS_TOKEN)) not in output
+            assert "characters" not in output
 
 
 # ---------------------------------------------------------------------------

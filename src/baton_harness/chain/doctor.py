@@ -614,7 +614,7 @@ def _check_bws_access_token(ctx: DoctorContext) -> CheckResult:
     token = ctx.env.get("BWS_ACCESS_TOKEN", "")
     if token:
         status = CheckStatus.PASS
-        detail = f"BWS_ACCESS_TOKEN is set ({len(token)} characters)."
+        detail = "BWS_ACCESS_TOKEN is set."
     else:
         status = CheckStatus.FAIL
         detail = "BWS_ACCESS_TOKEN is unset or empty."
