@@ -21,8 +21,8 @@ For what each credential these walkthroughs provision *is* and why it's required
 
 ## 1. Prerequisites — have these in hand before you start
 
-These are the CLIs `bin/setup-env.sh` (step 2 below) needs — some it installs for you
-(marked "auto"), one you must install yourself first.
+These are the CLIs `bin/setup-env.sh` (step 2 below) checks — it requires `uv`, `gh`, and
+`claude`, while `bws` is conditional on the later provider selection.
 
 **Software (auto-installable on Linux/macOS by `bin/setup-env.sh`, see step 2):**
 
@@ -58,20 +58,22 @@ What it does, in order:
 
 1. Checks `uv` is on `PATH` (fails with an install hint if not — this is the one tool it
    does not offer to auto-install)
-2. Checks the full supported CLI set (`bws`, `gh`, and `claude`) on `PATH`; in an
-   interactive terminal on
-   Linux/macOS it offers to auto-install each (pinned, checksum-verified versions for
-   `bws`/`gh`; the official installer for `claude`) to `~/.local/bin`. In a non-interactive
-   context (or with `BH_SETUP_NO_PROMPT=1`), it exits 1 with a link to the manual install
-   page instead of silently reaching the network.
-3. Creates `.venv` (skipped if already present — safe to re-run)
-4. Installs the package with dev extras: `uv pip install -e ".[dev]"`
-5. Verifies `bh-daemon` is reachable inside the venv
-6. Prints the venv-activation hint
-7. In an interactive terminal, prompts for `BH_PROJECT_ROOT` (the absolute path to your
+2. Checks optional `bws` on `PATH` and offers the pinned, checksum-verified v2.1.0 install
+   in an interactive Linux/macOS terminal. Declining, input EOF, non-interactive mode, or
+   `BH_SETUP_NO_PROMPT=1` prints the conditional manual-install guidance and continues
+   without a network call; provider selection happens later in `bin/init-sandbox.sh`.
+3. Requires `gh` and `claude` on `PATH`; in an interactive Linux/macOS terminal it offers
+   to install them (`gh` v2.62.0 with checksum verification; the official installer for
+   `claude`). Missing either in a non-interactive context or with `BH_SETUP_NO_PROMPT=1`
+   exits 1 with its manual-install link and makes no network call.
+4. Creates `.venv` (skipped if already present — safe to re-run)
+5. Installs the package with dev extras: `uv pip install -e ".[dev]"`
+6. Verifies `bh-daemon` is reachable inside the venv
+7. Prints the venv-activation hint
+8. In an interactive terminal, prompts for `BH_PROJECT_ROOT` (the absolute path to your
    local sandbox clone) and writes it to `~/.config/baton-harness/host.env` (mode 600) —
    `bin/run-daemon.sh` sources this automatically on every later launch
-8. Checks whether `BWS_ACCESS_TOKEN` is already set and prints a non-fatal notice if not.
+9. Checks whether `BWS_ACCESS_TOKEN` is already set and prints a non-fatal notice if not.
    The notice is relevant only when the selected provider or optional secret locators use
    BWS; the setup script itself never consumes the token.
 

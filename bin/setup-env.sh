@@ -33,8 +33,8 @@ package (including bh-daemon entry point) using uv.
 
 Steps performed:
   1. Checks that uv is on PATH
-  2. Checks that bws (Bitwarden Secrets CLI) is on PATH; offers to install
-     v2.1.0 to ~/.local/bin when running in an interactive terminal
+  2. Checks whether bws (Bitwarden Secrets CLI) is on PATH; optionally offers
+     to install v2.1.0 to ~/.local/bin in an interactive terminal
   3. Checks that gh (GitHub CLI) is on PATH; offers to install v2.62.0
      to ~/.local/bin when running in an interactive terminal
   4. Checks that claude (Claude Code CLI) is on PATH; offers to install
@@ -52,13 +52,19 @@ Safe to re-run: venv creation is skipped when .venv already exists.
 If host.env already exists, an interactive re-run asks whether to overwrite
 it or reuse it unchanged; reuse is the safe default.
 No environment variables are required for this dev-setup script to run.
-BWS_ACCESS_TOKEN is required later by bh-daemon at runtime, but not by this
-script; setup-env.sh only checks whether it is present and never persists it.
+BWS_ACCESS_TOKEN is needed later only when the selected App-key provider or
+optional PAT/heartbeat secret locators use BWS. setup-env.sh only checks
+whether it is present and never persists it.
 
-bws/gh/claude auto-install behaviour (all three follow the same rules):
+bws auto-install behaviour:
+  - Interactive terminal (default): prompts before downloading.
+  - Declining, input EOF, BH_SETUP_NO_PROMPT=1, or non-TTY skips installation
+    with conditional guidance and continues. No silent network calls.
+
+gh/claude auto-install behaviour (both remain required):
   - Interactive terminal (default): prompts before downloading.
   - BH_SETUP_NO_PROMPT=1 or non-TTY (e.g. CI): skips prompt and exits 1
-    with a link to the manual install page.  No silent network calls.
+    with a link to the manual install page. No silent network calls.
   - Manual install pages:
       bws:    https://bitwarden.com/help/secrets-manager-cli/
       gh:     https://github.com/cli/cli#installation
@@ -95,10 +101,16 @@ if ! command -v uv &>/dev/null; then
 fi
 
 # ---------------------------------------------------------------------------
-# Preflight: bws (Bitwarden Secrets CLI) must be on PATH
+# Optional preflight: bws (Bitwarden Secrets CLI)
 # ---------------------------------------------------------------------------
 
 _bws_manual_url="https://bitwarden.com/help/secrets-manager-cli/"
+
+_print_optional_bws_guidance() {
+    echo "baton-harness: warning: bws not found on PATH; continuing because BWS is optional until a provider is selected." >&2
+    echo "  Install bws v${BWS_INSTALL_VERSION} only when BH_GITHUB_APP_KEY_PROVIDER=bws or an optional PAT/heartbeat BWS secret locator is configured." >&2
+    echo "  Install bws manually: ${_bws_manual_url}" >&2
+}
 
 _install_bws() {
     # Preflight: required tools
@@ -212,13 +224,10 @@ elif [[ -t 0 && -t 1 && "${BH_SETUP_NO_PROMPT:-0}" != "1" ]]; then
             _install_bws ;;
         *)
             echo "baton-harness: bws install declined." >&2
-            echo "  Install bws manually: ${_bws_manual_url}" >&2
-            exit 1 ;;
+            _print_optional_bws_guidance ;;
     esac
 else
-    echo "baton-harness: error: bws not found on PATH" >&2
-    echo "  Install bws manually: ${_bws_manual_url}" >&2
-    exit 1
+    _print_optional_bws_guidance
 fi
 
 # ---------------------------------------------------------------------------
@@ -537,7 +546,7 @@ _bh_resolve_config_with_reuse_prompt "${HOST_ENV}" _bh_prompt_and_write_host_con
 # ---------------------------------------------------------------------------
 
 if [[ -n "${BWS_ACCESS_TOKEN:-}" ]]; then
-    echo "baton-harness: BWS_ACCESS_TOKEN already set in environment"
+    echo "baton-harness: BWS_ACCESS_TOKEN already set in environment; it is used only when the selected App-key provider or optional PAT/heartbeat secret locators use BWS"
 else
-    echo "baton-harness: warning: BWS_ACCESS_TOKEN not set — required by bh-daemon at runtime to authenticate to bws. For manual bin/run-daemon.sh runs, export it in your shell; for the systemd service, drop it at /etc/bh-daemon/secrets.env (mode 600, via EnvironmentFile). Do not store it in ~/.config/baton-harness/host.env. See README Prerequisites (runtime). Not needed for this dev-setup step." >&2
+    echo "baton-harness: warning: BWS_ACCESS_TOKEN not set — needed only when the selected App-key provider or optional PAT/heartbeat secret locators use BWS. When needed, export it for manual bin/run-daemon.sh runs or place it in /etc/bh-daemon/secrets.env (mode 600) for systemd. Do not store it in ~/.config/baton-harness/host.env. A file-only deployment needs neither bws nor this token." >&2
 fi

@@ -61,7 +61,7 @@ baton-harness/
 ├── pyproject.toml               # package metadata, dev dependencies, ruff/mypy config
 ├── bin/
 │   ├── run-daemon.sh            # launcher: validates env vars + labels, starts bh-daemon
-│   ├── setup-env.sh             # idempotent dev-env bootstrap: uv venv + editable install + bws check
+│   ├── setup-env.sh             # idempotent dev-env bootstrap: uv venv + editable install + optional bws check
 │   ├── init-sandbox.sh          # provision a throwaway sandbox repo for a first smoke test
 │   ├── provision-ruleset.sh     # create/repair the two branch-protection rulesets (required before first run)
 │   ├── verify-recovery.sh       # exercise the five startup-reconciliation gates against a live sandbox
@@ -216,7 +216,9 @@ checklist — what to install and export before a first run.
 - **`bws` (Bitwarden Secrets CLI)** on `PATH` only when the selected App-key provider is
   `bws`, or when `BWS_GH_TOKEN_SECRET_ID` or `BWS_HEARTBEAT_PING_URL_SECRET_ID` is set.
   `bin/setup-env.sh` checks for `bws` and offers to auto-install v2.1.0 to
-  `~/.local/bin`; verify with `bws --version` when your deployment uses BWS.
+  `~/.local/bin`. Declining or running non-interactively without it prints conditional
+  guidance and continues without downloading; verify with `bws --version` when your
+  deployment uses BWS.
 - **`BWS_ACCESS_TOKEN`** only for those same BWS-backed configurations. Provide this
   operator-supplied machine-account token in a root-readable-only file and never commit it.
   `bin/install-daemon-service.sh` writes `/etc/bh-daemon/secrets.env` (mode `600`) and adds
@@ -432,7 +434,8 @@ The four-step bringup sequence from [docs/smoke-test-daemon.md §"Fresh host bri
 
 ```bash
 # Step 1 — create the venv, install the package, and record BH_PROJECT_ROOT.
-#   Checks all supported CLIs (including bws); offers to auto-install on Linux/macOS.
+#   Requires uv, gh, and claude; checks optional bws and offers to auto-install it.
+#   Missing/declined bws prints conditional guidance and does not stop setup.
 #   Writes BH_PROJECT_ROOT to ~/.config/baton-harness/host.env (mode 600),
 #   prompting to overwrite or reuse an existing file on a re-run.
 bin/setup-env.sh
