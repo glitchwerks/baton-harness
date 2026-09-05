@@ -395,10 +395,85 @@ def test_new_bws_config_writes_explicit_provider_and_only_bws_source(
     )
     assert "export BH_GITHUB_APP_KEY_PROVIDER=bws\n" in config
     assert (
-        "export BWS_PEM_SECRET_ID=11111111-1111-1111-1111-111111111111\n"
+        "export BWS_PEM_SECRET_ID='11111111-1111-1111-1111-111111111111'\n"
         in config
     )
     assert "BH_GITHUB_APP_PRIVATE_KEY_FILE" not in config + prompts
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX pty required")
+def test_bws_provider_reprompts_empty_and_invalid_secret_ids(
+    tmp_path: Path,
+) -> None:
+    """Only a complete UUID can become the selected BWS PEM locator."""
+    config, prompts = _new_provider_config(
+        tmp_path,
+        "bws\n\nnot-a-uuid\n"
+        "11111111-1111-1111-1111-111111111111\n\n\n",
+    )
+    assert prompts.count("valid UUID") == 2
+    assert "not-a-uuid" not in config
+    assert (
+        "export BWS_PEM_SECRET_ID='11111111-1111-1111-1111-111111111111'\n"
+        in config
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX pty required")
+def test_bws_config_sources_uuid_without_command_execution(
+    tmp_path: Path,
+) -> None:
+    """A metacharacter-bearing BWS locator is rejected before persistence."""
+    marker = tmp_path / "bws-injection-marker"
+    malicious_id = (
+        "11111111-1111-1111-1111-111111111111; touch "
+        f"{marker.as_posix()}"
+    )
+    accepted_id = "22222222-2222-2222-2222-222222222222"
+    _origin, project = _make_origin_and_clone(tmp_path)
+    result = _run_init_sandbox(
+        tmp_path,
+        project,
+        input_text=(
+            "111\n999999\nbws\n"
+            f"{malicious_id}\n{accepted_id}\n\n\n"
+        ),
+    )
+    assert result.returncode == 0, result.stderr
+    assert "valid UUID" in result.stderr
+
+    source_result = subprocess.run(
+        [
+            _BASH,
+            "-c",
+            'source "$1"; printf "%s" "$BWS_PEM_SECRET_ID"',
+            "bash",
+            str(project / ".bh/config.env"),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+    )
+    assert source_result.returncode == 0, source_result.stderr
+    assert source_result.stdout == accepted_id
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX pty required")
+def test_bws_provider_read_eof_fails_closed_without_config(
+    tmp_path: Path,
+) -> None:
+    """EOF at the required BWS locator prompt cannot write partial config."""
+    _origin, project = _make_origin_and_clone(tmp_path)
+    result = _run_init_sandbox(
+        tmp_path,
+        project,
+        input_text="111\n999999\nbws\n\x04",
+    )
+    assert result.returncode != 0
+    assert "could not read BWS PEM secret UUID" in result.stderr
+    assert not (project / ".bh/config.env").exists()
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX pty required")

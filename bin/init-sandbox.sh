@@ -926,8 +926,18 @@ _bh_prompt_and_write_sandbox_config() {
         esac
     done
     if [[ "${_bh_app_key_provider}" == bws ]]; then
-        read -r -p "  BWS_PEM_SECRET_ID (UUID of GitHub App PEM secret in BWS): " _bws_pem_secret_id
-        _bh_app_key_source="export BWS_PEM_SECRET_ID=${_bws_pem_secret_id}"
+        local _bh_uuid_re='^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'
+        while true; do
+            if ! read -r -p "  BWS_PEM_SECRET_ID (UUID of GitHub App PEM secret in BWS): " _bws_pem_secret_id; then
+                echo "baton-harness: error: could not read BWS PEM secret UUID" >&2
+                return 1
+            fi
+            if [[ "${_bws_pem_secret_id}" =~ ${_bh_uuid_re} ]]; then
+                break
+            fi
+            echo "baton-harness: error: BWS_PEM_SECRET_ID must be a valid UUID" >&2
+        done
+        _bh_app_key_source="export BWS_PEM_SECRET_ID='${_bws_pem_secret_id}'"
     else
         while true; do
             if ! read -r -p "  BH_GITHUB_APP_PRIVATE_KEY_FILE (absolute path to secured PEM file): " _bh_app_key_file; then
