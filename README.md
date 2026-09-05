@@ -260,13 +260,21 @@ deployments must add the selector explicitly; there is no legacy default:
 # Existing BWS deployment
 export BH_GITHUB_APP_KEY_PROVIDER=bws
 export BWS_PEM_SECRET_ID=<uuid>
-export BWS_ACCESS_TOKEN=<machine-account-token>
 ```
 
 ```bash
 # BWS-free file deployment
 export BH_GITHUB_APP_KEY_PROVIDER=file
 export BH_GITHUB_APP_PRIVATE_KEY_FILE=/run/credentials/bh-daemon/app.pem
+```
+
+`BWS_ACCESS_TOKEN` is a shell/service bootstrap secret, not provider configuration. Never
+store it in `${BH_PROJECT_ROOT}/.bh/config.env`. For an interactive BWS-backed run, export
+it separately in the caller's shell:
+
+```bash
+read -r -s BWS_ACCESS_TOKEN
+export BWS_ACCESS_TOKEN
 ```
 
 For `file`, the path must be absolute and the target must be a regular, non-symlink file
@@ -313,10 +321,10 @@ permissions beyond what the harness requires. Structural least-privilege — the
 account literally cannot perform destructive actions — is the real security
 boundary. No software check substitutes for it.
 
-Auth method, required permissions, the fallback PAT's narrower permission
-surface relative to the GitHub App, and the validation gates are documented in
+Auth method, required permissions, the optional worker-hook PAT's narrower permission
+surface relative to the mandatory GitHub App, and the validation gates are documented in
 [docs/authentication.md](docs/authentication.md) — this section is a pointer,
-not a restatement. Quick reference for exporting the fallback PAT directly
+not a restatement. Quick reference for exporting the optional hook PAT directly
 (bypassing the Bitwarden vault fetch):
 
 ```bash
@@ -324,6 +332,9 @@ export GH_TOKEN=github_pat_<your-token>
 export BH_PROJECT_ROOT=/path/to/local/clone
 bin/run-daemon.sh
 ```
+
+This PAT does not replace the App ID, installation ID, or selected App private-key
+provider required in `${BH_PROJECT_ROOT}/.bh/config.env`.
 
 ## Safety and guardrails
 

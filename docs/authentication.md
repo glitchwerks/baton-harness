@@ -7,7 +7,7 @@ Single reference for every external service `bh-daemon` authenticates to: auth m
 | Authentication Method | Consumer | Method of Provision |
 |---|---|---|
 | [GitHub App installation token](#github-app-primary) | daemon push/labels/CI-reads/ruleset-bypass (`git`, `gh`) — `Identity.APP` | Selected App-key provider (`bws` or secured host file), minted to short-lived token at runtime |
-| [GitHub fine-grained PAT](#github-fine-grained-pat-fallback) | daemon fallback path, CI reads via Actions API not Checks, no ruleset bypass (`git`, `gh`) — `Identity.APP` | Vault (preferred) or User Setup (direct `export GH_TOKEN=...`) |
+| [GitHub fine-grained PAT](#github-fine-grained-pat-fallback) | optional `before_run` worker-hook credential; never daemon authority | Vault or User Setup (direct `export GH_TOKEN=...`) |
 | [Bitwarden Secrets Manager (`BWS_ACCESS_TOKEN`)](#bitwarden-secrets-manager) | conditional daemon startup / secret bootstrap (`app_auth.py`) | User Setup when any BWS-backed source is configured (this credential itself is never vaulted) |
 | [Anthropic / Claude Code OAuth](#anthropic--claude-code) | Claude Code worker subprocess — `Identity.WORKER` | Web auth (interactive `claude` login, produces `~/.claude/.credentials.json`) |
 | [Slack webhook (`BH_SLACK_WEBHOOK_URL`)](#slack) | daemon escalation notifications (`escalation.py`) | User Setup (plain env var, no vault form exists for it) |
@@ -99,31 +99,38 @@ Migration is fail-closed: existing deployments must add
 **Provisioning:** [docs/repository-onboarding.md](repository-onboarding.md) walks through
 App creation, obtaining the App ID and installation ID, and selecting either provider.
 
-## GitHub fine-grained PAT (fallback)
+<a id="github-fine-grained-pat-fallback"></a>
 
-**Auth method:** a fine-grained personal access token (prefix `github_pat_`), exported directly as `GH_TOKEN` (or `GITHUB_TOKEN`) instead of provisioning a GitHub App + Bitwarden PEM. Mint at <https://github.com/settings/personal-access-tokens/new> under a dedicated bot/machine account — never a personal account.
+## GitHub fine-grained PAT (optional worker-hook credential)
 
-**This is a narrower credential than the GitHub App, not an equivalent one — for two repo-specific reasons, not a blanket GitHub-wide restriction on what fine-grained PATs can hold.** This harness's PAT is not granted `checks`, so merge-gate CI status is read from the Actions API instead. Separately, the ruleset bypass actor for `feature/*` pushes must be the GitHub App itself — a fine-grained PAT cannot hold that role no matter what permissions it's granted (issue #220; see harness-design.md §12, which documents the bypass-actor requirement this constraint derives from). Note that fine-grained PATs *can* in general carry `administration`, including for ruleset read/write endpoints — this harness simply doesn't grant it to the PAT, both because it's unneeded (the App handles the ruleset preflight read) and because the bypass-actor constraint above rules out the PAT path for feature-branch pushes regardless. Consequences:
+**Auth method:** an optional fine-grained personal access token (prefix `github_pat_`),
+supplied as `GH_TOKEN` (or `GITHUB_TOKEN`) for the `before_run` worker hook. It does
+**not** replace GitHub App provisioning: the daemon always requires App ID, installation
+ID, and a private key from the selected `bws` or `file` provider. Mint the optional PAT
+at <https://github.com/settings/personal-access-tokens/new> under a dedicated bot/machine
+account — never a personal account.
 
-- CI status is read from the Actions API (`repos/{owner}/{repo}/actions/runs` + `.../jobs`, `src/baton_harness/chain/merge.py`) instead of the Checks API — the merge gate polls with `Actions: read`, not `checks` (#121).
-- The PAT cannot be the ruleset bypass actor for `feature/*` pushes — that role requires `Identity.APP` (issue #220). The `administration` preflight read is also performed via `Identity.APP` in this harness, though that is a scoping choice here, not a GitHub-imposed limitation on the PAT.
+The daemon threads this PAT by value only into `Orchestrator.hook_env` for the
+`bh-before-run` subprocess. That hook validates the PAT, fetches the branch base, and
+rebases locally. Daemon pushes, labels, pull requests, ruleset reads/bypass, and CI reads
+continue to use the separately minted App installation token under `Identity.APP`.
 
-**Required fine-grained PAT permissions:**
+**Required fine-grained PAT permissions when this optional hook credential is used:**
 
 | Operation | Fine-grained permission |
 |---|---|
-| Clone repo, push feature branches | Contents: Read & write |
-| Read issue body, edit labels, post comments | Issues: Read & write |
-| `gh pr list` / `gh pr create` | Pull requests: Read & write |
-| CI merge gate (read workflow-run/job conclusions) | Actions: Read |
+| Fetch the remote branch base in `before_run` | Contents: Read |
 | Baseline (granted automatically) | Metadata: Read |
 
-Not granted: Workflows, Administration, Secrets, Checks (App-only), any org-level scope. `Commit statuses: Read` is a useful diagnostic supplement for `gh pr checks` but not required.
+Not granted: Contents write, Issues, Pull requests, Actions, Workflows, Administration,
+Secrets, Checks, or any org-level scope. Those daemon operations remain App-authorized.
 
 **Provisioning:**
 
 - **Vault fetch (preferred when using the PAT path):** set `BWS_GH_TOKEN_SECRET_ID` in `${BH_PROJECT_ROOT}/.bh/config.env`; `bootstrap_secrets()` fetches the PAT from Bitwarden at startup and retains it by value for the worker hook without writing it to `os.environ`.
-- **Direct export (override / fallback):** `export GH_TOKEN=github_pat_<token>` — an explicit env value always wins over the vault fetch. This is the path described in [docs/repository-onboarding.md §1](repository-onboarding.md#1-prerequisites--have-these-in-hand-before-you-start) as the alternative to provisioning a GitHub App.
+- **Direct export (optional hook override):** `export GH_TOKEN=github_pat_<token>` — an
+  explicit env value wins over the vault fetch. This supplies only the worker hook; the
+  GitHub App configuration remains mandatory.
 
 **Validated by:** `validate_github_token()` (`src/baton_harness/_auth.py`) — reads `GH_TOKEN`/`GITHUB_TOKEN`, rejects classic `ghp_` PATs and anything not prefixed `github_pat_`, then runs a live `gh api user` capability self-test (retried up to `_MAX_RETRIES` = 2 times on transient failures — rate-limits, gateway errors, DNS/TLS — before failing closed; permanent 401/403 failures raise immediately). This runs at the top of the `bh-before-run` hook (`src/baton_harness/before_run.py`), i.e. once per worker turn, not at daemon startup — a **different gate, on a different credential, in a different execution context** than `validate_daemon_token()` above. Known limitation: fine-grained PATs expose no scope-introspection API (unlike classic PATs' `X-OAuth-Scopes` response header), so this gate verifies token *type* and *reachability* only, not the exact granted permission set — that verification is the operator's responsibility at mint time.
 

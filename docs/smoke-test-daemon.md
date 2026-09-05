@@ -598,7 +598,10 @@ Send SIGTERM to stop cleanly: `kill -TERM <pid>`.
 
 ## #40 recovery-path verification (`bin/verify-recovery.sh`)
 
-Issue #40 (merged PR #107) added a startup reconciliation sweep to the daemon. `bin/verify-recovery.sh` exercises each gate in that sweep against a live sandbox to confirm the recovery behavior is intact after a deploy or server reboot.
+Issue #40 (merged PR #107) added a startup reconciliation sweep to the daemon.
+`bin/verify-recovery.sh` exercises the G3b, G3c-preflight, G2, G1, and SIGTERM paths
+against a live sandbox. Its scenario labeled G3a has not been updated for by-value App
+authority and does not currently exercise the real G3a gate; see the limitation below.
 
 ### What it verifies and why it matters
 
@@ -647,17 +650,20 @@ Each scenario listed in the order the script runs them. "Alert text" refers to t
 | Scenario | Gate exercised | Setup | Expected exit code | Expected alert text in output |
 |---|---|---|---|---|
 | G3b | `ANTHROPIC_API_KEY` set | Script sets `ANTHROPIC_API_KEY=dummy-value-for-test` inline | Non-zero (exit 1) | `ANTHROPIC_API_KEY must not be set` |
-| G3a | Bogus `GH_TOKEN` | Script replaces `GH_TOKEN` with `ghp_BOGUS_TOKEN_FOR_TESTING`; the selected App-key provider must otherwise be usable. | Non-zero (exit 1) | `Startup credential check failed` |
+| G3a (known verifier limitation) | Not the real G3a gate | Script replaces ambient `GH_TOKEN` with `ghp_BOGUS_TOKEN_FOR_TESTING`, but daemon G3a validates the App installation token passed by value. The ambient value can instead fail the optional worker-PAT preflight earlier. | Daemon: non-zero; verifier: non-zero | No `Startup credential check failed` G3a alert |
 | G2 | Stale `daemon.alive` marker | Script pre-creates `.baton-harness/daemon.alive` before starting daemon `--once` | 0 (non-fatal) | `Prior daemon run ended ungracefully` |
 | G1 | Orphan `claude -p` process | Script spawns `sleep 999` with argv containing `claude -p` so `pgrep -f` matches it | 0 (non-fatal) | `Orphan claude processes detected at startup` |
 | SIGTERM | Graceful shutdown | Daemon starts in continuous mode; script waits for `daemon.alive` to appear, then sends SIGTERM | 0 (SystemExit(0) from handler) | Marker absent after exit |
 
 Notes on specific scenarios:
 - **G3b is the inverted gate**: the daemon refuses startup when `ANTHROPIC_API_KEY` IS set. This is the expected, correct behavior for OAuth/subscription deployment — the key's presence signals a misconfiguration.
-- **G3a provider prerequisite**: configure either a usable `bws` App-key source (including
-  its token) or a usable file source before running the verifier. The scenario's injected
-  `ghp_` token is the intended failure; an earlier provider failure makes the scenario
-  non-diagnostic even if the process still exits non-zero.
+- **G3a verifier limitation**: the current daemon passes its minted App installation token
+  by value into `reconcile_startup()`, so G3a does not read ambient `GH_TOKEN`. Replacing
+  only that environment variable cannot make the real G3a gate fail. The injected `ghp_`
+  value may cause the separate optional worker-PAT validation in `cli.py` to exit earlier,
+  but it cannot produce the G3a `Startup credential check failed` alert expected by the
+  script. Treat this scenario as a known verifier failure, not evidence that G3a was
+  exercised; updating the verifier is outside this documentation fix.
 - **G2 marker path**: `$BH_PROJECT_ROOT/.baton-harness/daemon.alive` — pre-created by the script, then re-written by the daemon on startup (non-fatal path). The marker is cleaned up by the script in an EXIT trap.
 - **G1 decoy**: the "orphan" process is `sleep 999` with its argv set to `sleep 999 claude -p`. No real Claude binary is invoked. The script reaps it immediately after the scenario.
 - **SIGTERM exit code**: Python's SIGTERM handler in `daemon.py` calls `raise SystemExit(0)`, so the daemon exits 0 — not 143 (which would indicate the process was killed externally without the handler firing).
@@ -668,19 +674,22 @@ The script prints a per-scenario `[PASS]` or `[FAIL]` line as each scenario comp
 
 ```
 baton-harness: [PASS] G3b
-baton-harness: [PASS] G3a
+baton-harness: [FAIL] G3a — fatal alert text not found in daemon output
 baton-harness: [PASS] G2
 baton-harness: [PASS] G1
 baton-harness: [PASS] SIGTERM
 baton-harness: ==============================
 baton-harness: Recovery verification summary
 baton-harness: ==============================
-baton-harness:   PASSED: 5
-baton-harness:   FAILED: 0
-baton-harness: RESULT: PASS
+baton-harness:   PASSED: 4
+baton-harness:   FAILED: 1
+baton-harness: RESULT: FAIL
 ```
 
-A `[FAIL]` line includes the reason. `FAILED` scenarios are listed again in the summary. The script exits non-zero if any scenario fails.
+A `[FAIL]` line includes the reason. `FAILED` scenarios are listed again in the summary.
+Until the legacy G3a scenario is updated to inject invalid by-value App authority, the
+overall verifier exits non-zero for this known limitation even when its other scenarios
+pass.
 
 If the OAuth credential file is absent, you will see instead:
 
