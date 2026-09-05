@@ -9,7 +9,7 @@ import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path
 from typing import Protocol
 
 _UUID_RE = re.compile(
@@ -72,21 +72,6 @@ class SecretFetcher(Protocol):
         raise NotImplementedError
 
 
-def _is_absolute_path(value: str) -> bool:
-    """Return whether a path is absolute in POSIX or Windows syntax.
-
-    Args:
-        value: Path text to classify.
-
-    Returns:
-        True when either supported path syntax is absolute.
-    """
-    return (
-        PurePosixPath(value).is_absolute()
-        or PureWindowsPath(value).is_absolute()
-    )
-
-
 def resolve_app_private_key_config(
     values: Mapping[str, str],
 ) -> AppPrivateKeyConfig:
@@ -140,13 +125,14 @@ def resolve_app_private_key_config(
         raise AppPrivateKeyConfigError(
             "BH_GITHUB_APP_PRIVATE_KEY_FILE is required for file provider"
         )
-    if not _is_absolute_path(file_value):
+    file_path = Path(file_value)
+    if not file_path.is_absolute():
         raise AppPrivateKeyConfigError(
             "BH_GITHUB_APP_PRIVATE_KEY_FILE must be absolute"
         )
     return AppPrivateKeyConfig(
         provider=provider,
-        file_path=Path(file_value),
+        file_path=file_path,
     )
 
 

@@ -72,8 +72,9 @@ def test_invalid_provider_matrix_rejected(
         resolve_app_private_key_config(values)
 
 
-def test_bws_and_file_configs_are_discriminated() -> None:
+def test_bws_and_file_configs_are_discriminated(tmp_path: Path) -> None:
     """Resolve source-specific settings into a discriminated config."""
+    key_path = (tmp_path / "key.pem").resolve()
     bws = resolve_app_private_key_config(
         {
             "BH_GITHUB_APP_KEY_PROVIDER": "bws",
@@ -83,15 +84,28 @@ def test_bws_and_file_configs_are_discriminated() -> None:
     file = resolve_app_private_key_config(
         {
             "BH_GITHUB_APP_KEY_PROVIDER": "file",
-            "BH_GITHUB_APP_PRIVATE_KEY_FILE": "/run/key.pem",
+            "BH_GITHUB_APP_PRIVATE_KEY_FILE": str(key_path),
         }
     )
     assert bws.provider is AppPrivateKeyProvider.BWS
     assert bws.bws_secret_id == _PEM_ID
     assert bws.file_path is None
     assert file.provider is AppPrivateKeyProvider.FILE
-    assert file.file_path == Path("/run/key.pem")
+    assert file.file_path == key_path
+    assert file.file_path.is_absolute()
     assert file.bws_secret_id is None
+
+
+def test_file_provider_rejects_foreign_absolute_syntax() -> None:
+    """Reject a path spelling that is not absolute on the current host."""
+    foreign_path = "/run/key.pem" if os.name == "nt" else r"C:\keys\app.pem"
+    with pytest.raises(AppPrivateKeyConfigError, match="absolute"):
+        resolve_app_private_key_config(
+            {
+                "BH_GITHUB_APP_KEY_PROVIDER": "file",
+                "BH_GITHUB_APP_PRIVATE_KEY_FILE": foreign_path,
+            }
+        )
 
 
 @pytest.mark.parametrize(
@@ -135,9 +149,20 @@ def test_requires_bws_composes_provider_and_optional_consumers(
     provider_values: dict[str, str],
     optional_values: dict[str, str],
     expected: bool,
+    tmp_path: Path,
 ) -> None:
     """Require BWS for the provider or either optional BWS consumer."""
+    if provider_values["BH_GITHUB_APP_KEY_PROVIDER"] == "file":
+        provider_values = {
+            **provider_values,
+            "BH_GITHUB_APP_PRIVATE_KEY_FILE": str(
+                (tmp_path / "key.pem").resolve()
+            ),
+        }
     config = resolve_app_private_key_config(provider_values)
+    if config.provider is AppPrivateKeyProvider.FILE:
+        assert config.file_path is not None
+        assert config.file_path.is_absolute()
     assert requires_bws(config, optional_values) is expected
 
 
