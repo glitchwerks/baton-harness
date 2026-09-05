@@ -58,9 +58,11 @@ import subprocess
 import textwrap
 from collections.abc import Callable
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
+from baton_harness.chain.app_private_key import AppPrivateKeyProvider
 from baton_harness.chain.sandbox_config import (
     SandboxConfig,
     SandboxConfigError,
@@ -91,6 +93,7 @@ _VALID_ENV_CONTENT = textwrap.dedent(
     BH_REPO_NAME={_REPO}
     BH_GITHUB_APP_ID={_APP_ID}
     BH_GITHUB_APP_INSTALLATION_ID={_INSTALL_ID}
+    BH_GITHUB_APP_KEY_PROVIDER=bws
     BWS_PEM_SECRET_ID={_PEM_UUID}
     BWS_GH_TOKEN_SECRET_ID={_GH_TOKEN_UUID}
     BWS_HEARTBEAT_PING_URL_SECRET_ID={_HEARTBEAT_UUID}
@@ -167,6 +170,8 @@ def _delenv_all(monkeypatch: pytest.MonkeyPatch) -> None:
         "BH_REPO_NAME",
         "BH_GITHUB_APP_ID",
         "BH_GITHUB_APP_INSTALLATION_ID",
+        "BH_GITHUB_APP_KEY_PROVIDER",
+        "BH_GITHUB_APP_PRIVATE_KEY_FILE",
         "BWS_PEM_SECRET_ID",
         "BWS_GH_TOKEN_SECRET_ID",
         "BWS_HEARTBEAT_PING_URL_SECRET_ID",
@@ -211,6 +216,316 @@ _ENV_APP_ID = "99999"
 _ENV_PEM_UUID = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
 _ENV_GH_TOKEN_UUID = "22222222-3333-4444-5555-666666666666"
 _ENV_INSTALL_ID = "13579"
+
+
+def _repo_probe_mock() -> Mock:
+    """Return a successful mock for the external repository probe.
+
+    Returns:
+        A mock runner returning a successful completed process.
+    """
+    return Mock(
+        return_value=subprocess.CompletedProcess(
+            args=["gh"],
+            returncode=0,
+            stdout='{"id": 999}',
+            stderr="",
+        )
+    )
+
+
+def _provider_env_snapshot() -> dict[str, str | None]:
+    """Capture the provider selector and source environment values.
+
+    Returns:
+        Current selector and source values, preserving absence as None.
+    """
+    return {
+        key: os.environ.get(key)
+        for key in (
+            "BH_GITHUB_APP_KEY_PROVIDER",
+            "BWS_PEM_SECRET_ID",
+            "BH_GITHUB_APP_PRIVATE_KEY_FILE",
+        )
+    }
+
+
+# ---------------------------------------------------------------------------
+# Provider-aware App private-key configuration (issue #359)
+# ---------------------------------------------------------------------------
+
+
+def test_file_provider_loads_absolute_path_and_removes_bws_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """File mode exports only its selected absolute source."""
+    private_key_path = tmp_path.resolve() / "github-app.pem"
+    monkeypatch.setenv("BWS_PEM_SECRET_ID", "")
+    env_file = _write_env(
+        tmp_path,
+        textwrap.dedent(
+            f"""\
+            BH_REPO_OWNER={_OWNER}
+            BH_REPO_NAME={_REPO}
+            BH_GITHUB_APP_ID={_APP_ID}
+            BH_GITHUB_APP_INSTALLATION_ID={_INSTALL_ID}
+            BH_GITHUB_APP_KEY_PROVIDER=file
+            BH_GITHUB_APP_PRIVATE_KEY_FILE={private_key_path}
+            """
+        ),
+    )
+
+    result = read_and_validate(env_file, run=_repo_probe_mock())
+
+    assert result.github_app_key_provider is AppPrivateKeyProvider.FILE
+    assert result.github_app_private_key_file == private_key_path
+    assert result.bws_pem_secret_id is None
+    assert os.environ["BH_GITHUB_APP_KEY_PROVIDER"] == "file"
+    assert os.environ["BH_GITHUB_APP_PRIVATE_KEY_FILE"] == str(
+        private_key_path
+    )
+    assert "BWS_PEM_SECRET_ID" not in os.environ
+
+
+def test_bws_provider_removes_file_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BWS mode exports only its selected UUID source."""
+    monkeypatch.setenv("BH_GITHUB_APP_PRIVATE_KEY_FILE", "")
+    env_file = _write_env(tmp_path, _VALID_ENV_CONTENT)
+
+    result = read_and_validate(env_file, run=_repo_probe_mock())
+
+    assert result.github_app_key_provider is AppPrivateKeyProvider.BWS
+    assert result.bws_pem_secret_id == _PEM_UUID
+    assert result.github_app_private_key_file is None
+    assert os.environ["BH_GITHUB_APP_KEY_PROVIDER"] == "bws"
+    assert os.environ["BWS_PEM_SECRET_ID"] == _PEM_UUID
+    assert "BH_GITHUB_APP_PRIVATE_KEY_FILE" not in os.environ
+
+
+def test_provider_and_sources_honor_nonempty_environment_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-empty environment values replace the file provider tuple."""
+    file_path = tmp_path.resolve() / "from-file.pem"
+    env_path = tmp_path.resolve() / "from-environment.pem"
+    monkeypatch.setenv("BH_GITHUB_APP_KEY_PROVIDER", "file")
+    monkeypatch.setenv("BH_GITHUB_APP_PRIVATE_KEY_FILE", str(env_path))
+    env_file = _write_env(
+        tmp_path,
+        textwrap.dedent(
+            f"""\
+            BH_REPO_OWNER={_OWNER}
+            BH_REPO_NAME={_REPO}
+            BH_GITHUB_APP_ID={_APP_ID}
+            BH_GITHUB_APP_INSTALLATION_ID={_INSTALL_ID}
+            BH_GITHUB_APP_KEY_PROVIDER=vault
+            BH_GITHUB_APP_PRIVATE_KEY_FILE={file_path}
+            """
+        ),
+    )
+
+    result = read_and_validate(env_file, run=_repo_probe_mock())
+
+    assert result.github_app_key_provider is AppPrivateKeyProvider.FILE
+    assert result.github_app_private_key_file == env_path
+    assert os.environ["BH_GITHUB_APP_KEY_PROVIDER"] == "file"
+    assert os.environ["BH_GITHUB_APP_PRIVATE_KEY_FILE"] == str(env_path)
+
+
+def test_empty_environment_override_falls_back_to_file_value(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty environment values leave the valid file tuple selected."""
+    private_key_path = tmp_path.resolve() / "from-file.pem"
+    monkeypatch.setenv("BH_GITHUB_APP_KEY_PROVIDER", "")
+    monkeypatch.setenv("BH_GITHUB_APP_PRIVATE_KEY_FILE", "")
+    env_file = _write_env(
+        tmp_path,
+        textwrap.dedent(
+            f"""\
+            BH_REPO_OWNER={_OWNER}
+            BH_REPO_NAME={_REPO}
+            BH_GITHUB_APP_ID={_APP_ID}
+            BH_GITHUB_APP_INSTALLATION_ID={_INSTALL_ID}
+            BH_GITHUB_APP_KEY_PROVIDER=file
+            BH_GITHUB_APP_PRIVATE_KEY_FILE={private_key_path}
+            """
+        ),
+    )
+
+    result = read_and_validate(env_file, run=_repo_probe_mock())
+
+    assert result.github_app_key_provider is AppPrivateKeyProvider.FILE
+    assert result.github_app_private_key_file == private_key_path
+
+
+@pytest.mark.parametrize("provider", ["", "vault", "BWS", "FILE"])
+def test_missing_or_unknown_provider_fails_before_repo_probe(
+    tmp_path: Path,
+    provider: str,
+) -> None:
+    """Missing or unsupported selectors fail before repository access."""
+    run = _repo_probe_mock()
+    env_file = _write_env(
+        tmp_path,
+        textwrap.dedent(
+            f"""\
+            BH_REPO_OWNER={_OWNER}
+            BH_REPO_NAME={_REPO}
+            BH_GITHUB_APP_ID={_APP_ID}
+            BH_GITHUB_APP_INSTALLATION_ID={_INSTALL_ID}
+            BH_GITHUB_APP_KEY_PROVIDER={provider}
+            BWS_PEM_SECRET_ID={_PEM_UUID}
+            """
+        ),
+    )
+
+    with pytest.raises(SandboxConfigError):
+        read_and_validate(env_file, run=run)
+
+    run.assert_not_called()
+
+
+def test_conflicting_bws_and_file_sources_fail_before_environment_mutation(
+    tmp_path: Path,
+) -> None:
+    """Two file-configured sources fail before probes or environment writes."""
+    private_key_path = tmp_path.resolve() / "github-app.pem"
+    run = _repo_probe_mock()
+    before = _provider_env_snapshot()
+    env_file = _write_env(
+        tmp_path,
+        textwrap.dedent(
+            f"""\
+            BH_REPO_OWNER={_OWNER}
+            BH_REPO_NAME={_REPO}
+            BH_GITHUB_APP_ID={_APP_ID}
+            BH_GITHUB_APP_INSTALLATION_ID={_INSTALL_ID}
+            BH_GITHUB_APP_KEY_PROVIDER=file
+            BWS_PEM_SECRET_ID={_PEM_UUID}
+            BH_GITHUB_APP_PRIVATE_KEY_FILE={private_key_path}
+            """
+        ),
+    )
+
+    with pytest.raises(SandboxConfigError):
+        read_and_validate(env_file, run=run)
+
+    run.assert_not_called()
+    assert _provider_env_snapshot() == before
+
+
+@pytest.mark.parametrize(
+    ("provider", "selected_line", "ambient_key", "ambient_value"),
+    [
+        (
+            "file",
+            "BH_GITHUB_APP_PRIVATE_KEY_FILE={path}",
+            "BWS_PEM_SECRET_ID",
+            _PEM_UUID,
+        ),
+        (
+            "bws",
+            f"BWS_PEM_SECRET_ID={_PEM_UUID}",
+            "BH_GITHUB_APP_PRIVATE_KEY_FILE",
+            "{path}",
+        ),
+    ],
+)
+def test_nonempty_ambient_unselected_source_fails_before_environment_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    selected_line: str,
+    ambient_key: str,
+    ambient_value: str,
+) -> None:
+    """A stale non-empty unselected source is a fail-closed conflict."""
+    private_key_path = tmp_path.resolve() / "github-app.pem"
+    selected_line = selected_line.format(path=private_key_path)
+    ambient_value = ambient_value.format(path=private_key_path)
+    monkeypatch.setenv(ambient_key, ambient_value)
+    run = _repo_probe_mock()
+    before = _provider_env_snapshot()
+    env_file = _write_env(
+        tmp_path,
+        textwrap.dedent(
+            f"""\
+            BH_REPO_OWNER={_OWNER}
+            BH_REPO_NAME={_REPO}
+            BH_GITHUB_APP_ID={_APP_ID}
+            BH_GITHUB_APP_INSTALLATION_ID={_INSTALL_ID}
+            BH_GITHUB_APP_KEY_PROVIDER={provider}
+            {selected_line}
+            """
+        ),
+    )
+
+    with pytest.raises(SandboxConfigError):
+        read_and_validate(env_file, run=run)
+
+    run.assert_not_called()
+    assert _provider_env_snapshot() == before
+
+
+def test_relative_file_source_fails_before_environment_mutation(
+    tmp_path: Path,
+) -> None:
+    """A relative file source fails before probes or environment writes."""
+    run = _repo_probe_mock()
+    before = _provider_env_snapshot()
+    env_file = _write_env(
+        tmp_path,
+        textwrap.dedent(
+            f"""\
+            BH_REPO_OWNER={_OWNER}
+            BH_REPO_NAME={_REPO}
+            BH_GITHUB_APP_ID={_APP_ID}
+            BH_GITHUB_APP_INSTALLATION_ID={_INSTALL_ID}
+            BH_GITHUB_APP_KEY_PROVIDER=file
+            BH_GITHUB_APP_PRIVATE_KEY_FILE=relative/github-app.pem
+            """
+        ),
+    )
+
+    with pytest.raises(SandboxConfigError, match="absolute"):
+        read_and_validate(env_file, run=run)
+
+    run.assert_not_called()
+    assert _provider_env_snapshot() == before
+
+
+def test_optional_bws_secret_ids_remain_valid_in_file_mode(
+    tmp_path: Path,
+) -> None:
+    """Optional BWS consumers remain available with a file App key."""
+    private_key_path = tmp_path.resolve() / "github-app.pem"
+    env_file = _write_env(
+        tmp_path,
+        textwrap.dedent(
+            f"""\
+            BH_REPO_OWNER={_OWNER}
+            BH_REPO_NAME={_REPO}
+            BH_GITHUB_APP_ID={_APP_ID}
+            BH_GITHUB_APP_INSTALLATION_ID={_INSTALL_ID}
+            BH_GITHUB_APP_KEY_PROVIDER=file
+            BH_GITHUB_APP_PRIVATE_KEY_FILE={private_key_path}
+            BWS_GH_TOKEN_SECRET_ID={_GH_TOKEN_UUID}
+            BWS_HEARTBEAT_PING_URL_SECRET_ID={_HEARTBEAT_UUID}
+            """
+        ),
+    )
+
+    result = read_and_validate(env_file, run=_repo_probe_mock())
+
+    assert result.bws_gh_token_secret_id == _GH_TOKEN_UUID
+    assert result.bws_heartbeat_ping_url_secret_id == _HEARTBEAT_UUID
 
 
 # ---------------------------------------------------------------------------
@@ -340,6 +655,7 @@ class TestFileParsingEdgeCases:
             BH_REPO_NAME='{_REPO}'
             BH_GITHUB_APP_ID='{_APP_ID}'
             BH_GITHUB_APP_INSTALLATION_ID='{_INSTALL_ID}'
+            BH_GITHUB_APP_KEY_PROVIDER='bws'
             BWS_PEM_SECRET_ID='{_PEM_UUID}'
             BWS_GH_TOKEN_SECRET_ID='{_GH_TOKEN_UUID}'
             BWS_HEARTBEAT_PING_URL_SECRET_ID='{_HEARTBEAT_UUID}'
@@ -364,6 +680,7 @@ class TestFileParsingEdgeCases:
             BH_REPO_NAME="{_REPO}"
             BH_GITHUB_APP_ID="{_APP_ID}"
             BH_GITHUB_APP_INSTALLATION_ID="{_INSTALL_ID}"
+            BH_GITHUB_APP_KEY_PROVIDER="bws"
             BWS_PEM_SECRET_ID="{_PEM_UUID}"
             BWS_GH_TOKEN_SECRET_ID="{_GH_TOKEN_UUID}"
             BWS_HEARTBEAT_PING_URL_SECRET_ID="{_HEARTBEAT_UUID}"
@@ -390,6 +707,7 @@ class TestFileParsingEdgeCases:
             BH_REPO_NAME={_REPO}
             BH_GITHUB_APP_ID={_APP_ID}
             BH_GITHUB_APP_INSTALLATION_ID={_INSTALL_ID}
+            BH_GITHUB_APP_KEY_PROVIDER=bws
             BWS_PEM_SECRET_ID={_PEM_UUID}
             BWS_GH_TOKEN_SECRET_ID={_GH_TOKEN_UUID}
             BWS_HEARTBEAT_PING_URL_SECRET_ID={_HEARTBEAT_UUID}
@@ -415,6 +733,7 @@ class TestFileParsingEdgeCases:
 
             BH_GITHUB_APP_ID={_APP_ID}
             BH_GITHUB_APP_INSTALLATION_ID={_INSTALL_ID}
+            BH_GITHUB_APP_KEY_PROVIDER=bws
             BWS_PEM_SECRET_ID={_PEM_UUID}
             BWS_GH_TOKEN_SECRET_ID={_GH_TOKEN_UUID}
             BWS_HEARTBEAT_PING_URL_SECRET_ID={_HEARTBEAT_UUID}
@@ -459,6 +778,7 @@ class TestExportPrefixedLines:
             export BH_REPO_NAME={_REPO}
             export BH_GITHUB_APP_ID={_APP_ID}
             export BH_GITHUB_APP_INSTALLATION_ID={_INSTALL_ID}
+            export BH_GITHUB_APP_KEY_PROVIDER=bws
             export BWS_PEM_SECRET_ID={_PEM_UUID}
             export BWS_GH_TOKEN_SECRET_ID={_GH_TOKEN_UUID}
             export BWS_HEARTBEAT_PING_URL_SECRET_ID={_HEARTBEAT_UUID}
@@ -495,6 +815,7 @@ class TestExportPrefixedLines:
             BH_REPO_NAME={_REPO}
             export BH_GITHUB_APP_ID={_APP_ID}
             BH_GITHUB_APP_INSTALLATION_ID={_INSTALL_ID}
+            export BH_GITHUB_APP_KEY_PROVIDER=bws
             export BWS_PEM_SECRET_ID={_PEM_UUID}
             """
         )
@@ -545,6 +866,7 @@ class TestRequiredKeysMissing:
             "BH_REPO_NAME",
             "BH_GITHUB_APP_ID",
             "BH_GITHUB_APP_INSTALLATION_ID",
+            "BH_GITHUB_APP_KEY_PROVIDER",
             "BWS_PEM_SECRET_ID",
         ],
     )
@@ -564,6 +886,9 @@ class TestRequiredKeysMissing:
             "BH_GITHUB_APP_ID": f"BH_GITHUB_APP_ID={_APP_ID}",
             "BH_GITHUB_APP_INSTALLATION_ID": (
                 f"BH_GITHUB_APP_INSTALLATION_ID={_INSTALL_ID}"
+            ),
+            "BH_GITHUB_APP_KEY_PROVIDER": (
+                "BH_GITHUB_APP_KEY_PROVIDER=bws"
             ),
             "BWS_PEM_SECRET_ID": f"BWS_PEM_SECRET_ID={_PEM_UUID}",
         }
@@ -627,17 +952,18 @@ class TestMalformedValues:
         with pytest.raises(SandboxConfigError):
             read_and_validate(env_file, run=run)
 
-    def test_invalid_uuid_pem_secret_raises_with_line_number(
+    def test_invalid_uuid_pem_secret_raises_provider_error(
         self,
         tmp_path: Path,
     ) -> None:
-        """BWS_PEM_SECRET_ID with bad UUID → error includes line number."""
+        """BWS_PEM_SECRET_ID with a bad UUID raises the provider error."""
         content = textwrap.dedent(
             """\
             BH_REPO_OWNER=my-org
             BH_REPO_NAME=my-sandbox
             BH_GITHUB_APP_ID=12345
             BH_GITHUB_APP_INSTALLATION_ID=67890
+            BH_GITHUB_APP_KEY_PROVIDER=bws
             BWS_PEM_SECRET_ID=not-a-uuid
             """
         )
@@ -648,8 +974,7 @@ class TestMalformedValues:
             read_and_validate(env_file, run=run)
 
         msg = str(exc_info.value)
-        assert "5" in msg, f"Expected line number '5' in error, got: {msg!r}"
-        assert "not-a-uuid" in msg
+        assert "BWS_PEM_SECRET_ID" in msg
 
     def test_empty_repo_owner_raises_error(
         self,
@@ -744,6 +1069,7 @@ class TestOptionalSecretIds:
             BH_REPO_NAME={_REPO}
             BH_GITHUB_APP_ID={_APP_ID}
             BH_GITHUB_APP_INSTALLATION_ID={_INSTALL_ID}
+            BH_GITHUB_APP_KEY_PROVIDER=bws
             BWS_PEM_SECRET_ID={_PEM_UUID}
             """
         )
@@ -774,6 +1100,7 @@ class TestOptionalSecretIds:
             BH_REPO_NAME={_REPO}
             BH_GITHUB_APP_ID={_APP_ID}
             BH_GITHUB_APP_INSTALLATION_ID={_INSTALL_ID}
+            BH_GITHUB_APP_KEY_PROVIDER=bws
             BWS_PEM_SECRET_ID={_PEM_UUID}
             BWS_GH_TOKEN_SECRET_ID=not-a-valid-uuid
             """
@@ -805,6 +1132,7 @@ class TestOptionalSecretIds:
             BH_REPO_NAME={_REPO}
             BH_GITHUB_APP_ID={_APP_ID}
             BH_GITHUB_APP_INSTALLATION_ID={_INSTALL_ID}
+            BH_GITHUB_APP_KEY_PROVIDER=bws
             BWS_PEM_SECRET_ID={_PEM_UUID}
             BWS_HEARTBEAT_PING_URL_SECRET_ID=definitely-not-a-uuid
             """
@@ -911,6 +1239,7 @@ class TestDerivedTwinKeysInFile:
             BH_REPO_NAME={_REPO}
             BH_GITHUB_APP_ID={_APP_ID}
             BH_GITHUB_APP_INSTALLATION_ID={_INSTALL_ID}
+            BH_GITHUB_APP_KEY_PROVIDER=bws
             BWS_PEM_SECRET_ID={_PEM_UUID}
             BWS_GH_TOKEN_SECRET_ID={_GH_TOKEN_UUID}
             BWS_HEARTBEAT_PING_URL_SECRET_ID={_HEARTBEAT_UUID}
@@ -947,6 +1276,7 @@ class TestDerivedTwinKeysInFile:
             BH_REPO_NAME={_REPO}
             BH_GITHUB_APP_ID={_APP_ID}
             BH_GITHUB_APP_INSTALLATION_ID={_INSTALL_ID}
+            BH_GITHUB_APP_KEY_PROVIDER=bws
             BWS_PEM_SECRET_ID={_PEM_UUID}
             BWS_APP_ID=99999
             BWS_INSTALLATION_ID=88888
@@ -1274,6 +1604,7 @@ class TestRequiredKeySourcedOnlyFromEnv:
             BH_REPO_NAME={_REPO}
             BH_GITHUB_APP_ID={_APP_ID}
             BH_GITHUB_APP_INSTALLATION_ID={_INSTALL_ID}
+            BH_GITHUB_APP_KEY_PROVIDER=bws
             """
         )
         env_file = _write_env(tmp_path, content)
@@ -1302,6 +1633,7 @@ class TestRequiredKeySourcedOnlyFromEnv:
             BH_REPO_NAME={_REPO}
             BH_GITHUB_APP_ID={_APP_ID}
             BH_GITHUB_APP_INSTALLATION_ID={_INSTALL_ID}
+            BH_GITHUB_APP_KEY_PROVIDER=bws
             """
         )
         env_file = _write_env(tmp_path, content)
@@ -1309,6 +1641,6 @@ class TestRequiredKeySourcedOnlyFromEnv:
 
         with pytest.raises(
             SandboxConfigError,
-            match=r"missing required key: BWS_PEM_SECRET_ID",
+            match=r"BWS_PEM_SECRET_ID",
         ):
             read_and_validate(env_file, run=run)
