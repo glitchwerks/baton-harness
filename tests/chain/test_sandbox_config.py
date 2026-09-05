@@ -887,9 +887,7 @@ class TestRequiredKeysMissing:
             "BH_GITHUB_APP_INSTALLATION_ID": (
                 f"BH_GITHUB_APP_INSTALLATION_ID={_INSTALL_ID}"
             ),
-            "BH_GITHUB_APP_KEY_PROVIDER": (
-                "BH_GITHUB_APP_KEY_PROVIDER=bws"
-            ),
+            "BH_GITHUB_APP_KEY_PROVIDER": ("BH_GITHUB_APP_KEY_PROVIDER=bws"),
             "BWS_PEM_SECRET_ID": f"BWS_PEM_SECRET_ID={_PEM_UUID}",
         }
         content = "\n".join(v for k, v in lines.items() if k != missing_key)

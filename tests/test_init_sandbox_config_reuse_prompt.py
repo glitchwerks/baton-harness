@@ -408,8 +408,7 @@ def test_bws_provider_reprompts_empty_and_invalid_secret_ids(
     """Only a complete UUID can become the selected BWS PEM locator."""
     config, prompts = _new_provider_config(
         tmp_path,
-        "bws\n\nnot-a-uuid\n"
-        "11111111-1111-1111-1111-111111111111\n\n\n",
+        "bws\n\nnot-a-uuid\n11111111-1111-1111-1111-111111111111\n\n\n",
     )
     assert prompts.count("valid UUID") == 2
     assert "not-a-uuid" not in config
@@ -426,18 +425,14 @@ def test_bws_config_sources_uuid_without_command_execution(
     """A metacharacter-bearing BWS locator is rejected before persistence."""
     marker = tmp_path / "bws-injection-marker"
     malicious_id = (
-        "11111111-1111-1111-1111-111111111111; touch "
-        f"{marker.as_posix()}"
+        f"11111111-1111-1111-1111-111111111111; touch {marker.as_posix()}"
     )
     accepted_id = "22222222-2222-2222-2222-222222222222"
     _origin, project = _make_origin_and_clone(tmp_path)
     result = _run_init_sandbox(
         tmp_path,
         project,
-        input_text=(
-            "111\n999999\nbws\n"
-            f"{malicious_id}\n{accepted_id}\n\n\n"
-        ),
+        input_text=(f"111\n999999\nbws\n{malicious_id}\n{accepted_id}\n\n\n"),
     )
     assert result.returncode == 0, result.stderr
     assert "valid UUID" in result.stderr
@@ -501,8 +496,7 @@ def test_file_provider_reprompts_relative_path(tmp_path: Path) -> None:
     assert "absolute path" in prompts
     assert "relative.pem" not in config
     assert (
-        "BH_GITHUB_APP_PRIVATE_KEY_FILE='/run/credentials/app.pem'\n"
-        in config
+        "BH_GITHUB_APP_PRIVATE_KEY_FILE='/run/credentials/app.pem'\n" in config
     )
 
 
@@ -519,8 +513,7 @@ def test_file_provider_reprompts_path_containing_single_quote(
     assert "single quote" in prompts
     assert "app'unsafe.pem" not in config
     assert (
-        "BH_GITHUB_APP_PRIVATE_KEY_FILE='/run/credentials/app.pem'\n"
-        in config
+        "BH_GITHUB_APP_PRIVATE_KEY_FILE='/run/credentials/app.pem'\n" in config
     )
 
 
@@ -535,11 +528,7 @@ def test_file_config_sources_literal_path_without_command_execution(
     result = _run_init_sandbox(
         tmp_path,
         project,
-        input_text=(
-            "111\n999999\nfile\n"
-            f"{private_key_path}\n"
-            "\n\n"
-        ),
+        input_text=(f"111\n999999\nfile\n{private_key_path}\n\n\n"),
     )
     assert result.returncode == 0, result.stderr
 
