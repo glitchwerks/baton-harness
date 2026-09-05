@@ -10,6 +10,8 @@ import tempfile
 from dataclasses import dataclass
 from typing import Any
 
+from baton_harness.chain.identity import Identity, env_for
+
 from .config import (
     WorkflowConfig,
 )  # VENDOR-PATCH: relative import for vendoring
@@ -152,6 +154,7 @@ class Worker:
                 cwd=cwd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=env_for(Identity.WORKER),
             )
 
             timeout_s = max(timeout_ms / 1000, 1)

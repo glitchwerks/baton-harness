@@ -3,7 +3,8 @@
 Provides a single public function, ``read_and_validate``, that reads a
 ``KEY=VALUE`` environment file, validates the required sandbox settings,
 confirms the target repository exists via ``gh api``, then populates
-``os.environ`` with both the parsed keys and the derived ``BWS_*`` twins.
+``os.environ`` with the selected App-key provider, its source, the
+remaining parsed keys, and the derived ``BWS_*`` twins.
 
 The subprocess call is injected via the ``run`` parameter so callers
 control the transport layer in tests — no real ``gh`` binary is
@@ -11,7 +12,7 @@ invoked during unit tests.
 
 Environment overrides
 ----------------------
-For each of the 7 config keys, a non-empty pre-existing ``os.environ``
+For each overridable config key, a non-empty pre-existing ``os.environ``
 value takes precedence over the value parsed from the file (an empty
 string is treated as absent). The resolved value — whichever source it
 came from — is validated with the same per-key rules. The derived
@@ -37,7 +38,13 @@ import re
 import subprocess
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 
+from baton_harness.chain.app_private_key import (
+    AppPrivateKeyConfigError,
+    AppPrivateKeyProvider,
+    resolve_app_private_key_config,
+)
 from baton_harness.chain.identity import Identity, env_for
 
 # ---------------------------------------------------------------------------
@@ -62,16 +69,26 @@ _REQUIRED_KEYS = (
     "BH_REPO_NAME",
     "BH_GITHUB_APP_ID",
     "BH_GITHUB_APP_INSTALLATION_ID",
-    "BWS_PEM_SECRET_ID",
+    "BH_GITHUB_APP_KEY_PROVIDER",
 )
-#: The 7 keys eligible for an ``os.environ`` override. A non-empty
+#: Config keys eligible for an ``os.environ`` override. A non-empty
 #: pre-existing env var wins over the file's value for each of these.
 _ENV_OVERRIDABLE_KEYS = (
     "BH_REPO_OWNER",
     "BH_REPO_NAME",
     "BH_GITHUB_APP_ID",
     "BH_GITHUB_APP_INSTALLATION_ID",
+    "BH_GITHUB_APP_KEY_PROVIDER",
     "BWS_PEM_SECRET_ID",
+    "BH_GITHUB_APP_PRIVATE_KEY_FILE",
+    "BWS_GH_TOKEN_SECRET_ID",
+    "BWS_HEARTBEAT_PING_URL_SECRET_ID",
+)
+_VALUE_VALIDATED_KEYS = (
+    "BH_REPO_OWNER",
+    "BH_REPO_NAME",
+    "BH_GITHUB_APP_ID",
+    "BH_GITHUB_APP_INSTALLATION_ID",
     "BWS_GH_TOKEN_SECRET_ID",
     "BWS_HEARTBEAT_PING_URL_SECRET_ID",
 )
@@ -115,7 +132,11 @@ class SandboxConfig:
         github_app_id: GitHub App numeric ID as a string.
         github_app_installation_id: GitHub App installation numeric ID
             as a string.
-        bws_pem_secret_id: Bitwarden Secrets UUID for the GitHub App PEM.
+        github_app_key_provider: Selected GitHub App private-key provider.
+        bws_pem_secret_id: Bitwarden Secrets UUID for the GitHub App PEM,
+            when the BWS provider is selected.
+        github_app_private_key_file: Absolute GitHub App PEM path, when
+            the file provider is selected.
         bws_gh_token_secret_id: Optional Bitwarden Secrets UUID for a
             GitHub token secret.
         bws_heartbeat_ping_url_secret_id: Optional Bitwarden Secrets UUID
@@ -126,7 +147,9 @@ class SandboxConfig:
     repo_name: str
     github_app_id: str
     github_app_installation_id: str
-    bws_pem_secret_id: str
+    github_app_key_provider: AppPrivateKeyProvider
+    bws_pem_secret_id: str | None
+    github_app_private_key_file: Path | None
     bws_gh_token_secret_id: str = ""
     bws_heartbeat_ping_url_secret_id: str = ""
 
@@ -191,8 +214,6 @@ def _is_valid(key: str, value: str) -> bool:
         return bool(value) and _REPO_PART_RE.fullmatch(value) is not None
     if key in {"BH_GITHUB_APP_ID", "BH_GITHUB_APP_INSTALLATION_ID"}:
         return value.isdigit() and int(value) > 0
-    if key == "BWS_PEM_SECRET_ID":
-        return _UUID_RE.fullmatch(value) is not None
     if key in {"BWS_GH_TOKEN_SECRET_ID", "BWS_HEARTBEAT_PING_URL_SECRET_ID"}:
         return not value or _UUID_RE.fullmatch(value) is not None
     return True
@@ -258,6 +279,7 @@ def read_and_validate(
         ) from exc
 
     parsed: dict[str, str] = {}
+    parsed_line_numbers: dict[str, int] = {}
 
     for line_number, raw_line in enumerate(lines, start=1):
         line = raw_line.strip()
@@ -281,32 +303,42 @@ def read_and_validate(
         if key in _IGNORED_KEYS:
             continue
 
-        if not _is_valid(key, value):
-            raise SandboxConfigError(
-                f"{key} invalid at line {line_number}: {value!r}"
-            )
-
         parsed[key] = value
+        parsed_line_numbers[key] = line_number
 
     # Resolve each overridable key: a non-empty os.environ value wins
     # over the file's value (empty env is treated as absent). The
-    # resolved value is validated with the same per-key rule used for
-    # file-sourced values above, so a malformed env override is caught
-    # too.
+    # completely resolved base and optional values are validated below.
     resolved = resolve_overridable_keys(
         parsed, os.environ, _ENV_OVERRIDABLE_KEYS
     )
-    for key in _ENV_OVERRIDABLE_KEYS:
-        env_value = os.environ.get(key, "")
-        if env_value:
-            if not _is_valid(key, env_value):
-                raise SandboxConfigError(
-                    f"{key} invalid (from environment variable): {env_value!r}"
-                )
 
     for required_key in _REQUIRED_KEYS:
         if not resolved.get(required_key):
             raise SandboxConfigError(f"missing required key: {required_key}")
+
+    for key in _VALUE_VALIDATED_KEYS:
+        value = resolved[key]
+        if _is_valid(key, value):
+            continue
+
+        env_value = os.environ.get(key, "")
+        if env_value:
+            raise SandboxConfigError(
+                f"{key} invalid (from environment variable): {value!r}"
+            )
+
+        source_line_number = parsed_line_numbers.get(key)
+        if source_line_number is None:
+            raise SandboxConfigError(f"{key} invalid: {value!r}")
+        raise SandboxConfigError(
+            f"{key} invalid at line {source_line_number}: {value!r}"
+        )
+
+    try:
+        app_key_config = resolve_app_private_key_config(resolved)
+    except AppPrivateKeyConfigError as exc:
+        raise SandboxConfigError(str(exc)) from exc
 
     owner = resolved["BH_REPO_OWNER"]
     repo = resolved["BH_REPO_NAME"]
@@ -322,7 +354,17 @@ def read_and_validate(
     os.environ["BH_GITHUB_APP_INSTALLATION_ID"] = resolved[
         "BH_GITHUB_APP_INSTALLATION_ID"
     ]
-    os.environ["BWS_PEM_SECRET_ID"] = resolved["BWS_PEM_SECRET_ID"]
+    os.environ["BH_GITHUB_APP_KEY_PROVIDER"] = app_key_config.provider.value
+    if app_key_config.provider is AppPrivateKeyProvider.BWS:
+        assert app_key_config.bws_secret_id is not None
+        os.environ["BWS_PEM_SECRET_ID"] = app_key_config.bws_secret_id
+        os.environ.pop("BH_GITHUB_APP_PRIVATE_KEY_FILE", None)
+    else:
+        assert app_key_config.file_path is not None
+        os.environ["BH_GITHUB_APP_PRIVATE_KEY_FILE"] = str(
+            app_key_config.file_path
+        )
+        os.environ.pop("BWS_PEM_SECRET_ID", None)
     os.environ["BWS_GH_TOKEN_SECRET_ID"] = resolved["BWS_GH_TOKEN_SECRET_ID"]
     os.environ["BWS_HEARTBEAT_PING_URL_SECRET_ID"] = resolved[
         "BWS_HEARTBEAT_PING_URL_SECRET_ID"
@@ -337,7 +379,9 @@ def read_and_validate(
         repo_name=repo,
         github_app_id=resolved["BH_GITHUB_APP_ID"],
         github_app_installation_id=resolved["BH_GITHUB_APP_INSTALLATION_ID"],
-        bws_pem_secret_id=resolved["BWS_PEM_SECRET_ID"],
+        github_app_key_provider=app_key_config.provider,
+        bws_pem_secret_id=app_key_config.bws_secret_id,
+        github_app_private_key_file=app_key_config.file_path,
         bws_gh_token_secret_id=resolved["BWS_GH_TOKEN_SECRET_ID"],
         bws_heartbeat_ping_url_secret_id=resolved[
             "BWS_HEARTBEAT_PING_URL_SECRET_ID"

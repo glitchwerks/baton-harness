@@ -915,7 +915,47 @@ _bh_prompt_and_write_sandbox_config() {
 
     read -r -p "  BH_GITHUB_APP_ID (GitHub App numeric ID): " _bh_github_app_id
     read -r -p "  BH_GITHUB_APP_INSTALLATION_ID (GitHub App installation numeric ID): " _bh_github_app_installation_id
-    read -r -p "  BWS_PEM_SECRET_ID (UUID of GitHub App PEM secret in BWS): " _bws_pem_secret_id
+    while true; do
+        if ! read -r -p "  BH_GITHUB_APP_KEY_PROVIDER (bws/file): " _bh_app_key_provider; then
+            echo "baton-harness: error: could not read App private-key provider" >&2
+            return 1
+        fi
+        case "${_bh_app_key_provider}" in
+            bws|file) break ;;
+            *) echo "baton-harness: error: App private-key provider must be bws or file" >&2 ;;
+        esac
+    done
+    if [[ "${_bh_app_key_provider}" == bws ]]; then
+        local _bh_uuid_re='^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'
+        while true; do
+            if ! read -r -p "  BWS_PEM_SECRET_ID (UUID of GitHub App PEM secret in BWS): " _bws_pem_secret_id; then
+                echo "baton-harness: error: could not read BWS PEM secret UUID" >&2
+                return 1
+            fi
+            if [[ "${_bws_pem_secret_id}" =~ ${_bh_uuid_re} ]]; then
+                break
+            fi
+            echo "baton-harness: error: BWS_PEM_SECRET_ID must be a valid UUID" >&2
+        done
+        _bh_app_key_source="export BWS_PEM_SECRET_ID='${_bws_pem_secret_id}'"
+    else
+        while true; do
+            if ! read -r -p "  BH_GITHUB_APP_PRIVATE_KEY_FILE (absolute path to secured PEM file): " _bh_app_key_file; then
+                echo "baton-harness: error: could not read App private-key file path" >&2
+                return 1
+            fi
+            case "${_bh_app_key_file}" in
+                *"'"*)
+                    echo "baton-harness: error: App private-key file path must not contain a single quote" >&2
+                    ;;
+                /*) break ;;
+                *)
+                    echo "baton-harness: error: App private-key file must be an absolute path beginning with '/'" >&2
+                    ;;
+            esac
+        done
+        _bh_app_key_source="export BH_GITHUB_APP_PRIVATE_KEY_FILE='${_bh_app_key_file}'"
+    fi
     read -r -p "  BWS_GH_TOKEN_SECRET_ID (required for the standard App-token deploy — the worker PAT is vault-fetched from this ID; only skip if GH_TOKEN is supplied by other means): " _bws_gh_token_secret_id
     read -r -p "  BWS_HEARTBEAT_PING_URL_SECRET_ID (optional; press Enter to skip): " _bws_heartbeat_ping_url_secret_id
 
@@ -928,7 +968,8 @@ export BH_REPO_OWNER=${BH_REPO_OWNER}
 export BH_REPO_NAME=${BH_REPO_NAME}
 export BH_GITHUB_APP_ID=${_bh_github_app_id}
 export BH_GITHUB_APP_INSTALLATION_ID=${_bh_github_app_installation_id}
-export BWS_PEM_SECRET_ID=${_bws_pem_secret_id}
+export BH_GITHUB_APP_KEY_PROVIDER=${_bh_app_key_provider}
+${_bh_app_key_source}
 # Required for the standard App-token deploy (leave empty ONLY if GH_TOKEN is
 # supplied by other means, e.g. a direct export — see README "Override / fallback"):
 export BWS_GH_TOKEN_SECRET_ID=${_bws_gh_token_secret_id}

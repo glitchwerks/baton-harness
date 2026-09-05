@@ -73,9 +73,15 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 HARNESS = Path(__file__).resolve().parents[1]
 SCRIPT = HARNESS / "bin" / "provision-ruleset.sh"
@@ -124,7 +130,8 @@ def _invoke(
     token_cmd: str | None = f"printf %s {_FAKE_TOKEN}",
     admin_role_id: str = "5",
     custom_roles_body: str | None = None,
-    exclude_bws_env: bool = False,
+    script: Path = SCRIPT,
+    extra_env: dict[str, str] | None = None,
     timeout: float = 60.0,
 ) -> tuple[int, str, str, Path]:
     """Run provision-ruleset.sh with the fake gh on PATH.
@@ -140,11 +147,8 @@ def _invoke(
             exercises the custom-repository-roles call.
         custom_roles_body: Optional canned body for
             GET /orgs/.../custom-repository-roles.
-        exclude_bws_env: When True, BWS_PEM_SECRET_ID and
-            BWS_ACCESS_TOKEN are stripped from the subprocess
-            environment regardless of what the host has ambiently set,
-            so the real app_auth module's env-validation path is
-            exercised deterministically.
+        script: Script path, optionally in an isolated harness copy.
+        extra_env: Explicit provider fixture values.
         timeout: Subprocess timeout in seconds — bounds the case where
             an unexpected fallback path attempts a live network call.
 
@@ -175,9 +179,16 @@ def _invoke(
     env = {
         k: v
         for k, v in os.environ.items()
-        if k not in ("GH_TOKEN", "GITHUB_TOKEN")
-        and not (
-            exclude_bws_env and k in ("BWS_PEM_SECRET_ID", "BWS_ACCESS_TOKEN")
+        if k
+        not in (
+            "GH_TOKEN",
+            "GITHUB_TOKEN",
+            "BH_GITHUB_APP_KEY_PROVIDER",
+            "BH_GITHUB_APP_PRIVATE_KEY_FILE",
+            "BWS_PEM_SECRET_ID",
+            "BWS_ACCESS_TOKEN",
+            "BWS_GH_TOKEN_SECRET_ID",
+            "BWS_HEARTBEAT_PING_URL_SECRET_ID",
         )
     }
     env["PATH"] = os.pathsep.join(
@@ -194,6 +205,7 @@ def _invoke(
     env["BH_REPO_NAME"] = "fake-repo"
     env["BH_GITHUB_APP_ID"] = "111"
     env["BH_GITHUB_APP_INSTALLATION_ID"] = "999999"
+    env["BH_GITHUB_APP_KEY_PROVIDER"] = "bws"
     env["BH_ADMIN_ROLE_ID"] = admin_role_id
     env["BH_FAKE_GH_LOG"] = str(log_path)
     env["BH_FAKE_GH_CANNED_DIR"] = str(canned_state_dir)
@@ -201,6 +213,10 @@ def _invoke(
     # capture step (unrelated to this suite) is skipped, keeping the
     # expected call set small and deterministic.
     env.pop("BH_PROJECT_ROOT", None)
+    env["HOME"] = tmp_path.as_posix()
+    env["XDG_CONFIG_HOME"] = (tmp_path / "xdg").as_posix()
+    if extra_env:
+        env.update(extra_env)
 
     if jwt_cmd is not None:
         env["BH_APP_AUTH_JWT_CMD"] = jwt_cmd
@@ -213,7 +229,7 @@ def _invoke(
 
     try:
         proc = subprocess.run(
-            [_BASH, str(SCRIPT)],
+            [_BASH, str(script)],
             env=env,
             capture_output=True,
             text=True,
@@ -578,7 +594,6 @@ def test_unset_overrides_fall_back_to_real_app_auth_module(
         canned,
         jwt_cmd=None,
         token_cmd=None,
-        exclude_bws_env=True,
         timeout=30.0,
     )
 
@@ -593,3 +608,162 @@ def test_unset_overrides_fall_back_to_real_app_auth_module(
         "the real app_auth module must fail on missing BWS_* env before "
         f"the script ever reaches a gh call; observed calls={calls!r}"
     )
+
+
+_AUTH_TRANSPORT_DRIVER = '''"""Run real auth with offline transports."""
+import io
+import json
+import os
+import runpy
+import subprocess
+import sys
+import urllib.request
+from pathlib import Path
+from unittest.mock import patch
+
+import jwt
+from cryptography.hazmat.primitives import serialization
+
+
+def record(endpoint):
+    """Record ordering only, never credentials or derived values."""
+    with open(os.environ["BH_FAKE_GH_LOG"], "a", encoding="utf-8") as log:
+        log.write(json.dumps({"endpoint": endpoint}) + "\\n")
+
+
+def vault_command(args, **kwargs):
+    """Mock only the external BWS command; keep its client and parser real."""
+    assert args == ["bws", "secret", "get",
+                    "11111111-1111-1111-1111-111111111111"]
+    assert kwargs["env"]["BWS_ACCESS_TOKEN"] == "task-six-bws-sentinel"
+    record("bws_fetch")
+    pem = Path(os.environ["TEST_KEY_PATH"]).read_text()
+    return subprocess.CompletedProcess(args, 0, json.dumps({"value": pem}), "")
+
+
+def mint_response(request, **kwargs):
+    """Verify real RS256 signing before returning an offline token response."""
+    assert request.full_url == (
+        "https://api.github.com/app/installations/999999/access_tokens"
+    )
+    assert request.method == "POST"
+    pem = Path(os.environ["TEST_KEY_PATH"]).read_bytes()
+    public_key = serialization.load_pem_private_key(pem, None).public_key()
+    claims = jwt.decode(request.get_header("Authorization").split()[1],
+                        public_key, algorithms=["RS256"])
+    assert claims["iss"] == "111"
+    record("mint_installation_token")
+    return io.BytesIO(json.dumps({
+        "token": "task-six-installation-sentinel",
+        "expires_at": "2099-01-01T00:00:00Z",
+    }).encode())
+
+
+def owner_only(real_stat):
+    """Emulate POSIX mode bits on Windows while keeping actual file reads."""
+    def stat(*args, **kwargs):
+        fields = list(real_stat(*args, **kwargs))
+        fields[0] = (fields[0] & ~0o777) | 0o600
+        return os.stat_result(fields)
+    return stat
+
+
+record("auth_" + sys.argv[-1])
+sys.argv = ["baton_harness.chain.app_auth", sys.argv[-1]]
+with patch("subprocess.run", vault_command), patch(
+    "urllib.request.urlopen", mint_response
+):
+    if sys.platform == "win32":
+        with patch("os.lstat", owner_only(os.lstat)), patch(
+            "os.fstat", owner_only(os.fstat)
+        ):
+            runpy.run_module(
+                "baton_harness.chain.app_auth", run_name="__main__"
+            )
+    else:
+        runpy.run_module("baton_harness.chain.app_auth", run_name="__main__")
+'''
+
+
+@pytest.mark.parametrize("provider", ["bws", "file"])
+def test_real_app_auth_provider_fallback_precedes_ruleset_mutations(
+    tmp_path: Path,
+    provider: str,
+) -> None:
+    """Both sources sign through the real CLI before any ruleset mutation.
+
+    Only BWS subprocess and GitHub HTTP transports are mocked. The file
+    source uses generated owner-only PEM material; Windows needs mode-bit
+    emulation because NTFS does not expose POSIX owner-only permissions.
+    """
+    harness = tmp_path / "harness"
+    (harness / "bin/lib").mkdir(parents=True)
+    script = harness / "bin/provision-ruleset.sh"
+    shutil.copyfile(SCRIPT, script)
+    shutil.copyfile(
+        HARNESS / "bin/lib/load-config.sh", harness / "bin/lib/load-config.sh"
+    )
+    shutil.copytree(HARNESS / "config", harness / "config")
+    venv_bin = harness / ".venv/bin"
+    venv_bin.mkdir(parents=True)
+    driver = tmp_path / "auth_driver.py"
+    driver.write_text(_AUTH_TRANSPORT_DRIVER, encoding="utf-8")
+    interpreter = shlex.quote(Path(sys.executable).as_posix())
+    python_shim = venv_bin / "python"
+    python_shim.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "${1:-}" == -m && '
+        '"${2:-}" == baton_harness.chain.app_auth ]]; then\n'
+        f'    exec {interpreter} {shlex.quote(driver.as_posix())} "$3"\n'
+        "fi\n"
+        f'exec {interpreter} "$@"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    python_shim.chmod(0o755)
+    private_key = rsa.generate_private_key(
+        public_exponent=65537, key_size=2048
+    )
+    pem = private_key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+    key_path = tmp_path / "app.pem"
+    key_path.write_bytes(pem)
+    key_path.chmod(0o600)
+    env = {
+        "BH_GITHUB_APP_KEY_PROVIDER": provider,
+        "TEST_KEY_PATH": key_path.as_posix(),
+    }
+    if provider == "bws":
+        env["BWS_PEM_SECRET_ID"] = "11111111-1111-1111-1111-111111111111"
+        env["BWS_ACCESS_TOKEN"] = "task-six-bws-sentinel"
+    else:
+        env["BH_GITHUB_APP_PRIVATE_KEY_FILE"] = key_path.as_posix()
+    canned = tmp_path / "canned"
+    canned.mkdir()
+    rc, stdout, stderr, log = _invoke(
+        tmp_path,
+        canned,
+        jwt_cmd=None,
+        token_cmd=None,
+        script=script,
+        extra_env=env,
+    )
+    assert rc == 0, stderr
+    endpoints = [call["endpoint"] for call in _calls(log)]
+    assert endpoints.index("auth_jwt") < endpoints.index("get_app")
+    assert endpoints.index("get_app") < endpoints.index("auth_token")
+    assert endpoints.index("auth_token") < endpoints.index(
+        "mint_installation_token"
+    )
+    assert endpoints.index("mint_installation_token") < endpoints.index(
+        "post_create"
+    )
+    assert endpoints.count("bws_fetch") == (2 if provider == "bws" else 0)
+    combined = stdout + stderr
+    assert "PRIVATE KEY" not in combined
+    assert pem.decode() not in combined
+    assert "task-six-bws-sentinel" not in combined
+    assert "task-six-installation-sentinel" not in combined

@@ -7,6 +7,7 @@ import logging
 import os
 from typing import NamedTuple
 
+from baton_harness.chain.identity import Identity, env_for
 from baton_harness.redact import redact_secrets
 
 log = logging.getLogger("symphony")
@@ -43,13 +44,15 @@ async def run_hook(
     """Run a shell hook script.
 
     Args:
-        name: Hook name, used only for logging (e.g. "before_run").
+        name: Hook name. Only "before_run" may receive an explicit
+            worker PAT override.
         script: The shell script to run. A missing or whitespace-only
             script is treated as a no-op success.
         cwd: Working directory for the hook subprocess.
         timeout_ms: Hook timeout in milliseconds.
-        env: Optional overrides merged into ``os.environ`` for the
-            hook subprocess.
+        env: Optional overrides merged into ``os.environ`` before worker
+            identity filtering. Explicit GH_TOKEN/GITHUB_TOKEN overrides
+            are restored only for the before_run hook.
 
     Returns:
         A ``HookResult`` carrying whether the hook succeeded, its real
@@ -60,21 +63,24 @@ async def run_hook(
     if not script or not script.strip():
         return HookResult(ok=True, returncode=None, stderr_tail="")
 
-    # VENDOR-PATCH VP-1: run_hook env= threading (merged into os.environ)
-    # Merge caller-supplied overrides INTO os.environ so that PATH, HOME, and
-    # every other inherited var remain accessible to git/gh inside the hook.
-    # NEVER pass an overrides-only dict — that strips PATH/HOME and makes
-    # git/gh unresolvable (CONCERN-1 in issue #42).
-    merged_env: dict[str, str] = {**os.environ, **(env or {})}
+    # Filter after merging so overrides cannot restore daemon authority.
+    # PATH/HOME and other non-privileged settings remain available (#42).
+    merged_env = env_for(
+        Identity.WORKER, base_env={**os.environ, **(env or {})}
+    )
+    if name == "before_run":
+        for key in ("GH_TOKEN", "GITHUB_TOKEN"):
+            if env and key in env:
+                merged_env[key] = env[key]
 
     # VENDOR-PATCH VP-9 (#362, CodeRabbit follow-up): capture the vault
     # token ONCE, here, at the same moment merged_env is built — this is
-    # the value the subprocess actually runs with. Reading
+    # the ambient value to redact defensively even though it is filtered
+    # out of the subprocess environment. Reading
     # os.environ.get("BWS_ACCESS_TOKEN", "") again later (after
     # communicate()) is a TOCTOU race: if the parent rotates the token
     # mid-run, a fresh late read redacts the NEW value while the
-    # subprocess (and its stderr) ran with the OLD one, so the value
-    # that actually leaked slips through unredacted. Both redaction call
+    # hook diagnostics may still contain the OLD one. Both redaction call
     # sites below must reuse this single captured value.
     bws_access_token = os.environ.get("BWS_ACCESS_TOKEN", "")
 

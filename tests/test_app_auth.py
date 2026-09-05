@@ -51,6 +51,7 @@ import os
 import time
 import urllib.error
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -65,7 +66,13 @@ from baton_harness.chain.app_auth import (
     InstallationTokenProvider,
     bootstrap_secrets,
     build_app_jwt,
+    build_installation_token_provider,
+    main,
     mint_installation_token,
+)
+from baton_harness.chain.app_private_key import (
+    AppPrivateKeyConfig,
+    AppPrivateKeyProvider,
 )
 
 # ---------------------------------------------------------------------------
@@ -555,7 +562,11 @@ class TestBootstrapSecretsEnvDiscipline:
         ) as mock_open:
             token, expires_at = bootstrap_secrets(
                 app_id=_APP_ID,
-                app_private_key_bws_id="bws-secret-id-for-key",
+                app_key_config=AppPrivateKeyConfig(
+                    AppPrivateKeyProvider.BWS,
+                    bws_secret_id=_CLI_PEM_SECRET_ID,
+                ),
+                bws_access_token="fake-bws-token-for-test",
                 installation_id=_INSTALLATION_ID,
                 fetch_secret=fake_fetch_secret,
                 mint_token=mint_installation_token,
@@ -699,7 +710,7 @@ class TestBootstrapSecretsEnvDisciplineInvariants:
             run: object = None,
         ) -> str:
             """Return a fake PEM without touching real Bitwarden."""
-            return "FAKE_PEM_PRIVATE_KEY_MATERIAL"
+            return _generate_rsa_keypair()[0]
 
         def fake_mint(
             app_id: str,
@@ -714,7 +725,11 @@ class TestBootstrapSecretsEnvDisciplineInvariants:
 
         bootstrap_secrets(
             app_id=_APP_ID,
-            app_private_key_bws_id="bws-secret-id-for-key",
+            app_key_config=AppPrivateKeyConfig(
+                AppPrivateKeyProvider.BWS,
+                bws_secret_id=_CLI_PEM_SECRET_ID,
+            ),
+            bws_access_token="fake-bws-token-for-test",
             installation_id=_INSTALLATION_ID,
             fetch_secret=fake_fetch_secret,
             mint_token=fake_mint,
@@ -745,7 +760,7 @@ class TestBootstrapSecretsEnvDisciplineInvariants:
             run: object = None,
         ) -> str:
             """Return a fake PEM without touching real Bitwarden."""
-            return "FAKE_PEM_PRIVATE_KEY_MATERIAL"
+            return _generate_rsa_keypair()[0]
 
         def fake_mint(
             app_id: str,
@@ -760,7 +775,11 @@ class TestBootstrapSecretsEnvDisciplineInvariants:
 
         bootstrap_secrets(
             app_id=_APP_ID,
-            app_private_key_bws_id="bws-secret-id-for-key",
+            app_key_config=AppPrivateKeyConfig(
+                AppPrivateKeyProvider.BWS,
+                bws_secret_id=_CLI_PEM_SECRET_ID,
+            ),
+            bws_access_token="fake-bws-token-for-test",
             installation_id=_INSTALLATION_ID,
             fetch_secret=fake_fetch_secret,
             mint_token=fake_mint,
@@ -796,14 +815,226 @@ class TestBootstrapSecretsEnvDisciplineInvariants:
 
 _CLI_APP_ID = "424242"
 _CLI_INSTALLATION_ID = "989898"
-_CLI_PEM_SECRET_ID = "pem-secret-cli-aaaa-bbbb-cccc-dddddddddddd"
+_CLI_PEM_SECRET_ID = "11111111-2222-3333-4444-555555555555"
 _CLI_ACCESS_TOKEN_SENTINEL = "0.cli-sentinel-bws-access-token-fake-9f3c1a"
+
+
+@pytest.fixture()
+def file_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, str, bytes]:
+    """Write a real RSA key with owner-only descriptor metadata.
+
+    Windows chmod cannot express POSIX owner-only mode; emulate only
+    that metadata field there while retaining real descriptor I/O.
+    """
+    pem, public_key = _generate_rsa_keypair()
+    path = (tmp_path / "app.pem").resolve()
+    path.write_text(pem, encoding="utf-8")
+    path.chmod(0o600)
+    if os.name == "nt":
+        real_fstat = os.fstat
+
+        def owner_only_fstat(descriptor: int) -> os.stat_result:
+            """Preserve descriptor identity and simulate POSIX mode bits."""
+            metadata = list(real_fstat(descriptor))
+            metadata[0] = (metadata[0] & ~0o777) | 0o600
+            return os.stat_result(metadata)
+
+        monkeypatch.setattr(os, "fstat", owner_only_fstat)
+    return path, pem, public_key
+
+
+@pytest.fixture()
+def file_cli_env(
+    cli_env: None,
+    file_key: tuple[Path, str, bytes],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Select the real file key without any BWS dependency."""
+    monkeypatch.setenv("BH_GITHUB_APP_KEY_PROVIDER", "file")
+    monkeypatch.setenv("BH_GITHUB_APP_PRIVATE_KEY_FILE", str(file_key[0]))
+    monkeypatch.delenv("BWS_PEM_SECRET_ID")
+    monkeypatch.delenv("BWS_ACCESS_TOKEN")
+
+
+def test_build_provider_bws_loads_once_and_proves_jwt_before_return() -> None:
+    """A BWS key is loaded once and supports authenticated token minting."""
+    pem, public_key = _generate_rsa_keypair()
+    fetch = MagicMock(return_value=pem)
+    config = AppPrivateKeyConfig(
+        AppPrivateKeyProvider.BWS, bws_secret_id=_CLI_PEM_SECRET_ID
+    )
+    with patch(
+        "baton_harness.chain.app_auth._github_http_post",
+        side_effect=_http_post_ok,
+    ) as post:
+        provider = build_installation_token_provider(
+            _APP_ID,
+            config,
+            _INSTALLATION_ID,
+            bws_access_token=_CLI_ACCESS_TOKEN_SENTINEL,
+            fetch_secret=fetch,
+        )
+        post.assert_not_called()
+        assert provider.get_token() == _FAKE_TOKEN
+        assert provider.get_token() == _FAKE_TOKEN
+    fetch.assert_called_once_with(
+        _CLI_PEM_SECRET_ID, access_token=_CLI_ACCESS_TOKEN_SENTINEL
+    )
+    claims = jwt.decode(
+        post.call_args.args[1]["Authorization"].removeprefix("Bearer "),
+        load_der_public_key(public_key),
+        algorithms=["RS256"],
+    )
+    assert claims["iss"] == _APP_ID
+
+
+def test_build_provider_file_never_calls_bws(
+    file_key: tuple[Path, str, bytes],
+) -> None:
+    """File selection loads the exact PEM without touching the vault."""
+    fetch = MagicMock()
+    provider = build_installation_token_provider(
+        _APP_ID,
+        AppPrivateKeyConfig(AppPrivateKeyProvider.FILE, file_path=file_key[0]),
+        _INSTALLATION_ID,
+        bws_access_token="",
+        fetch_secret=fetch,
+    )
+    assert provider.private_key_pem == file_key[1]
+    fetch.assert_not_called()
+
+
+def test_build_provider_rejects_malformed_pem_before_github_call() -> None:
+    """Invalid PEM cannot escape bootstrap and reach GitHub."""
+    with patch("baton_harness.chain.app_auth._github_http_post") as post:
+        with pytest.raises(AppAuthError, match="bws.*RS256"):
+            build_installation_token_provider(
+                _APP_ID,
+                AppPrivateKeyConfig(
+                    AppPrivateKeyProvider.BWS, bws_secret_id=_CLI_PEM_SECRET_ID
+                ),
+                _INSTALLATION_ID,
+                bws_access_token="bootstrap-token",
+                fetch_secret=MagicMock(return_value="malformed-key"),
+            )
+    post.assert_not_called()
+
+
+def test_cli_jwt_file_provider_prints_valid_jwt_without_bws(
+    file_cli_env: None,
+    file_key: tuple[Path, str, bytes],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A real file PEM signs a verifiable JWT without BWS credentials."""
+    with patch("baton_harness.chain.bws_client.fetch_secret") as fetch:
+        assert main(["jwt"]) == 0
+    output = capsys.readouterr()
+    claims = jwt.decode(
+        output.out.strip(),
+        load_der_public_key(file_key[2]),
+        algorithms=["RS256"],
+    )
+    assert claims["iss"] == _CLI_APP_ID
+    assert output.err == ""
+    fetch.assert_not_called()
+
+
+def test_cli_token_file_provider_mints_without_bws(
+    file_cli_env: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Token mode prints only the minted installation credential."""
+    with (
+        patch("baton_harness.chain.bws_client.fetch_secret") as fetch,
+        patch(
+            "baton_harness.chain.app_auth._github_http_post",
+            side_effect=_http_post_ok,
+        ),
+    ):
+        assert main(["token"]) == 0
+    output = capsys.readouterr()
+    assert output.out == _FAKE_TOKEN + "\n"
+    assert output.err == ""
+    fetch.assert_not_called()
+
+
+def test_cli_bws_provider_requires_access_token(
+    cli_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A valid BWS source requires exactly its bootstrap credential."""
+    monkeypatch.delenv("BWS_ACCESS_TOKEN")
+    with patch("baton_harness.chain.bws_client.fetch_secret") as fetch:
+        assert main(["jwt"]) == 2
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert output.err.strip() == (
+        "app_auth: missing required environment variable(s): BWS_ACCESS_TOKEN"
+    )
+    fetch.assert_not_called()
+
+
+def test_cli_file_provider_does_not_require_access_token(
+    file_cli_env: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """File signing remains independent of optional daemon BWS consumers."""
+    assert main(["jwt"]) == 0
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize("mode", ["jwt", "token"])
+@pytest.mark.parametrize("valid_pem", [True, False])
+def test_cli_scrubs_ambient_bws_token_on_success_and_failure(
+    file_cli_env: None,
+    file_key: tuple[Path, str, bytes],
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    valid_pem: bool,
+) -> None:
+    """Both modes scrub the bootstrap token even when signing fails."""
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", _CLI_ACCESS_TOKEN_SENTINEL)
+    if not valid_pem:
+        file_key[0].write_text("malformed-private-key", encoding="utf-8")
+    with patch(
+        "baton_harness.chain.app_auth._github_http_post",
+        side_effect=_http_post_ok,
+    ) as post:
+        assert main([mode]) == (0 if valid_pem else 1)
+        if not valid_pem:
+            post.assert_not_called()
+    assert "BWS_ACCESS_TOKEN" not in os.environ
+
+
+@pytest.mark.parametrize("mode", ["jwt", "token"])
+def test_cli_errors_never_include_pem_or_access_token(
+    file_cli_env: None,
+    file_key: tuple[Path, str, bytes],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    mode: str,
+) -> None:
+    """Invalid key errors never echo credential material."""
+    sentinel = "PRIVATE-KEY-SENTINEL-359"
+    file_key[0].write_text(sentinel, encoding="utf-8")
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", _CLI_ACCESS_TOKEN_SENTINEL)
+    with patch("baton_harness.chain.app_auth._github_http_post") as post:
+        assert main([mode]) == 1
+    output = capsys.readouterr()
+    assert sentinel not in output.out + output.err
+    assert _CLI_ACCESS_TOKEN_SENTINEL not in output.out + output.err
+    post.assert_not_called()
 
 
 @pytest.fixture()
 def cli_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Set the four env vars the CLI entrypoint requires (issue #200)."""
     monkeypatch.setenv("BH_GITHUB_APP_ID", _CLI_APP_ID)
+    monkeypatch.setenv("BH_GITHUB_APP_KEY_PROVIDER", "bws")
+    monkeypatch.delenv("BH_GITHUB_APP_PRIVATE_KEY_FILE", raising=False)
     monkeypatch.setenv("BH_GITHUB_APP_INSTALLATION_ID", _CLI_INSTALLATION_ID)
     monkeypatch.setenv("BWS_PEM_SECRET_ID", _CLI_PEM_SECRET_ID)
     monkeypatch.setenv("BWS_ACCESS_TOKEN", _CLI_ACCESS_TOKEN_SENTINEL)
@@ -1166,6 +1397,7 @@ class TestCliMissingEnvVars:
             token_exit = main(["token"])
             token_captured = capsys.readouterr()
 
+            monkeypatch.setenv("BWS_ACCESS_TOKEN", _CLI_ACCESS_TOKEN_SENTINEL)
             jwt_exit = main(["jwt"])
             jwt_captured = capsys.readouterr()
 
