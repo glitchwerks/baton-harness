@@ -74,6 +74,28 @@ _AMBIENT_VAR = "BH_IDENTITY_TEST_AMBIENT_VAR"
 _AMBIENT_VALUE = "ambient-value-untouched"
 
 _PRIVILEGED_KEYS = ("GH_TOKEN", "GITHUB_TOKEN", "GH_INSTALLATION_TOKEN")
+_DAEMON_ONLY_KEYS = {
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_INSTALLATION_TOKEN",
+    "BH_GITHUB_APP_KEY_PROVIDER",
+    "BH_GITHUB_APP_PRIVATE_KEY_FILE",
+    "BWS_ACCESS_TOKEN",
+    "BWS_PEM_SECRET_ID",
+    "BWS_APP_ID",
+    "BWS_INSTALLATION_ID",
+    "BWS_GH_TOKEN_SECRET_ID",
+    "BWS_HEARTBEAT_PING_URL_SECRET_ID",
+}
+
+
+@pytest.mark.parametrize("key", sorted(_DAEMON_ONLY_KEYS))
+def test_worker_strips_every_daemon_only_auth_key(
+    monkeypatch: pytest.MonkeyPatch, key: str
+) -> None:
+    """Every daemon-only authentication key must be absent."""
+    monkeypatch.setenv(key, f"sentinel-{key}")
+    assert key not in env_for(Identity.WORKER)
 
 
 class _FakeTokenSource:

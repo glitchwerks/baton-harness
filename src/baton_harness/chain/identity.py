@@ -1,4 +1,8 @@
-"""Per-spawn GitHub auth identity broker for chain subprocesses."""
+"""Per-spawn authentication identity broker for chain subprocesses.
+
+The privileged-key set covers daemon-only authentication configuration
+as well as minted tokens.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +15,19 @@ from baton_harness.chain.app_auth import (
 )
 
 _PRIVILEGED_ENV_KEYS: frozenset[str] = frozenset(
-    {"GH_TOKEN", "GITHUB_TOKEN", "GH_INSTALLATION_TOKEN"}
+    {
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "GH_INSTALLATION_TOKEN",
+        "BH_GITHUB_APP_KEY_PROVIDER",
+        "BH_GITHUB_APP_PRIVATE_KEY_FILE",
+        "BWS_ACCESS_TOKEN",
+        "BWS_PEM_SECRET_ID",
+        "BWS_APP_ID",
+        "BWS_INSTALLATION_ID",
+        "BWS_GH_TOKEN_SECRET_ID",
+        "BWS_HEARTBEAT_PING_URL_SECRET_ID",
+    }
 )
 
 

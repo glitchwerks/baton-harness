@@ -42,6 +42,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from baton_harness.chain.identity import Identity, env_for
+
 # ---------------------------------------------------------------------------
 # Type aliases — matches bws_client.RunFn (see test_cli_bootstrap_vault.py)
 # ---------------------------------------------------------------------------
@@ -66,6 +68,20 @@ _FAKE_PEM = (
     "-----END RSA PRIVATE KEY-----\n"
 )
 _FAKE_TOKEN = "ghs_FAKEFAKEFAKEFAKEFAKEFAKEFAKE"
+
+_DAEMON_ONLY_KEYS = {
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_INSTALLATION_TOKEN",
+    "BH_GITHUB_APP_KEY_PROVIDER",
+    "BH_GITHUB_APP_PRIVATE_KEY_FILE",
+    "BWS_ACCESS_TOKEN",
+    "BWS_PEM_SECRET_ID",
+    "BWS_APP_ID",
+    "BWS_INSTALLATION_ID",
+    "BWS_GH_TOKEN_SECRET_ID",
+    "BWS_HEARTBEAT_PING_URL_SECRET_ID",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -186,3 +202,16 @@ class TestBootstrapNeverWritesTokenToAmbientEnviron:
             "bootstrap_secrets() — this reverts issue #222's "
             "env-discipline invariant."
         )
+
+    def test_daemon_only_auth_values_absent_from_worker_environment(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """No daemon-only authentication value reaches a worker spawn."""
+        seeded_values = {key: f"sentinel-{key}" for key in _DAEMON_ONLY_KEYS}
+        for key, value in seeded_values.items():
+            monkeypatch.setenv(key, value)
+
+        worker_env = env_for(Identity.WORKER)
+
+        assert set(seeded_values.values()).isdisjoint(worker_env.values())
