@@ -7,7 +7,7 @@ Single reference for every external service `bh-daemon` authenticates to: auth m
 | Authentication Method | Consumer | Method of Provision |
 |---|---|---|
 | [GitHub App installation token](#github-app-primary) | daemon push/labels/CI-reads/ruleset-bypass (`git`, `gh`) — `Identity.APP` | Selected App-key provider (`bws` or secured host file), minted to short-lived token at runtime |
-| [GitHub fine-grained PAT](#github-fine-grained-pat-fallback) | optional `before_run` worker-hook credential; never daemon authority | Vault or User Setup (direct `export GH_TOKEN=...`) |
+| [GitHub fine-grained PAT](#github-fine-grained-pat-fallback) | required by the standard `bh-before-run` worker hook; never daemon authority | Vault or externally supplied `GH_TOKEN` |
 | [Bitwarden Secrets Manager (`BWS_ACCESS_TOKEN`)](#bitwarden-secrets-manager) | conditional daemon startup / secret bootstrap (`app_auth.py`) | User Setup when any BWS-backed source is configured (this credential itself is never vaulted) |
 | [Anthropic / Claude Code OAuth](#anthropic--claude-code) | Claude Code worker subprocess — `Identity.WORKER` | Web auth (interactive `claude` login, produces `~/.claude/.credentials.json`) |
 | [Slack webhook (`BH_SLACK_WEBHOOK_URL`)](#slack) | daemon escalation notifications (`escalation.py`) | User Setup (plain env var, no vault form exists for it) |
@@ -101,12 +101,13 @@ App creation, obtaining the App ID and installation ID, and selecting either pro
 
 <a id="github-fine-grained-pat-fallback"></a>
 
-## GitHub fine-grained PAT (optional worker-hook credential)
+## GitHub fine-grained PAT (required standard worker-hook credential)
 
-**Auth method:** an optional fine-grained personal access token (prefix `github_pat_`),
-supplied as `GH_TOKEN` (or `GITHUB_TOKEN`) for the `before_run` worker hook. It does
+**Auth method:** a fine-grained personal access token (prefix `github_pat_`),
+supplied as `GH_TOKEN` to the daemon for the standard `bh-before-run` worker hook. The
+PAT is required by that hook; only its BWS secret locator is optional. It does
 **not** replace GitHub App provisioning: the daemon always requires App ID, installation
-ID, and a private key from the selected `bws` or `file` provider. Mint the optional PAT
+ID, and a private key from the selected `bws` or `file` provider. Mint the worker PAT
 at <https://github.com/settings/personal-access-tokens/new> under a dedicated bot/machine
 account — never a personal account.
 
@@ -115,7 +116,7 @@ The daemon threads this PAT by value only into `Orchestrator.hook_env` for the
 rebases locally. Daemon pushes, labels, pull requests, ruleset reads/bypass, and CI reads
 continue to use the separately minted App installation token under `Identity.APP`.
 
-**Required fine-grained PAT permissions when this optional hook credential is used:**
+**Required fine-grained PAT permissions:**
 
 | Operation | Fine-grained permission |
 |---|---|
@@ -127,10 +128,18 @@ Secrets, Checks, or any org-level scope. Those daemon operations remain App-auth
 
 **Provisioning:**
 
-- **Vault fetch (preferred when using the PAT path):** set `BWS_GH_TOKEN_SECRET_ID` in `${BH_PROJECT_ROOT}/.bh/config.env`; `bootstrap_secrets()` fetches the PAT from Bitwarden at startup and retains it by value for the worker hook without writing it to `os.environ`.
-- **Direct export (optional hook override):** `export GH_TOKEN=github_pat_<token>` — an
+- **Vault fetch:** set `BWS_GH_TOKEN_SECRET_ID` in `${BH_PROJECT_ROOT}/.bh/config.env`; `bootstrap_secrets()` fetches the PAT from Bitwarden at startup and retains it by value for the worker hook without writing it to `os.environ`.
+- **Direct environment:** supply `GH_TOKEN` through external secret provisioning — an
   explicit env value wins over the vault fetch. This supplies only the worker hook; the
   GitHub App configuration remains mandatory.
+
+For a BWS-free systemd deployment, externally provision
+`/etc/bh-daemon/worker.env` (owner `root`, mode `0600`) with a `GH_TOKEN` assignment,
+then reference it from a service drop-in with
+`EnvironmentFile=/etc/bh-daemon/worker.env`. This supplies the required worker PAT
+alongside the separately mounted App PEM. The installer does not create this file or
+drop-in. Never put the token in a committed unit, `.bh/config.env`, or any repository
+file. See the complete [BWS-free service example](smoke-test-daemon.md#manual--reference).
 
 **Validated by:** `validate_github_token()` (`src/baton_harness/_auth.py`) — reads `GH_TOKEN`/`GITHUB_TOKEN`, rejects classic `ghp_` PATs and anything not prefixed `github_pat_`, then runs a live `gh api user` capability self-test (retried up to `_MAX_RETRIES` = 2 times on transient failures — rate-limits, gateway errors, DNS/TLS — before failing closed; permanent 401/403 failures raise immediately). This runs at the top of the `bh-before-run` hook (`src/baton_harness/before_run.py`), i.e. once per worker turn, not at daemon startup — a **different gate, on a different credential, in a different execution context** than `validate_daemon_token()` above. Known limitation: fine-grained PATs expose no scope-introspection API (unlike classic PATs' `X-OAuth-Scopes` response header), so this gate verifies token *type* and *reachability* only, not the exact granted permission set — that verification is the operator's responsibility at mint time.
 
@@ -152,10 +161,10 @@ success or failure path. Worker subprocesses cannot inherit it.
 
 Bootstrap resolves and validates the complete provider matrix before mutating the
 environment or making a GitHub request. It fetches configured optional PAT/heartbeat
-secrets while the BWS token is available, loads the selected App key once, scrubs the BWS
-token unconditionally, proves the PEM by signing a JWT, then mints and validates the
-first installation token. The installation token remains a by-value credential and is
-never written to `os.environ`.
+secrets while the BWS token is available, loads the selected App key once, and proves
+the PEM by signing a JWT. Its `finally` block scrubs the BWS token on every bootstrap
+exit, before the first installation token is minted and validated. The installation
+token remains a by-value credential and is never written to `os.environ`.
 
 **Consuming code:** `src/baton_harness/chain/app_auth.py` (`bootstrap_secrets`,
 `build_installation_token_provider`, `main`).
@@ -182,6 +191,11 @@ GitHub tokens plus `BH_GITHUB_APP_KEY_PROVIDER`, `BH_GITHUB_APP_PRIVATE_KEY_FILE
 `BWS_GH_TOKEN_SECRET_ID`, and `BWS_HEARTBEAT_PING_URL_SECRET_ID` unconditionally. The
 identity is additive-safe: requesting `WORKER` can only remove credentials and secret
 locators from a subprocess environment, never grant them.
+
+The vendored Claude runner and every lifecycle hook apply this filter at their actual
+spawn boundaries. Only `before_run` restores explicitly supplied worker PAT overrides
+after filtering; other hooks and Claude receive neither ambient GitHub tokens nor that
+PAT override.
 
 The full two-identity broker model — `Identity.APP` vs. `Identity.WORKER`, the `env_for()` single resolution point, and the AST-walking spawn guard that enforces every `chain/` subprocess declares an explicit identity — is documented in **[docs/harness-design.md §12 "Two-identity subprocess auth model (identity broker)"](harness-design.md#12-two-identity-subprocess-auth-model-identity-broker-implemented--issue-222)** (issue #222). That section is the authoritative source; this doc does not duplicate its mechanics.
 

@@ -199,6 +199,8 @@ def _read_file_private_key(path: Path) -> str:
     flags = os.O_RDONLY
     flags |= getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
+    # A FIFO replacement must reach fstat without waiting for a writer.
+    flags |= getattr(os, "O_NONBLOCK", 0)
     try:
         descriptor = os.open(path, flags)
     except OSError:

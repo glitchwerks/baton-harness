@@ -185,6 +185,11 @@ token from `os.environ` in a `finally` block on every success or failure path. T
 GitHub PAT is held in a module-global and threaded through `Orchestrator.hook_env` to the
 `before_run` hook subprocess only; it is never written to the daemon's ambient environment.
 
+The standard `bh-before-run` hook requires a worker PAT with either App-key provider.
+Its BWS locator is optional: without `BWS_GH_TOKEN_SECRET_ID`, supply `GH_TOKEN` through
+the daemon's externally provisioned environment. The GitHub App remains mandatory for
+daemon operations; neither credential substitutes for the other.
+
 **Vault-fetched at startup when a locator and `BWS_ACCESS_TOKEN` are supplied:**
 
 - `GH_TOKEN` — the GitHub fine-grained PAT used by the `before_run` hook subprocess. If `BWS_GH_TOKEN_SECRET_ID` is set in `.bh/config.env` and `GH_TOKEN` is not already in the environment, `bootstrap_secrets()` fetches it from the vault, holds it in a module-global, and threads it through `Orchestrator.hook_env` to that subprocess only. It is never written to the daemon's ambient environment. If `GH_TOKEN` is already set (shell export, CI env), the vault is not called — operator override wins.
@@ -194,8 +199,8 @@ Vault errors propagate as `BwsClientError` — fail-closed, never swallowed.
 
 **Ordering invariant:** configuration is resolved first, optional vault fetches complete
 while the token is available, the selected App key is loaded once, and the token is then
-scrubbed before the first installation token is minted. The loaded PEM must first pass an
-RS256 JWT-signing proof.
+scrubbed in `finally` on every bootstrap exit before the first installation token is
+minted. The loaded PEM passes an RS256 JWT-signing proof during bootstrap.
 
 ### Auto-derived (do not set)
 
@@ -448,6 +453,9 @@ What each credential is, why it's required, and which startup gate validates it 
   `BWS_ACCESS_TOKEN` in the host/systemd environment. File-only configuration needs
   neither BWS prerequisite. Optional BWS PAT/heartbeat IDs independently restore both;
   direct `GH_TOKEN` / `BH_HEARTBEAT_PING_URL` values avoid those optional fetches.
+- The standard `bh-before-run` hook also requires its fine-grained worker PAT. In
+  BWS-free file mode, externally provision `GH_TOKEN` using the systemd environment-file
+  example below. A shell export is not automatically inherited by a system service.
 - `git` must be configured with a username and email in the daemon's environment.
 - Do not export `ANTHROPIC_API_KEY` — not in `.env` files, not in systemd `EnvironmentFile=`, not in the Docker entrypoint. Its presence at daemon startup causes an immediate hard abort (gate G3b).
 
@@ -486,6 +494,10 @@ writes `/etc/systemd/system/bh-daemon.service`, and optionally starts the servic
 bin/install-daemon-service.sh
 ```
 
+For BWS-free file mode, install with `--no-start`, provision the worker PAT environment
+file and drop-in shown below, then run `sudo systemctl daemon-reload` and
+`sudo systemctl enable --now bh-daemon`. The installer does not provision the worker PAT.
+
 Useful flags:
 
 | Flag | Effect |
@@ -507,7 +519,9 @@ After it finishes, the script reminds you to run `bin/provision-ruleset.sh` once
 ##### Manual / reference
 
 `bin/install-daemon-service.sh` writes the provider-aware unit shape below. The
-`EnvironmentFile=` line and secrets file exist only for BWS-backed configurations.
+installer-generated BWS `EnvironmentFile=` line and secrets file exist only for
+BWS-backed configurations. BWS-free deployments must separately provision the worker
+PAT environment file and drop-in below for the standard `bh-before-run` hook.
 
 `${BH_PROJECT_ROOT}/.bh/config.env` supplies the repo identity, App IDs, provider/source,
 and optional secret locators. Because this unit invokes `bh-daemon` directly, it carries
@@ -554,7 +568,21 @@ rotation:
 LoadCredential=app.pem:/externally/provisioned/github-app.pem
 Environment=BH_GITHUB_APP_KEY_PROVIDER=file
 Environment=BH_GITHUB_APP_PRIVATE_KEY_FILE=%d/app.pem
+EnvironmentFile=/etc/bh-daemon/worker.env
 ```
+
+External secret provisioning must create `/etc/bh-daemon/worker.env` with owner `root`,
+mode `0600`, and a `GH_TOKEN` assignment containing the fine-grained worker PAT. Keep
+that file outside all repositories; never commit its token or place it directly in the
+unit. This environment-file example supplies the PAT because Harness currently reads
+it from the environment, while the App PEM uses the credential path. Clear
+`BWS_PEM_SECRET_ID`, `BWS_GH_TOKEN_SECRET_ID`, and `BWS_HEARTBEAT_PING_URL_SECRET_ID`
+for a fully BWS-free deployment. The installer manages neither this file nor this
+drop-in; external provisioning owns both.
+
+`EnvironmentFile=` reads assignments into the service environment; see the upstream
+[systemd.exec environment-file reference](https://github.com/systemd/systemd/blob/main/man/systemd.exec.xml)
+(fetched 2026-09-05).
 
 systemd expands `%d` to the service credential directory. See the official
 [systemd.exec credentials documentation](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#Credentials)

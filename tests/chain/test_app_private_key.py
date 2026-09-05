@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import os
+import signal
 import stat
+import time
 import traceback
 from pathlib import Path
+from types import FrameType
 from unittest.mock import Mock, patch
 
 import pytest
@@ -407,6 +410,84 @@ def test_file_loader_rejects_close_error(tmp_path: Path) -> None:
         )
     rendered = "".join(traceback.format_exception(exc_info.value))
     assert sentinel not in rendered
+
+
+def test_file_loader_uses_supported_nonblocking_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Require nonblocking open while preserving normal file reads."""
+    key = tmp_path / "app.pem"
+    key.write_text("private-key", encoding="utf-8")
+    nonblock_flag = getattr(os, "O_NONBLOCK", 1 << 29)
+    monkeypatch.setattr(os, "O_NONBLOCK", nonblock_flag, raising=False)
+    real_open = os.open
+
+    def checked_open(path: Path, flags: int) -> int:
+        """Check the platform flag before delegating a real file read."""
+        assert flags & nonblock_flag, "FIFO replacement must not block open"
+        # The injected flag has no Windows OS equivalent.
+        return real_open(path, flags & ~nonblock_flag)
+
+    with (
+        patch("baton_harness.chain.app_private_key.os.open", checked_open),
+        patch(
+            "baton_harness.chain.app_private_key.os.fstat",
+            return_value=_file_stat(key, 0o600),
+        ),
+    ):
+        assert (
+            load_app_private_key(
+                _file_config(key), bws_access_token="", fetch_secret=Mock()
+            )
+            == "private-key"
+        )
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason="requires POSIX FIFO and SIGALRM"
+)
+def test_file_loader_rejects_fifo_replacement_promptly(tmp_path: Path) -> None:
+    """Reject a FIFO swapped in after lstat without waiting for a writer."""
+    key = tmp_path / "app.pem"
+    key.write_text("private-key", encoding="utf-8")
+    key.chmod(0o600)
+    config = _file_config(key)
+    real_open = os.open
+    opened: list[int] = []
+
+    def replace_then_open(path: Path, flags: int) -> int:
+        """Swap the inspected regular file for a FIFO before open."""
+        key.unlink()
+        os.mkfifo(key, 0o600)
+        descriptor = real_open(path, flags)
+        opened.append(descriptor)
+        return descriptor
+
+    def deadline_expired(signum: int, frame: FrameType | None) -> None:
+        """Fail the regression without leaving an indefinitely blocked open."""
+        pytest.fail("file loader blocked opening a replacement FIFO")
+
+    previous_handler = signal.signal(signal.SIGALRM, deadline_expired)
+    started = time.monotonic()
+    try:
+        signal.alarm(2)
+        with (
+            patch(
+                "baton_harness.chain.app_private_key.os.open",
+                replace_then_open,
+            ),
+            pytest.raises(AppPrivateKeyLoadError, match="regular file"),
+        ):
+            load_app_private_key(
+                config, bws_access_token="", fetch_secret=Mock()
+            )
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous_handler)
+    assert time.monotonic() - started < 2
+    assert len(opened) == 1
+    with pytest.raises(OSError):
+        os.fstat(opened[0])
 
 
 def test_file_loader_rejects_replacement_race(tmp_path: Path) -> None:

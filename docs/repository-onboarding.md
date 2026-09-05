@@ -40,10 +40,10 @@ waiting for a value only you can supply. (For the machine-level CLI prerequisite
   - `file`: externally provision the PEM at an absolute host path and note that path
     (`BH_GITHUB_APP_PRIVATE_KEY_FILE`). The file must be regular, non-symlink,
     owner-only (`0400` or `0600`), readable UTF-8 PEM, non-empty, and at most 1 MiB.
-- Optionally, a **GitHub fine-grained PAT** (see
+- A **GitHub fine-grained PAT** for the standard `bh-before-run` hook (see
   [docs/authentication.md § GitHub fine-grained PAT](authentication.md#github-fine-grained-pat-fallback)
-  for the exact permission table — narrower than the App's) uploaded to Bitwarden Secrets
-  Manager as a secret (`BWS_GH_TOKEN_SECRET_ID`). If you skip this, you must export
+  for the exact permission table — narrower than the App's). Optionally upload it to
+  Bitwarden Secrets Manager as a secret (`BWS_GH_TOKEN_SECRET_ID`). If you skip this, supply
   `GH_TOKEN` directly instead.
 - A **Bitwarden Secrets Manager machine-account access token** (`BWS_ACCESS_TOKEN`) only
   when you select the `bws` App-key provider or configure either optional BWS secret ID.
@@ -290,8 +290,8 @@ credential helper. The remaining 6 need a live GitHub API call and so only make 
 repo identity is known: both branch-protection rulesets provisioned (step 4); all six
 required harness labels present; a repository admin collaborator (WARNING — informational);
 GitHub CLI authentication validity; and the Claude OAuth credential file's readability. It
-never inspects or prints secret *values* — only presence, shape, and byte length where a
-length is diagnostic (as in the `BWS_ACCESS_TOKEN` example above).
+reports secret presence and configuration shape without printing secret values or
+lengths. The `BWS_ACCESS_TOKEN` check reports only whether the required token is present.
 
 `--doctor` running the full 20-check catalog standalone is not the same as either of the
 daemon's two real startup gates — it lets you see every check's `[STATUS]` ahead of time,

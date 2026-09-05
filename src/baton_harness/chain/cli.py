@@ -450,8 +450,8 @@ def main(argv: list[str] | None = None) -> int:
 
     # Bootstrap GitHub App installation token (slice 3a).
     # Must run AFTER chdir so the managed repo is the process cwd.
-    # BWS_ACCESS_TOKEN is popped from os.environ by bootstrap_secrets
-    # as its first operation — never re-added after this point.
+    # bootstrap_secrets removes BWS_ACCESS_TOKEN from os.environ in
+    # finally on every bootstrap exit, after any selected vault reads.
     # The installation token is NEVER written to os.environ; it is
     # passed by value to run_daemon (env-discipline invariant).
     try:

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import enum
 import os
+from collections.abc import Mapping
 
 from baton_harness.chain.app_auth import (
     InstallationTokenSource,
@@ -42,9 +43,24 @@ def env_for(
     identity: Identity,
     *,
     installation_token: InstallationTokenSource | None = None,
+    base_env: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
-    """Return an explicit subprocess env for the requested identity."""
-    env = dict(os.environ)
+    """Return an explicit subprocess env for the requested identity.
+
+    Args:
+        identity: Authority to grant the subprocess.
+        installation_token: App token source, or a token to exclude from
+            worker values.
+        base_env: Complete environment to filter, including caller
+            overrides. Defaults to the ambient environment.
+
+    Returns:
+        A new environment dictionary with the requested authority.
+
+    Raises:
+        ValueError: If App identity is requested without a usable token.
+    """
+    env = dict(os.environ if base_env is None else base_env)
 
     if identity is Identity.APP:
         if installation_token is None:
