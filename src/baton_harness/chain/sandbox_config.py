@@ -84,6 +84,14 @@ _ENV_OVERRIDABLE_KEYS = (
     "BWS_GH_TOKEN_SECRET_ID",
     "BWS_HEARTBEAT_PING_URL_SECRET_ID",
 )
+_VALUE_VALIDATED_KEYS = (
+    "BH_REPO_OWNER",
+    "BH_REPO_NAME",
+    "BH_GITHUB_APP_ID",
+    "BH_GITHUB_APP_INSTALLATION_ID",
+    "BWS_GH_TOKEN_SECRET_ID",
+    "BWS_HEARTBEAT_PING_URL_SECRET_ID",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -271,6 +279,7 @@ def read_and_validate(
         ) from exc
 
     parsed: dict[str, str] = {}
+    parsed_line_numbers: dict[str, int] = {}
 
     for line_number, raw_line in enumerate(lines, start=1):
         line = raw_line.strip()
@@ -294,32 +303,37 @@ def read_and_validate(
         if key in _IGNORED_KEYS:
             continue
 
-        if not _is_valid(key, value):
-            raise SandboxConfigError(
-                f"{key} invalid at line {line_number}: {value!r}"
-            )
-
         parsed[key] = value
+        parsed_line_numbers[key] = line_number
 
     # Resolve each overridable key: a non-empty os.environ value wins
     # over the file's value (empty env is treated as absent). The
-    # resolved value is validated with the same per-key rule used for
-    # file-sourced values above, so a malformed env override is caught
-    # too.
+    # completely resolved base and optional values are validated below.
     resolved = resolve_overridable_keys(
         parsed, os.environ, _ENV_OVERRIDABLE_KEYS
     )
-    for key in _ENV_OVERRIDABLE_KEYS:
-        env_value = os.environ.get(key, "")
-        if env_value:
-            if not _is_valid(key, env_value):
-                raise SandboxConfigError(
-                    f"{key} invalid (from environment variable): {env_value!r}"
-                )
 
     for required_key in _REQUIRED_KEYS:
         if not resolved.get(required_key):
             raise SandboxConfigError(f"missing required key: {required_key}")
+
+    for key in _VALUE_VALIDATED_KEYS:
+        value = resolved[key]
+        if _is_valid(key, value):
+            continue
+
+        env_value = os.environ.get(key, "")
+        if env_value:
+            raise SandboxConfigError(
+                f"{key} invalid (from environment variable): {value!r}"
+            )
+
+        source_line_number = parsed_line_numbers.get(key)
+        if source_line_number is None:
+            raise SandboxConfigError(f"{key} invalid: {value!r}")
+        raise SandboxConfigError(
+            f"{key} invalid at line {source_line_number}: {value!r}"
+        )
 
     try:
         app_key_config = resolve_app_private_key_config(resolved)

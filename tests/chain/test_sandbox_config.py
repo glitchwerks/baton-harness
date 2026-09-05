@@ -919,6 +919,7 @@ class TestMalformedValues:
             BH_REPO_NAME=my-sandbox
             BH_GITHUB_APP_ID=not-a-number
             BH_GITHUB_APP_INSTALLATION_ID=67890
+            BH_GITHUB_APP_KEY_PROVIDER=bws
             BWS_PEM_SECRET_ID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
             """
         )
@@ -943,6 +944,7 @@ class TestMalformedValues:
             BH_REPO_NAME=my-sandbox
             BH_GITHUB_APP_ID=0
             BH_GITHUB_APP_INSTALLATION_ID=67890
+            BH_GITHUB_APP_KEY_PROVIDER=bws
             BWS_PEM_SECRET_ID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
             """
         )
@@ -987,6 +989,7 @@ class TestMalformedValues:
             BH_REPO_NAME=my-sandbox
             BH_GITHUB_APP_ID=12345
             BH_GITHUB_APP_INSTALLATION_ID=67890
+            BH_GITHUB_APP_KEY_PROVIDER=bws
             BWS_PEM_SECRET_ID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
             """
         )
@@ -1007,6 +1010,7 @@ class TestMalformedValues:
             BH_REPO_NAME=my-sandbox
             BH_GITHUB_APP_ID=12345
             BH_GITHUB_APP_INSTALLATION_ID=67890
+            BH_GITHUB_APP_KEY_PROVIDER=bws
             BWS_PEM_SECRET_ID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
             """
         )
@@ -1031,6 +1035,7 @@ class TestMalformedValues:
             BH_REPO_NAME=my-sandbox
             BH_GITHUB_APP_ID=12345
             BH_GITHUB_APP_INSTALLATION_ID=-1
+            BH_GITHUB_APP_KEY_PROVIDER=bws
             BWS_PEM_SECRET_ID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
             """
         )
@@ -1375,6 +1380,44 @@ class TestEnvOverridesFileValue:
 
         assert result.bws_gh_token_secret_id == _ENV_GH_TOKEN_UUID
         assert result.bws_gh_token_secret_id != _GH_TOKEN_UUID
+
+    def test_valid_env_optional_uuid_overrides_invalid_file_value(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A valid optional UUID override supersedes invalid file syntax."""
+        _delenv_all(monkeypatch)
+        monkeypatch.setenv("BWS_GH_TOKEN_SECRET_ID", _ENV_GH_TOKEN_UUID)
+        content = _VALID_ENV_CONTENT.replace(
+            f"BWS_GH_TOKEN_SECRET_ID={_GH_TOKEN_UUID}",
+            "BWS_GH_TOKEN_SECRET_ID=not-a-uuid",
+        )
+        env_file = _write_env(tmp_path, content)
+
+        result = read_and_validate(env_file, run=_make_run_stub())
+
+        assert result.bws_gh_token_secret_id == _ENV_GH_TOKEN_UUID
+        assert os.environ["BWS_GH_TOKEN_SECRET_ID"] == _ENV_GH_TOKEN_UUID
+
+    def test_valid_env_base_value_overrides_invalid_file_value(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A valid base-key override supersedes invalid file syntax."""
+        _delenv_all(monkeypatch)
+        monkeypatch.setenv("BH_REPO_OWNER", _ENV_OWNER)
+        content = _VALID_ENV_CONTENT.replace(
+            f"BH_REPO_OWNER={_OWNER}",
+            "BH_REPO_OWNER=invalid owner",
+        )
+        env_file = _write_env(tmp_path, content)
+
+        result = read_and_validate(env_file, run=_make_run_stub())
+
+        assert result.repo_owner == _ENV_OWNER
+        assert os.environ["BH_REPO_OWNER"] == _ENV_OWNER
 
 
 # ---------------------------------------------------------------------------
