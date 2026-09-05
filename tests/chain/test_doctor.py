@@ -65,16 +65,21 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
+import stat
 import subprocess
 import textwrap
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
-from baton_harness.chain import doctor
+from baton_harness.chain import app_auth, doctor
+from baton_harness.chain.cli import main
 from baton_harness.chain.doctor import (
     CheckResult,
     CheckStatus,
@@ -250,12 +255,217 @@ _VALID_CONFIG_ENV = textwrap.dedent(
     BH_REPO_NAME=my-sandbox
     BH_GITHUB_APP_ID=12345
     BH_GITHUB_APP_INSTALLATION_ID=67890
+    BH_GITHUB_APP_KEY_PROVIDER=bws
     BWS_PEM_SECRET_ID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
     """
 )
 
 _FAKE_BWS_TOKEN = "not-a-real-secret-VALUE-9f8e7d6c5b4a"  # placeholder
 _FAKE_ANTHROPIC_KEY = "sk-fake-not-a-real-key-12345"  # placeholder
+
+
+@pytest.fixture(scope="module")
+def app_private_key_pem() -> str:
+    """Generate a real signing key so probes exercise PEM validation."""
+    return (
+        rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        .private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+        .decode("utf-8")
+    )
+
+
+def _file_provider_config(path: Path) -> str:
+    """Build file-provider settings with no BWS consumer."""
+    return _VALID_CONFIG_ENV.replace(
+        "BH_GITHUB_APP_KEY_PROVIDER=bws", "BH_GITHUB_APP_KEY_PROVIDER=file"
+    ).replace(
+        "BWS_PEM_SECRET_ID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        f"BH_GITHUB_APP_PRIVATE_KEY_FILE={path}",
+    )
+
+
+@pytest.mark.parametrize(
+    ("provider", "optional_key", "expected"),
+    [
+        ("bws", "", CheckStatus.FAIL),
+        ("file", "", CheckStatus.PASS),
+        ("file", "BWS_GH_TOKEN_SECRET_ID", CheckStatus.FAIL),
+        ("file", "BWS_HEARTBEAT_PING_URL_SECRET_ID", CheckStatus.FAIL),
+    ],
+)
+@pytest.mark.parametrize("optional_in_env", [False, True])
+def test_cli_bws_and_access_token_follow_composed_requirement(
+    tmp_path: Path,
+    provider: str,
+    optional_key: str,
+    expected: CheckStatus,
+    optional_in_env: bool,
+) -> None:
+    """Both prerequisites follow provider and optional BWS consumers."""
+    content = (
+        _VALID_CONFIG_ENV
+        if provider == "bws"
+        else _file_provider_config(tmp_path / "app.pem")
+    )
+    env = {}
+    if optional_key:
+        if optional_in_env:
+            env[optional_key] = "11111111-2222-3333-4444-555555555555"
+        else:
+            content += f"{optional_key}=11111111-2222-3333-4444-555555555555\n"
+    _write_config_env(tmp_path, content)
+    ctx = _make_ctx(
+        project_root=str(tmp_path), env=env, which=lambda name: None
+    )
+    for check_id in ("CLI_BWS", "ENV_BWS_ACCESS_TOKEN"):
+        result = _get_check(check_id)(ctx)
+        assert result.status is expected
+        assert result.severity is Severity.CRITICAL
+
+
+def test_file_only_missing_bws_binary_and_token_are_pass_not_required(
+    tmp_path: Path,
+) -> None:
+    """File-only prerequisites pass explicitly without a binary or token."""
+    _write_config_env(tmp_path, _file_provider_config(tmp_path / "app.pem"))
+    ctx = _make_ctx(project_root=str(tmp_path), which=lambda name: None)
+    for check_id in ("CLI_BWS", "ENV_BWS_ACCESS_TOKEN"):
+        result = _get_check(check_id)(ctx)
+        assert result.status is CheckStatus.PASS
+        assert "not required" in result.detail
+    assert _get_check("CFG_REQUIRED_KEYS")(ctx).status is CheckStatus.PASS
+
+
+def test_invalid_provider_matrix_fails_cfg_required_keys(
+    tmp_path: Path,
+) -> None:
+    """Conflicting sources fail validation before any secret retrieval."""
+    _write_config_env(
+        tmp_path,
+        _VALID_CONFIG_ENV
+        + f"BH_GITHUB_APP_PRIVATE_KEY_FILE={tmp_path / 'app.pem'}\n",
+    )
+    fetch = Mock()
+    result = _get_check("CFG_REQUIRED_KEYS")(
+        _make_ctx(project_root=str(tmp_path), fetch_secret=fetch)
+    )
+    assert result.status is CheckStatus.FAIL
+    fetch.assert_not_called()
+
+
+def test_bws_key_probe_fetches_without_exposing_secret(
+    tmp_path: Path,
+    app_private_key_pem: str,
+) -> None:
+    """A BWS probe loads exactly once and reports no secret or byte count."""
+    fetch = Mock(return_value=app_private_key_pem)
+    ctx = _make_vault_ctx(tmp_path, fetch)
+    resolved_id = "11111111-2222-3333-4444-555555555555"
+    ctx.env.update(
+        {
+            "BH_GITHUB_APP_KEY_PROVIDER": "",
+            "BWS_PEM_SECRET_ID": resolved_id,
+            "BH_GITHUB_APP_ID": "54321",
+        }
+    )
+    with patch.object(
+        app_auth, "build_app_jwt", wraps=app_auth.build_app_jwt
+    ) as sign:
+        result = doctor.VAULT_PEM_DRYRUN_CHECK(ctx)
+    assert result.status is CheckStatus.PASS
+    fetch.assert_called_once_with(resolved_id, access_token=_FAKE_BWS_TOKEN)
+    assert sign.call_count == 1
+    assert sign.call_args.args == ("54321", app_private_key_pem)
+    for secret in (app_private_key_pem, _FAKE_BWS_TOKEN, _VAULT_SECRET_ID):
+        _assert_no_secret_leak(result, secret)
+    assert "characters" not in result.detail
+    assert str(len(app_private_key_pem)) not in result.detail
+
+
+@pytest.mark.parametrize("mode", [0o600, 0o644])
+@pytest.mark.parametrize("malformed", [False, True])
+def test_file_key_probe_reads_secure_file_without_bws(
+    tmp_path: Path,
+    app_private_key_pem: str,
+    mode: int,
+    malformed: bool,
+) -> None:
+    """Load real file bytes and enforce descriptor permission metadata."""
+    path = tmp_path / "app.pem"
+    contents = "MALFORMED_PEM_SENTINEL" if malformed else app_private_key_pem
+    path.write_text(contents, encoding="utf-8")
+    path.chmod(mode)
+    _write_config_env(tmp_path, _file_provider_config(path))
+    metadata = list(path.stat())
+    metadata[stat.ST_MODE] = stat.S_IFREG | mode
+    fetch = Mock(return_value=app_private_key_pem)
+    # Windows chmod cannot express POSIX bits; preserve real identity and
+    # file I/O while supplying the descriptor mode enforced in production.
+    with patch(
+        "baton_harness.chain.app_private_key.os.fstat",
+        return_value=os.stat_result(metadata),
+    ):
+        result = doctor.VAULT_PEM_DRYRUN_CHECK(
+            _make_ctx(project_root=str(tmp_path), fetch_secret=fetch)
+        )
+    assert result.status is (
+        CheckStatus.PASS
+        if mode == 0o600 and not malformed
+        else CheckStatus.FAIL
+    )
+    _assert_no_secret_leak(result, contents)
+    fetch.assert_not_called()
+
+
+def test_file_key_probe_rejects_insecure_mode_safely(tmp_path: Path) -> None:
+    """An insecure native file fails without leaking its content or path."""
+    path = tmp_path / "private-sentinel.pem"
+    path.write_text("SECRET_PEM_SENTINEL", encoding="utf-8")
+    path.chmod(0o644)
+    _write_config_env(tmp_path, _file_provider_config(path))
+    result = doctor._run_check(
+        doctor.VAULT_PEM_DRYRUN_CHECK,
+        _make_ctx(project_root=str(tmp_path)),
+    )
+    assert result.status is CheckStatus.FAIL
+    assert "file provider" in result.detail
+    _assert_no_secret_leak(result, "SECRET_PEM_SENTINEL")
+    _assert_no_secret_leak(result, str(path))
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_key_probe_output_excludes_pem_token_and_credential_url(
+    tmp_path: Path,
+    raises: bool,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Malformed PEM and transport failures stay secret-safe in reports."""
+    sentinels = (
+        "SECRET_PEM_SENTINEL",
+        _FAKE_BWS_TOKEN,
+        "https://credential-user:credential-pass@example.invalid/key",
+    )
+    payload = " ".join(sentinels)
+    fetch = Mock(
+        side_effect=RuntimeError(payload) if raises else None,
+        return_value=payload,
+    )
+    ctx = _make_vault_ctx(tmp_path, fetch)
+    result = doctor._run_check(doctor.VAULT_PEM_DRYRUN_CHECK, ctx)
+    assert result.status is CheckStatus.FAIL
+    with patch.object(doctor, "DoctorContext", return_value=ctx):
+        assert main(["--doctor", "--check-vault"]) == 1
+    captured = capsys.readouterr()
+    for output in (
+        captured.out + captured.err,
+        json.dumps(dataclasses.asdict(result), default=lambda item: item.name),
+    ):
+        for sentinel in sentinels:
+            assert sentinel not in output
 
 
 # ---------------------------------------------------------------------------
@@ -771,6 +981,7 @@ _CLI_CHECKS = [
     "check_id, binary, severity, fail_status", _CLI_CHECKS
 )
 def test_cli_on_path_check_passes_when_which_finds_binary(
+    tmp_path: Path,
     check_id: str,
     binary: str,
     severity: Severity,
@@ -782,7 +993,8 @@ def test_cli_on_path_check_passes_when_which_finds_binary(
     def _which(name: str) -> str | None:
         return f"/usr/bin/{name}" if name == binary else None
 
-    result = check(_make_ctx(which=_which))
+    _write_config_env(tmp_path, _VALID_CONFIG_ENV)
+    result = check(_make_ctx(project_root=str(tmp_path), which=_which))
 
     assert result.check_id == check_id
     assert result.status == CheckStatus.PASS
@@ -795,6 +1007,7 @@ def test_cli_on_path_check_passes_when_which_finds_binary(
     "check_id, binary, severity, fail_status", _CLI_CHECKS
 )
 def test_cli_on_path_check_reports_failure_when_binary_missing(
+    tmp_path: Path,
     check_id: str,
     binary: str,
     severity: Severity,
@@ -803,7 +1016,10 @@ def test_cli_on_path_check_reports_failure_when_binary_missing(
     """A missing binary FAILs (CRITICAL checks) or WARNs (CLI_UV)."""
     check = _get_check(check_id)
 
-    result = check(_make_ctx(which=lambda name: None))
+    _write_config_env(tmp_path, _VALID_CONFIG_ENV)
+    result = check(
+        _make_ctx(project_root=str(tmp_path), which=lambda name: None)
+    )
 
     assert result.status == fail_status, (
         f"{check_id} on a missing binary must report status "
@@ -971,7 +1187,7 @@ class TestCfgRequiredKeys:
         _write_config_env(tmp_path, content)
         result = check(_make_ctx(project_root=str(tmp_path), env={}))
         assert result.status == CheckStatus.FAIL
-        assert "BWS_PEM_SECRET_ID is missing" in result.detail
+        assert "BWS_PEM_SECRET_ID" in result.detail
 
     def test_fails_when_a_required_value_is_malformed(
         self, tmp_path: Path
@@ -1085,23 +1301,35 @@ class TestCfgOptionalSecretIds:
 class TestEnvBwsAccessToken:
     """BWS_ACCESS_TOKEN presence/shape only -- never the value (CRITICAL)."""
 
-    def test_fails_when_unset(self) -> None:
+    def test_fails_when_unset(self, tmp_path: Path) -> None:
         """No BWS_ACCESS_TOKEN in env FAILs."""
         check = _get_check("ENV_BWS_ACCESS_TOKEN")
-        result = check(_make_ctx(env={}))
+        _write_config_env(tmp_path, _VALID_CONFIG_ENV)
+        result = check(_make_ctx(project_root=str(tmp_path), env={}))
         assert result.status == CheckStatus.FAIL
         assert result.severity == Severity.CRITICAL
 
-    def test_fails_when_set_but_empty(self) -> None:
+    def test_fails_when_set_but_empty(self, tmp_path: Path) -> None:
         """An empty-string value is treated as unset -- FAILs."""
         check = _get_check("ENV_BWS_ACCESS_TOKEN")
-        result = check(_make_ctx(env={"BWS_ACCESS_TOKEN": ""}))
+        _write_config_env(tmp_path, _VALID_CONFIG_ENV)
+        result = check(
+            _make_ctx(project_root=str(tmp_path), env={"BWS_ACCESS_TOKEN": ""})
+        )
         assert result.status == CheckStatus.FAIL
 
-    def test_passes_when_set_and_never_leaks_the_value(self) -> None:
+    def test_passes_when_set_and_never_leaks_the_value(
+        self, tmp_path: Path
+    ) -> None:
         """A non-empty token PASSes; the value never appears anywhere."""
         check = _get_check("ENV_BWS_ACCESS_TOKEN")
-        result = check(_make_ctx(env={"BWS_ACCESS_TOKEN": _FAKE_BWS_TOKEN}))
+        _write_config_env(tmp_path, _VALID_CONFIG_ENV)
+        result = check(
+            _make_ctx(
+                project_root=str(tmp_path),
+                env={"BWS_ACCESS_TOKEN": _FAKE_BWS_TOKEN},
+            )
+        )
         assert result.status == CheckStatus.PASS
         _assert_no_secret_leak(result, _FAKE_BWS_TOKEN)
 
@@ -1871,58 +2099,11 @@ class TestCredOauthVolume:
 
 
 # ---------------------------------------------------------------------------
-# Phase 6 (#193): opt-in ``--check-vault`` live bws PEM dry-run (D2,
-# section 11).
-#
-# check_id added this phase: VAULT_PEM_DRYRUN -- deliberately NOT part of
-# ``CATALOG``.
-#
-# Design notes / assumptions made by this file (no implementation existed
-# to consult; flagged here and repeated in the return summary):
-#
-# - VAULT_PEM_DRYRUN is opt-in and standalone-only (plan section 11 /
-#   D2): it must never run as part of ``run_report`` or ``run_gate``, so
-#   this file assumes it is NOT registered in ``CATALOG``. It is instead
-#   assumed to be exposed as a module-level ``Check`` instance,
-#   ``doctor.VAULT_PEM_DRYRUN_CHECK`` -- built the same way as every
-#   ``CATALOG`` row (same ``Check`` dataclass, same ``fn: CheckFn``
-#   shape) but deliberately left out of the ``CATALOG`` list, so the
-#   (out-of-scope-for-this-phase) ``--check-vault`` CLI wiring can invoke
-#   it through the existing generic ``run_report``/exception-synthesis
-#   machinery for free.
-# - The secret ID (``BWS_PEM_SECRET_ID``) and access token
-#   (``BWS_ACCESS_TOKEN``) are assumed to be sourced the same way the
-#   existing Phase-1 checks source them -- ``BWS_PEM_SECRET_ID`` from
-#   ``{project_root}/.bh/config.env`` (mirrors ``CFG_REQUIRED_KEYS``) and
-#   ``BWS_ACCESS_TOKEN`` from ``ctx.env`` (mirrors
-#   ``ENV_BWS_ACCESS_TOKEN``). The fixture below sets the secret ID in
-#   BOTH places so these tests are satisfiable regardless of which single
-#   source a correct implementation reads it from.
-# - Severity is deliberately NOT pinned to CRITICAL or WARNING: the
-#   plan's own catalog table (section 6) leaves that cell as "opt-in,
-#   standalone only" rather than a severity value, since a check excluded
-#   from every gate never has its ``.severity`` consulted for a
-#   pass/fail decision. Tests reference ``VAULT_PEM_DRYRUN_CHECK.severity``
-#   symbolically only.
-# - The fetch-failure test assumes ``ctx.fetch_secret`` exceptions
-#   propagate out of the check uncaught (mirrors most ``CATALOG`` checks
-#   -- only the ones with check-specific subprocess handling, e.g.
-#   ``FORCE_PR_TRIPWIRE``, catch internally), so the generic section-3
-#   synthesis (``CheckResult(status=FAIL, severity=check.severity,
-#   detail=repr(exc), fix=check.fix)``) applies verbatim. This is
-#   exercised through ``doctor._run_check`` directly (NOT
-#   ``run_report``/``run_gate``, which would contradict
-#   ``test_is_excluded_from_the_catalog`` above) -- the assumed
-#   ``--check-vault`` CLI wiring calls ``_run_check`` on
-#   ``VAULT_PEM_DRYRUN_CHECK`` the same way the catalog runners do for
-#   every other check. If a correct implementation instead catches
-#   internally with a custom message, this ONE test needs to relax its
-#   ``detail`` assertion -- not a shared matrix.
-# - Every fixture below routes through ``_make_ctx``'s default
-#   ``which``/``runner``/``run`` stubs (which raise ``AssertionError`` if
-#   invoked), so a correct implementation that bypasses the injected
-#   ``fetch_secret`` seam to shell out to ``bws`` directly is caught by
-#   every test in this section, not just a dedicated one.
+# Opt-in App key probe (#193, updated by #359).
+# VAULT_PEM_DRYRUN remains outside CATALOG and retains its stable ID.
+# The selected provider loads key material and local JWT signing proves
+# usability. Transport and signing failures must be sanitized before the
+# generic check wrapper can render them. No GitHub call is permitted.
 # ---------------------------------------------------------------------------
 
 _FAKE_PEM_VALUE = "fake-vault-secret-value-9f8e7d6c5b4a"
@@ -1981,15 +2162,15 @@ class TestVaultPemDryrun:
         assert check.daemon_native is False
         assert isinstance(check.fix, str) and check.fix
 
-    def test_passes_when_secret_fetch_succeeds_and_is_non_empty(
-        self, tmp_path: Path
+    def test_passes_when_secret_fetch_succeeds_and_can_sign(
+        self, tmp_path: Path, app_private_key_pem: str
     ) -> None:
-        """A non-empty fetch PASSes (section 11: non-empty check only)."""
+        """A fetched signing key PASSes after local JWT signing (#359)."""
 
         def _fake_fetch_secret(*args: object, **kwargs: object) -> str:
             assert args == (_VAULT_SECRET_ID,)
             assert kwargs == {"access_token": _FAKE_BWS_TOKEN}
-            return _FAKE_PEM_VALUE
+            return app_private_key_pem
 
         ctx = _make_vault_ctx(tmp_path, _fake_fetch_secret)
 
@@ -2028,22 +2209,10 @@ class TestVaultPemDryrun:
 
         assert result.status == CheckStatus.FAIL
 
-    def test_fetch_failure_is_synthesized_as_fail_per_exception_contract(
+    def test_fetch_failure_is_reported_as_secret_safe_provider_failure(
         self, tmp_path: Path
     ) -> None:
-        """A raising fetch_secret becomes FAIL per the section-3 contract.
-
-        VAULT_PEM_DRYRUN is excluded from ``CATALOG`` (D2), so it is
-        never reached via ``run_report``/``run_gate`` -- the assumed
-        invocation path is the (out-of-scope-for-this-phase)
-        ``--check-vault`` CLI flag calling ``doctor._run_check`` directly
-        on ``VAULT_PEM_DRYRUN_CHECK``, the same generic wrapper the
-        catalog runners use for every other check's section-3 synthesis
-        (mirrors ``test_run_report_catches_raising_check_and_synthesizes_
-        fail`` above, but through ``_run_check`` instead of
-        ``run_report`` so this test does not contradict
-        ``test_is_excluded_from_the_catalog``).
-        """
+        """A raising fetch becomes a provider failure without raw text."""
 
         def _raising_fetch_secret(*args: object, **kwargs: object) -> str:
             raise RuntimeError("bws exited non-zero")
@@ -2055,5 +2224,6 @@ class TestVaultPemDryrun:
 
         assert result.status == CheckStatus.FAIL
         assert result.severity == check.severity
-        assert result.detail == "RuntimeError('bws exited non-zero')"
+        assert "bws provider" in result.detail
+        assert "bws exited non-zero" not in result.detail
         assert result.fix == check.fix

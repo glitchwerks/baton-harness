@@ -6,12 +6,20 @@ import json
 import re
 import subprocess
 import sys
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
 
-from baton_harness.chain import ruleset_status, sandbox_config
+from baton_harness.chain import app_auth, ruleset_status, sandbox_config
+from baton_harness.chain.app_private_key import (
+    AppPrivateKeyConfig,
+    AppPrivateKeyConfigError,
+    load_app_private_key,
+    requires_bws,
+    resolve_app_private_key_config,
+)
 
 RunFn = Callable[..., subprocess.CompletedProcess[str]]
 FetchSecretFn = Callable[..., str]
@@ -33,7 +41,11 @@ _REQUIRED_KEYS = (
     "BH_REPO_NAME",
     "BH_GITHUB_APP_ID",
     "BH_GITHUB_APP_INSTALLATION_ID",
+)
+_PROVIDER_KEYS = (
+    "BH_GITHUB_APP_KEY_PROVIDER",
     "BWS_PEM_SECRET_ID",
+    "BH_GITHUB_APP_PRIVATE_KEY_FILE",
 )
 _OPTIONAL_SECRET_IDS = (
     "BWS_GH_TOKEN_SECRET_ID",
@@ -210,11 +222,35 @@ def _is_valid(key: str, value: str) -> bool:
         return bool(value) and _REPO_PART_RE.fullmatch(value) is not None
     if key in {"BH_GITHUB_APP_ID", "BH_GITHUB_APP_INSTALLATION_ID"}:
         return value.isdigit() and int(value) > 0
-    if key == "BWS_PEM_SECRET_ID":
-        return _UUID_RE.fullmatch(value) is not None
     if key in _OPTIONAL_SECRET_IDS:
         return not value or _UUID_RE.fullmatch(value) is not None
     return True
+
+
+def _resolved_private_key_context(
+    ctx: DoctorContext,
+) -> tuple[AppPrivateKeyConfig, dict[str, str]]:
+    """Resolve provider and optional consumers from one config snapshot.
+
+    Args:
+        ctx: Context supplying the config root and environment overrides.
+
+    Returns:
+        Validated provider configuration and complete resolved values.
+
+    Raises:
+        AppPrivateKeyConfigError: If config is unreadable or invalid.
+    """
+    try:
+        parsed = _parse_config(Path(ctx.project_root) / ".bh" / "config.env")
+    except (OSError, UnicodeError):
+        raise AppPrivateKeyConfigError(
+            ".bh/config.env is missing or unreadable."
+        ) from None
+    values = sandbox_config.resolve_overridable_keys(
+        parsed, ctx.env, _REQUIRED_KEYS + _PROVIDER_KEYS + _OPTIONAL_SECRET_IDS
+    )
+    return resolve_app_private_key_config(values), values
 
 
 def _cli_result(
@@ -289,14 +325,36 @@ def _check_cli_bws(ctx: DoctorContext) -> CheckResult:
     Returns:
         Bitwarden Secrets CLI availability result.
     """
+    title = "Bitwarden Secrets CLI available"
+    fix = "Install bws and ensure it is on PATH."
+    try:
+        config, values = _resolved_private_key_context(ctx)
+    except AppPrivateKeyConfigError as exc:
+        return _result(
+            "CLI_BWS",
+            title,
+            Severity.CRITICAL,
+            CheckStatus.FAIL,
+            str(exc),
+            "Correct the App private-key provider configuration.",
+        )
+    if not requires_bws(config, values):
+        return _result(
+            "CLI_BWS",
+            title,
+            Severity.CRITICAL,
+            CheckStatus.PASS,
+            "BWS is not required by the resolved secret configuration.",
+            fix,
+        )
     return _cli_result(
         ctx,
         check_id="CLI_BWS",
-        title="Bitwarden Secrets CLI available",
+        title=title,
         binary="bws",
         severity=Severity.CRITICAL,
         missing_status=CheckStatus.FAIL,
-        fix="Install bws and ensure it is on PATH.",
+        fix=fix,
     )
 
 
@@ -437,10 +495,17 @@ def _check_required_keys(ctx: DoctorContext) -> CheckResult:
             ".bh/config.env is missing, so required keys cannot be checked.",
             fix,
         )
-    parsed = _parse_config(path)
-    resolved = sandbox_config.resolve_overridable_keys(
-        parsed, ctx.env, _REQUIRED_KEYS
-    )
+    try:
+        _, resolved = _resolved_private_key_context(ctx)
+    except AppPrivateKeyConfigError as exc:
+        return _result(
+            "CFG_REQUIRED_KEYS",
+            title,
+            Severity.CRITICAL,
+            CheckStatus.FAIL,
+            str(exc),
+            fix,
+        )
     for key in _REQUIRED_KEYS:
         if not resolved.get(key):
             return _result(
@@ -526,6 +591,26 @@ def _check_bws_access_token(ctx: DoctorContext) -> CheckResult:
     """
     title = "BWS access token present"
     fix = "Set BWS_ACCESS_TOKEN to a non-empty access token."
+    try:
+        config, values = _resolved_private_key_context(ctx)
+    except AppPrivateKeyConfigError as exc:
+        return _result(
+            "ENV_BWS_ACCESS_TOKEN",
+            title,
+            Severity.CRITICAL,
+            CheckStatus.FAIL,
+            str(exc),
+            "Correct the App private-key provider configuration.",
+        )
+    if not requires_bws(config, values):
+        return _result(
+            "ENV_BWS_ACCESS_TOKEN",
+            title,
+            Severity.CRITICAL,
+            CheckStatus.PASS,
+            "BWS is not required by the resolved secret configuration.",
+            fix,
+        )
     token = ctx.env.get("BWS_ACCESS_TOKEN", "")
     if token:
         status = CheckStatus.PASS
@@ -903,35 +988,52 @@ def _check_oauth_volume(ctx: DoctorContext) -> CheckResult:
 
 
 def _check_vault_dryrun(ctx: DoctorContext) -> CheckResult:
-    """Fetch the configured PEM secret and report only whether it is non-empty.
+    """Load the selected App key and prove it can sign without GitHub I/O.
 
     Args:
         ctx: Injected doctor context.
 
     Returns:
-        PASS when the fetched secret is non-empty, otherwise FAIL.
+        PASS when the selected key signs an App JWT, otherwise safe FAIL.
     """
-    title = "Vault PEM secret fetch succeeds"
-    fix = (
-        "Verify BWS_PEM_SECRET_ID in .bh/config.env and set a valid "
-        "BWS_ACCESS_TOKEN."
-    )
-    config_path = Path(ctx.project_root) / ".bh" / "config.env"
-    secret_id = _parse_config(config_path).get("BWS_PEM_SECRET_ID", "")
-    access_token = ctx.env.get("BWS_ACCESS_TOKEN", "")
-    secret_value = ctx.fetch_secret(
-        secret_id,
-        access_token=access_token,
-    )
-    if secret_value:
-        status = CheckStatus.PASS
-        detail = (
-            "PEM secret fetched successfully "
-            f"({len(secret_value)} characters)."
+    title = "App private key is usable"
+    fix = "Verify the selected App private-key source and its credentials."
+    try:
+        config, values = _resolved_private_key_context(ctx)
+    except AppPrivateKeyConfigError as exc:
+        return _result(
+            "VAULT_PEM_DRYRUN",
+            title,
+            Severity.CRITICAL,
+            CheckStatus.FAIL,
+            str(exc),
+            fix,
         )
-    else:
+    app_id = values.get("BH_GITHUB_APP_ID", "")
+    if not _is_valid("BH_GITHUB_APP_ID", app_id):
+        return _result(
+            "VAULT_PEM_DRYRUN",
+            title,
+            Severity.CRITICAL,
+            CheckStatus.FAIL,
+            "BH_GITHUB_APP_ID is missing or malformed.",
+            fix,
+        )
+    try:
+        private_key = load_app_private_key(
+            config,
+            bws_access_token=ctx.env.get("BWS_ACCESS_TOKEN", ""),
+            fetch_secret=ctx.fetch_secret,
+        )
+        # Signing proves usability; discard the JWT without network access.
+        app_auth.build_app_jwt(app_id, private_key, now=int(time.time()))
+        status = CheckStatus.PASS
+        detail = "App private key loaded successfully."
+    except Exception:
         status = CheckStatus.FAIL
-        detail = "PEM secret fetch returned an empty value."
+        detail = (
+            f"{config.provider.value} provider App private key is unusable."
+        )
     return _result(
         "VAULT_PEM_DRYRUN",
         title,
@@ -944,14 +1046,11 @@ def _check_vault_dryrun(ctx: DoctorContext) -> CheckResult:
 
 VAULT_PEM_DRYRUN_CHECK = Check(
     "VAULT_PEM_DRYRUN",
-    "Vault PEM secret fetch succeeds",
+    "App private key is usable",
     Severity.CRITICAL,
     Phase.POST_BOOTSTRAP,
     False,
-    (
-        "Verify BWS_PEM_SECRET_ID in .bh/config.env and set a valid "
-        "BWS_ACCESS_TOKEN."
-    ),
+    "Verify the selected App private-key source and its credentials.",
     _check_vault_dryrun,
 )
 
