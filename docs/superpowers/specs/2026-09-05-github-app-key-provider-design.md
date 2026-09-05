@@ -1,6 +1,6 @@
 ---
 title: GitHub App private-key provider selection
-status: proposed
+status: approved
 issue: 359
 ---
 
