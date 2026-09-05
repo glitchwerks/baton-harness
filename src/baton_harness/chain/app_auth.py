@@ -15,8 +15,8 @@ Security invariant (env-discipline seam)
 -----------------------------------------
 ``bootstrap_secrets`` is the harness startup entry point.  It accepts
 injected ``fetch_secret`` and ``mint_token`` callables so tests can drive
-the full flow without real Bitwarden or GitHub calls.  After reading
-``BWS_ACCESS_TOKEN`` from ``os.environ`` it **pops it** immediately, and
+the full flow without real Bitwarden or GitHub calls. The ambient
+``BWS_ACCESS_TOKEN`` is scrubbed in a bootstrap ``finally`` block, and
 the installation token value is **never written into** ``os.environ``.
 
 These two rules ensure that worker subprocesses that inherit
@@ -39,6 +39,15 @@ from typing import Any, Protocol, runtime_checkable
 import jwt
 
 import baton_harness.chain.bws_client as bws_client
+from baton_harness.chain.app_private_key import (
+    AppPrivateKeyConfig,
+    AppPrivateKeyConfigError,
+    AppPrivateKeyLoadError,
+    AppPrivateKeyProvider,
+    SecretFetcher,
+    load_app_private_key,
+    resolve_app_private_key_config,
+)
 
 
 class AppAuthError(RuntimeError):
@@ -353,104 +362,86 @@ def _parse_iso_to_epoch(iso_str: str) -> float:
 
 def bootstrap_secrets(
     app_id: str,
-    app_private_key_bws_id: str,
+    app_key_config: AppPrivateKeyConfig,
     installation_id: int,
     *,
-    fetch_secret: Callable[..., str],
+    bws_access_token: str,
+    fetch_secret: SecretFetcher,
     mint_token: Callable[..., tuple[str, str]],
 ) -> tuple[str, str]:
-    """Fetch the App private key from Bitwarden Secrets and mint a token.
-
-    This is the harness startup entry point for the GitHub App auth
-    flow.  It enforces the env-discipline invariants:
-
-    1. ``BWS_ACCESS_TOKEN`` is **popped** from ``os.environ`` immediately
-       after it is read, so worker subprocesses cannot access it.
-    2. The installation token is **never** written into ``os.environ``,
-       so workers cannot read the privileged merge credential.
-
-    The ``fetch_secret`` and ``mint_token`` callables are injected so
-    tests can drive the full flow without a real Bitwarden vault or
-    GitHub API.
-
-    Note: ``BWS_ACCESS_TOKEN`` is removed from ``os.environ`` immediately,
-    before any other operation.  If this function raises an exception,
-    the token will have already been scrubbed.
+    """Load the selected App key and mint a token without env persistence.
 
     Args:
-        app_id: GitHub App numeric ID (forwarded to ``mint_token``).
-        app_private_key_bws_id: Bitwarden Secrets secret ID containing
-            the GitHub App RSA private key PEM.
-        installation_id: GitHub App installation ID (forwarded to
-            ``mint_token``).
-        fetch_secret: Callable ``(secret_id, *, access_token, run) -> str``
-            that retrieves a secret value from Bitwarden Secrets.
-            Signature matches ``bws_client.fetch_secret``.
-        mint_token: Callable
-            ``(app_id, private_key_pem, installation_id, *, http_post,
-            now) -> (token, expires_at)`` that mints an installation
-            token.  Signature matches ``mint_installation_token``.
+        app_id: GitHub App numeric ID.
+        app_key_config: Validated selected private-key source.
+        installation_id: GitHub App installation ID.
+        bws_access_token: Explicit bootstrap credential for BWS reads.
+        fetch_secret: Injected BWS secret fetcher.
+        mint_token: Injected installation-token mint function.
 
     Returns:
-        A ``(token, expires_at)`` tuple.  The token is the short-lived
-        GitHub App installation access token; ``expires_at`` is the ISO
-        8601 expiry timestamp.  Neither value is written to
-        ``os.environ``.
+        The installation token and its ISO 8601 expiry, held by value.
 
     Raises:
-        AppAuthError: If the Bitwarden secret fetch or the GitHub token
-            mint fails.
+        AppAuthError: If loading or signing the selected key fails.
     """
-    # Read and immediately pop BWS_ACCESS_TOKEN so workers cannot inherit it.
-    bws_token = os.environ.pop("BWS_ACCESS_TOKEN", None) or ""
-
-    private_key_pem = fetch_secret(
-        app_private_key_bws_id,
-        access_token=bws_token,
-    )
-
-    now = int(time.time())
-    token, expires_at = mint_token(
-        app_id,
-        private_key_pem,
-        installation_id,
-        http_post=_github_http_post,
-        now=now,
-    )
-
-    # Invariant: never write the installation token into os.environ.
-    # The caller receives it as a return value and stores it outside env.
-    return token, expires_at
+    try:
+        provider = build_installation_token_provider(
+            app_id,
+            app_key_config,
+            installation_id,
+            bws_access_token=bws_access_token,
+            fetch_secret=fetch_secret,
+        )
+        return mint_token(
+            app_id,
+            provider.private_key_pem,
+            installation_id,
+            http_post=_github_http_post,
+            now=int(time.time()),
+        )
+    finally:
+        os.environ.pop("BWS_ACCESS_TOKEN", None)
 
 
 def build_installation_token_provider(
     app_id: str,
-    app_private_key_bws_id: str,
+    app_key_config: AppPrivateKeyConfig,
     installation_id: int,
     *,
-    fetch_secret: Callable[..., str],
+    bws_access_token: str,
+    fetch_secret: SecretFetcher,
 ) -> InstallationTokenProvider:
-    """Fetch the App private key and return a refreshable token provider.
-
-    Mirrors the env-discipline behavior of ``bootstrap_secrets`` while
-    returning an ``InstallationTokenProvider`` that can mint fresh tokens
-    on demand for long-running daemon work.
+    """Load and prove an App key before returning a refreshable provider.
 
     Args:
         app_id: GitHub App numeric ID.
-        app_private_key_bws_id: Bitwarden secret ID for the RSA PEM key.
+        app_key_config: Validated selected private-key source.
         installation_id: GitHub App installation ID.
-        fetch_secret: Callable used to retrieve the private key PEM.
+        bws_access_token: Explicit bootstrap credential for BWS reads.
+        fetch_secret: Injected BWS secret fetcher.
 
     Returns:
-        A configured ``InstallationTokenProvider`` that mints via the real
-        GitHub HTTP transport and keeps the private key outside ``os.environ``.
+        A provider retaining the verified PEM for subsequent token refresh.
+
+    Raises:
+        AppAuthError: If loading or RS256 signing fails.
     """
-    bws_token = os.environ.pop("BWS_ACCESS_TOKEN", None) or ""
-    private_key_pem = fetch_secret(
-        app_private_key_bws_id,
-        access_token=bws_token,
-    )
+    try:
+        private_key_pem = load_app_private_key(
+            app_key_config,
+            bws_access_token=bws_access_token,
+            fetch_secret=fetch_secret,
+        )
+    except AppPrivateKeyLoadError as exc:
+        raise AppAuthError(str(exc)) from exc
+    try:
+        build_app_jwt(app_id, private_key_pem, now=int(time.time()))
+    except Exception as exc:
+        raise AppAuthError(
+            f"{app_key_config.provider.value} App private key could not sign "
+            "an RS256 JWT"
+        ) from exc
     return InstallationTokenProvider(
         app_id=app_id,
         private_key_pem=private_key_pem,
@@ -593,93 +584,94 @@ def main(argv: list[str]) -> int:
     """Mint a GitHub App JWT or installation token for shell callers.
 
     Args:
-        argv: Command-line arguments excluding the module name. The sole
-            argument must be ``jwt`` or ``token``.
+        argv: Command arguments; the sole argument is jwt or token.
 
     Returns:
-        Zero on success, or a non-zero status after writing a safe error
-        message to stderr.
+        Zero on success, two for usage/configuration errors, or one for
+        load/sign/mint failures. Only successful credentials reach stdout.
     """
-    if len(argv) != 1 or argv[0] not in {"jwt", "token"}:
-        print("app_auth: usage: app_auth.py {jwt|token}", file=sys.stderr)
-        return 2
+    access_token = os.environ.get("BWS_ACCESS_TOKEN", "")
+    try:
+        if len(argv) != 1 or argv[0] not in {"jwt", "token"}:
+            print("app_auth: usage: app_auth.py {jwt|token}", file=sys.stderr)
+            return 2
 
-    mode = argv[0]
-    required_vars = [
-        "BH_GITHUB_APP_ID",
-        "BWS_PEM_SECRET_ID",
-        "BWS_ACCESS_TOKEN",
-    ]
-    if mode == "token":
-        required_vars.append("BH_GITHUB_APP_INSTALLATION_ID")
-
-    missing_vars = [name for name in required_vars if not os.environ.get(name)]
-    if missing_vars:
-        print(
-            "app_auth: missing required environment variable(s): "
-            + ", ".join(missing_vars),
-            file=sys.stderr,
-        )
-        return 2
-
-    app_id = os.environ["BH_GITHUB_APP_ID"]
-    secret_id = os.environ["BWS_PEM_SECRET_ID"]
-    access_token = os.environ["BWS_ACCESS_TOKEN"]
-
-    installation_id: int | None = None
-    if mode == "token":
-        try:
-            installation_id = int(os.environ["BH_GITHUB_APP_INSTALLATION_ID"])
-        except ValueError:
+        mode = argv[0]
+        required_vars = ["BH_GITHUB_APP_ID", "BH_GITHUB_APP_KEY_PROVIDER"]
+        if mode == "token":
+            required_vars.append("BH_GITHUB_APP_INSTALLATION_ID")
+        missing_vars = [
+            name for name in required_vars if not os.environ.get(name)
+        ]
+        if missing_vars:
             print(
-                "app_auth: BH_GITHUB_APP_INSTALLATION_ID must be an integer",
+                "app_auth: missing required environment variable(s): "
+                + ", ".join(missing_vars),
                 file=sys.stderr,
             )
             return 2
 
-    try:
-        private_key_pem = bws_client.fetch_secret(
-            secret_id,
-            access_token=access_token,
-        )
-    except bws_client.BwsClientError:
-        print("app_auth: failed to fetch private key", file=sys.stderr)
-        return 1
-    except Exception:
-        print("app_auth: failed to fetch private key", file=sys.stderr)
-        return 1
-
-    if mode == "jwt":
         try:
-            app_jwt = build_app_jwt(
+            config = resolve_app_private_key_config(os.environ)
+        except AppPrivateKeyConfigError as exc:
+            print(f"app_auth: {exc}", file=sys.stderr)
+            return 2
+
+        if config.provider is AppPrivateKeyProvider.BWS and not access_token:
+            print(
+                "app_auth: missing required environment variable(s): "
+                "BWS_ACCESS_TOKEN",
+                file=sys.stderr,
+            )
+            return 2
+
+        installation_id = 0
+        if mode == "token":
+            try:
+                installation_id = int(
+                    os.environ["BH_GITHUB_APP_INSTALLATION_ID"]
+                )
+            except ValueError:
+                print(
+                    "app_auth: BH_GITHUB_APP_INSTALLATION_ID "
+                    "must be an integer",
+                    file=sys.stderr,
+                )
+                return 2
+
+        app_id = os.environ["BH_GITHUB_APP_ID"]
+        try:
+            provider = build_installation_token_provider(
                 app_id,
-                private_key_pem,
-                now=int(time.time()),
+                config,
+                installation_id,
+                bws_access_token=access_token,
+                fetch_secret=bws_client.fetch_secret,
+            )
+        except AppAuthError as exc:
+            print(f"app_auth: {exc}", file=sys.stderr)
+            return 1
+
+        try:
+            credential = (
+                build_app_jwt(
+                    app_id, provider.private_key_pem, now=int(time.time())
+                )
+                if mode == "jwt"
+                else provider.get_token()
             )
         except Exception:
             print(
-                "app_auth: failed to sign App JWT "
-                "(invalid private key material)",
+                "app_auth: failed to sign App JWT"
+                if mode == "jwt"
+                else "app_auth: failed to mint installation token",
                 file=sys.stderr,
             )
             return 1
-        print(app_jwt)
+        print(credential)
         return 0
-
-    assert installation_id is not None  # noqa: S101 - narrowed by mode
-    try:
-        token, _expires_at = mint_installation_token(
-            app_id,
-            private_key_pem,
-            installation_id,
-            http_post=_github_http_post,
-            now=int(time.time()),
-        )
-    except Exception:
-        print("app_auth: failed to mint installation token", file=sys.stderr)
-        return 1
-    print(token)
-    return 0
+    finally:
+        os.environ.pop("BWS_ACCESS_TOKEN", None)
 
 
 if __name__ == "__main__":

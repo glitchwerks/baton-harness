@@ -18,9 +18,8 @@ Coverage (issue #171 / #222):
 - A BwsClientError from the GH_TOKEN vault fetch propagates (fail-closed).
 - A BwsClientError from the heartbeat URL vault fetch propagates
   (fail-closed).
-- Vault fetches for GH_TOKEN and BH_HEARTBEAT_PING_URL happen BEFORE
-  build_installation_token_provider() is called (which pops
-  BWS_ACCESS_TOKEN), enforcing the ordering constraint.
+- Optional vault fetches precede provider construction, with one
+  explicit access-token value and unconditional bootstrap scrubbing.
 - The returned InstallationTokenSource repr does not contain secret values
   fetched from the vault.
 
@@ -33,11 +32,15 @@ from __future__ import annotations
 import os
 import subprocess
 from collections.abc import Callable
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from baton_harness.chain import app_auth, cli
 from baton_harness.chain.bws_client import BwsClientError
+from tests.test_app_auth import _generate_rsa_keypair
+from tests.test_app_auth import file_key as file_key
 
 # ---------------------------------------------------------------------------
 # Type alias — matches bws_client.RunFn
@@ -54,9 +57,9 @@ FetchSecretFn = Callable[..., str]
 
 _ACCESS_TOKEN = "0.fake-bws-machine-account-token-for-171-tests"
 _APP_ID = "99999"
-_PEM_SECRET_ID = "pem-secret-aaaa-bbbb-cccc-dddddddddddd"
-_GH_TOKEN_SECRET_ID = "gh-token-1111-2222-3333-444444444444"
-_HEARTBEAT_SECRET_ID = "heartbeat-5555-6666-7777-888888888888"
+_PEM_SECRET_ID = "11111111-2222-3333-4444-555555555555"
+_GH_TOKEN_SECRET_ID = "22222222-3333-4444-5555-666666666666"
+_HEARTBEAT_SECRET_ID = "33333333-4444-5555-6666-777777777777"
 _INSTALLATION_ID = "12345"
 
 _FAKE_GH_TOKEN = "github_pat_TESTVAL_ABCDEFGHIJKLMNOP"
@@ -88,6 +91,8 @@ def base_env(monkeypatch: pytest.MonkeyPatch) -> None:
     a clean slate for those keys.
     """
     monkeypatch.setenv("BWS_ACCESS_TOKEN", _ACCESS_TOKEN)
+    monkeypatch.setenv("BH_GITHUB_APP_KEY_PROVIDER", "bws")
+    monkeypatch.delenv("BH_GITHUB_APP_PRIVATE_KEY_FILE", raising=False)
     monkeypatch.setenv("BWS_APP_ID", _APP_ID)
     monkeypatch.setenv("BWS_PEM_SECRET_ID", _PEM_SECRET_ID)
     monkeypatch.setenv("BWS_INSTALLATION_ID", _INSTALLATION_ID)
@@ -95,6 +100,152 @@ def base_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("BH_HEARTBEAT_PING_URL", raising=False)
     monkeypatch.delenv("BWS_GH_TOKEN_SECRET_ID", raising=False)
     monkeypatch.delenv("BWS_HEARTBEAT_PING_URL_SECRET_ID", raising=False)
+    monkeypatch.setattr(cli, "_BOOTSTRAPPED_GH_TOKEN", "")
+
+
+@pytest.fixture()
+def file_env(
+    base_env: None,
+    file_key: tuple[Path, str, bytes],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Select an absolute owner-only PEM file without BWS consumers."""
+    monkeypatch.setenv("BH_GITHUB_APP_KEY_PROVIDER", "file")
+    monkeypatch.setenv("BH_GITHUB_APP_PRIVATE_KEY_FILE", str(file_key[0]))
+    monkeypatch.delenv("BWS_PEM_SECRET_ID")
+    monkeypatch.delenv("BWS_ACCESS_TOKEN")
+
+
+def test_file_only_bootstrap_never_calls_bws(
+    file_env: None,
+    file_key: tuple[Path, str, bytes],
+) -> None:
+    """File-only daemon startup succeeds without touching the vault."""
+    with patch("baton_harness.chain.bws_client.fetch_secret") as fetch:
+        provider = cli.bootstrap_secrets()
+    assert isinstance(provider, app_auth.InstallationTokenProvider)
+    assert provider.private_key_pem == file_key[1]
+    fetch.assert_not_called()
+
+
+def test_file_provider_with_optional_pat_fetches_only_pat_and_key_from_file(
+    file_env: None,
+    file_key: tuple[Path, str, bytes],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A file key composes with a vault PAT retained solely by value."""
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", _ACCESS_TOKEN)
+    monkeypatch.setenv("BWS_GH_TOKEN_SECRET_ID", _GH_TOKEN_SECRET_ID)
+    with patch(
+        "baton_harness.chain.bws_client.fetch_secret",
+        return_value=_FAKE_GH_TOKEN,
+    ) as fetch:
+        provider = cli.bootstrap_secrets()
+    assert isinstance(provider, app_auth.InstallationTokenProvider)
+    assert provider.private_key_pem == file_key[1]
+    assert cli._BOOTSTRAPPED_GH_TOKEN == _FAKE_GH_TOKEN
+    assert _FAKE_GH_TOKEN not in os.environ.values()
+    fetch.assert_called_once_with(
+        _GH_TOKEN_SECRET_ID, access_token=_ACCESS_TOKEN
+    )
+    assert "BWS_ACCESS_TOKEN" not in os.environ
+
+
+def test_file_provider_with_optional_heartbeat_fetches_only_heartbeat_and_key_from_file(  # noqa: E501
+    file_env: None,
+    file_key: tuple[Path, str, bytes],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A heartbeat URL retains its ambient destination with a file key."""
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", _ACCESS_TOKEN)
+    monkeypatch.setenv(
+        "BWS_HEARTBEAT_PING_URL_SECRET_ID", _HEARTBEAT_SECRET_ID
+    )
+    with patch(
+        "baton_harness.chain.bws_client.fetch_secret",
+        return_value=_FAKE_HEARTBEAT_URL,
+    ) as fetch:
+        provider = cli.bootstrap_secrets()
+    assert isinstance(provider, app_auth.InstallationTokenProvider)
+    assert provider.private_key_pem == file_key[1]
+    assert os.environ["BH_HEARTBEAT_PING_URL"] == _FAKE_HEARTBEAT_URL
+    fetch.assert_called_once_with(
+        _HEARTBEAT_SECRET_ID, access_token=_ACCESS_TOKEN
+    )
+
+
+@pytest.mark.parametrize(
+    "locator",
+    [
+        "BWS_GH_TOKEN_SECRET_ID",
+        "BWS_HEARTBEAT_PING_URL_SECRET_ID",
+    ],
+)
+def test_file_provider_with_optional_bws_secret_requires_access_token(
+    file_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    locator: str,
+) -> None:
+    """Missing optional-consumer credentials fail before any secret read."""
+    monkeypatch.setenv(locator, _GH_TOKEN_SECRET_ID)
+    with (
+        patch("baton_harness.chain.bws_client.fetch_secret") as fetch,
+        patch(
+            "baton_harness.chain.cli.build_installation_token_provider"
+        ) as build,
+    ):
+        with pytest.raises(app_auth.AppAuthError, match="BWS_ACCESS_TOKEN"):
+            cli.bootstrap_secrets()
+    fetch.assert_not_called()
+    build.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "stage", ["resolve", "optional_fetch", "key_load", "jwt_probe"]
+)
+def test_bootstrap_scrubs_bws_access_token_for_every_failure_stage(
+    base_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+) -> None:
+    """Every bootstrap failure stage scrubs the access token."""
+    pem, _ = _generate_rsa_keypair()
+    fetch = MagicMock(return_value=pem)
+    if stage == "resolve":
+        monkeypatch.setenv("BH_GITHUB_APP_PRIVATE_KEY_FILE", "conflicting-key")
+    elif stage == "optional_fetch":
+        monkeypatch.setenv("BWS_GH_TOKEN_SECRET_ID", _GH_TOKEN_SECRET_ID)
+        fetch.side_effect = BwsClientError("optional fetch failed")
+    elif stage == "key_load":
+        fetch.side_effect = BwsClientError("key fetch failed")
+    else:
+        fetch.return_value = "malformed-pem"
+    with patch("baton_harness.chain.bws_client.fetch_secret", fetch):
+        expected_error = (
+            BwsClientError
+            if stage == "optional_fetch"
+            else app_auth.AppAuthError
+        )
+        with pytest.raises(expected_error):
+            cli.bootstrap_secrets()
+    remaining_token = os.environ.get("BWS_ACCESS_TOKEN")
+    assert remaining_token is None
+    if stage == "resolve":
+        fetch.assert_not_called()
+
+
+def test_bootstrap_never_writes_installation_token_to_environment(
+    file_env: None,
+) -> None:
+    """The minted provider credential remains outside ambient process state."""
+    sentinel = "ghs_INSTALLATION_SENTINEL_359"
+    with patch(
+        "baton_harness.chain.app_auth._github_http_post",
+        return_value={"token": sentinel, "expires_at": "2099-01-01T00:00:00Z"},
+    ):
+        provider = cli.bootstrap_secrets()
+        assert app_auth.resolve_installation_token(provider) == sentinel
+    assert sentinel not in os.environ.values()
 
 
 def _make_fetch_secret_stub(
@@ -169,8 +320,7 @@ class TestGhTokenVaultFetch:
                 side_effect=stub,
             ),
             patch(
-                "baton_harness.chain.app_auth"
-                ".build_installation_token_provider",
+                "baton_harness.chain.cli.build_installation_token_provider",
                 return_value=provider,
             ),
         ):
@@ -226,8 +376,7 @@ class TestGhTokenVaultFetch:
                 side_effect=recording_stub,
             ),
             patch(
-                "baton_harness.chain.app_auth"
-                ".build_installation_token_provider",
+                "baton_harness.chain.cli.build_installation_token_provider",
                 return_value=provider,
             ),
         ):
@@ -278,8 +427,7 @@ class TestHeartbeatUrlVaultFetch:
                 side_effect=stub,
             ),
             patch(
-                "baton_harness.chain.app_auth"
-                ".build_installation_token_provider",
+                "baton_harness.chain.cli.build_installation_token_provider",
                 return_value=provider,
             ),
         ):
@@ -339,8 +487,7 @@ class TestExistingEnvPreservation:
                 side_effect=recording_stub,
             ),
             patch(
-                "baton_harness.chain.app_auth"
-                ".build_installation_token_provider",
+                "baton_harness.chain.cli.build_installation_token_provider",
                 return_value=provider,
             ),
         ):
@@ -396,8 +543,7 @@ class TestExistingEnvPreservation:
                 side_effect=recording_stub,
             ),
             patch(
-                "baton_harness.chain.app_auth"
-                ".build_installation_token_provider",
+                "baton_harness.chain.cli.build_installation_token_provider",
                 return_value=provider,
             ),
         ):
@@ -442,8 +588,7 @@ class TestBackwardCompatNoSecretId:
                 side_effect=stub,
             ),
             patch(
-                "baton_harness.chain.app_auth"
-                ".build_installation_token_provider",
+                "baton_harness.chain.cli.build_installation_token_provider",
                 return_value=provider,
             ),
         ):
@@ -477,8 +622,7 @@ class TestBackwardCompatNoSecretId:
                 side_effect=stub,
             ),
             patch(
-                "baton_harness.chain.app_auth"
-                ".build_installation_token_provider",
+                "baton_harness.chain.cli.build_installation_token_provider",
                 return_value=provider,
             ),
         ):
@@ -533,8 +677,7 @@ class TestVaultErrorFailClosed:
                 side_effect=failing_stub,
             ),
             patch(
-                "baton_harness.chain.app_auth"
-                ".build_installation_token_provider",
+                "baton_harness.chain.cli.build_installation_token_provider",
                 return_value=provider,
             ),
         ):
@@ -578,8 +721,7 @@ class TestVaultErrorFailClosed:
                 side_effect=failing_stub,
             ),
             patch(
-                "baton_harness.chain.app_auth"
-                ".build_installation_token_provider",
+                "baton_harness.chain.cli.build_installation_token_provider",
                 return_value=provider,
             ),
         ):
@@ -611,15 +753,8 @@ class TestVaultFetchOrdering:
         called.  The GH_TOKEN and heartbeat secret IDs must appear in
         the call sequence BEFORE the sentinel.
 
-        Rationale: build_installation_token_provider() pops
-        BWS_ACCESS_TOKEN as its very first operation.  Any vault call
-        that happens after it would receive an empty access_token and
-        fail with BwsClientError("access_token is empty") in production.
-        Asserting relative to the provider-build call — not relative to
-        the PEM fetch that happens *inside* the provider — measures the
-        actual protected boundary directly, without requiring
-        bootstrap_secrets() to call fetch_secret for the PEM a second
-        time just to make the invariant observable.
+        This preserves bootstrap composition order while the bootstrap
+        function owns the access token and scrubs it in finally.
         """
         monkeypatch.setenv("BWS_GH_TOKEN_SECRET_ID", _GH_TOKEN_SECRET_ID)
         monkeypatch.setenv(
@@ -748,8 +883,7 @@ class TestNoSecretLeakInRepr:
                 side_effect=stub,
             ),
             patch(
-                "baton_harness.chain.app_auth"
-                ".build_installation_token_provider",
+                "baton_harness.chain.cli.build_installation_token_provider",
                 return_value=provider,
             ),
         ):

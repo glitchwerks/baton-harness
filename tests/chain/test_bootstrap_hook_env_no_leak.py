@@ -55,7 +55,7 @@ FetchSecretFn = Callable[..., str]
 
 _ACCESS_TOKEN = "0.fake-bws-machine-account-token-for-347-tests"
 _APP_ID = "99999"
-_PEM_SECRET_ID = "pem-secret-aaaa-bbbb-cccc-dddddddddddd"
+_PEM_SECRET_ID = "11111111-2222-3333-4444-555555555555"
 _GH_TOKEN_SECRET_ID = "gh-token-1111-2222-3333-444444444444"
 _INSTALLATION_ID = "12345"
 
@@ -84,6 +84,8 @@ def bws_only_env(monkeypatch: pytest.MonkeyPatch) -> None:
     reason (see MEMORY.md ``feedback_ambient_environ_leak``).
     """
     monkeypatch.setenv("BWS_ACCESS_TOKEN", _ACCESS_TOKEN)
+    monkeypatch.setenv("BH_GITHUB_APP_KEY_PROVIDER", "bws")
+    monkeypatch.delenv("BH_GITHUB_APP_PRIVATE_KEY_FILE", raising=False)
     monkeypatch.setenv("BWS_APP_ID", _APP_ID)
     monkeypatch.setenv("BWS_PEM_SECRET_ID", _PEM_SECRET_ID)
     monkeypatch.setenv("BWS_INSTALLATION_ID", _INSTALLATION_ID)
@@ -170,6 +172,8 @@ class TestBootstrapNeverWritesTokenToAmbientEnviron:
         ):
             cli_mod.bootstrap_secrets()
 
+        assert "BWS_ACCESS_TOKEN" not in os.environ
+        assert _FAKE_TOKEN not in os.environ.values()
         assert "GH_TOKEN" not in os.environ, (
             "GH_TOKEN was written into ambient os.environ by "
             "bootstrap_secrets() — this reverts issue #222's "
