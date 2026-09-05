@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # bin/install-daemon-service.sh — One-shot systemd unit installer for bh-daemon (#208)
 #
-# Installs /etc/systemd/system/bh-daemon.service and BH_DAEMON_SECRETS_PATH
+# Installs /etc/systemd/system/bh-daemon.service and, when BWS is needed,
+# BH_DAEMON_SECRETS_PATH
 # (default: /etc/bh-daemon/secrets.env), then enables and starts the bh-daemon
 # service. Interaction model: auto-detect everything possible, print a summary,
 # ask one [y/N] confirm; prompt only for values that cannot be resolved
@@ -25,6 +26,7 @@
 #                     if still unresolved.
 #
 # Secret handling:
+#   Only when the App provider or optional secrets require BWS,
 #   BWS_ACCESS_TOKEN is read from the environment if exported, else prompted
 #   silently (read -r -s). Never echoed, logged, or exposed via `set -x`.
 #   Written to BH_DAEMON_SECRETS_PATH (default: /etc/bh-daemon/secrets.env) as
@@ -57,9 +59,9 @@ Usage: bin/install-daemon-service.sh [OPTIONS]
 Installs and starts the bh-daemon systemd service.
 
 Options:
-  --no-start              Write the unit + secrets.env and daemon-reload only;
+  --no-start              Write the unit + required secrets and daemon-reload only;
                            do not enable/start the service.
-  --print-unit             Render the unit + secrets.env to stdout instead of
+  --print-unit             Render the unit + required secrets to stdout instead of
                            writing to /etc; skips all privileged writes and
                            systemctl calls. For dry-run inspection.
   --harness-dir PATH      Override auto-detected harness repo root.
@@ -71,8 +73,9 @@ Options:
 Environment:
   BWS_ACCESS_TOKEN        Bitwarden Secrets CLI machine-account token.
                           Read from the environment if exported; otherwise
-                          prompted for silently. Required — the script fails
-                          closed in non-interactive mode if unresolved.
+                          prompted for silently. Required only for the BWS App
+                          provider or configured optional BWS secret IDs.
+                          Fails closed if required and unresolved.
   BH_DAEMON_SECRETS_PATH  Secrets file path (default:
                           /etc/bh-daemon/secrets.env).
   BH_SETUP_NO_PROMPT=1    Skip the confirm prompt and any interactive prompt
@@ -80,7 +83,7 @@ Environment:
                           stdin/stdout is treated the same way.
 
 Writes:
-  BH_DAEMON_SECRETS_PATH                mode 600, EnvironmentFile= source
+  BH_DAEMON_SECRETS_PATH                mode 600, only when BWS is required
   /etc/systemd/system/bh-daemon.service
 
 After activation, prints a reminder that bin/provision-ruleset.sh must be
@@ -269,6 +272,26 @@ if [[ -z "${BH_PROJECT_ROOT:-}" ]]; then
     fi
 fi
 
+# Validate the provider and resolve BWS need through the shared Python policy.
+# This query reads configuration only; it never loads private-key material.
+_BH_PYTHON="${HARNESS_DIR}/.venv/bin/python"
+if [[ ! -x "${_BH_PYTHON}" ]]; then
+    _BH_PYTHON="${HARNESS_DIR}/.venv/Scripts/python.exe"
+fi
+if [[ ! -x "${_BH_PYTHON}" ]]; then
+    echo "baton-harness: error: project Python not found; run bin/setup-env.sh first." >&2
+    exit 1
+fi
+if ! _bh_requires_bws="$("${_BH_PYTHON}" -m baton_harness.chain.app_private_key requires-bws)"; then
+    echo "baton-harness: error: invalid App private-key configuration" >&2
+    exit 1
+fi
+case "${_bh_requires_bws}" in
+    true) _BH_REQUIRES_BWS=1 ;;
+    false) _BH_REQUIRES_BWS=0 ;;
+    *) echo "baton-harness: error: could not resolve BWS requirement" >&2; exit 1 ;;
+esac
+
 # .bh/config.env is read by bh-daemon itself at startup — warn (not fail) if
 # absent, since this installer does not require it to write the unit file.
 if [[ ! -f "${BH_PROJECT_ROOT}/.bh/config.env" ]]; then
@@ -340,8 +363,10 @@ _bh_prompt_for_daemon_token() {
     _bh_daemon_secrets_write_needed=1
 }
 
-if ! _bh_resolve_config_with_reuse_prompt "${BH_DAEMON_SECRETS_PATH}" _bh_prompt_for_daemon_token; then
-    exit 1
+if [[ "${_BH_REQUIRES_BWS}" == 1 ]]; then
+    if ! _bh_resolve_config_with_reuse_prompt "${BH_DAEMON_SECRETS_PATH}" _bh_prompt_for_daemon_token; then
+        exit 1
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -366,7 +391,11 @@ Type=simple
 User=${RUN_USER}
 Environment=BH_PROJECT_ROOT=${BH_PROJECT_ROOT}
 Environment=PATH=${BWS_BIN_DIR}:/usr/local/bin:/usr/bin:/bin
-EnvironmentFile=${BH_DAEMON_SECRETS_PATH}
+EOF
+    if [[ "${_BH_REQUIRES_BWS}" == 1 ]]; then
+        printf 'EnvironmentFile=%s\n' "${BH_DAEMON_SECRETS_PATH}"
+    fi
+    cat <<EOF
 ExecStart=${BH_DAEMON_BIN} --workflow ${WORKFLOW_FILE}
 Restart=on-failure
 RestartSec=15
@@ -389,11 +418,17 @@ echo "  WORKFLOW_FILE      = ${WORKFLOW_FILE}"
 echo "  RUN_USER           = ${RUN_USER}"
 echo "  BWS_BIN_DIR        = ${BWS_BIN_DIR} (unit PATH= prefix, so bws is found)"
 echo "  BH_PROJECT_ROOT    = ${BH_PROJECT_ROOT}"
-echo "  BWS_ACCESS_TOKEN   = <resolved, not shown>"
+if [[ "${_BH_REQUIRES_BWS}" == 1 ]]; then
+    echo "  BWS_ACCESS_TOKEN   = <resolved, not shown>"
+else
+    echo "  BWS                = not required"
+fi
 echo "  --no-start         = ${NO_START}"
 echo ""
 echo "  Will write:"
-echo "    ${BH_DAEMON_SECRETS_PATH}"
+if [[ "${_BH_REQUIRES_BWS}" == 1 ]]; then
+    echo "    ${BH_DAEMON_SECRETS_PATH}"
+fi
 echo "    /etc/systemd/system/bh-daemon.service"
 echo ""
 
@@ -404,8 +439,10 @@ echo ""
 if [[ "${PRINT_UNIT}" == 1 ]]; then
     echo "baton-harness: --print-unit given, rendering to stdout (no writes performed)."
     echo ""
-    echo "--- ${BH_DAEMON_SECRETS_PATH} ---"
-    _render_secrets_preview
+    if [[ "${_BH_REQUIRES_BWS}" == 1 ]]; then
+        echo "--- ${BH_DAEMON_SECRETS_PATH} ---"
+        _render_secrets_preview
+    fi
     echo "--- /etc/systemd/system/bh-daemon.service ---"
     _render_unit
     exit 0
@@ -487,7 +524,7 @@ activate_service() {
 echo "baton-harness: writing files ..."
 if [[ "${_bh_daemon_secrets_write_needed}" == 1 ]]; then
     write_secrets_file
-else
+elif [[ "${_BH_REQUIRES_BWS}" == 1 ]]; then
     echo "baton-harness:   reusing existing ${BH_DAEMON_SECRETS_PATH}"
 fi
 write_unit_file

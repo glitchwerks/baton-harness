@@ -50,6 +50,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 HARNESS = Path(__file__).resolve().parents[1]
 INIT_SANDBOX = HARNESS / "bin" / "init-sandbox.sh"
 
@@ -189,7 +191,7 @@ def _write_gh_stub(bin_dir: Path) -> None:
 
 
 def _run_init_sandbox(
-    tmp_path: Path, project_root: Path
+    tmp_path: Path, project_root: Path, *, input_text: str | None = None
 ) -> subprocess.CompletedProcess[str]:
     """Invoke the real ``init-sandbox.sh`` non-interactively.
 
@@ -200,6 +202,7 @@ def _run_init_sandbox(
     Args:
         tmp_path: Pytest-provided temp directory for the test.
         project_root: The local clone to point ``BH_PROJECT_ROOT`` at.
+        input_text: Optional answers for a real POSIX pseudo-terminal.
 
     Returns:
         The completed ``init-sandbox.sh`` process, including captured
@@ -234,6 +237,15 @@ def _run_init_sandbox(
     env["BH_REPO_NAME"] = "fake-repo"
     env["BH_SCENARIO"] = "recovery"
     env["FAKE_GH_DEFAULT_BRANCH"] = "main"
+    env.pop("BH_SETUP_NO_PROMPT", None)
+
+    if input_text is not None:
+        from tests._bh_pty import run_interactive
+
+        rc, stdout, stderr = run_interactive(
+            [_BASH, str(INIT_SANDBOX)], env, input_text=input_text, timeout=60
+        )
+        return subprocess.CompletedProcess([], rc, stdout, stderr)
 
     return subprocess.run(
         [_BASH, str(INIT_SANDBOX)],
@@ -353,3 +365,146 @@ def test_absent_config_env_regression_reaches_write_step(
         "existence-check logic\n"
         f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
     )
+
+
+def _new_provider_config(tmp_path: Path, answers: str) -> tuple[str, str]:
+    """Run fresh initialization and return its config and prompts.
+
+    Args:
+        tmp_path: Isolated fixture directory.
+        answers: Provider/source answers, followed by optional secret IDs.
+
+    Returns:
+        The persisted config and prompt/error output.
+    """
+    _origin, project = _make_origin_and_clone(tmp_path)
+    result = _run_init_sandbox(
+        tmp_path, project, input_text="111\n999999\n" + answers
+    )
+    assert result.returncode == 0, result.stderr
+    return (project / ".bh/config.env").read_text(), result.stderr
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX pty required")
+def test_new_bws_config_writes_explicit_provider_and_only_bws_source(
+    tmp_path: Path,
+) -> None:
+    """The BWS choice persists only its selector and secret UUID."""
+    config, prompts = _new_provider_config(
+        tmp_path, "bws\n11111111-1111-1111-1111-111111111111\n\n\n"
+    )
+    assert "export BH_GITHUB_APP_KEY_PROVIDER=bws\n" in config
+    assert (
+        "export BWS_PEM_SECRET_ID=11111111-1111-1111-1111-111111111111\n"
+        in config
+    )
+    assert "BH_GITHUB_APP_PRIVATE_KEY_FILE" not in config + prompts
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX pty required")
+def test_new_file_config_writes_explicit_provider_and_only_absolute_file_source(  # noqa: E501
+    tmp_path: Path,
+) -> None:
+    """The file choice persists a locator without requesting a vault source."""
+    config, prompts = _new_provider_config(
+        tmp_path, "file\n/run/credentials/app.pem\n\n\n"
+    )
+    assert "export BH_GITHUB_APP_KEY_PROVIDER=file\n" in config
+    assert (
+        "export BH_GITHUB_APP_PRIVATE_KEY_FILE='/run/credentials/app.pem'\n"
+        in config
+    )
+    assert "BWS_PEM_SECRET_ID" not in config + prompts
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX pty required")
+def test_file_provider_reprompts_relative_path(tmp_path: Path) -> None:
+    """An invalid relative locator is rejected before the config is written."""
+    config, prompts = _new_provider_config(
+        tmp_path, "file\nrelative.pem\n/run/credentials/app.pem\n\n\n"
+    )
+    assert "absolute path" in prompts
+    assert "relative.pem" not in config
+    assert (
+        "BH_GITHUB_APP_PRIVATE_KEY_FILE='/run/credentials/app.pem'\n"
+        in config
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX pty required")
+def test_file_provider_reprompts_path_containing_single_quote(
+    tmp_path: Path,
+) -> None:
+    """A path that cannot be safely single-quoted is never persisted."""
+    config, prompts = _new_provider_config(
+        tmp_path,
+        "file\n/run/credentials/app'unsafe.pem\n"
+        "/run/credentials/app.pem\n\n\n",
+    )
+    assert "single quote" in prompts
+    assert "app'unsafe.pem" not in config
+    assert (
+        "BH_GITHUB_APP_PRIVATE_KEY_FILE='/run/credentials/app.pem'\n"
+        in config
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX pty required")
+def test_file_config_sources_literal_path_without_command_execution(
+    tmp_path: Path,
+) -> None:
+    """Sourcing generated config preserves metacharacters without execution."""
+    marker = tmp_path / "injection-marker"
+    private_key_path = f"/run/app.pem; touch {marker.as_posix()}"
+    _origin, project = _make_origin_and_clone(tmp_path)
+    result = _run_init_sandbox(
+        tmp_path,
+        project,
+        input_text=(
+            "111\n999999\nfile\n"
+            f"{private_key_path}\n"
+            "\n\n"
+        ),
+    )
+    assert result.returncode == 0, result.stderr
+
+    source_result = subprocess.run(
+        [
+            _BASH,
+            "-c",
+            'source "$1"; printf "%s" "$BH_GITHUB_APP_PRIVATE_KEY_FILE"',
+            "bash",
+            str(project / ".bh/config.env"),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+    )
+    assert source_result.returncode == 0, source_result.stderr
+    assert source_result.stdout == private_key_path
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX pty required")
+def test_unknown_provider_reprompts_without_writing_config(
+    tmp_path: Path,
+) -> None:
+    """An unknown provider does not become a persisted source or selector."""
+    config, prompts = _new_provider_config(
+        tmp_path, "vault\nfile\n/run/credentials/app.pem\n\n\n"
+    )
+    assert "bws or file" in prompts
+    assert "vault" not in config
+    assert "BH_GITHUB_APP_KEY_PROVIDER=file\n" in config
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX pty required")
+def test_generated_config_never_contains_pem_contents(tmp_path: Path) -> None:
+    """Initialization accepts only the path; extra PEM input is not copied."""
+    config, _prompts = _new_provider_config(
+        tmp_path,
+        "file\n/run/credentials/app.pem\n\n\n-----BEGIN PRIVATE KEY-----\n",
+    )
+    assert "BH_GITHUB_APP_KEY_PROVIDER=file\n" in config
+    assert "PRIVATE KEY" not in config
