@@ -1,6 +1,6 @@
 ---
 title: Runtime provenance and machine-readable preflight
-status: proposed
+status: approved
 issue: 358
 ---
 
@@ -90,22 +90,35 @@ lock identity, and development flag. Missing inputs, malformed inputs, a Git mis
 or a generated-record mismatch fail the build before an artifact is accepted (#358).
 
 Editable developer installs opt in with `BH_BUILD_DEVELOPMENT=1`. That path requires
-a Git checkout, derives the source revision from `HEAD`, and uses the configured
-development base `0.1.0.dev0` plus a `g<12-character-revision>` local-version segment.
-It computes the same lock identity and records `development: true`. Repository setup
-and CI editable-sync commands will set this flag explicitly; a normal `uv build`
-without the standard identity inputs therefore cannot silently emit a development
-artifact. uv documents that workspace projects are installed editably by default
-during sync.
+a Git checkout, derives the source revision from `HEAD`, and uses the stable committed
+development version `0.1.0.dev0`. It computes the same lock identity and records
+`development: true`. Keeping the development version independent of `HEAD` prevents
+the project-version entry in `uv.lock` from changing on every commit; the exact commit
+remains available in `source_revision`. Repository setup and CI editable-sync commands
+will set this flag explicitly; a normal `uv build` without the standard identity
+inputs therefore cannot silently emit a development artifact. uv documents that
+workspace projects are installed editably by default during sync.
 https://docs.astral.sh/uv/concepts/projects/dependencies/ (fetched 2026-09-06)
+
+Production consumers pin an immutable release tag such as `v1.0.0` and install the
+verified standard artifact for that tag. Release automation may derive
+`BH_BUILD_VERSION=1.0.0` and the exact `BH_BUILD_SOURCE_REVISION` from the selected tag,
+but the build hook validates the explicit assertions and does not infer identity from
+tag names. After a release, the committed development version advances to the next
+planned line, for example `1.1.0.dev0`. Published prereleases use immutable tags such
+as `v1.1.0.dev1`; development checkouts do not rely on a moving Git tag.
 
 ### Generated record and archive behavior
 
 The custom build hook will create the record in a build-owned temporary location and
-add it with Hatch's `force-include` mechanism. It will not rewrite a tracked source
-file. Hatch exposes `initialize`/`finalize` build-hook lifecycle methods and build data
-including `artifacts` and `force_include` for files generated during a build.
+add it with Hatch's `force-include` mechanism, using `force_include_editable` for the
+editable wheel. It will not rewrite a tracked source file. Hatch exposes
+`initialize`/`finalize` build-hook lifecycle methods and build data including
+`artifacts` and `force_include` for files generated during a build.
 https://hatch.pypa.io/1.0/plugins/build-hook/ (fetched 2026-09-06)
+Hatch documents `force_include_editable` as the editable-wheel counterpart that takes
+precedence for editable builds.
+https://hatch.pypa.io/dev/plugins/builder/wheel/ (fetched 2026-09-06)
 
 The archive path will be `baton_harness/build_provenance.json` in wheels and
 `src/baton_harness/build_provenance.json` in sdists. The sdist will also contain
@@ -245,6 +258,11 @@ code 2.
   ]
 }
 ```
+
+The top-level `provenance` value is `null` only when the packaged record cannot be
+validated; in that case the selected installation phase contains a critical failed
+`PKG_PROVENANCE` check. Selecting another phase does not implicitly execute the
+installation phase merely to populate this field.
 
 The serializer validates and redacts every human-readable field immediately before
 writing either text or JSON. Redaction expands the existing fail-closed helper to
