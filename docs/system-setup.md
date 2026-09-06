@@ -85,9 +85,34 @@ What it does, in order:
 .venv/Scripts/bh-daemon --help   # Windows Git Bash
 .venv/bin/bh-daemon --help       # macOS/Linux
 
+# Verify a runtime-only, non-editable wheel on Python 3.10 and 3.13
+.venv/Scripts/bh-verify-foundation.exe   # Windows Git Bash
+.venv/bin/bh-verify-foundation           # macOS/Linux
+
 # host.env was written (only if you answered the prompt)
 cat ~/.config/baton-harness/host.env
 ```
+
+### Editable development versus immutable production
+
+`bin/setup-env.sh` creates a locked but editable development environment with
+`uv sync --locked --extra dev`. Source changes are immediately visible and the
+quality tools are installed.
+
+Production installation is non-editable and contains runtime dependencies only.
+`bh-verify-foundation` is the executable production-installation reference: it
+checks `uv.lock` without modifying it, compares canonical package resources with
+their temporary `config/` mirrors, exports the locked runtime and development
+closures, and constrains the build backend to the hashed development resolution.
+It then builds the sdist and wheel, installs only the runtime closure plus the
+wheel into clean Python 3.10 and 3.13 environments outside the checkout, runs
+`uv pip check`, loads every packaged resource, rejects development-only packages,
+and executes every installed console wrapper.
+
+CI runs the same command with both default interpreters. For a focused diagnostic
+run, pass one or more `--python VERSION` arguments. The command fails closed on
+stale dependency metadata or packaging drift and never rewrites the lock or
+resource mirrors.
 
 If `gh`, `bws`, or `claude` were auto-installed to `~/.local/bin` and are not yet visible
 to `command -v`, add `export PATH="$HOME/.local/bin:$PATH"` to your shell rc and re-run.

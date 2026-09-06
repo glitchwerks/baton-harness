@@ -112,3 +112,22 @@ def test_required_checks_agree_across_sources() -> None:
         f"merge.py REQUIRED_CHECKS {sorted(merge_set)!r} differs from "
         f"ruleset.main.json required_status_checks {sorted(ruleset_set)!r}"
     )
+
+
+def test_pytest_job_runs_foundation_verifier() -> None:
+    """Removing the frozen-install step from merge-blocking CI is detected."""
+    ci_path = HARNESS / ".github" / "workflows" / "ci.yml"
+    workflow = yaml.safe_load(ci_path.read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["test"]["steps"]
+    verifier_steps = [
+        step
+        for step in steps
+        if step.get("name") == "Verify frozen wheel foundation"
+    ]
+
+    assert verifier_steps == [
+        {
+            "name": "Verify frozen wheel foundation",
+            "run": ".venv/bin/bh-verify-foundation",
+        }
+    ]

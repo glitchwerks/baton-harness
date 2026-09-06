@@ -54,6 +54,9 @@ jobs:
       - name: Test (pytest)
         run: .venv/bin/python -m pytest
 
+      - name: Verify frozen wheel foundation
+        run: .venv/bin/bh-verify-foundation
+
   shellcheck:
     name: Lint (shellcheck)
     runs-on: ubuntu-latest

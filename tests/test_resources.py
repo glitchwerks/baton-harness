@@ -52,9 +52,7 @@ def test_different_config_mirror_fails_closed(tmp_path: Path) -> None:
     config_dir.mkdir()
     for name in _EXPECTED_NAMES:
         (config_dir / name).write_bytes(read_bytes(name))
-    (config_dir / "WORKFLOW.md").write_text(
-        "drifted\n", encoding="utf-8"
-    )
+    (config_dir / "WORKFLOW.md").write_text("drifted\n", encoding="utf-8")
 
     with pytest.raises(PackagedResourceError, match="config mirror drift"):
         assert_config_mirrors(tmp_path)

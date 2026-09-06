@@ -123,7 +123,8 @@ dedicated branch, and use a pull request to integrate changes into `main`.
 ### Prerequisites
 
 - Python 3.10+
-- [uv](https://docs.astral.sh/uv/) (recommended) or pip
+- [uv](https://docs.astral.sh/uv/) (required for locked development and
+  production verification)
 - [`prek`](https://github.com/j178/prek#installation) for automated local pre-commit checks
 - `git` (required by `bin/init-sandbox.sh` for sandbox repo operations)
 
@@ -164,6 +165,10 @@ pushing:
 # Tests
 .venv/Scripts/python.exe -m pytest               # Windows
 .venv/bin/python        -m pytest               # macOS/Linux
+
+# Frozen wheel and Python 3.10/3.13 installation proof
+.venv/Scripts/bh-verify-foundation.exe            # Windows
+.venv/bin/bh-verify-foundation                    # macOS/Linux
 ```
 
 Note: `src/baton_harness/vendor/symphony/` is **not** excluded from these checks. Issue `#224`
@@ -172,7 +177,27 @@ assimilated the vendored symphony tree as owned code — it is linted and type-c
 `src/baton_harness/vendor/symphony/VENDORING.md` hold a historical record of the tree's
 provenance and pre-#224 patches, not an active exclusion or re-vendor procedure.
 
-### Hook entry-point convention
+### Production wheel verification
+
+Development uses the editable environment above. Production installation is
+non-editable and contains runtime dependencies only. Before deployment, run
+`bh-verify-foundation` from the repository's locked development environment.
+The command:
+
+1. rejects a missing or stale `uv.lock` and resource-mirror drift;
+2. exports the locked runtime-only and development dependency graphs;
+3. constrains the wheel build backend to the hashed development resolution;
+4. builds an sdist and wheel, then inspects the wheel's resources and commands;
+5. creates clean Python 3.10 and 3.13 environments outside the checkout;
+6. syncs only locked runtime dependencies, installs the wheel with `--no-deps`,
+   and rejects editable metadata or any development-only distribution; and
+7. loads all packaged defaults and executes all installed console wrappers.
+
+Use repeated `--python VERSION` arguments for a focused diagnostic run. CI and
+release validation use the default 3.10 and 3.13 endpoints. The command only
+reports drift; it never updates the lock or repairs resource mirrors.
+
+### Console entry-point convention
 
 The three lifecycle hooks and the daemon are installed as console scripts by `pyproject.toml`:
 
@@ -183,6 +208,7 @@ The three lifecycle hooks and the daemon are installed as console scripts by `py
 | `bh-after-run` | `baton_harness.after_run:main` | `src/baton_harness/after_run.py` |
 | `bh-daemon` | `baton_harness.chain.cli:main` | `src/baton_harness/chain/cli.py` |
 | `bh-force-pr-not-merge` | `baton_harness.hooks.force_pr_not_merge:main` | `src/baton_harness/hooks/force_pr_not_merge.py` |
+| `bh-verify-foundation` | `baton_harness.verify_foundation:main` | `src/baton_harness/verify_foundation.py` |
 
 After `uv sync --locked --extra dev`, these commands are on `PATH` inside
 the editable development venv.
@@ -251,8 +277,9 @@ checklist — what to install and export before a first run.
   [docs/smoke-test-daemon.md](docs/smoke-test-daemon.md) for details; `bin/init-sandbox.sh`
   seeds this automatically for throwaway sandboxes)
 
-The separate `baton` pip install is **not required** — `symphony` is vendored inside the
-`baton_harness` package. Only `uv pip install -e .` (or `pip install -e .`) is needed.
+The separate `baton` package is **not required** — `symphony` is vendored inside the
+`baton_harness` package. Use `uv sync --locked --extra dev` for an editable local
+development installation.
 
 ### GitHub App private-key provider
 
