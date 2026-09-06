@@ -42,6 +42,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from baton_harness.chain.identity import Identity, env_for
+
 # ---------------------------------------------------------------------------
 # Type aliases — matches bws_client.RunFn (see test_cli_bootstrap_vault.py)
 # ---------------------------------------------------------------------------
@@ -55,7 +57,7 @@ FetchSecretFn = Callable[..., str]
 
 _ACCESS_TOKEN = "0.fake-bws-machine-account-token-for-347-tests"
 _APP_ID = "99999"
-_PEM_SECRET_ID = "pem-secret-aaaa-bbbb-cccc-dddddddddddd"
+_PEM_SECRET_ID = "11111111-2222-3333-4444-555555555555"
 _GH_TOKEN_SECRET_ID = "gh-token-1111-2222-3333-444444444444"
 _INSTALLATION_ID = "12345"
 
@@ -66,6 +68,20 @@ _FAKE_PEM = (
     "-----END RSA PRIVATE KEY-----\n"
 )
 _FAKE_TOKEN = "ghs_FAKEFAKEFAKEFAKEFAKEFAKEFAKE"
+
+_DAEMON_ONLY_KEYS = {
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_INSTALLATION_TOKEN",
+    "BH_GITHUB_APP_KEY_PROVIDER",
+    "BH_GITHUB_APP_PRIVATE_KEY_FILE",
+    "BWS_ACCESS_TOKEN",
+    "BWS_PEM_SECRET_ID",
+    "BWS_APP_ID",
+    "BWS_INSTALLATION_ID",
+    "BWS_GH_TOKEN_SECRET_ID",
+    "BWS_HEARTBEAT_PING_URL_SECRET_ID",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +100,8 @@ def bws_only_env(monkeypatch: pytest.MonkeyPatch) -> None:
     reason (see MEMORY.md ``feedback_ambient_environ_leak``).
     """
     monkeypatch.setenv("BWS_ACCESS_TOKEN", _ACCESS_TOKEN)
+    monkeypatch.setenv("BH_GITHUB_APP_KEY_PROVIDER", "bws")
+    monkeypatch.delenv("BH_GITHUB_APP_PRIVATE_KEY_FILE", raising=False)
     monkeypatch.setenv("BWS_APP_ID", _APP_ID)
     monkeypatch.setenv("BWS_PEM_SECRET_ID", _PEM_SECRET_ID)
     monkeypatch.setenv("BWS_INSTALLATION_ID", _INSTALLATION_ID)
@@ -170,6 +188,8 @@ class TestBootstrapNeverWritesTokenToAmbientEnviron:
         ):
             cli_mod.bootstrap_secrets()
 
+        assert "BWS_ACCESS_TOKEN" not in os.environ
+        assert _FAKE_TOKEN not in os.environ.values()
         assert "GH_TOKEN" not in os.environ, (
             "GH_TOKEN was written into ambient os.environ by "
             "bootstrap_secrets() — this reverts issue #222's "
@@ -182,3 +202,16 @@ class TestBootstrapNeverWritesTokenToAmbientEnviron:
             "bootstrap_secrets() — this reverts issue #222's "
             "env-discipline invariant."
         )
+
+    def test_daemon_only_auth_values_absent_from_worker_environment(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """No daemon-only authentication value reaches a worker spawn."""
+        seeded_values = {key: f"sentinel-{key}" for key in _DAEMON_ONLY_KEYS}
+        for key, value in seeded_values.items():
+            monkeypatch.setenv(key, value)
+
+        worker_env = env_for(Identity.WORKER)
+
+        assert set(seeded_values.values()).isdisjoint(worker_env.values())

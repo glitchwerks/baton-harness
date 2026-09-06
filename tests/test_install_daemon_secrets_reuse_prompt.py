@@ -68,6 +68,7 @@ runner (``ubuntu-latest`` per ``.github/workflows/ci.yml``).
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -110,6 +111,7 @@ _LEGACY_NONINTERACTIVE_TOKEN_ERROR_TEXT = (
 # whether BH_DAEMON_SECRETS_PATH is threaded through every call site.
 _SUDO_STUB = """#!/usr/bin/env bash
 set -euo pipefail
+printf '%s\n' "$1" >> "${FAKE_SUDO_LOG}"
 args=()
 for a in "$@"; do
     case "$a" in
@@ -195,6 +197,16 @@ def _build_harness_dir(tmp_path: Path) -> Path:
             newline="\n",
         )
         daemon_bin.chmod(0o755)
+    # Execute the shared policy module using the actual project interpreter.
+    python_shim = harness / ".venv/bin/python"
+    python_shim.write_text(
+        "#!/usr/bin/env bash\nexec "
+        + shlex.quote(Path(sys.executable).as_posix())
+        + ' "$@"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    python_shim.chmod(0o755)
     return harness
 
 
@@ -236,6 +248,11 @@ def _base_env(
             "ANTHROPIC_API_KEY",
             "BWS_ACCESS_TOKEN",
             "BH_DAEMON_SECRETS_PATH",
+            "BH_GITHUB_APP_KEY_PROVIDER",
+            "BH_GITHUB_APP_PRIVATE_KEY_FILE",
+            "BWS_PEM_SECRET_ID",
+            "BWS_GH_TOKEN_SECRET_ID",
+            "BWS_HEARTBEAT_PING_URL_SECRET_ID",
         )
     }
     env["PATH"] = os.pathsep.join(
@@ -250,6 +267,9 @@ def _base_env(
     env["HOME"] = home.as_posix()
     env["XDG_CONFIG_HOME"] = xdg_config_home.as_posix()
     env["FAKE_ROOT"] = fake_root.as_posix()
+    env["FAKE_SUDO_LOG"] = (tmp_path / "sudo.log").as_posix()
+    env["BH_GITHUB_APP_KEY_PROVIDER"] = "bws"
+    env["BWS_PEM_SECRET_ID"] = "11111111-1111-1111-1111-111111111111"
     return env
 
 
@@ -660,3 +680,152 @@ def test_existing_secrets_file_interactive_read_eof_fails_closed(
         "an interactive read failure must never modify a pre-existing "
         f"secrets.env\npty_output:\n{pty_output}\nstderr:\n{stderr}"
     )
+
+
+def _provider_install(
+    tmp_path: Path,
+    *,
+    provider: str = "file",
+    optional_secret: str = "",
+    optional_key: str = "BWS_GH_TOKEN_SECRET_ID",
+    token: str = "",
+    print_unit: bool = True,
+    existing_secrets: bool = False,
+) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
+    """Drive the installer with real config/policy and isolated system writes.
+
+    Args:
+        tmp_path: Isolated fixture directory.
+        provider: Explicit selector persisted in sandbox config.
+        optional_secret: Optional PAT UUID requiring BWS independently.
+        optional_key: Optional BWS consumer configured with that UUID.
+        token: Fake bootstrap token; omitted for file-only deployments.
+        print_unit: Render only when true, install through fake sudo otherwise.
+        existing_secrets: Seed a secrets file whose bytes must survive.
+
+    Returns:
+        The process, secrets path, and sudo operation log path.
+    """
+    harness = _build_harness_dir(tmp_path)
+    project = tmp_path / "project"
+    (project / ".bh").mkdir(parents=True)
+    source = (
+        "BWS_PEM_SECRET_ID=11111111-1111-1111-1111-111111111111\n"
+        if provider == "bws"
+        else f"BH_GITHUB_APP_PRIVATE_KEY_FILE={tmp_path.as_posix()}/app.pem\n"
+    )
+    (project / ".bh/config.env").write_text(
+        f"BH_GITHUB_APP_KEY_PROVIDER={provider}\n"
+        + source
+        + f"{optional_key}={optional_secret}\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    secrets = tmp_path / "secrets.env"
+    if existing_secrets:
+        secrets.write_bytes(b"preserve-existing-secrets\n")
+    env = _base_env(
+        tmp_path, tmp_path / "fake_root", _build_stub_bin_dir(tmp_path)
+    )
+    env.pop("BH_GITHUB_APP_KEY_PROVIDER")
+    env.pop("BWS_PEM_SECRET_ID")
+    env["BH_SETUP_NO_PROMPT"] = "1"
+    env["BH_DAEMON_SECRETS_PATH"] = secrets.as_posix()
+    if token:
+        env["BWS_ACCESS_TOKEN"] = token
+    argv = _argv(harness, project)
+    if print_unit:
+        argv.append("--print-unit")
+    proc = subprocess.run(
+        argv,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        stdin=subprocess.DEVNULL,
+        timeout=30,
+    )
+    return proc, secrets, Path(env["FAKE_SUDO_LOG"])
+
+
+def test_file_only_print_unit_needs_no_bws_token_or_secrets_file(
+    tmp_path: Path,
+) -> None:
+    """File-only rendering succeeds without resolving a bootstrap token."""
+    proc, secrets, sudo_log = _provider_install(tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    assert "[Service]" in proc.stdout
+    assert "EnvironmentFile=" not in proc.stdout
+    assert "<redacted>" not in proc.stdout
+    assert "BWS_ACCESS_TOKEN" not in proc.stdout + proc.stderr
+    assert not secrets.exists()
+    assert not sudo_log.exists()
+
+
+@pytest.mark.parametrize(
+    "optional_key",
+    ["BWS_GH_TOKEN_SECRET_ID", "BWS_HEARTBEAT_PING_URL_SECRET_ID"],
+)
+def test_file_provider_optional_bws_secret_still_requires_token(
+    tmp_path: Path,
+    optional_key: str,
+) -> None:
+    """Independent optional vault consumers retain the token prerequisite."""
+    proc, _secrets, sudo_log = _provider_install(
+        tmp_path,
+        optional_secret="22222222-2222-2222-2222-222222222222",
+        optional_key=optional_key,
+    )
+    assert proc.returncode != 0
+    assert _LEGACY_NONINTERACTIVE_TOKEN_ERROR_TEXT in proc.stderr
+    assert "[Service]" not in proc.stdout
+    assert not sudo_log.exists()
+
+
+def test_bws_provider_still_renders_redacted_environment_file(
+    tmp_path: Path,
+) -> None:
+    """BWS rendering retains the environment file and hides the token."""
+    token = "task-six-bootstrap-sentinel"
+    proc, _secrets, _sudo_log = _provider_install(
+        tmp_path, provider="bws", token=token
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "BWS_ACCESS_TOKEN=<redacted>" in proc.stdout
+    assert "EnvironmentFile=" in proc.stdout
+    assert token not in proc.stdout + proc.stderr
+
+
+@pytest.mark.parametrize("existing_secrets", [False, True])
+def test_file_only_install_does_not_create_or_overwrite_secrets_file(
+    tmp_path: Path,
+    existing_secrets: bool,
+) -> None:
+    """File-only installation leaves both absent and existing secrets alone."""
+    proc, secrets, sudo_log = _provider_install(
+        tmp_path, print_unit=False, existing_secrets=existing_secrets
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert sudo_log.exists()
+    if existing_secrets:
+        assert secrets.read_bytes() == b"preserve-existing-secrets\n"
+    else:
+        assert not secrets.exists()
+    assert not list(tmp_path.glob("secrets.env.bak.*"))
+    unit = tmp_path / "fake_root/etc/systemd/system/bh-daemon.service"
+    assert "EnvironmentFile=" not in unit.read_text()
+
+
+def test_invalid_provider_fails_before_prompt_or_privileged_write(
+    tmp_path: Path,
+) -> None:
+    """An unknown selector fails before token handling or sudo operations."""
+    proc, secrets, sudo_log = _provider_install(
+        tmp_path, provider="vault", print_unit=False
+    )
+    assert proc.returncode != 0
+    assert "invalid App private-key configuration" in proc.stderr
+    assert _TOKEN_PROMPT_TEXT not in proc.stderr
+    assert "BWS_ACCESS_TOKEN" not in proc.stderr
+    assert not sudo_log.exists()
+    assert not secrets.exists()

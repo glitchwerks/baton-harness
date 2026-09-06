@@ -137,7 +137,7 @@ class TestRunHookEnvMergePreserved:
     def test_override_merged_with_inherited_baseline_var(
         self, tmp_path: object
     ) -> None:
-        """GH_TOKEN override reaches the subprocess env; PATH still present."""
+        """The before_run PAT override reaches its env alongside PATH."""
         captured_env: dict[str, str] = {}
 
         async def fake_create_subprocess_exec(
@@ -153,7 +153,7 @@ class TestRunHookEnvMergePreserved:
         ):
             _run_sync(
                 run_hook(
-                    "test",
+                    "before_run",
                     "echo hi",
                     cwd=str(tmp_path),
                     env={"GH_TOKEN": "sentinel123"},

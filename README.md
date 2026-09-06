@@ -61,7 +61,7 @@ baton-harness/
 ├── pyproject.toml               # package metadata, dev dependencies, ruff/mypy config
 ├── bin/
 │   ├── run-daemon.sh            # launcher: validates env vars + labels, starts bh-daemon
-│   ├── setup-env.sh             # idempotent dev-env bootstrap: uv venv + editable install + bws check
+│   ├── setup-env.sh             # idempotent dev-env bootstrap: uv venv + editable install + optional bws check
 │   ├── init-sandbox.sh          # provision a throwaway sandbox repo for a first smoke test
 │   ├── provision-ruleset.sh     # create/repair the two branch-protection rulesets (required before first run)
 │   ├── verify-recovery.sh       # exercise the five startup-reconciliation gates against a live sandbox
@@ -213,16 +213,18 @@ checklist — what to install and export before a first run.
   checks for `gh` and, when running interactively on Linux/macOS, offers to auto-install
   v2.62.0 to `~/.local/bin`.
 - `git` configured with user name and email
-- **`bws` (Bitwarden Secrets CLI)** on `PATH` — required for vault-fetching the GitHub App PEM
-  key and optional secrets at daemon startup. `bin/setup-env.sh` checks for `bws` and offers
-  to auto-install v2.1.0 to `~/.local/bin` when running interactively. Verify with
-  `bws --version`. Without it the daemon fails immediately at startup.
-- **`BWS_ACCESS_TOKEN`** exported — the operator-supplied Bitwarden machine-account access
-  token. Provide it in a root-readable-only file and never commit it. The canonical server
-  path is `/etc/bh-daemon/secrets.env` (mode `600`); `bin/install-daemon-service.sh` writes
-  this file for you as part of the systemd install — see
-  [docs/smoke-test-daemon.md §"systemd unit (recommended)"](docs/smoke-test-daemon.md) for the
-  `EnvironmentFile=` pattern it produces.
+- **`bws` (Bitwarden Secrets CLI)** on `PATH` only when the selected App-key provider is
+  `bws`, or when `BWS_GH_TOKEN_SECRET_ID` or `BWS_HEARTBEAT_PING_URL_SECRET_ID` is set.
+  `bin/setup-env.sh` checks for `bws` and offers to auto-install v2.1.0 to
+  `~/.local/bin`. Declining or running non-interactively without it prints conditional
+  guidance and continues without downloading; verify with `bws --version` when your
+  deployment uses BWS.
+- **`BWS_ACCESS_TOKEN`** only for those same BWS-backed configurations. Provide this
+  operator-supplied machine-account token in a root-readable-only file and never commit it.
+  `bin/install-daemon-service.sh` writes `/etc/bh-daemon/secrets.env` (mode `600`) and adds
+  `EnvironmentFile=` only when the resolved configuration needs BWS; file-only deployments
+  create neither. See [docs/smoke-test-daemon.md §"systemd unit
+  (recommended)"](docs/smoke-test-daemon.md).
 - **GitHub App** created, installed on the target repo, with the required permissions
   configured **before** first run (table in [docs/authentication.md](docs/authentication.md)).
   `bin/run-daemon.sh` reads the App IDs from `${BH_PROJECT_ROOT}/.bh/config.env`;
@@ -248,6 +250,43 @@ checklist — what to install and export before a first run.
 
 The separate `baton` pip install is **not required** — `symphony` is vendored inside the
 `baton_harness` package. Only `uv pip install -e .` (or `pip install -e .`) is needed.
+
+### GitHub App private-key provider
+
+Select exactly one provider in `${BH_PROJECT_ROOT}/.bh/config.env`. Existing BWS
+deployments must add the selector explicitly; there is no legacy default:
+
+```bash
+# Existing BWS deployment
+export BH_GITHUB_APP_KEY_PROVIDER=bws
+export BWS_PEM_SECRET_ID=<uuid>
+```
+
+```bash
+# BWS-free file deployment
+export BH_GITHUB_APP_KEY_PROVIDER=file
+export BH_GITHUB_APP_PRIVATE_KEY_FILE=/run/credentials/bh-daemon/app.pem
+```
+
+`BWS_ACCESS_TOKEN` is a shell/service bootstrap secret, not provider configuration. Never
+store it in `${BH_PROJECT_ROOT}/.bh/config.env`. For an interactive BWS-backed run, export
+it separately in the caller's shell:
+
+```bash
+read -r -s BWS_ACCESS_TOKEN
+export BWS_ACCESS_TOKEN
+```
+
+For `file`, the path must be absolute and the target must be a regular, non-symlink file
+with owner-only permissions (`0400` or `0600`). Its contents must be a non-empty UTF-8 PEM
+of at most 1 MiB. Harness reads the file once and proves it can sign an App JWT before any
+GitHub request; it does not generate, copy, enroll, or rotate the key.
+
+| App-key provider | Optional BWS PAT/heartbeat IDs | `bws` and `BWS_ACCESS_TOKEN` |
+|---|---|---|
+| `bws` | Either | Required |
+| `file` | Neither configured | Not required |
+| `file` | Either configured | Required for those optional fetches |
 
 ## Required GitHub labels
 
@@ -282,10 +321,10 @@ permissions beyond what the harness requires. Structural least-privilege — the
 account literally cannot perform destructive actions — is the real security
 boundary. No software check substitutes for it.
 
-Auth method, required permissions, the fallback PAT's narrower permission
-surface relative to the GitHub App, and the validation gates are documented in
+Auth method, required permissions, the optional worker-hook PAT's narrower permission
+surface relative to the mandatory GitHub App, and the validation gates are documented in
 [docs/authentication.md](docs/authentication.md) — this section is a pointer,
-not a restatement. Quick reference for exporting the fallback PAT directly
+not a restatement. Quick reference for exporting the optional hook PAT directly
 (bypassing the Bitwarden vault fetch):
 
 ```bash
@@ -293,6 +332,9 @@ export GH_TOKEN=github_pat_<your-token>
 export BH_PROJECT_ROOT=/path/to/local/clone
 bin/run-daemon.sh
 ```
+
+This PAT does not replace the App ID, installation ID, or selected App private-key
+provider required in `${BH_PROJECT_ROOT}/.bh/config.env`.
 
 ## Safety and guardrails
 
@@ -323,7 +365,10 @@ It never merges to `main`.
 |---|---|
 | `BH_PROJECT_ROOT` | Absolute path to the local clone of the target repo |
 
-Repo identity (`BH_REPO_OWNER`, `BH_REPO_NAME`), GitHub App IDs, and vault secret IDs are read from `${BH_PROJECT_ROOT}/.bh/config.env` at startup — the operator does not export them by hand. `bin/init-sandbox.sh` writes that file interactively at provision time and prompts to overwrite or reuse it on a re-run.
+Repo identity (`BH_REPO_OWNER`, `BH_REPO_NAME`), GitHub App IDs, the explicit App-key
+provider and its selected source, and optional vault secret IDs are read from
+`${BH_PROJECT_ROOT}/.bh/config.env` at startup. `bin/init-sandbox.sh` writes that file
+interactively at provision time and prompts to overwrite or reuse it on a re-run.
 
 **Quickstart (one tick, then exit):**
 
@@ -379,8 +424,8 @@ bh-daemon           # continuous
 setup still creates the labels, stub CI workflow, and `${BH_PROJECT_ROOT}/.bh/config.env`.
 
 `bin/run-daemon.sh` now requires only `BH_PROJECT_ROOT` in the shell. Repo identity,
-GitHub App IDs, and vault secret IDs are read at daemon startup from
-`${BH_PROJECT_ROOT}/.bh/config.env`.
+GitHub App IDs, the App-key provider/source, and optional vault secret IDs are read at
+daemon startup from `${BH_PROJECT_ROOT}/.bh/config.env`.
 
 For the full first-run walkthrough — sandbox setup, trigger-issue creation, DAG dependency
 wiring, CI-gate behaviour, and expected log output — see
@@ -392,23 +437,24 @@ wiring, CI-gate behaviour, and expected log output — see
 [docs/system-setup.md](docs/system-setup.md) for machine-level setup (CLIs, the Python
 venv), then [docs/repository-onboarding.md](docs/repository-onboarding.md) for the
 repo/sandbox-level walkthrough — prerequisites, each `bin/*.sh` step with its verification
-command, the `bh-daemon --doctor --strict` preflight, the opt-in `--check-vault` live vault
-dry-run, and troubleshooting. The summary below assumes the CLIs are already installed and
-is a quick reference, not a walkthrough.
+command, the `bh-daemon --doctor --strict` preflight, the provider-aware
+`--check-vault` App-key dry-run, and troubleshooting. The summary below assumes the CLIs
+are already installed and is a quick reference, not a walkthrough.
 
 The four-step bringup sequence from [docs/smoke-test-daemon.md §"Fresh host bringup"](docs/smoke-test-daemon.md):
 
 ```bash
 # Step 1 — create the venv, install the package, and record BH_PROJECT_ROOT.
-#   Checks for bws; offers to auto-install on Linux/macOS when interactive.
+#   Requires uv, gh, and claude; checks optional bws and offers to auto-install it.
+#   Missing/declined bws prints conditional guidance and does not stop setup.
 #   Writes BH_PROJECT_ROOT to ~/.config/baton-harness/host.env (mode 600),
 #   prompting to overwrite or reuse an existing file on a re-run.
 bin/setup-env.sh
 
 # Step 2 — provision the throwaway sandbox repo.
 #   Reads BH_REPO_OWNER, BH_REPO_NAME, BH_PROJECT_ROOT from the environment.
-#   Prompts interactively for the 5 App/vault identity values and writes
-#   ${BH_PROJECT_ROOT}/.bh/config.env; re-runs prompt to overwrite or reuse it.
+#   Prompts for the App IDs, bws/file selector, the selected key source, and
+#   optional BWS secret IDs, then writes ${BH_PROJECT_ROOT}/.bh/config.env.
 #   Optional: --scenario hello|terminal-block|recovery (or BH_SCENARIO).
 export BH_REPO_OWNER=<owner>
 export BH_REPO_NAME=<repo>
@@ -416,25 +462,20 @@ export BH_PROJECT_ROOT=<abs-path-to-local-sandbox-clone>
 bin/init-sandbox.sh
 
 # Step 3 — provision branch-protection rulesets (required before first run).
-#   Reads App IDs from ${BH_PROJECT_ROOT}/.bh/config.env. Requires BWS_ACCESS_TOKEN
-#   already exported in this shell (it mints a GitHub App JWT via a vault fetch) —
-#   see docs/repository-onboarding.md §3 for the secure (silent-input) export pattern
-#   and for why this must come before step 4 below.
-read -r -s BWS_ACCESS_TOKEN
-export BWS_ACCESS_TOKEN
+#   Reads the App IDs and selected key provider from .bh/config.env. Provider bws
+#   needs the bootstrap token here; file mode does not. Optional BWS IDs need it
+#   later when the daemon starts.
+# read -r -s BWS_ACCESS_TOKEN
+# export BWS_ACCESS_TOKEN
 bin/provision-ruleset.sh
 
-# Step 4 — drop the bootstrap secret and run one tick.
-#   Uses the $BWS_ACCESS_TOKEN already exported in step 3 — never re-typed or echoed.
-sudo install -m 600 /dev/null /etc/bh-daemon/secrets.env
-printf 'BWS_ACCESS_TOKEN=%s\n' "$BWS_ACCESS_TOKEN" |
-  sudo tee /etc/bh-daemon/secrets.env >/dev/null
+# Step 4 — run one bounded tick. A file-only deployment needs no BWS environment.
 bin/run-daemon.sh --once
 ```
 
 Step 4 above is the bounded, single-tick smoke test. For continuous operation, install the
-`bh-daemon` systemd unit with `bin/install-daemon-service.sh` instead of writing
-`secrets.env` by hand — see
+`bh-daemon` systemd unit with `bin/install-daemon-service.sh`; it creates a secrets file
+only when BWS is needed — see
 [docs/smoke-test-daemon.md §"systemd unit (recommended)"](docs/smoke-test-daemon.md) for the
 one-command invocation, flags, and the manual/reference unit it generates.
 
@@ -462,11 +503,14 @@ export BH_REPO_OWNER=<owner>
 export BH_REPO_NAME=<sandbox-repo>
 export BH_GITHUB_APP_ID=<numeric-from-/app>
 export BH_GITHUB_APP_INSTALLATION_ID=<numeric-from-/repos/.../installation>
-# Required: the harness App's private-key secret ID (in .bh/config.env) and
-# the Bitwarden Secrets Manager access token (exported in the shell) used to
-# fetch it — both consumed by `app_auth.py` when it mints the App JWT.
+# Select exactly one App private-key source (normally already in .bh/config.env).
+# BWS:
+export BH_GITHUB_APP_KEY_PROVIDER=bws
 export BWS_PEM_SECRET_ID=<bws-secret-id-for-app-private-key>
 export BWS_ACCESS_TOKEN=<bws-access-token>
+# Or file (unset BWS_PEM_SECRET_ID; no BWS token unless an optional BWS ID is set):
+# export BH_GITHUB_APP_KEY_PROVIDER=file
+# export BH_GITHUB_APP_PRIVATE_KEY_FILE=/run/credentials/bh-daemon/app.pem
 # Optional: override the RepositoryRole admin actor_id (default 5).
 # Only needed if your org has remapped role ids.
 # export BH_ADMIN_ROLE_ID=5

@@ -17,6 +17,13 @@
 #                                    (NOT the same as installation id).
 #   BH_GITHUB_APP_INSTALLATION_ID    Required for app_auth.py at runtime.
 #                                    Validated for presence only here.
+#   BH_GITHUB_APP_KEY_PROVIDER       Explicit bws/file selector, validated
+#                                    by the Python app_auth command.
+#   BWS_PEM_SECRET_ID                Required only for provider bws.
+#   BH_GITHUB_APP_PRIVATE_KEY_FILE   Absolute secured PEM path, required
+#                                    only for provider file.
+#   BWS_ACCESS_TOKEN                 Required for the bws App-key source.
+#                                    Python owns all key loading and signing.
 #
 # Optional environment variables:
 #   BH_ADMIN_ROLE_ID                 Numeric RepositoryRole id for admin
@@ -39,6 +46,9 @@ Usage: bin/provision-ruleset.sh [--help|-h]
 
 Idempotently provisions the harness-main-no-merge and
 harness-feature-daemon-only rulesets in the target sandbox repo.
+App authentication is delegated to Python: set BH_GITHUB_APP_KEY_PROVIDER
+to bws (with BWS_PEM_SECRET_ID and BWS_ACCESS_TOKEN) or file (with
+BH_GITHUB_APP_PRIVATE_KEY_FILE pointing to a secured absolute PEM path).
 EOF
 }
 

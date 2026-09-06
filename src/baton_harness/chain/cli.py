@@ -40,6 +40,11 @@ from baton_harness.chain.app_auth import (
     build_installation_token_provider,
     resolve_installation_token,
 )
+from baton_harness.chain.app_private_key import (
+    AppPrivateKeyConfigError,
+    requires_bws,
+    resolve_app_private_key_config,
+)
 from baton_harness.chain.daemon import run_daemon
 from baton_harness.chain.identity import Identity, env_for
 from baton_harness.chain.registry import load_registry
@@ -62,116 +67,85 @@ def bootstrap_secrets(
     app_private_key_bws_id: str = "",
     installation_id: int = 0,
 ) -> InstallationTokenSource:
-    """Fetch App private key from BWS and build a refreshable token source.
+    """Load selected startup secrets and retain refreshable App authority.
 
-    Thin wrapper around ``app_auth.build_installation_token_provider`` that
-    reads env vars, calls the real implementation, and returns a provider
-    object for long-running daemon use. ``BWS_ACCESS_TOKEN`` is popped
-    from ``os.environ`` by the inner call as its first operation.
-
-    This function exists as a named symbol in ``cli`` so tests can patch
-    ``baton_harness.chain.cli.bootstrap_secrets`` without touching the
-    implementation module.
-
-    **Ordering invariant:** all vault fetches in this function MUST happen
-    BEFORE ``build_installation_token_provider`` is called.
-    ``build_installation_token_provider`` pops ``BWS_ACCESS_TOKEN`` from
-    ``os.environ`` as its very first operation, so any ``fetch_secret``
-    call that occurs after it would receive an empty access token and fail
-    with ``BwsClientError("access_token is empty")`` in production.
-
-    **New env vars (issue #171):**
-
-    - ``BWS_GH_TOKEN_SECRET_ID``: optional Bitwarden Secrets ID for a
-      GitHub fine-grained PAT.  When set and ``GH_TOKEN`` is absent or
-      empty in the environment, fetches the PAT, holds it in the module
-      global, and threads it through ``Orchestrator.hook_env`` to the
-      ``before_run`` hook subprocess only. It is never written to the
-      daemon's ambient ``os.environ``. If ``GH_TOKEN`` is already set to a
-      non-empty value, the vault is not called (operator override wins).
-    - ``BWS_HEARTBEAT_PING_URL_SECRET_ID``: optional Bitwarden Secrets ID
-      for a heartbeat webhook URL.  When set and ``BH_HEARTBEAT_PING_URL``
-      is absent or empty, fetches the URL and writes it to
-      ``os.environ["BH_HEARTBEAT_PING_URL"]``.  Same skip logic applies.
-
-    Both new env vars are optional for backward compatibility: omitting
-    them causes no fetch attempt and no error.  Vault errors
-    (``BwsClientError``) propagate — fail-closed semantics.
-
-    The PEM key is fetched once, internally, by
-    ``build_installation_token_provider`` — no duplicate vault round-trip.
+    The bootstrap token is captured once and scrubbed on every exit,
+    including configuration errors. Optional PAT and heartbeat reads
+    preserve non-empty operator overrides. The PAT stays by value in
+    _BOOTSTRAPPED_GH_TOKEN; the heartbeat URL retains its ambient destination.
 
     Args:
-        app_id: GitHub App numeric ID string.  Defaults to
-            ``BWS_APP_ID`` env var.
-        app_private_key_bws_id: Bitwarden Secrets ID for the RSA PEM
-            key.  Defaults to ``BWS_PEM_SECRET_ID`` env var.
-        installation_id: GitHub App installation ID.  Defaults to
-            ``BWS_INSTALLATION_ID`` env var.
+        app_id: GitHub App ID, defaulting to BWS_APP_ID.
+        app_private_key_bws_id: Optional override for BWS_PEM_SECRET_ID.
+        installation_id: App installation ID, defaulting to
+            BWS_INSTALLATION_ID.
 
     Returns:
-        A refreshable installation-token source for daemon-side gh calls.
+        A provider retaining the verified PEM for installation-token refresh.
 
     Raises:
-        AppAuthError: Propagated from ``build_installation_token_provider``
-            on Bitwarden or GitHub API failure during PEM/token bootstrap.
-        BwsClientError: Propagated from ``bws_client.fetch_secret`` when
-            a vault fetch for ``GH_TOKEN`` or ``BH_HEARTBEAT_PING_URL``
-            fails (fail-closed — never swallowed).
+        AppAuthError: If provider configuration, credentials, or key
+            loading/signing are invalid.
+        BwsClientError: If an optional PAT or heartbeat fetch fails.
     """
     from baton_harness.chain import bws_client
 
-    _app_id = app_id or os.environ.get("BWS_APP_ID", "")
-    _pem_id = app_private_key_bws_id or os.environ.get("BWS_PEM_SECRET_ID", "")
-    _install_id = installation_id or int(
-        os.environ.get("BWS_INSTALLATION_ID", "0")
-    )
-
-    # ------------------------------------------------------------------
-    # All vault fetches — MUST happen BEFORE
-    # build_installation_token_provider() is called (see ordering
-    # invariant in the docstring above).
-    #
-    # We read BWS_ACCESS_TOKEN here but do NOT pop it yet; the pop
-    # is delegated to build_installation_token_provider() so that
-    # function's env-discipline invariant is preserved.  The access
-    # token is only read (not consumed) at this stage.
-    # ------------------------------------------------------------------
-
     global _BOOTSTRAPPED_GH_TOKEN
 
-    _access_token = os.environ.get("BWS_ACCESS_TOKEN", "")
+    access_token = os.environ.get("BWS_ACCESS_TOKEN", "")
     _BOOTSTRAPPED_GH_TOKEN = ""
+    try:
+        values = dict(os.environ)
+        if app_private_key_bws_id:
+            values["BWS_PEM_SECRET_ID"] = app_private_key_bws_id
+        try:
+            app_key_config = resolve_app_private_key_config(values)
+        except AppPrivateKeyConfigError as exc:
+            raise AppAuthError(
+                f"{exc}; check the selected App private-key configuration"
+            ) from exc
 
-    # Step 1: optional GH_TOKEN vault fetch (skip if already set).
-    _gh_token_secret_id = os.environ.get("BWS_GH_TOKEN_SECRET_ID", "")
-    _gh_token = os.environ.get("GH_TOKEN", "")
-    if _gh_token_secret_id and not os.environ.get("GH_TOKEN"):
-        _gh_token = bws_client.fetch_secret(
-            _gh_token_secret_id,
-            access_token=_access_token,
+        if requires_bws(app_key_config, values) and not access_token:
+            raise AppAuthError(
+                "BWS_ACCESS_TOKEN is required by the selected secret "
+                "configuration"
+            )
+
+        resolved_app_id = app_id or os.environ.get("BWS_APP_ID", "")
+        try:
+            resolved_installation_id = installation_id or int(
+                os.environ.get("BWS_INSTALLATION_ID", "0")
+            )
+        except ValueError:
+            raise AppAuthError(
+                "BWS_INSTALLATION_ID must be an integer"
+            ) from None
+
+        gh_secret_id = os.environ.get("BWS_GH_TOKEN_SECRET_ID", "")
+        gh_token = os.environ.get("GH_TOKEN", "")
+        if gh_secret_id and not gh_token:
+            gh_token = bws_client.fetch_secret(
+                gh_secret_id, access_token=access_token
+            )
+        _BOOTSTRAPPED_GH_TOKEN = gh_token
+
+        heartbeat_secret_id = os.environ.get(
+            "BWS_HEARTBEAT_PING_URL_SECRET_ID", ""
         )
-    _BOOTSTRAPPED_GH_TOKEN = _gh_token
+        if heartbeat_secret_id and not os.environ.get("BH_HEARTBEAT_PING_URL"):
+            os.environ["BH_HEARTBEAT_PING_URL"] = bws_client.fetch_secret(
+                heartbeat_secret_id, access_token=access_token
+            )
 
-    # Step 2: optional BH_HEARTBEAT_PING_URL vault fetch (skip if set).
-    _heartbeat_secret_id = os.environ.get(
-        "BWS_HEARTBEAT_PING_URL_SECRET_ID", ""
-    )
-    if _heartbeat_secret_id and not os.environ.get("BH_HEARTBEAT_PING_URL"):
-        os.environ["BH_HEARTBEAT_PING_URL"] = bws_client.fetch_secret(
-            _heartbeat_secret_id,
-            access_token=_access_token,
+        return build_installation_token_provider(
+            app_id=resolved_app_id,
+            app_key_config=app_key_config,
+            installation_id=resolved_installation_id,
+            bws_access_token=access_token,
+            fetch_secret=bws_client.fetch_secret,
         )
-
-    # Step 3: build the token provider.  The PEM is fetched once,
-    # internally, inside build_installation_token_provider — no
-    # duplicate vault round-trip from this function.
-    return build_installation_token_provider(
-        app_id=_app_id,
-        app_private_key_bws_id=_pem_id,
-        installation_id=_install_id,
-        fetch_secret=bws_client.fetch_secret,
-    )
+    finally:
+        os.environ.pop("BWS_ACCESS_TOKEN", None)
 
 
 def _default_workflow_path() -> Path:
@@ -476,8 +450,8 @@ def main(argv: list[str] | None = None) -> int:
 
     # Bootstrap GitHub App installation token (slice 3a).
     # Must run AFTER chdir so the managed repo is the process cwd.
-    # BWS_ACCESS_TOKEN is popped from os.environ by bootstrap_secrets
-    # as its first operation — never re-added after this point.
+    # bootstrap_secrets removes BWS_ACCESS_TOKEN from os.environ in
+    # finally on every bootstrap exit, after any selected vault reads.
     # The installation token is NEVER written to os.environ; it is
     # passed by value to run_daemon (env-discipline invariant).
     try:

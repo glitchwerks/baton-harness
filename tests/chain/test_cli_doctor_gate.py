@@ -39,10 +39,12 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Iterator
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from baton_harness.chain import doctor
 from baton_harness.chain.cli import main
 from baton_harness.chain.doctor import (
     CheckResult,
@@ -50,6 +52,79 @@ from baton_harness.chain.doctor import (
     Phase,
     Severity,
 )
+
+_REAL_RUN_GATE = doctor.run_gate
+
+
+def _run_file_provider_gate(
+    tmp_path: Path, *, optional_bws: bool
+) -> tuple[int, int]:
+    """Run the real prerequisite gate through CLI startup in isolation."""
+    bh_dir = tmp_path / ".bh"
+    bh_dir.mkdir()
+    content = (
+        "BH_REPO_OWNER=my-org\nBH_REPO_NAME=my-sandbox\n"
+        "BH_GITHUB_APP_ID=12345\nBH_GITHUB_APP_INSTALLATION_ID=67890\n"
+        "BH_GITHUB_APP_KEY_PROVIDER=file\n"
+        f"BH_GITHUB_APP_PRIVATE_KEY_FILE={tmp_path / 'app.pem'}\n"
+    )
+    if optional_bws:
+        content += (
+            "BWS_GH_TOKEN_SECRET_ID=11111111-2222-3333-4444-555555555555\n"
+        )
+    (bh_dir / "config.env").write_text(content, encoding="utf-8")
+    checks = [
+        check
+        for check in doctor.CATALOG
+        if check.check_id
+        in {"CLI_BWS", "CFG_REQUIRED_KEYS", "ENV_BWS_ACCESS_TOKEN"}
+    ]
+    with (
+        patch.dict(
+            "os.environ", {"BH_PROJECT_ROOT": str(tmp_path)}, clear=True
+        ),
+        patch.object(doctor, "CATALOG", checks),
+        patch.object(doctor, "run_gate", new=_REAL_RUN_GATE),
+        patch(
+            "baton_harness.chain.cli.load_workflow", return_value=MagicMock()
+        ),
+        patch(
+            "baton_harness.chain.cli.load_registry",
+            return_value=[MagicMock(project_root=str(tmp_path))],
+        ),
+        patch("baton_harness.chain.sandbox_config.read_and_validate"),
+        patch("baton_harness.chain.cli.os.chdir"),
+        patch("baton_harness.chain.cli._assert_force_pr_not_merge_tripwire"),
+        patch(
+            "baton_harness.chain.cli.shutil.which",
+            return_value="/usr/bin/bws" if optional_bws else None,
+        ),
+        patch(
+            "baton_harness.chain.cli.bootstrap_secrets",
+            return_value="ghs_TESTTOKEN_sentinel",
+        ) as bootstrap,
+        patch("baton_harness.chain.cli.validate_daemon_token"),
+        patch("baton_harness.chain.cli.run_daemon", new_callable=AsyncMock),
+    ):
+        result = _run_main_allow_system_exit("--once")
+    return result, bootstrap.call_count
+
+
+def test_cli_doctor_gate_allows_file_only_host_without_bws(
+    tmp_path: Path,
+) -> None:
+    """File-only hosts reach bootstrap without BWS binary or token."""
+    assert _run_file_provider_gate(tmp_path, optional_bws=False) == (0, 1)
+
+
+def test_cli_doctor_gate_blocks_file_provider_optional_bws_without_token(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An optional PAT consumer makes a missing BWS token fatal."""
+    assert _run_file_provider_gate(tmp_path, optional_bws=True) == (1, 0)
+    assert "ENV_BWS_ACCESS_TOKEN" in capsys.readouterr().err
+
 
 # ---------------------------------------------------------------------------
 # Autouse fixtures
