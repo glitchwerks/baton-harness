@@ -1,0 +1,52 @@
+{
+  "_comment": "The 'update' rule is the load-bearing control that denies worker-identity direct pushes AND gh pr merge to main. Worker identity (daemon App installation) is NOT in bypass_actors; only the admin RepositoryRole bypasses. This repo uses TWO rulesets, not one, because GitHub's ruleset model applies a single bypass_actors list per ruleset; we need admin-only bypass on ~DEFAULT_BRANCH here and App-only bypass on refs/heads/feature/* in harness-feature-daemon-only. required_status_checks carries the CI gate. See https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets#restrict-updates",
+  "name": "harness-main-no-merge",
+  "target": "branch",
+  "enforcement": "active",
+  "bypass_actors": [
+    {
+      "actor_id": "__BH_ADMIN_ROLE_ID__",
+      "actor_type": "RepositoryRole",
+      "bypass_mode": "always"
+    }
+  ],
+  "conditions": {
+    "ref_name": {
+      "include": ["~DEFAULT_BRANCH"],
+      "exclude": []
+    }
+  },
+  "rules": [
+    {"type": "deletion"},
+    {"type": "non_fast_forward"},
+    {
+      "type": "update",
+      "parameters": {
+        "update_allows_fetch_and_merge": false
+      }
+    },
+    {
+      "type": "pull_request",
+      "parameters": {
+        "_comment": "required_approving_review_count: 0 is intentional. This rule exists to force the PR path so CI runs before main changes land; the operator self-merges after CI green. The load-bearing boundary is the update rule plus required_status_checks, not a second human-review gate.",
+        "required_approving_review_count": 0,
+        "dismiss_stale_reviews_on_push": false,
+        "require_code_owner_review": false,
+        "require_last_push_approval": false,
+        "required_review_thread_resolution": false
+      }
+    },
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": false,
+        "required_status_checks": [
+          {"context": "Lint (ruff)"},
+          {"context": "Lint (shellcheck)"},
+          {"context": "Type check (mypy)"},
+          {"context": "Test (pytest)"}
+        ]
+      }
+    }
+  ]
+}
