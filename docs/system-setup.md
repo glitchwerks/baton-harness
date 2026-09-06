@@ -67,7 +67,8 @@ What it does, in order:
    `claude`). Missing either in a non-interactive context or with `BH_SETUP_NO_PROMPT=1`
    exits 1 with its manual-install link and makes no network call.
 4. Creates `.venv` (skipped if already present — safe to re-run)
-5. Installs the package with dev extras: `uv pip install -e ".[dev]"`
+5. Syncs the package editably with the exact runtime and development
+   dependencies from `uv.lock`: `uv sync --locked --extra dev`
 6. Verifies `bh-daemon` is reachable inside the venv
 7. Prints the venv-activation hint
 8. In an interactive terminal, prompts for `BH_PROJECT_ROOT` (the absolute path to your

@@ -129,12 +129,14 @@ dedicated branch, and use a pull request to integrate changes into `main`.
 
 ### Setup
 
-`bin/setup-env.sh` wraps these two steps (idempotent; pass `--help` for details):
+`bin/setup-env.sh` wraps these locked development steps (idempotent; pass
+`--help` for details):
 
 ```bash
-# Create and populate the virtual environment
+# Create the virtual environment, then install the project editably with
+# the exact runtime and development dependencies recorded in uv.lock.
 uv venv .venv
-uv pip install -e ".[dev]"
+uv sync --locked --extra dev
 ```
 
 ### Running the quality gate
@@ -182,7 +184,8 @@ The three lifecycle hooks and the daemon are installed as console scripts by `py
 | `bh-daemon` | `baton_harness.chain.cli:main` | `src/baton_harness/chain/cli.py` |
 | `bh-force-pr-not-merge` | `baton_harness.hooks.force_pr_not_merge:main` | `src/baton_harness/hooks/force_pr_not_merge.py` |
 
-After `uv pip install -e ".[dev]"`, these commands are on `PATH` inside the venv.
+After `uv sync --locked --extra dev`, these commands are on `PATH` inside
+the editable development venv.
 WORKFLOW.md hook lines wire them as:
 
 ```yaml

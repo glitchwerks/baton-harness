@@ -40,7 +40,7 @@ Steps performed:
   4. Checks that claude (Claude Code CLI) is on PATH; offers to install
      via the official native installer when running in an interactive terminal
   5. Creates .venv (skipped if already present — idempotent)
-  6. Installs the package with dev extras: uv pip install -e ".[dev]"
+  6. Syncs the locked package with dev extras (editable by default)
   7. Checks whether prek is on PATH and installs the git pre-commit hook when
      available; prints a non-fatal warning and skips it otherwise
   8. Verifies bh-daemon is accessible inside the venv
@@ -442,8 +442,8 @@ fi
 # Install the package (always run — uv is idempotent here)
 # ---------------------------------------------------------------------------
 
-echo "baton-harness: installing package (uv pip install -e \".[dev]\") ..."
-uv pip install --python "${VENV_DIR}" -e "${BATON_HARNESS_DIR}[dev]"
+echo "baton-harness: syncing locked editable package with dev extras ..."
+uv sync --project "${BATON_HARNESS_DIR}" --locked --extra dev
 
 # ---------------------------------------------------------------------------
 # Install the git pre-commit hook (prek install is idempotent)

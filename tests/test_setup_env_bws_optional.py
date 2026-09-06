@@ -192,6 +192,20 @@ def _run_setup(
     return proc, log_path
 
 
+def test_package_setup_uses_locked_editable_sync(tmp_path: Path) -> None:
+    """Replacing locked sync with an unlocked install breaks bootstrap."""
+    proc, log_path = _run_setup(tmp_path)
+
+    assert proc.returncode == 0, proc.stderr
+    commands = log_path.read_text(encoding="utf-8").splitlines()
+    sync = [line for line in commands if line.startswith("uv:sync ")]
+    assert len(sync) == 1
+    assert "--project " in sync[0]
+    assert "--locked" in sync[0]
+    assert "--extra dev" in sync[0]
+    assert not any(line.startswith("uv:pip install") for line in commands)
+
+
 def test_missing_bws_no_prompt_continues_without_download(
     tmp_path: Path,
 ) -> None:
@@ -200,7 +214,7 @@ def test_missing_bws_no_prompt_continues_without_download(
 
     assert proc.returncode == 0, proc.stderr
     command_log = log_path.read_text(encoding="utf-8")
-    assert "uv:pip install" in command_log
+    assert "uv:sync " in command_log
     assert "curl:" not in command_log
     assert "bws" in proc.stderr.lower()
     assert "optional" in proc.stderr.lower()
@@ -218,7 +232,7 @@ def test_declining_interactive_bws_install_continues(
 
     assert proc.returncode == 0, proc.stderr
     command_log = log_path.read_text(encoding="utf-8")
-    assert "uv:pip install" in command_log
+    assert "uv:sync " in command_log
     assert "curl:" not in command_log
     assert "bws install declined" in proc.stderr.lower()
     assert "optional" in proc.stderr.lower()
