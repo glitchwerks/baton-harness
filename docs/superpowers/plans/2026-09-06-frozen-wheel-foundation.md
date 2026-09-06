@@ -6,7 +6,7 @@
 
 **Architecture:** `uv.lock` is the sole dependency authority. Canonical defaults live in `baton_harness.resources`, with byte-identical `config/` mirrors retained for shell consumers. `bh-verify-foundation` centralizes repository, wheel, and installed-environment invariants and runs inside the existing pytest CI check.
 
-**Tech Stack:** Python 3.10+, `importlib.resources`, `tomllib`, `zipfile`, uv, Hatchling, pytest, GitHub Actions.
+**Tech Stack:** Python 3.10+, `importlib.resources`, `zipfile`, uv, Hatchling, pytest, GitHub Actions.
 
 **Spec:** `docs/superpowers/specs/2026-09-06-frozen-wheel-foundation-design.md`
 
@@ -334,11 +334,13 @@ Use a recording runner and assert this order for one requested interpreter:
 
 ```text
 uv lock --check
-uv build --locked --sdist --wheel --out-dir <temp>
 uv export --locked --no-emit-project --format requirements.txt --output-file <temp>
+uv export --locked --extra dev --no-emit-project --format requirements.txt --output-file <temp>
+uv build --build-constraints <dev-export> --require-hashes --sdist --wheel --out-dir <temp>
 uv venv <temp-venv> --python 3.10
 uv pip sync --python <temp-python> <requirements>
 uv pip install --python <temp-python> --no-deps <wheel>
+uv pip check --python <temp-python>
 <temp-verifier> --installed-smoke
 ```
 
@@ -366,7 +368,7 @@ Expected: installed-state assertions fail because `verify_installed` is absent.
 
 - [ ] **Step 10: Implement installed smoke**
 
-Use `importlib.metadata.distribution("baton-harness")`; reject editable metadata and imports outside `sys.prefix`; load all five package resources; require all six entry points. Invoke `bh-daemon --help`, invoke the lifecycle hooks from an unresolvable temporary directory expecting their documented early exit, and feed `{}` to `bh-force-pr-not-merge` expecting zero (`src/baton_harness/after_create.py:L394-L420`; `src/baton_harness/before_run.py:L104-L135`; `src/baton_harness/after_run.py:L615-L647`). Pass the dev-only distribution names through a temporary JSON manifest and reject those not shared by the runtime closure.
+Use `importlib.metadata.distribution("baton-harness")`; reject editable metadata and imports outside `sys.prefix`; load all five package resources; require all six entry points. Invoke `bh-daemon --help`, invoke the lifecycle hooks from an unresolvable temporary directory expecting their documented early exit, and feed `{}` to `bh-force-pr-not-merge` expecting zero (`src/baton_harness/after_create.py:L394-L420`; `src/baton_harness/before_run.py:L104-L135`; `src/baton_harness/after_run.py:L615-L647`). Derive dev-only distributions by subtracting the locked runtime export from a locked `--extra dev` export, pass the names through repeated hidden `--forbid-distribution` arguments, and reject any that appear in the installed environment.
 
 - [ ] **Step 11: Verify GREEN and quality gates**
 

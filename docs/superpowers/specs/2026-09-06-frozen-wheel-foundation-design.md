@@ -48,8 +48,10 @@ and recommends committing it for reproducible installations.
 https://docs.astral.sh/uv/concepts/projects/layout/ (fetched 2026-09-06)
 
 The lock covers the base project and its `dev` extra across the declared Python range.
-Dependency changes are made in `pyproject.toml`, followed deliberately by `uv lock`.
-Neither CI nor validation may update the lock implicitly.
+Hatchling is also selected in the `dev` extra so its exact build-backend resolution can
+be exported as a build constraint. Dependency changes are made in `pyproject.toml`,
+followed deliberately by `uv lock`. Neither CI nor validation may update the lock
+implicitly.
 
 Development setup changes from an unlocked `uv pip install` to
 `uv sync --locked --extra dev`. uv installs projects editably by default during
@@ -105,21 +107,22 @@ runs on Windows and Linux. Its default mode requires a project root containing
    https://docs.astral.sh/uv/concepts/projects/sync/ (fetched 2026-09-06)
 2. Compare every packaged-resource source file with its `config/` compatibility
    mirror as raw bytes.
-3. Build an sdist and wheel into a temporary directory with `uv build --locked`.
-   `uv build` builds the wheel from the sdist when both formats are requested, so
-   omitted source-distribution data is also exposed.
+3. Export both runtime-only and `--extra dev` resolutions from the checked lock, then
+   build an sdist and wheel with the dev export supplied through
+   `uv build --build-constraints ... --require-hashes`. This freezes Hatchling and its
+   build transitives. `uv build` builds the wheel from the sdist when both formats are
+   requested, so omitted source-distribution data is also exposed.
    https://docs.astral.sh/uv/concepts/projects/build/ (fetched 2026-09-06)
 4. Inspect the wheel archive before installation: require all five resources, the
    original five runtime entry points, and `bh-verify-foundation`; reject unexpected
    duplicate resource paths.
-5. For each requested interpreter, export the locked base dependency set, create a
-   temporary environment, sync those dependencies, and install the wheel with
-   `--no-deps`.
+5. For each requested interpreter, create a temporary environment, sync the exported
+   runtime dependency set, install the wheel with `--no-deps`, and run `uv pip check`.
 6. From a temporary working directory outside the repository, invoke the installed
    command with a hidden `--installed-smoke` mode. That mode verifies distribution
    metadata, confirms the imported package is inside the temporary environment rather
    than the checkout, loads every packaged resource, confirms the six console entry
-   points, and rejects installed packages attributable only to the declared dev extra.
+   points, and rejects the resolved packages selected only by the declared dev extra.
 7. Exercise each original entry point without external writes: `bh-daemon --help`,
    the three lifecycle hooks from a deliberately unresolvable temporary directory
    with their documented failure expected, and `bh-force-pr-not-merge` with a benign
