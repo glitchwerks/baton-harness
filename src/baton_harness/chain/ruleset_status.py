@@ -12,9 +12,9 @@ API shape (same as bin/provision-ruleset.sh):
 
 Charge 2 — Compare-keys single source of truth:
     The set of keys compared between desired and live state is loaded
-    from ``config/ruleset.compare-keys.json`` at call time.  No literal
-    ``_COMPARE_KEYS`` tuple exists in this module body.  The resolved
-    ``Path`` is exposed as ``_COMPARE_KEYS_CFG`` so tests can monkeypatch.
+    from the packaged ``ruleset.compare-keys.json`` at call time.  No
+    literal ``_COMPARE_KEYS`` tuple exists in this module body.  The
+    resource is exposed as ``_COMPARE_KEYS_CFG`` so tests can monkeypatch.
 
 Charge 8 — HTTP status from stdout, not stderr:
     Every ``gh api`` call passes ``--include`` so that the HTTP status
@@ -61,32 +61,28 @@ from typing import cast
 
 from baton_harness.chain.identity import Identity, env_for
 from baton_harness.chain.subproc import run_cmd
+from baton_harness.resources import PackageResource, resource
 
 _log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Path resolution — config/ lives 3 parents up from this module file:
-#   src/baton_harness/chain/  (this module)
-#   -> src/baton_harness/
-#   -> src/
-#   -> <harness root>  (parents[3])
+# Packaged defaults remain replaceable with Paths in focused tests.
 # ---------------------------------------------------------------------------
 
-_HARNESS_ROOT = Path(__file__).resolve().parents[3]
-_MAIN_CFG = _HARNESS_ROOT / "config" / "ruleset.main.json"
-_FEATURE_CFG = _HARNESS_ROOT / "config" / "ruleset.feature.json"
+_MAIN_CFG: PackageResource | Path = resource("ruleset.main.json")
+_FEATURE_CFG: PackageResource | Path = resource("ruleset.feature.json")
 
 #: Module-level attribute for the compare-keys config path.
 #: Exposed so tests can monkeypatch to a tmp file.
-_COMPARE_KEYS_CFG: Path = (
-    _HARNESS_ROOT / "config" / "ruleset.compare-keys.json"
+_COMPARE_KEYS_CFG: PackageResource | Path = resource(
+    "ruleset.compare-keys.json"
 )
 
 #: App-token-safe compare-keys subset (#206) — excludes ``bypass_actors``,
 #: which an App installation token cannot read.  Used only by
 #: ``check_ruleset_signals``; ``ruleset_is_provisioned`` is unaffected.
-_COMPARE_KEYS_APP_CFG: Path = (
-    _HARNESS_ROOT / "config" / "ruleset.compare-keys.app.json"
+_COMPARE_KEYS_APP_CFG: PackageResource | Path = resource(
+    "ruleset.compare-keys.app.json"
 )
 
 _MAIN_NAME = "harness-main-no-merge"
@@ -156,7 +152,9 @@ class RulesetCheckResult:
 # ---------------------------------------------------------------------------
 
 
-def _load_keys_from_path(cfg_path: Path) -> tuple[str, ...]:
+def _load_keys_from_path(
+    cfg_path: PackageResource | Path,
+) -> tuple[str, ...]:
     """Load and validate a compare-keys JSON list from an arbitrary path.
 
     Shared by ``_load_compare_keys`` (full admin-visible key set) and
@@ -164,7 +162,7 @@ def _load_keys_from_path(cfg_path: Path) -> tuple[str, ...]:
     exists, content is valid JSON, value is a non-empty list of strings.
 
     Args:
-        cfg_path: Path to the compare-keys JSON config file.
+        cfg_path: Package resource or injected config-file path.
 
     Returns:
         A tuple of key names to compare.
@@ -173,7 +171,7 @@ def _load_keys_from_path(cfg_path: Path) -> tuple[str, ...]:
         RulesetConfigError: When the file is missing, non-JSON, not a
             list, or an empty list.
     """
-    if not cfg_path.exists():
+    if not cfg_path.is_file():
         raise RulesetConfigError(f"compare-keys config not found: {cfg_path}")
     try:
         raw = json.loads(cfg_path.read_text(encoding="utf-8"))

@@ -5,9 +5,7 @@ runs the always-on daemon via ``asyncio.run``.
 
 Flags:
     --once          Run a single tick then exit (useful for tests and CI).
-    --workflow      Path to ``WORKFLOW.md`` (default: ``config/WORKFLOW.md``
-                    relative to the repo root derived from this file's
-                    location).
+    --workflow      Path to ``WORKFLOW.md`` (default: packaged workflow).
     --poll-interval Override the outer-loop poll interval in seconds.
     --report        Path to the session report JSON file.
 
@@ -27,6 +25,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 
 from baton_harness._auth import (
@@ -48,6 +47,7 @@ from baton_harness.chain.app_private_key import (
 from baton_harness.chain.daemon import run_daemon
 from baton_harness.chain.identity import Identity, env_for
 from baton_harness.chain.registry import load_registry
+from baton_harness.resources import as_path
 from baton_harness.vendor.symphony.config import load_workflow
 
 _log = logging.getLogger(__name__)
@@ -148,21 +148,18 @@ def bootstrap_secrets(
         os.environ.pop("BWS_ACCESS_TOKEN", None)
 
 
-def _default_workflow_path() -> Path:
-    """Return the default ``config/WORKFLOW.md`` path.
+def _workflow_path(workflow: str | None) -> AbstractContextManager[Path]:
+    """Resolve an explicit workflow or expose the packaged default.
 
-    Resolves relative to the harness repo root, derived from this
-    module's location (``src/baton_harness/chain/cli.py`` → four
-    parents up = repo root).
+    Args:
+        workflow: Optional operator-supplied workflow path.
 
     Returns:
-        The absolute path to ``config/WORKFLOW.md``.
+        Context manager yielding an absolute filesystem path.
     """
-    # src/baton_harness/chain/cli.py → src/baton_harness/chain →
-    # src/baton_harness → src → <repo_root>
-    here = Path(__file__).resolve()
-    repo_root = here.parent.parent.parent.parent
-    return repo_root / "config" / "WORKFLOW.md"
+    if workflow:
+        return nullcontext(Path(workflow).resolve())
+    return as_path("WORKFLOW.md")
 
 
 def _assert_force_pr_not_merge_tripwire() -> None:
@@ -223,7 +220,7 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help=(
             "Path to WORKFLOW.md config file.  Defaults to"
-            " config/WORKFLOW.md in the harness repo root."
+            " the WORKFLOW.md shipped in the harness package."
         ),
     )
     parser.add_argument(
@@ -316,21 +313,18 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         return 0
 
-    # Resolve workflow path to ABSOLUTE before any chdir so the path
-    # survives a working-directory change later in this function.
-    workflow_path = (
-        Path(args.workflow).resolve()
+    workflow_description = (
+        str(Path(args.workflow).resolve())
         if args.workflow
-        else _default_workflow_path()
+        else "packaged WORKFLOW.md"
     )
-
-    # Load workflow config.
     try:
-        config = load_workflow(str(workflow_path))
+        with _workflow_path(args.workflow) as workflow_path:
+            config = load_workflow(str(workflow_path))
     except Exception as exc:
         print(
             f"bh-daemon: error loading workflow config"
-            f" {workflow_path!r}: {exc}",
+            f" {workflow_description!r}: {exc}",
             file=sys.stderr,
         )
         return 1
@@ -373,7 +367,7 @@ def main(argv: list[str] | None = None) -> int:
     # Without this chdir, the tracker's ``fetch_issue_state`` and
     # ``check_pr_exists`` would hit the harness repo (or wherever the
     # daemon was launched from) instead of the managed repo.
-    # NOTE: workflow_path was resolved to absolute above, so it is
+    # NOTE: workflow configuration was fully loaded above, so it is
     # unaffected by this directory change.
     project_root = registry[0].project_root
     report_path = (
