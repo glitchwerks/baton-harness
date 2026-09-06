@@ -239,7 +239,7 @@ Run: `uv lock`
 
 Run: `uv lock --check`
 
-Replace the composite action install step with `uv sync --locked --extra dev`. Retain explicit venv creation in `bin/setup-env.sh`, then run `uv sync --project "${BATON_HARNESS_DIR}" --locked --extra dev`. Update README/setup text to call it a locked editable developer environment. uv resolves optional dependencies into the universal lock and installs selected extras with `--extra`. https://docs.astral.sh/uv/concepts/resolution/ (fetched 2026-09-06); https://docs.astral.sh/uv/concepts/projects/sync/ (fetched 2026-09-06)
+Replace the composite action install step with `uv sync --python 3.10 --locked --extra dev` and assert that `.venv/bin/python` reports Python 3.10. Retain explicit venv creation in `bin/setup-env.sh`, then run `uv sync --project "${BATON_HARNESS_DIR}" --locked --extra dev`. Update README/setup text to call it a locked editable developer environment. uv resolves optional dependencies into the universal lock and installs selected extras with `--extra`. https://docs.astral.sh/uv/concepts/resolution/ (fetched 2026-09-06); https://docs.astral.sh/uv/concepts/projects/sync/ (fetched 2026-09-06)
 
 - [ ] **Step 4: Verify GREEN**
 
@@ -436,7 +436,7 @@ Add this step immediately after pytest without creating or renaming a job:
   run: .venv/bin/bh-verify-foundation
 ```
 
-Document `uv sync --locked --extra dev` as editable development and `bh-verify-foundation` as the full lock/mirror/wheel/Python 3.10+3.13 production proof. State that production installation is non-editable and contains runtime dependencies only.
+Document `uv sync --locked --extra dev` as editable development and `bh-verify-foundation` as the full lock/mirror/wheel/Python 3.10+3.13 production proof. Include runnable locked export, constrained build, runtime-only sync, non-editable wheel install, and `uv pip check` commands. State that production installation is non-editable and contains runtime dependencies only.
 
 - [ ] **Step 4: Verify contract GREEN**
 

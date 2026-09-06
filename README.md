@@ -197,6 +197,33 @@ Use repeated `--python VERSION` arguments for a focused diagnostic run. CI and
 release validation use the default 3.10 and 3.13 endpoints. The command only
 reports drift; it never updates the lock or repairs resource mirrors.
 
+To reproduce the non-editable installation manually from the repository root,
+use the following Bash commands. Set `RUNTIME_PYTHON` to the path for the host
+platform as shown:
+
+```bash
+mkdir -p .tmp
+uv lock --check
+uv export --locked --no-emit-project --format requirements.txt \
+  --output-file .tmp/runtime-requirements.txt
+uv export --locked --extra dev --no-emit-project --format requirements.txt \
+  --output-file .tmp/build-requirements.txt
+uv build --build-constraints .tmp/build-requirements.txt --require-hashes \
+  --sdist --wheel --out-dir .tmp/dist
+uv venv .tmp/runtime-venv --python 3.13
+
+RUNTIME_PYTHON=.tmp/runtime-venv/Scripts/python.exe  # Windows Git Bash
+# RUNTIME_PYTHON=.tmp/runtime-venv/bin/python        # macOS/Linux
+uv pip sync --python "$RUNTIME_PYTHON" .tmp/runtime-requirements.txt
+uv pip install --python "$RUNTIME_PYTHON" --no-deps \
+  .tmp/dist/baton_harness-*.whl
+uv pip check --python "$RUNTIME_PYTHON"
+```
+
+This staging environment contains the locked runtime closure and the built wheel;
+it does not select the `dev` extra. Run `bh-verify-foundation` before promoting the
+wheel to a deployment environment.
+
 ### Console entry-point convention
 
 The three lifecycle hooks and the daemon are installed as console scripts by `pyproject.toml`:

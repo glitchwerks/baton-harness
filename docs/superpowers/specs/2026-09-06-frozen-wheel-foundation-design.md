@@ -113,9 +113,9 @@ runs on Windows and Linux. Its default mode requires a project root containing
    build transitives. `uv build` builds the wheel from the sdist when both formats are
    requested, so omitted source-distribution data is also exposed.
    https://docs.astral.sh/uv/concepts/projects/build/ (fetched 2026-09-06)
-4. Inspect the wheel archive before installation: require all five resources, the
-   original five runtime entry points, and `bh-verify-foundation`; reject unexpected
-   duplicate resource paths.
+4. Inspect the wheel archive before installation: require the exact canonical archive
+   paths for all five resources, the original five runtime entry points, and
+   `bh-verify-foundation`; reject unexpected duplicate resource paths.
 5. For each requested interpreter, create a temporary environment, sync the exported
    runtime dependency set, install the wheel with `--no-deps`, and run `uv pip check`.
 6. From a temporary working directory outside the repository, invoke the installed
@@ -130,15 +130,19 @@ runs on Windows and Linux. Its default mode requires a project root containing
    behavioral coverage remains in the existing test suite.
 
 The default interpreter set is 3.10 and 3.13, matching #360. Repeated `--python`
-arguments allow focused local checks without changing CI policy. Temporary build and
-environment directories are deleted on success and retained only when an explicit
-diagnostic option requests it. Errors identify the failed invariant and return
-non-zero; the command never repairs state automatically.
+arguments allow focused local checks without changing CI policy. External commands
+have bounded runtimes, receive closed standard input unless a smoke payload is
+required, and normalize expected operational failures into a stable non-zero
+diagnostic. Temporary build and environment directories are deleted on success and
+retained only when an explicit diagnostic option requests it. Errors identify the
+failed invariant and return non-zero; the command never repairs state automatically.
 
 ## CI enforcement
 
-The shared setup action installs with `uv sync --locked --extra dev`, making every
-existing Python job reject lock drift before linting, typing, or tests. The existing
+The shared setup action installs with
+`uv sync --python 3.10 --locked --extra dev` and asserts the created interpreter is
+Python 3.10, making every existing Python job reject lock drift before linting, typing,
+or tests. The existing
 `Test (pytest)` job then runs `bh-verify-foundation` after pytest. Keeping validation
 inside that existing required check avoids a required-check name migration while still
 making the complete foundation proof merge-blocking

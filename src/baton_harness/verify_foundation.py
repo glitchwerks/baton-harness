@@ -10,12 +10,12 @@ import re
 import subprocess
 import sys
 import tempfile
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from importlib import metadata
 from pathlib import Path
 from typing import Protocol
-from zipfile import ZipFile
+from zipfile import BadZipFile, ZipFile
 
 from baton_harness.resources import (
     RESOURCE_NAMES,
@@ -34,6 +34,8 @@ EXPECTED_ENTRY_POINTS = frozenset(
         "bh-verify-foundation",
     }
 )
+COMMAND_TIMEOUT_SECONDS = 300.0
+SMOKE_TIMEOUT_SECONDS = 30.0
 
 
 class FoundationError(RuntimeError):
@@ -50,6 +52,7 @@ class Runner(Protocol):
         cwd: Path,
         env: Mapping[str, str] | None = None,
         input_text: str | None = None,
+        timeout_seconds: float = COMMAND_TIMEOUT_SECONDS,
     ) -> subprocess.CompletedProcess[str]:
         """Execute a command and return its captured result."""
 
@@ -60,6 +63,7 @@ def run_command(
     cwd: Path,
     env: Mapping[str, str] | None = None,
     input_text: str | None = None,
+    timeout_seconds: float = COMMAND_TIMEOUT_SECONDS,
 ) -> subprocess.CompletedProcess[str]:
     """Run one external validation command with captured UTF-8 output.
 
@@ -68,19 +72,35 @@ def run_command(
         cwd: Working directory for the child process.
         env: Optional complete child environment.
         input_text: Optional standard-input text.
+        timeout_seconds: Maximum command duration.
 
     Returns:
         Captured process result without automatic exception handling.
     """
+    arguments = list(command)
+    environment = None if env is None else dict(env)
+    if input_text is None:
+        return subprocess.run(
+            arguments,
+            cwd=cwd,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=timeout_seconds,
+        )
     return subprocess.run(
-        list(command),
+        arguments,
         cwd=cwd,
-        env=None if env is None else dict(env),
+        env=environment,
         input=input_text,
         capture_output=True,
         text=True,
         encoding="utf-8",
         check=False,
+        timeout=timeout_seconds,
     )
 
 
@@ -104,11 +124,22 @@ def _run_checked(
     Raises:
         FoundationError: If the child exits non-zero.
     """
-    result = runner(command, cwd=cwd, env=env, input_text=input_text)
+    rendered = " ".join(str(part) for part in command)
+    try:
+        result = runner(
+            command,
+            cwd=cwd,
+            env=env,
+            input_text=input_text,
+            timeout_seconds=COMMAND_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
+        raise FoundationError(
+            f"command could not complete ({rendered}): {exc}"
+        ) from exc
     if result.returncode == 0:
         return
     detail = (result.stderr or result.stdout).strip() or "no output"
-    rendered = " ".join(str(part) for part in command)
     raise FoundationError(f"command failed ({rendered}): {detail}")
 
 
@@ -167,8 +198,14 @@ def _requirement_names(path: Path) -> frozenset[str]:
     Returns:
         Resolved distribution names from requirement records.
     """
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as exc:
+        raise FoundationError(
+            f"could not read locked requirements {path}: {exc}"
+        ) from exc
     names: set[str] = set()
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in lines:
         match = re.match(r"^([A-Za-z0-9][A-Za-z0-9._-]*)", line.strip())
         if match is not None:
             names.add(_normalize_distribution_name(match.group(1)))
@@ -278,12 +315,18 @@ def _smoke_entry_points(
             executable = executable_dir / (
                 f"{name}.exe" if os.name == "nt" else name
             )
-            result = runner(
-                (str(executable), *arguments),
-                cwd=cwd,
-                env=child_env,
-                input_text=input_text,
-            )
+            try:
+                result = runner(
+                    (str(executable), *arguments),
+                    cwd=cwd,
+                    env=child_env,
+                    input_text=input_text,
+                    timeout_seconds=SMOKE_TIMEOUT_SECONDS,
+                )
+            except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
+                raise FoundationError(
+                    f"entry-point smoke could not complete ({name}): {exc}"
+                ) from exc
             if result.returncode != expected_status:
                 detail = (
                     result.stderr or result.stdout
@@ -292,6 +335,24 @@ def _smoke_entry_points(
                     f"entry-point smoke failed ({name}): expected exit "
                     f"{expected_status}, got {result.returncode}: {detail}"
                 )
+
+
+def _read_installed_resources(
+    reader: Callable[[str], bytes] = read_bytes,
+) -> None:
+    """Read every installed default and normalize resource failures.
+
+    Args:
+        reader: Package-resource byte reader, injectable for tests.
+
+    Raises:
+        FoundationError: If a resource is absent or unreadable.
+    """
+    try:
+        for name in RESOURCE_NAMES:
+            reader(name)
+    except (PackagedResourceError, OSError, UnicodeError) as exc:
+        raise FoundationError(f"installed resource unreadable: {exc}") from exc
 
 
 def verify_installed(forbidden_distributions: frozenset[str]) -> None:
@@ -305,31 +366,38 @@ def verify_installed(forbidden_distributions: frozenset[str]) -> None:
     """
     import baton_harness
 
-    distribution = metadata.distribution("baton-harness")
-    package_file = Path(baton_harness.__file__ or "")
-    entry_points = frozenset(
-        entry.name
-        for entry in distribution.entry_points
-        if entry.group == "console_scripts"
-    )
-    installed_names = frozenset(
-        name
-        for candidate in metadata.distributions()
-        if (name := candidate.metadata["Name"]) is not None
-    )
+    try:
+        distribution = metadata.distribution("baton-harness")
+        package_file = Path(baton_harness.__file__ or "")
+        entry_points = frozenset(
+            entry.name
+            for entry in distribution.entry_points
+            if entry.group == "console_scripts"
+        )
+        installed_names = frozenset(
+            name
+            for candidate in metadata.distributions()
+            if (name := candidate.metadata["Name"]) is not None
+        )
+        direct_url_json = distribution.read_text("direct_url.json")
+    except (
+        metadata.PackageNotFoundError,
+        OSError,
+        UnicodeError,
+        configparser.Error,
+    ) as exc:
+        raise FoundationError(
+            f"could not read installed metadata: {exc}"
+        ) from exc
     _validate_installed_state(
-        direct_url_json=distribution.read_text("direct_url.json"),
+        direct_url_json=direct_url_json,
         package_file=package_file,
         prefix=Path(sys.prefix),
         entry_points=entry_points,
         installed_distributions=installed_names,
         forbidden_distributions=forbidden_distributions,
     )
-    try:
-        for name in RESOURCE_NAMES:
-            read_bytes(name)
-    except PackagedResourceError as exc:
-        raise FoundationError(str(exc)) from exc
+    _read_installed_resources()
 
     executable_dir = Path(sys.executable).resolve().parent
     _smoke_entry_points(executable_dir)
@@ -369,25 +437,32 @@ def inspect_wheel(wheel: Path) -> None:
         FoundationError: If a resource or entry point is absent or
             duplicated.
     """
-    with ZipFile(wheel) as archive:
-        archive_names = archive.namelist()
-        for resource_name in RESOURCE_NAMES:
-            suffix = f"baton_harness/resources/{resource_name}"
-            matches = [name for name in archive_names if name.endswith(suffix)]
-            if not matches:
-                raise FoundationError(
-                    f"wheel resource missing: {resource_name}"
-                )
-            if len(matches) > 1:
-                raise FoundationError(
-                    f"wheel resource duplicated: {resource_name}"
-                )
+    try:
+        with ZipFile(wheel) as archive:
+            archive_names = archive.namelist()
+            for resource_name in RESOURCE_NAMES:
+                expected = f"baton_harness/resources/{resource_name}"
+                count = archive_names.count(expected)
+                if count == 0:
+                    raise FoundationError(
+                        f"wheel resource missing: {resource_name}"
+                    )
+                if count > 1:
+                    raise FoundationError(
+                        f"wheel resource duplicated: {resource_name}"
+                    )
 
-        missing = EXPECTED_ENTRY_POINTS - _wheel_entry_points(archive)
-        if missing:
-            raise FoundationError(
-                f"wheel entry points missing: {', '.join(sorted(missing))}"
-            )
+            missing = EXPECTED_ENTRY_POINTS - _wheel_entry_points(archive)
+            if missing:
+                raise FoundationError(
+                    f"wheel entry points missing: {', '.join(sorted(missing))}"
+                )
+    except FoundationError:
+        raise
+    except (OSError, BadZipFile, UnicodeError, configparser.Error) as exc:
+        raise FoundationError(
+            f"could not inspect wheel {wheel}: {exc}"
+        ) from exc
 
 
 def verify_repository(

@@ -114,6 +114,31 @@ run, pass one or more `--python VERSION` arguments. The command fails closed on
 stale dependency metadata or packaging drift and never rewrites the lock or
 resource mirrors.
 
+To stage the equivalent non-editable runtime installation manually, run these
+Bash commands from the repository root:
+
+```bash
+mkdir -p .tmp
+uv lock --check
+uv export --locked --no-emit-project --format requirements.txt \
+  --output-file .tmp/runtime-requirements.txt
+uv export --locked --extra dev --no-emit-project --format requirements.txt \
+  --output-file .tmp/build-requirements.txt
+uv build --build-constraints .tmp/build-requirements.txt --require-hashes \
+  --sdist --wheel --out-dir .tmp/dist
+uv venv .tmp/runtime-venv --python 3.13
+
+RUNTIME_PYTHON=.tmp/runtime-venv/Scripts/python.exe  # Windows Git Bash
+# RUNTIME_PYTHON=.tmp/runtime-venv/bin/python        # macOS/Linux
+uv pip sync --python "$RUNTIME_PYTHON" .tmp/runtime-requirements.txt
+uv pip install --python "$RUNTIME_PYTHON" --no-deps \
+  .tmp/dist/baton_harness-*.whl
+uv pip check --python "$RUNTIME_PYTHON"
+```
+
+The `dev` export constrains the build backend; it is not synced into the runtime
+environment. Run `bh-verify-foundation` before promoting the wheel.
+
 If `gh`, `bws`, or `claude` were auto-installed to `~/.local/bin` and are not yet visible
 to `command -v`, add `export PATH="$HOME/.local/bin:$PATH"` to your shell rc and re-run.
 After installing `gh` or `claude`, authenticate them separately (`gh auth login`; run

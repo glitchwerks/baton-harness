@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import zipfile
 from collections.abc import Mapping, Sequence
+from importlib import metadata
 from pathlib import Path
-from subprocess import CompletedProcess
+from subprocess import CompletedProcess, TimeoutExpired
 
 import pytest
 
@@ -15,6 +16,7 @@ from baton_harness.verify_foundation import (
     EXPECTED_ENTRY_POINTS,
     FoundationError,
     _dev_only_distributions,
+    _read_installed_resources,
     _smoke_entry_points,
     _validate_installed_state,
     inspect_wheel,
@@ -34,7 +36,13 @@ class _RecordingRunner:
         """
         self.fail_command = fail_command
         self.calls: list[
-            tuple[tuple[str, ...], Path, Mapping[str, str] | None, str | None]
+            tuple[
+                tuple[str, ...],
+                Path,
+                Mapping[str, str] | None,
+                str | None,
+                float,
+            ]
         ] = []
 
     def __call__(
@@ -44,10 +52,11 @@ class _RecordingRunner:
         cwd: Path,
         env: Mapping[str, str] | None = None,
         input_text: str | None = None,
+        timeout_seconds: float = 300,
     ) -> CompletedProcess[str]:
         """Record a command and create the outputs expected from uv."""
         normalized = tuple(str(part) for part in command)
-        self.calls.append((normalized, cwd, env, input_text))
+        self.calls.append((normalized, cwd, env, input_text, timeout_seconds))
         should_fail = (
             self.fail_command is not None
             and normalized[: len(self.fail_command)] == self.fail_command
@@ -77,7 +86,13 @@ class _SmokeRunner:
     def __init__(self) -> None:
         """Initialize an empty call log."""
         self.calls: list[
-            tuple[tuple[str, ...], Path, Mapping[str, str] | None, str | None]
+            tuple[
+                tuple[str, ...],
+                Path,
+                Mapping[str, str] | None,
+                str | None,
+                float,
+            ]
         ] = []
 
     def __call__(
@@ -87,10 +102,11 @@ class _SmokeRunner:
         cwd: Path,
         env: Mapping[str, str] | None = None,
         input_text: str | None = None,
+        timeout_seconds: float = 300,
     ) -> CompletedProcess[str]:
         """Return each original command's side-effect-free smoke status."""
         normalized = tuple(str(part) for part in command)
-        self.calls.append((normalized, cwd, env, input_text))
+        self.calls.append((normalized, cwd, env, input_text, timeout_seconds))
         command_name = Path(normalized[0]).stem
         lifecycle = {"bh-after-create", "bh-before-run", "bh-after-run"}
         return CompletedProcess(
@@ -107,6 +123,8 @@ def _write_wheel(
     resources: tuple[str, ...] = RESOURCE_NAMES,
     entry_points: frozenset[str] | None = None,
     duplicate_resource: str | None = None,
+    shadow_resource: str | None = None,
+    entry_points_text: bytes | None = None,
 ) -> Path:
     """Write a minimal wheel-like ZIP for archive validation.
 
@@ -114,7 +132,9 @@ def _write_wheel(
         root: Directory receiving the archive.
         resources: Package resource basenames to include.
         entry_points: Console command names to declare.
-        duplicate_resource: Optional resource to add at a second path.
+        duplicate_resource: Optional resource to add twice at its exact path.
+        shadow_resource: Optional resource to add only below a shadow path.
+        entry_points_text: Optional raw entry-point metadata replacement.
 
     Returns:
         Path to the generated archive.
@@ -129,12 +149,19 @@ def _write_wheel(
             archive.writestr(f"baton_harness/resources/{name}", b"test")
         if duplicate_resource is not None:
             archive.writestr(
-                f"shadow/baton_harness/resources/{duplicate_resource}",
+                f"baton_harness/resources/{duplicate_resource}",
                 b"duplicate",
+            )
+        if shadow_resource is not None:
+            archive.writestr(
+                f"shadow/baton_harness/resources/{shadow_resource}",
+                b"shadow",
             )
         archive.writestr(
             "baton_harness-0.1.0.dist-info/entry_points.txt",
-            f"[console_scripts]\n{declarations}\n",
+            entry_points_text
+            if entry_points_text is not None
+            else f"[console_scripts]\n{declarations}\n",
         )
     return wheel
 
@@ -176,9 +203,44 @@ def test_wheel_without_resource_fails_closed(tmp_path: Path) -> None:
 
 def test_wheel_with_duplicate_resource_fails_closed(tmp_path: Path) -> None:
     """Shipping ambiguous duplicate runtime defaults is rejected."""
-    wheel = _write_wheel(tmp_path, duplicate_resource="WORKFLOW.md")
+    with pytest.warns(UserWarning, match="Duplicate name"):
+        wheel = _write_wheel(tmp_path, duplicate_resource="WORKFLOW.md")
 
     with pytest.raises(FoundationError, match="wheel resource duplicated"):
+        inspect_wheel(wheel)
+
+
+def test_shadow_resource_path_cannot_satisfy_wheel_contract(
+    tmp_path: Path,
+) -> None:
+    """Only the canonical archive member satisfies a packaged default."""
+    wheel = _write_wheel(
+        tmp_path,
+        resources=RESOURCE_NAMES[1:],
+        shadow_resource="WORKFLOW.md",
+    )
+
+    with pytest.raises(FoundationError, match="wheel resource missing"):
+        inspect_wheel(wheel)
+
+
+def test_invalid_wheel_archive_is_normalized(tmp_path: Path) -> None:
+    """A corrupt wheel reports a stable foundation error."""
+    wheel = tmp_path / "baton_harness-0.1.0-py3-none-any.whl"
+    wheel.write_bytes(b"not a zip archive")
+
+    with pytest.raises(FoundationError, match="could not inspect wheel"):
+        inspect_wheel(wheel)
+
+
+def test_malformed_entry_point_metadata_is_normalized(tmp_path: Path) -> None:
+    """Invalid wheel metadata reports a stable foundation error."""
+    wheel = _write_wheel(
+        tmp_path,
+        entry_points_text=b"[console_scripts\nbroken",
+    )
+
+    with pytest.raises(FoundationError, match="could not inspect wheel"):
         inspect_wheel(wheel)
 
 
@@ -258,6 +320,32 @@ def test_repository_verification_stops_on_stale_lock() -> None:
         )
 
     assert len(runner.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [FileNotFoundError("uv"), TimeoutExpired(("uv", "lock"), 300)],
+)
+def test_repository_command_failures_are_normalized(
+    failure: BaseException,
+) -> None:
+    """Missing or stalled tools report stable foundation errors."""
+
+    def failing_runner(
+        command: Sequence[str],
+        *,
+        cwd: Path,
+        env: Mapping[str, str] | None = None,
+        input_text: str | None = None,
+        timeout_seconds: float = 300,
+    ) -> CompletedProcess[str]:
+        del command, cwd, env, input_text, timeout_seconds
+        raise failure
+
+    with pytest.raises(FoundationError, match="command could not complete"):
+        verify_foundation.verify_repository(
+            _REPO_ROOT, ("3.10",), runner=failing_runner
+        )
 
 
 def test_dev_only_distributions_exclude_runtime_closure(
@@ -353,6 +441,30 @@ def test_dev_only_distribution_fails_closed(tmp_path: Path) -> None:
         )
 
 
+def test_missing_installed_distribution_is_normalized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Absent wheel metadata reports a stable foundation error."""
+
+    def missing_distribution(name: str) -> metadata.Distribution:
+        raise metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(metadata, "distribution", missing_distribution)
+
+    with pytest.raises(FoundationError, match="installed metadata"):
+        verify_foundation.verify_installed(frozenset())
+
+
+def test_installed_resource_read_failure_is_normalized() -> None:
+    """Unreadable packaged defaults report a stable foundation error."""
+
+    def unreadable_resource(name: str) -> bytes:
+        raise OSError(f"cannot read {name}")
+
+    with pytest.raises(FoundationError, match="installed resource"):
+        _read_installed_resources(unreadable_resource)
+
+
 def test_installed_entry_points_use_only_safe_smokes(tmp_path: Path) -> None:
     """Changing a wrapper smoke into an external workflow is rejected."""
     runner = _SmokeRunner()
@@ -366,6 +478,27 @@ def test_installed_entry_points_use_only_safe_smokes(tmp_path: Path) -> None:
     for name in ("bh-after-create", "bh-before-run", "bh-after-run"):
         assert commands[name][0][1:] == ()
         assert commands[name][1] != _REPO_ROOT
+    assert all(call[4] == 30 for call in runner.calls)
+
+
+def test_installed_entry_point_timeout_is_normalized(tmp_path: Path) -> None:
+    """A stalled generated wrapper reports a stable foundation error."""
+
+    def stalled_runner(
+        command: Sequence[str],
+        *,
+        cwd: Path,
+        env: Mapping[str, str] | None = None,
+        input_text: str | None = None,
+        timeout_seconds: float = 300,
+    ) -> CompletedProcess[str]:
+        del cwd, env, input_text
+        raise TimeoutExpired(command, timeout_seconds)
+
+    with pytest.raises(
+        FoundationError, match="entry-point smoke could not complete"
+    ):
+        _smoke_entry_points(tmp_path / "bin", runner=stalled_runner)
 
 
 def test_installed_smoke_mode_skips_repository_build(
