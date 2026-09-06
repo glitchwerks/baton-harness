@@ -81,6 +81,23 @@ _MAIN_CFG = _HARNESS / "config" / "ruleset.main.json"
 _FEATURE_CFG = _HARNESS / "config" / "ruleset.feature.json"
 _COMPARE_KEYS_CFG = _HARNESS / "config" / "ruleset.compare-keys.json"
 
+
+def test_default_ruleset_sources_are_packaged_resources() -> None:
+    """Ruleset status must not require the harness checkout at runtime."""
+    import baton_harness.chain.ruleset_status as rs_mod
+    from baton_harness.resources import resource
+
+    expected = {
+        "_MAIN_CFG": "ruleset.main.json",
+        "_FEATURE_CFG": "ruleset.feature.json",
+        "_COMPARE_KEYS_CFG": "ruleset.compare-keys.json",
+        "_COMPARE_KEYS_APP_CFG": "ruleset.compare-keys.app.json",
+    }
+
+    for attribute, name in expected.items():
+        assert getattr(rs_mod, attribute) == resource(name)
+
+
 # Real GitHub Rulesets GET bodies captured from cbeaulieu-gt/baton-test
 # (issue #204).  Committed fixtures so the regression is self-contained —
 # do NOT read from the gitignored .tmp/ captures at test runtime.

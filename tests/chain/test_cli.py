@@ -3,8 +3,7 @@
 Coverage:
 - ``--once`` path: daemon invoked with ``once=True``.
 - Registry unset (missing env vars) → clean error message + exit 1.
-- Default ``--workflow`` resolves to ``config/WORKFLOW.md`` relative to
-  the repo root.
+- Default ``--workflow`` resolves to packaged ``WORKFLOW.md``.
 - ``--poll-interval`` override is threaded through.
 - ``os.chdir`` is called with the managed repo root before ``run_daemon``.
 - Workflow path is resolved to absolute BEFORE the ``os.chdir`` call.
@@ -27,7 +26,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from baton_harness.chain.cli import main
+from baton_harness.chain.cli import _workflow_path, main
+from baton_harness.resources import read_bytes
 
 # ---------------------------------------------------------------------------
 # Autouse fixtures
@@ -276,6 +276,21 @@ def test_main_invalid_project_root_exits_1_no_traceback(
 # ---------------------------------------------------------------------------
 # Workflow path absolute before chdir
 # ---------------------------------------------------------------------------
+
+
+def test_default_workflow_comes_from_packaged_resource() -> None:
+    """Removing the checkout must not remove the daemon's default workflow."""
+    with _workflow_path(None) as path:
+        assert path.read_bytes() == read_bytes("WORKFLOW.md")
+
+
+def test_explicit_workflow_remains_an_absolute_path(tmp_path: Path) -> None:
+    """An operator-supplied workflow remains a normal absolute path."""
+    supplied = tmp_path / "WORKFLOW.md"
+    supplied.write_text("---\n---\n", encoding="utf-8")
+
+    with _workflow_path(str(supplied)) as path:
+        assert path == supplied.resolve()
 
 
 def test_main_workflow_path_resolved_absolute_before_chdir() -> None:

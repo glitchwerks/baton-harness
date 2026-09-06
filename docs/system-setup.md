@@ -67,7 +67,8 @@ What it does, in order:
    `claude`). Missing either in a non-interactive context or with `BH_SETUP_NO_PROMPT=1`
    exits 1 with its manual-install link and makes no network call.
 4. Creates `.venv` (skipped if already present — safe to re-run)
-5. Installs the package with dev extras: `uv pip install -e ".[dev]"`
+5. Syncs the package editably with the exact runtime and development
+   dependencies from `uv.lock`: `uv sync --locked --extra dev`
 6. Verifies `bh-daemon` is reachable inside the venv
 7. Prints the venv-activation hint
 8. In an interactive terminal, prompts for `BH_PROJECT_ROOT` (the absolute path to your
@@ -84,9 +85,59 @@ What it does, in order:
 .venv/Scripts/bh-daemon --help   # Windows Git Bash
 .venv/bin/bh-daemon --help       # macOS/Linux
 
+# Verify a runtime-only, non-editable wheel on Python 3.10 and 3.13
+.venv/Scripts/bh-verify-foundation.exe   # Windows Git Bash
+.venv/bin/bh-verify-foundation           # macOS/Linux
+
 # host.env was written (only if you answered the prompt)
 cat ~/.config/baton-harness/host.env
 ```
+
+### Editable development versus immutable production
+
+`bin/setup-env.sh` creates a locked but editable development environment with
+`uv sync --locked --extra dev`. Source changes are immediately visible and the
+quality tools are installed.
+
+Production installation is non-editable and contains runtime dependencies only.
+`bh-verify-foundation` is the executable production-installation reference: it
+checks `uv.lock` without modifying it, compares canonical package resources with
+their temporary `config/` mirrors, exports the locked runtime and development
+closures, and constrains the build backend to the hashed development resolution.
+It then builds the sdist and wheel, installs only the runtime closure plus the
+wheel into clean Python 3.10 and 3.13 environments outside the checkout, runs
+`uv pip check`, loads every packaged resource, rejects development-only packages,
+and executes every installed console wrapper.
+
+CI runs the same command with both default interpreters. For a focused diagnostic
+run, pass one or more `--python VERSION` arguments. The command fails closed on
+stale dependency metadata or packaging drift and never rewrites the lock or
+resource mirrors.
+
+To stage the equivalent non-editable runtime installation manually, run these
+Bash commands from the repository root:
+
+```bash
+mkdir -p .tmp
+uv lock --check
+uv export --locked --no-emit-project --format requirements.txt \
+  --output-file .tmp/runtime-requirements.txt
+uv export --locked --extra dev --no-emit-project --format requirements.txt \
+  --output-file .tmp/build-requirements.txt
+uv build --build-constraints .tmp/build-requirements.txt --require-hashes \
+  --sdist --wheel --out-dir .tmp/dist
+uv venv .tmp/runtime-venv --python 3.13
+
+RUNTIME_PYTHON=.tmp/runtime-venv/Scripts/python.exe  # Windows Git Bash
+# RUNTIME_PYTHON=.tmp/runtime-venv/bin/python        # macOS/Linux
+uv pip sync --python "$RUNTIME_PYTHON" .tmp/runtime-requirements.txt
+uv pip install --python "$RUNTIME_PYTHON" --no-deps \
+  .tmp/dist/baton_harness-*.whl
+uv pip check --python "$RUNTIME_PYTHON"
+```
+
+The `dev` export constrains the build backend; it is not synced into the runtime
+environment. Run `bh-verify-foundation` before promoting the wheel.
 
 If `gh`, `bws`, or `claude` were auto-installed to `~/.local/bin` and are not yet visible
 to `command -v`, add `export PATH="$HOME/.local/bin:$PATH"` to your shell rc and re-run.

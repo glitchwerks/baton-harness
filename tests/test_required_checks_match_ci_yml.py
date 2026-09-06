@@ -112,3 +112,39 @@ def test_required_checks_agree_across_sources() -> None:
         f"merge.py REQUIRED_CHECKS {sorted(merge_set)!r} differs from "
         f"ruleset.main.json required_status_checks {sorted(ruleset_set)!r}"
     )
+
+
+def test_pytest_job_runs_foundation_verifier() -> None:
+    """Removing the frozen-install step from merge-blocking CI is detected."""
+    ci_path = HARNESS / ".github" / "workflows" / "ci.yml"
+    workflow = yaml.safe_load(ci_path.read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["test"]["steps"]
+    verifier_steps = [
+        step
+        for step in steps
+        if step.get("name") == "Verify frozen wheel foundation"
+    ]
+
+    assert verifier_steps == [
+        {
+            "name": "Verify frozen wheel foundation",
+            "run": ".venv/bin/bh-verify-foundation",
+        }
+    ]
+
+
+def test_composite_setup_selects_python_floor_explicitly() -> None:
+    """The locked CI environment cannot bind to an ambient interpreter."""
+    action_path = HARNESS / ".github" / "actions" / "setup" / "action.yml"
+    action = yaml.safe_load(action_path.read_text(encoding="utf-8"))
+    steps = action["runs"]["steps"]
+
+    assert any(
+        step.get("run") == "uv sync --python 3.10 --locked --extra dev"
+        for step in steps
+    )
+    expected_version_check = (
+        ".venv/bin/python -c 'import sys; assert "
+        "sys.version_info[:2] == (3, 10), sys.version'"
+    )
+    assert any(step.get("run") == expected_version_check for step in steps)

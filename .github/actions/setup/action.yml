@@ -1,6 +1,6 @@
 name: Setup Python + uv
 description: >
-  Checkout, install uv, pin Python 3.10, create a venv, and install the
+  Checkout, install uv, pin Python 3.10, and sync the locked editable
   package with dev extras (ruff, mypy, pytest). Each parallel CI job calls
   this composite action to keep setup consistent and avoid copy-paste drift.
 
@@ -17,11 +17,12 @@ runs:
       run: uv python install 3.10
       shell: bash
 
-    # Create venv and install the package + dev extras (ruff, mypy, pytest).
-    # Using the dev extras pins ensures CI uses the same tool versions as
-    # local development — avoids the "uv run <tool> resolves latest" footgun.
+    # Sync the exact locked package + dev extras (ruff, mypy, pytest).
+    # uv creates .venv as needed and installs the project editably by default.
     - name: Install package and dev dependencies
-      run: |
-        uv venv .venv
-        uv pip install -e ".[dev]"
+      run: uv sync --python 3.10 --locked --extra dev
+      shell: bash
+
+    - name: Verify Python floor
+      run: .venv/bin/python -c 'import sys; assert sys.version_info[:2] == (3, 10), sys.version'
       shell: bash
