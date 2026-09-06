@@ -200,42 +200,38 @@ git commit -m "feat(#360): load defaults from package resources"
 
 **Files:**
 - Create: `uv.lock`
-- Create: `tests/test_dependency_lock_contract.py`
 - Modify: `.github/actions/setup/action.yml:1-27`
 - Modify: `bin/setup-env.sh:42-51,432-446`
 - Modify: `README.md:130-185`
 - Modify: `docs/system-setup.md:60-85`
+- Modify: `tests/test_setup_env_bws_optional.py:1-200`
 
 **Interfaces:**
 - Produces: one universal lock containing base and optional dependencies.
 - Produces: `uv sync --locked --extra dev` as the CI/developer setup command.
 - Preserves: editable project installation in `.venv`.
 
-- [ ] **Step 1: Write failing lock-contract tests**
+- [ ] **Step 1: Write a failing setup behavior test**
 
 ```python
-REPO_ROOT = Path(__file__).resolve().parents[1]
+def test_package_setup_uses_locked_editable_sync(tmp_path: Path) -> None:
+    proc, log_path = _run_setup(tmp_path)
 
-
-def test_uv_lock_exists() -> None:
-    lock = REPO_ROOT / "uv.lock"
-    assert lock.is_file()
-    assert 'name = "baton-harness"' in lock.read_text(encoding="utf-8")
-
-
-def test_setup_paths_use_locked_sync() -> None:
-    action = (REPO_ROOT / ".github/actions/setup/action.yml").read_text()
-    setup = (REPO_ROOT / "bin/setup-env.sh").read_text()
-    assert "uv sync --locked --extra dev" in action
-    assert "--locked --extra dev" in setup
-    assert 'uv pip install -e ".[dev]"' not in action
+    assert proc.returncode == 0, proc.stderr
+    commands = log_path.read_text(encoding="utf-8").splitlines()
+    sync = [line for line in commands if line.startswith("uv:sync ")]
+    assert len(sync) == 1
+    assert "--project " in sync[0]
+    assert "--locked" in sync[0]
+    assert "--extra dev" in sync[0]
+    assert not any(line.startswith("uv:pip install") for line in commands)
 ```
 
 - [ ] **Step 2: Verify RED**
 
-Run: `./.venv/Scripts/python.exe -m pytest tests/test_dependency_lock_contract.py -q`
+Run: `./.venv/Scripts/python.exe -m pytest tests/test_setup_env_bws_optional.py::test_package_setup_uses_locked_editable_sync -q`
 
-Expected: `uv.lock` and locked-sync assertions fail.
+Expected: failure because the real script invokes `uv pip install` instead of locked sync.
 
 - [ ] **Step 3: Generate the lock and change setup paths**
 
@@ -249,14 +245,14 @@ Replace the composite action install step with `uv sync --locked --extra dev`. R
 
 Run: `uv sync --locked --extra dev`
 
-Run: `./.venv/Scripts/python.exe -m pytest tests/test_dependency_lock_contract.py tests/test_setup_env_bws_optional.py -q`
+Run: `./.venv/Scripts/python.exe -m pytest tests/test_setup_env_bws_optional.py -q`
 
 Expected: sync leaves the lock unchanged and tests pass.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add uv.lock .github/actions/setup/action.yml bin/setup-env.sh README.md docs/system-setup.md tests/test_dependency_lock_contract.py
+git add uv.lock .github/actions/setup/action.yml bin/setup-env.sh README.md docs/system-setup.md tests/test_setup_env_bws_optional.py
 git commit -m "build(#360): enforce locked development installs"
 ```
 
@@ -397,36 +393,37 @@ git commit -m "feat(#360): add frozen foundation verifier"
 - Modify: `.github/workflows/ci.yml:45-55`
 - Modify: `README.md:130-185,240-252`
 - Modify: `docs/system-setup.md:60-100`
-- Modify: `tests/test_dependency_lock_contract.py`
+- Modify: `tests/test_required_checks_match_ci_yml.py:1-120`
 
 **Interfaces:**
 - Consumes: installed `bh-verify-foundation` from Task 4.
 - Produces: merge-blocking validation inside the existing `Test (pytest)` job.
 - Produces: documented editable-development and non-editable-production workflows.
 
-- [ ] **Step 1: Extend failing CI/documentation contract tests**
+- [ ] **Step 1: Write a failing CI wiring test**
 
 ```python
 def test_pytest_job_runs_foundation_verifier() -> None:
-    workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text()
-    assert "name: Verify frozen wheel foundation" in workflow
-    assert "run: .venv/bin/bh-verify-foundation" in workflow
-
-
-def test_docs_distinguish_install_modes() -> None:
-    for relative in ("README.md", "docs/system-setup.md"):
-        body = (REPO_ROOT / relative).read_text()
-        assert "uv sync --locked --extra dev" in body
-        assert "bh-verify-foundation" in body
-        assert "non-editable" in body.lower()
-        assert "runtime dependencies only" in body.lower()
+    path = HARNESS / ".github" / "workflows" / "ci.yml"
+    workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["test"]["steps"]
+    verifier_steps = [
+        step for step in steps
+        if step.get("name") == "Verify frozen wheel foundation"
+    ]
+    assert verifier_steps == [
+        {
+            "name": "Verify frozen wheel foundation",
+            "run": ".venv/bin/bh-verify-foundation",
+        }
+    ]
 ```
 
 - [ ] **Step 2: Verify RED**
 
-Run: `./.venv/Scripts/python.exe -m pytest tests/test_dependency_lock_contract.py -q`
+Run: `./.venv/Scripts/python.exe -m pytest tests/test_required_checks_match_ci_yml.py::test_pytest_job_runs_foundation_verifier -q`
 
-Expected: CI and production-documentation assertions fail.
+Expected: failure because the pytest job has no foundation-verifier step.
 
 - [ ] **Step 3: Wire CI and documentation**
 
@@ -441,7 +438,7 @@ Document `uv sync --locked --extra dev` as editable development and `bh-verify-f
 
 - [ ] **Step 4: Verify contract GREEN**
 
-Run: `./.venv/Scripts/python.exe -m pytest tests/test_dependency_lock_contract.py -q`
+Run: `./.venv/Scripts/python.exe -m pytest tests/test_required_checks_match_ci_yml.py -q`
 
 Expected: all contract tests pass.
 
@@ -476,7 +473,7 @@ Expected: every referenced resource and lock is committed.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add .github/workflows/ci.yml README.md docs/system-setup.md tests/test_dependency_lock_contract.py
+git add .github/workflows/ci.yml README.md docs/system-setup.md tests/test_required_checks_match_ci_yml.py
 git commit -m "ci(#360): enforce frozen wheel verification"
 ```
 
