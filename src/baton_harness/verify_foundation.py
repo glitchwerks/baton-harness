@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import sys
+import sysconfig
 import tempfile
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -404,7 +405,7 @@ def verify_installed(forbidden_distributions: frozenset[str]) -> None:
     )
     _read_installed_resources()
 
-    executable_dir = Path(sys.executable).resolve().parent
+    executable_dir = Path(sysconfig.get_path("scripts"))
     _smoke_entry_points(executable_dir)
 
 

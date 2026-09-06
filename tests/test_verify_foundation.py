@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+import sysconfig
 import zipfile
 from collections.abc import Mapping, Sequence
 from importlib import metadata
@@ -477,6 +479,41 @@ def test_missing_installed_distribution_is_normalized(
 
     with pytest.raises(FoundationError, match="installed metadata"):
         verify_foundation.verify_installed(frozenset())
+
+
+def test_installed_smoke_uses_environment_scripts_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An external resolved interpreter cannot redirect wrapper smokes."""
+    prefix = tmp_path / "environment"
+    scripts = prefix / "bin"
+    resolved_interpreter = tmp_path / "uv-python" / "bin" / "python"
+    selected_directories: list[Path] = []
+
+    monkeypatch.setattr(sys, "prefix", str(prefix))
+    monkeypatch.setattr(sys, "executable", str(resolved_interpreter))
+    monkeypatch.setattr(sysconfig, "get_path", lambda name: str(scripts))
+    monkeypatch.setattr(
+        verify_foundation,
+        "_validate_installed_state",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(
+        verify_foundation,
+        "_read_installed_resources",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        verify_foundation,
+        "_smoke_entry_points",
+        selected_directories.append,
+    )
+
+    verify_foundation.verify_installed(frozenset())
+
+    assert selected_directories == [scripts]
+    assert selected_directories[0].is_relative_to(Path(sys.prefix))
 
 
 def test_installed_resource_read_failure_is_normalized() -> None:

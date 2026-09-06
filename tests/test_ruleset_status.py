@@ -97,6 +97,7 @@ def test_default_ruleset_sources_are_packaged_resources() -> None:
     for attribute, name in expected.items():
         assert getattr(rs_mod, attribute) == resource(name)
 
+
 # Real GitHub Rulesets GET bodies captured from cbeaulieu-gt/baton-test
 # (issue #204).  Committed fixtures so the regression is self-contained —
 # do NOT read from the gitignored .tmp/ captures at test runtime.
