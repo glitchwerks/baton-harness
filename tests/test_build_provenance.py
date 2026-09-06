@@ -50,6 +50,24 @@ def test_standard_identity_requires_and_preserves_assertions(
     )
 
 
+def test_standard_identity_normalizes_a_valid_pep_440_version(
+    tmp_path: Path,
+) -> None:
+    """Standard builds store the canonical PEP 440 version spelling."""
+    (tmp_path / "uv.lock").write_bytes(LOCK_CONTENT)
+
+    identity = resolve_build_provenance(
+        tmp_path,
+        {
+            "BH_BUILD_VERSION": "v1.2.3",
+            "BH_BUILD_SOURCE_REVISION": REVISION,
+        },
+        read_head=lambda _root: REVISION,
+    )
+
+    assert identity.package_version == "1.2.3"
+
+
 def test_development_identity_uses_stable_version_and_exact_head(
     tmp_path: Path,
 ) -> None:
@@ -166,6 +184,40 @@ def test_carried_record_must_exactly_match_resolved_identity(
         ),
         encoding="utf-8",
     )
+
+    with pytest.raises(BuildProvenanceError):
+        resolve_build_provenance(
+            tmp_path,
+            {
+                "BH_BUILD_VERSION": "1.2.3",
+                "BH_BUILD_SOURCE_REVISION": REVISION,
+            },
+            read_head=lambda _root: REVISION,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "malformed_value"),
+    [("schema_version", True), ("development", 0)],
+)
+def test_carried_record_rejects_values_with_wrong_json_types(
+    tmp_path: Path,
+    field: str,
+    malformed_value: bool | int,
+) -> None:
+    """Reject carried values that compare equal but have wrong types."""
+    (tmp_path / "uv.lock").write_bytes(LOCK_CONTENT)
+    record_path = tmp_path / "src" / "baton_harness" / "build_provenance.json"
+    record_path.parent.mkdir(parents=True)
+    record = BuildProvenance(
+        schema_version=1,
+        package_version="1.2.3",
+        source_revision=REVISION,
+        lock_identity=f"sha256:{sha256(LOCK_CONTENT).hexdigest()}",
+        development=False,
+    ).as_dict()
+    record[field] = malformed_value
+    record_path.write_text(json.dumps(record), encoding="utf-8")
 
     with pytest.raises(BuildProvenanceError):
         resolve_build_provenance(

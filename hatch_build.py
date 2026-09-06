@@ -111,12 +111,12 @@ def _validate_version(value: str | None) -> str:
     if not value:
         raise BuildProvenanceError("BH_BUILD_VERSION is required")
     try:
-        Version(value)
+        normalized = str(Version(value))
     except InvalidVersion as exc:
         raise BuildProvenanceError(
             "BH_BUILD_VERSION must be a PEP 440 version"
         ) from exc
-    return value
+    return normalized
 
 
 def _validate_revision(value: str | None, name: str) -> str:
@@ -146,6 +146,16 @@ def _validate_carried_record(path: Path, identity: BuildProvenance) -> None:
     if not isinstance(carried, dict) or set(carried) != RECORD_KEYS:
         raise BuildProvenanceError(
             "carried provenance record has an invalid schema"
+        )
+    if (
+        type(carried["schema_version"]) is not int
+        or type(carried["package_version"]) is not str
+        or type(carried["source_revision"]) is not str
+        or type(carried["lock_identity"]) is not str
+        or type(carried["development"]) is not bool
+    ):
+        raise BuildProvenanceError(
+            "carried provenance record has invalid field types"
         )
     if carried != identity.as_dict():
         raise BuildProvenanceError(
