@@ -258,7 +258,12 @@ def _validate_installed_state(
             direct_url = json.loads(direct_url_json)
         except json.JSONDecodeError as exc:
             raise FoundationError("invalid installed direct_url.json") from exc
-        if (direct_url.get("dir_info") or {}).get("editable") is True:
+        if not isinstance(direct_url, Mapping):
+            raise FoundationError("invalid installed direct_url.json")
+        dir_info = direct_url.get("dir_info")
+        if dir_info is not None and not isinstance(dir_info, Mapping):
+            raise FoundationError("invalid installed direct_url.json")
+        if dir_info is not None and dir_info.get("editable") is True:
             raise FoundationError("editable installation detected")
 
     if not package_file.resolve().is_relative_to(prefix.resolve()):

@@ -398,6 +398,30 @@ def test_editable_installed_state_fails_closed(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "direct_url_json",
+    ("[]", '{"dir_info": []}'),
+)
+def test_invalid_direct_url_shape_fails_closed(
+    tmp_path: Path,
+    direct_url_json: str,
+) -> None:
+    """Structurally corrupt direct-URL metadata cannot raise AttributeError."""
+    package_file = tmp_path / "venv" / "site-packages" / "baton_harness.py"
+
+    with pytest.raises(
+        FoundationError, match="invalid installed direct_url.json"
+    ):
+        _validate_installed_state(
+            direct_url_json=direct_url_json,
+            package_file=package_file,
+            prefix=tmp_path / "venv",
+            entry_points=EXPECTED_ENTRY_POINTS,
+            installed_distributions=frozenset({"baton-harness"}),
+            forbidden_distributions=frozenset(),
+        )
+
+
 def test_package_imported_outside_environment_fails_closed(
     tmp_path: Path,
 ) -> None:
