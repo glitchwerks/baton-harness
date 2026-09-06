@@ -18,6 +18,7 @@ _DAEMON_ENV = {
     "GH_INSTALLATION_TOKEN": "ambient-installation-token",
     "BH_GITHUB_APP_KEY_PROVIDER": "file",
     "BH_GITHUB_APP_PRIVATE_KEY_FILE": "/private/app.pem",
+    "BH_HEARTBEAT_PING_URL": "https://heartbeat.invalid/secret-ping-token",
     "BWS_ACCESS_TOKEN": "vault-access-token",
     "BWS_PEM_SECRET_ID": "pem-secret-id",
     "BWS_APP_ID": "app-id",

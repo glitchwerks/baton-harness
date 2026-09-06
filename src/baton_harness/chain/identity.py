@@ -22,6 +22,7 @@ _PRIVILEGED_ENV_KEYS: frozenset[str] = frozenset(
         "GH_INSTALLATION_TOKEN",
         "BH_GITHUB_APP_KEY_PROVIDER",
         "BH_GITHUB_APP_PRIVATE_KEY_FILE",
+        "BH_HEARTBEAT_PING_URL",
         "BWS_ACCESS_TOKEN",
         "BWS_PEM_SECRET_ID",
         "BWS_APP_ID",
