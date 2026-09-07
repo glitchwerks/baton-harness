@@ -146,6 +146,8 @@ def test_null_provenance_and_summary(
         "exact opaque credential",
         "-----BEGIN PRIVATE KEY-----\nmaterial\n-----END PRIVATE KEY-----",
         "https://user:password@example.test/path",
+        "https://:opaque-password@example.test/path",
+        "https://opaque-credential@example.test/path",
         "https://example.test/?access_token=oauth-value",
         '{"refresh_token":"refresh-value"}',
     ],
@@ -180,6 +182,40 @@ def test_both_formats_redact_every_human_field(
             assert value not in output
         assert "«redacted»" in output
     assert getattr(original, field) == f"before {secret} after"
+
+
+@pytest.mark.parametrize("field", ["title", "detail", "remediation"])
+@pytest.mark.parametrize(
+    ("secret", "values"),
+    [
+        ("opaque-token-long", ("opaque-token", "opaque-token-long")),
+        ("opaque-token-long", ("opaque-token-long", "opaque-token")),
+        ("abcdef", ("abcd", "cdef")),
+        ("abcdef", ("cdef", "abcd")),
+    ],
+)
+def test_report_redacts_overlapping_values_completely(
+    report: ModuleType,
+    results: tuple[CheckResult, ...],
+    field: str,
+    secret: str,
+    values: tuple[str, ...],
+) -> None:
+    """All fields and repeated checks hide complete overlapping spans."""
+    original = replace(results[0], **{field: f"before {secret} after"})
+    selected = (original, original)
+    text = report.render_text(selected, secret_values=iter(values))
+    document = json.loads(
+        report.render_json(
+            selected,
+            (Phase.INSTALLATION,),
+            None,
+            secret_values=iter(values),
+        )
+    )
+    assert text.count("before «redacted» after") == 2
+    for check in document["checks"]:
+        assert check[field] == "before «redacted» after"
 
 
 def test_text_contains_status_details_and_remediation(

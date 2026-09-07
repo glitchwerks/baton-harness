@@ -9,7 +9,7 @@ _REDACTION_MARKER = "«redacted»"
 _TOKEN_PATTERN = re.compile(
     r"(?:github_pat_|ghs_|ghp_|gho_|ghu_|ghr_)[A-Za-z0-9_]+"
 )
-_URL_USERINFO_PATTERN = re.compile(r"(?<=://)[^\s/@:]+:[^\s/@]+@")
+_URL_USERINFO_PATTERN = re.compile(r"(?<=://)[^\s/@?#]+@")
 _PEM_PATTERN = re.compile(
     r"-----BEGIN ([A-Z0-9 ]+)-----.*?-----END \1-----", re.DOTALL
 )
@@ -53,14 +53,27 @@ def redact_secrets(
         RedactionError: If strict redaction encounters invalid input or
             cannot complete all substitutions.
     """
-    result = text
+    spans: list[tuple[int, int]] = []
     try:
-        result = _PEM_PATTERN.sub(_REDACTION_MARKER, result)
-        result = _URL_USERINFO_PATTERN.sub(_REDACTION_MARKER, result)
-        result = _AUTHORIZATION_PATTERN.sub(r"\1" + _REDACTION_MARKER, result)
-        result = _QUERY_PATTERN.sub(r"\1" + _REDACTION_MARKER, result)
-        result = _FIELD_PATTERN.sub(r"\1" + _REDACTION_MARKER, result)
-        result = _TOKEN_PATTERN.sub(_REDACTION_MARKER, result)
+        for pattern, preserve_prefix in (
+            (_PEM_PATTERN, False),
+            (_URL_USERINFO_PATTERN, False),
+            (_AUTHORIZATION_PATTERN, True),
+            (_QUERY_PATTERN, True),
+            (_FIELD_PATTERN, True),
+            (_TOKEN_PATTERN, False),
+        ):
+
+            def record(
+                match: re.Match[str], keep_prefix: bool = preserve_prefix
+            ) -> str:
+                """Record a structural span using original text offsets."""
+                start = match.end(1) if keep_prefix else match.start()
+                spans.append((start, match.end()))
+                return match.group()
+
+            # Discover structural spans first, without changing offsets.
+            pattern.sub(record, text)
     except Exception:  # noqa: BLE001
         # Fail CLOSED: this is security-critical redaction, so an
         # exception mid-substitution must never hand back the raw
@@ -72,7 +85,11 @@ def redact_secrets(
         for value in extra_values:
             try:
                 if value:
-                    result = result.replace(value, _REDACTION_MARKER)
+                    start = text.find(value)
+                    while start != -1:
+                        spans.append((start, start + len(value)))
+                        # Include self-overlapping occurrences as well.
+                        start = text.find(value, start + 1)
             except Exception:  # noqa: BLE001
                 # Preserve per-entry isolation for existing callers.
                 if strict:
@@ -84,4 +101,19 @@ def redact_secrets(
         if strict:
             raise RedactionError("credential redaction failed") from None
         return _REDACTION_MARKER
-    return result
+    # Union every original span before replacing any text. Sequential
+    # substitutions could otherwise hide a later match while leaking its
+    # suffix, including overlaps between structural and exact secrets.
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+        else:
+            merged.append((start, end))
+    parts: list[str] = []
+    previous_end = 0
+    for start, end in merged:
+        parts.extend((text[previous_end:start], _REDACTION_MARKER))
+        previous_end = end
+    parts.append(text[previous_end:])
+    return "".join(parts)
