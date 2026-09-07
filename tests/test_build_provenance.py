@@ -233,24 +233,99 @@ def test_carried_record_rejects_values_with_wrong_json_types(
         )
 
 
+@pytest.mark.parametrize(
+    ("canonical", "legacy", "canonical_value", "legacy_value", "other"),
+    [
+        (
+            "CODEREEVE_BUILD_VERSION",
+            "BH_BUILD_VERSION",
+            "0.2.0",
+            "9.9.9",
+            {"CODEREEVE_BUILD_SOURCE_REVISION": REVISION},
+        ),
+        (
+            "CODEREEVE_BUILD_SOURCE_REVISION",
+            "BH_BUILD_SOURCE_REVISION",
+            REVISION,
+            "f" * 40,
+            {"CODEREEVE_BUILD_VERSION": "0.2.0"},
+        ),
+        (
+            "CODEREEVE_BUILD_DEVELOPMENT",
+            "BH_BUILD_DEVELOPMENT",
+            "1",
+            "0",
+            {},
+        ),
+    ],
+)
 def test_conflicting_canonical_and_legacy_build_values_fail_closed(
     tmp_path: Path,
+    canonical: str,
+    legacy: str,
+    canonical_value: str,
+    legacy_value: str,
+    other: dict[str, str],
 ) -> None:
-    """Conflicting canonical and compatibility values are ambiguous."""
+    """Every conflicting alias pair fails without exposing either value."""
     (tmp_path / "uv.lock").write_bytes(LOCK_CONTENT)
-    with pytest.raises(
-        BuildProvenanceError,
-        match="CODEREEVE_BUILD_VERSION and BH_BUILD_VERSION",
-    ):
+    environment = {
+        canonical: canonical_value,
+        legacy: legacy_value,
+        **other,
+    }
+
+    with pytest.raises(BuildProvenanceError) as caught:
         resolve_build_provenance(
             tmp_path,
-            {
-                "CODEREEVE_BUILD_VERSION": "0.2.0",
-                "BH_BUILD_VERSION": "9.9.9",
-                "CODEREEVE_BUILD_SOURCE_REVISION": REVISION,
-            },
+            environment,
             read_head=lambda _root: REVISION,
         )
+
+    message = str(caught.value)
+    assert canonical in message
+    assert legacy in message
+    assert canonical_value not in message
+    assert legacy_value not in message
+
+
+@pytest.mark.parametrize(
+    ("environment", "development"),
+    [
+        (
+            {
+                "CODEREEVE_BUILD_VERSION": "0.2.0",
+                "BH_BUILD_VERSION": "0.2.0",
+                "CODEREEVE_BUILD_SOURCE_REVISION": REVISION,
+                "BH_BUILD_SOURCE_REVISION": REVISION,
+            },
+            False,
+        ),
+        (
+            {
+                "CODEREEVE_BUILD_DEVELOPMENT": "1",
+                "BH_BUILD_DEVELOPMENT": "1",
+            },
+            True,
+        ),
+    ],
+)
+def test_equal_canonical_and_legacy_build_values_succeed(
+    tmp_path: Path,
+    environment: dict[str, str],
+    development: bool,
+) -> None:
+    """Equal canonical and compatibility aliases resolve unambiguously."""
+    (tmp_path / "uv.lock").write_bytes(LOCK_CONTENT)
+
+    identity = resolve_build_provenance(
+        tmp_path,
+        environment,
+        read_head=lambda _root: REVISION,
+    )
+
+    assert identity.development is development
+    assert identity.source_revision == REVISION
 
 
 def test_legacy_build_variables_remain_compatible(tmp_path: Path) -> None:

@@ -29,7 +29,8 @@ from codereeve.resources import (
     read_bytes,
 )
 
-EXPECTED_ENTRY_POINTS = frozenset(
+CANONICAL_ENTRY_POINTS = frozenset({"codereeve"})
+LEGACY_ENTRY_POINTS = frozenset(
     {
         "bh-after-create",
         "bh-before-run",
@@ -38,6 +39,53 @@ EXPECTED_ENTRY_POINTS = frozenset(
         "bh-force-pr-not-merge",
         "bh-verify-foundation",
     }
+)
+EXPECTED_ENTRY_POINTS = CANONICAL_ENTRY_POINTS | LEGACY_ENTRY_POINTS
+INCOMPATIBLE_DISTRIBUTIONS = frozenset({"baton-harness"})
+CANONICAL_SMOKES = (
+    ("codereeve", ("--version",), None, 0),
+    ("codereeve", ("provenance",), None, 0),
+    (
+        "codereeve",
+        (
+            "doctor",
+            "--phase",
+            "installation",
+            "--format",
+            "json",
+            "--strict",
+        ),
+        None,
+        0,
+    ),
+    ("codereeve", ("hook", "force-pr-not-merge"), "{}", 0),
+    ("codereeve", ("hook", "after-create"), None, 1),
+    ("codereeve", ("hook", "before-run"), None, 1),
+    ("codereeve", ("hook", "after-run"), None, 1),
+    ("codereeve", ("verify", "--help"), None, 0),
+)
+LEGACY_SMOKES = (
+    ("bh-daemon", ("--help",), None, 0),
+    ("bh-daemon", ("--version",), None, 0),
+    ("bh-daemon", ("--provenance",), None, 0),
+    (
+        "bh-daemon",
+        (
+            "--doctor",
+            "--phase",
+            "installation",
+            "--format",
+            "json",
+            "--strict",
+        ),
+        None,
+        0,
+    ),
+    ("bh-after-create", (), None, 1),
+    ("bh-before-run", (), None, 1),
+    ("bh-after-run", (), None, 1),
+    ("bh-force-pr-not-merge", (), "{}", 0),
+    ("bh-verify-foundation", ("--help",), None, 0),
 )
 COMMAND_TIMEOUT_SECONDS = 300.0
 SMOKE_TIMEOUT_SECONDS = 30.0
@@ -241,6 +289,7 @@ def _validate_installed_state(
     prefix: Path,
     entry_points: frozenset[str],
     installed_distributions: frozenset[str],
+    incompatible_distributions: frozenset[str],
     forbidden_distributions: frozenset[str],
 ) -> None:
     """Validate collected metadata for one installed wheel environment.
@@ -251,12 +300,14 @@ def _validate_installed_state(
         prefix: Active virtual-environment prefix.
         entry_points: Installed console-script names.
         installed_distributions: Installed distribution names.
+        incompatible_distributions: Superseded distributions that must not
+            coexist with the canonical distribution.
         forbidden_distributions: Dev-only names forbidden in production.
 
     Raises:
         FoundationError: If the install is editable, imported from outside
             its environment, missing a command, or includes a dev-only
-            distribution.
+            or incompatible distribution.
     """
     if direct_url_json:
         try:
@@ -285,6 +336,15 @@ def _validate_installed_state(
     installed = {
         _normalize_distribution_name(name) for name in installed_distributions
     }
+    incompatible = {
+        _normalize_distribution_name(name)
+        for name in incompatible_distributions
+    }
+    overlapping = sorted(installed & incompatible)
+    if overlapping:
+        raise FoundationError(
+            f"incompatible distributions installed: {', '.join(overlapping)}"
+        )
     forbidden = {
         _normalize_distribution_name(name) for name in forbidden_distributions
     }
@@ -324,6 +384,7 @@ def _smoke_environment(root: Path) -> dict[str, str]:
         for key, value in os.environ.items()
         if key.upper() in essentials
     }
+    environment["PYTHONUTF8"] = "1"
     homes = {
         "HOME": "home",
         "USERPROFILE": "home",
@@ -403,7 +464,7 @@ def _smoke_entry_points(
     *,
     runner: Runner = run_command,
 ) -> None:
-    """Execute each original installed wrapper through a safe early path.
+    """Execute canonical and compatibility wrappers through safe early paths.
 
     Args:
         executable_dir: Directory containing installed console wrappers.
@@ -412,96 +473,106 @@ def _smoke_entry_points(
     Raises:
         FoundationError: If a wrapper returns an unexpected status.
     """
-    smoke_cases = (
-        ("bh-daemon", ("--help",), None, 0),
-        ("bh-daemon", ("--version",), None, 0),
-        ("bh-daemon", ("--provenance",), None, 0),
-        (
-            "bh-daemon",
-            (
-                "--doctor",
-                "--phase",
-                "installation",
-                "--format",
-                "json",
-                "--strict",
-            ),
-            None,
-            0,
-        ),
-        ("bh-after-create", (), None, 1),
-        ("bh-before-run", (), None, 1),
-        ("bh-after-run", (), None, 1),
-        ("bh-force-pr-not-merge", (), "{}", 0),
-    )
     with tempfile.TemporaryDirectory(prefix="bh-entrypoint-smoke-") as raw:
         cwd = Path(raw)
         child_env = _smoke_environment(cwd / "isolated")
-        smoke_version = ""
-        smoke_provenance: dict[str, object] | None = None
-        for name, arguments, input_text, expected_status in smoke_cases:
-            executable = executable_dir / (
-                f"{name}.exe" if os.name == "nt" else name
-            )
-            try:
-                result = runner(
-                    (str(executable), *arguments),
-                    cwd=cwd,
-                    env=child_env,
-                    input_text=input_text,
-                    timeout_seconds=SMOKE_TIMEOUT_SECONDS,
+        groups = ((CANONICAL_SMOKES, False), (LEGACY_SMOKES, True))
+        for smoke_cases, requires_notice in groups:
+            smoke_version = ""
+            smoke_provenance: dict[str, object] | None = None
+            for name, arguments, input_text, expected_status in smoke_cases:
+                executable = executable_dir / (
+                    f"{name}.exe" if os.name == "nt" else name
                 )
-            except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
-                raise FoundationError(
-                    f"entry-point smoke could not complete ({name}): {exc}"
-                ) from exc
-            if result.returncode != expected_status:
-                detail = (
-                    result.stderr or result.stdout
-                ).strip() or "no output"
-                raise FoundationError(
-                    f"entry-point smoke failed ({name}): expected exit "
-                    f"{expected_status}, got {result.returncode}: {detail}"
-                )
-            try:
-                if arguments == ("--version",):
-                    smoke_version = result.stdout.strip().removeprefix(
-                        "bh-daemon "
+                try:
+                    result = runner(
+                        (str(executable), *arguments),
+                        cwd=cwd,
+                        env=child_env,
+                        input_text=input_text,
+                        timeout_seconds=SMOKE_TIMEOUT_SECONDS,
                     )
-                    if not smoke_version:
-                        raise FoundationError("empty installed version")
-                elif arguments == ("--provenance",):
-                    smoke_provenance = validate_provenance(
-                        json.loads(result.stdout), smoke_version
-                    ).as_dict()
-                    if smoke_provenance["development"] is not False:
-                        raise FoundationError(
-                            "installed provenance is developmental"
+                except (
+                    OSError,
+                    subprocess.SubprocessError,
+                    UnicodeError,
+                ) as exc:
+                    raise FoundationError(
+                        "entry-point smoke could not complete "
+                        f"({name}): {exc}"
+                    ) from exc
+                notice = f"{name} is deprecated;"
+                if requires_notice and (
+                    notice not in result.stderr
+                    or "removed in 0.4.0" not in result.stderr
+                    or notice in result.stdout
+                ):
+                    raise FoundationError(
+                        "legacy entry-point removal notice missing or "
+                        f"misplaced ({name})"
+                    )
+                if result.returncode != expected_status:
+                    detail = (
+                        result.stderr or result.stdout
+                    ).strip() or "no output"
+                    raise FoundationError(
+                        f"entry-point smoke failed ({name}): expected exit "
+                        f"{expected_status}, got {result.returncode}: {detail}"
+                    )
+                try:
+                    if arguments == ("--version",):
+                        output = result.stdout.strip()
+                        prefix = (
+                            "codereeve daemon "
+                            if name == "bh-daemon"
+                            else "codereeve "
                         )
-                elif "--doctor" in arguments:
-                    report = json.loads(result.stdout)
-                    if (
-                        not isinstance(report, dict)
-                        or type(report.get("schema_version")) is not int
-                        or report.get("schema_version") != 1
-                        or report.get("provenance")
-                        != {
-                            key: value
-                            for key, value in (smoke_provenance or {}).items()
-                            if key != "schema_version"
-                        }
-                        or not _valid_installation_results(
-                            report.get("checks"), report.get("summary")
-                        )
-                        or report.get("selected_phases") != ["installation"]
-                    ):
-                        raise FoundationError(
-                            "invalid installed doctor report"
-                        )
-            except (ValueError, ProvenanceError) as exc:
-                raise FoundationError(
-                    f"invalid installed JSON smoke: {exc}"
-                ) from exc
+                        if not output.startswith(prefix):
+                            raise FoundationError("invalid installed version")
+                        smoke_version = output.removeprefix(prefix)
+                        if not smoke_version:
+                            raise FoundationError("empty installed version")
+                    elif arguments in {
+                        ("provenance",),
+                        ("--provenance",),
+                    }:
+                        smoke_provenance = validate_provenance(
+                            json.loads(result.stdout), smoke_version
+                        ).as_dict()
+                        if smoke_provenance["development"] is not False:
+                            raise FoundationError(
+                                "installed provenance is developmental"
+                            )
+                    elif arguments and arguments[0] in {
+                        "doctor",
+                        "--doctor",
+                    }:
+                        report = json.loads(result.stdout)
+                        if (
+                            not isinstance(report, dict)
+                            or type(report.get("schema_version")) is not int
+                            or report.get("schema_version") != 1
+                            or report.get("provenance")
+                            != {
+                                key: value
+                                for key, value in (
+                                    smoke_provenance or {}
+                                ).items()
+                                if key != "schema_version"
+                            }
+                            or not _valid_installation_results(
+                                report.get("checks"), report.get("summary")
+                            )
+                            or report.get("selected_phases")
+                            != ["installation"]
+                        ):
+                            raise FoundationError(
+                                "invalid installed doctor report"
+                            )
+                except (ValueError, ProvenanceError) as exc:
+                    raise FoundationError(
+                        f"invalid installed JSON smoke: {exc}"
+                    ) from exc
 
 
 def _read_installed_resources(
@@ -562,6 +633,7 @@ def verify_installed(forbidden_distributions: frozenset[str]) -> None:
         prefix=Path(sys.prefix),
         entry_points=entry_points,
         installed_distributions=installed_names,
+        incompatible_distributions=INCOMPATIBLE_DISTRIBUTIONS,
         forbidden_distributions=forbidden_distributions,
     )
     _read_installed_resources()
@@ -809,9 +881,12 @@ def verify_repository(
             f"could not determine build identity: {exc}"
         ) from exc
     build_env = dict(os.environ)
+    build_env.pop("CODEREEVE_BUILD_DEVELOPMENT", None)
     build_env.pop("BH_BUILD_DEVELOPMENT", None)
-    build_env["BH_BUILD_VERSION"] = "0.0.0+foundation"
-    build_env["BH_BUILD_SOURCE_REVISION"] = revision
+    build_env.pop("BH_BUILD_VERSION", None)
+    build_env.pop("BH_BUILD_SOURCE_REVISION", None)
+    build_env["CODEREEVE_BUILD_VERSION"] = "0.0.0+foundation"
+    build_env["CODEREEVE_BUILD_SOURCE_REVISION"] = revision
 
     with _temporary_workspace(keep_temp) as workspace:
         distributions = workspace / "dist"
@@ -936,7 +1011,7 @@ def verify_repository(
         for version in python_versions:
             venv = workspace / f"python-{version}"
             python = _venv_executable(venv, "python")
-            verifier = _venv_executable(venv, "bh-verify-foundation")
+            verifier = _venv_executable(venv, "codereeve")
             _run_checked(
                 runner,
                 ("uv", "venv", str(venv), "--python", version),
@@ -976,7 +1051,7 @@ def verify_repository(
                 cwd=smoke_cwd,
                 env=child_env,
             )
-            smoke_command = [str(verifier), "--installed-smoke"]
+            smoke_command = [str(verifier), "verify", "--installed-smoke"]
             for name in sorted(forbidden_distributions):
                 smoke_command.extend(("--forbid-distribution", name))
             _run_checked(
