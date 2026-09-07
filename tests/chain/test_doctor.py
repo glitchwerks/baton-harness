@@ -929,7 +929,7 @@ def test_run_gate_only_runs_checks_for_the_requested_phase(
     doctor.run_gate(_make_ctx(), (Phase.CONFIGURATION,))
 
     assert calls == ["A"], (
-        "run_gate(PRE_BOOTSTRAP) must only run PRE_BOOTSTRAP-phase "
+        "run_gate(configuration) must only run configuration-phase "
         f"checks; got {calls!r}"
     )
 
@@ -2055,7 +2055,7 @@ class TestGitCredHelper:
 
 
 # ---------------------------------------------------------------------------
-# Phase 4 (#193): auth-needing checks + the POST_BOOTSTRAP gate.
+# Live phase: credential-bearing checks and the live gate.
 #
 # check_id set added this phase: RULESET_MAIN, RULESET_FEATURE,
 # LABELS_PRESENT, GH_REPO_ADMIN, GH_AUTH, CRED_OAUTH_VOLUME.
@@ -2476,11 +2476,9 @@ class TestGhRepoAdmin:
 class TestGhAuth:
     """gh token valid (CRITICAL, daemon_native=True).
 
-    Standalone ``run_report`` executes this via ``ctx.runner`` (mirrors
-    ``gh auth status``); the daemon path never invokes it through
-    ``run_gate`` (``daemon_native`` filter) -- native G3a
-    (``validate_daemon_token``, reconcile.py:182-208) is the sole
-    daemon-path executor.
+    Standalone reports and daemon live gates execute ``gh auth status``
+    through ``ctx.runner``. Native installation-token validation remains
+    a separate startup check.
     """
 
     def test_passes_when_gh_auth_status_succeeds(self) -> None:
@@ -2518,7 +2516,7 @@ class TestGhAuth:
         assert result.severity == Severity.CRITICAL
 
     def test_is_daemon_native(self) -> None:
-        """GH_AUTH is daemon_native=True, phase POST_BOOTSTRAP."""
+        """GH_AUTH retains native metadata and belongs to live."""
         check = _get_check("GH_AUTH")
         assert check.daemon_native is True
         assert check.phase is Phase.LIVE
@@ -2581,7 +2579,7 @@ class TestCredOauthVolume:
         _assert_no_secret_leak(result, secret_marker)
 
     def test_is_daemon_native(self) -> None:
-        """CRED_OAUTH_VOLUME is daemon_native=True, phase POST_BOOTSTRAP."""
+        """CRED_OAUTH_VOLUME retains native metadata and belongs to live."""
         check = _get_check("CRED_OAUTH_VOLUME")
         assert check.daemon_native is True
         assert check.phase is Phase.LIVE
@@ -2589,23 +2587,14 @@ class TestCredOauthVolume:
     def test_static_severity_is_warning_for_standalone_dev_box_reporting(
         self,
     ) -> None:
-        """Pinned WARNING -- see the module docstring's ambiguity note.
-
-        run_gate filters daemon_native=True checks in BOTH phases
-        unconditionally, so this Check's own ``.severity`` is only ever
-        consulted by the standalone ``run_report``/``--strict`` path,
-        where the dev-box ("WARN") reading is the only one that can
-        actually apply. If a correct implementation instead pins
-        CRITICAL, this ONE isolated test needs to flip -- not a shared
-        matrix.
-        """
+        """OAuth availability is warning-severity in the shared catalog."""
         check = _get_check("CRED_OAUTH_VOLUME")
         assert check.severity == Severity.WARNING
 
 
 # ---------------------------------------------------------------------------
 # Opt-in App key probe (#193, updated by #359).
-# VAULT_PEM_DRYRUN remains outside CATALOG and retains its stable ID.
+# VAULT_PEM_DRYRUN belongs to the live catalog and retains its stable ID.
 # The selected provider loads key material and local JWT signing proves
 # usability. Transport and signing failures must be sanitized before the
 # generic check wrapper can render them. No GitHub call is permitted.

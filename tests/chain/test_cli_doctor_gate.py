@@ -705,7 +705,7 @@ def test_no_doctor_flag_runs_daemon_path_and_never_calls_run_report() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Phase 3 (#193): run_gate(ctx, PRE_BOOTSTRAP) wired into the normal
+# Installation and configuration run_gate wired into the normal
 # (non-``--doctor``) daemon-startup path
 # ---------------------------------------------------------------------------
 
@@ -713,18 +713,9 @@ def test_no_doctor_flag_runs_daemon_path_and_never_calls_run_report() -> None:
 def _run_main_allow_system_exit(*args: str) -> int:
     """Run ``main`` and normalize either a return or a ``SystemExit`` to int.
 
-    ``doctor.run_gate`` raises ``SystemExit(1)`` directly on its own
-    documented contract (``doctor.py``: "Raises: SystemExit: With code 1
-    on the first critical failed check."). The plan's Phase 3 bullet says
-    ``cli.main`` "exits 1" on a CRITICAL doctor failure without
-    prescribing whether that means letting the ``SystemExit`` propagate
-    out of ``main`` unmodified (the most direct wiring: just call
-    ``run_gate`` inline) or catching it and returning ``1`` (mirroring
-    the ``except Exception as exc: return 1`` shape used by the
-    neighboring tripwire/bootstrap blocks). Both are valid readings of
-    "exits 1"; this helper normalizes so the test pins the *outcome*
-    (process would exit non-zero) rather than the implementation's
-    control-flow shape.
+    Startup renders the gate's aggregated critical failures and returns
+    one. Argument parsing may still raise ``SystemExit``; normalize both
+    paths so callers assert the process exit outcome.
 
     Args:
         *args: Command-line arguments to pass to ``main``.
@@ -752,7 +743,7 @@ def _assert_run_gate_called_with_pre_bootstrap(gate_mock: MagicMock) -> None:
     if phase_arg is None and len(call.args) >= 2:
         phase_arg = call.args[1]
     assert phase_arg == (Phase.INSTALLATION, Phase.CONFIGURATION), (
-        "run_gate must be called with phase=Phase.PRE_BOOTSTRAP in the"
+        "run_gate must select installation and configuration in the"
         f" normal daemon-startup path, got {phase_arg!r} (call={call!r})"
     )
 
@@ -826,7 +817,7 @@ class TestPreBootstrapDoctorGate:
             f" force-pr-not-merge self-test; got {call_order!r}"
         )
         assert call_order.index("gate") < call_order.index("bootstrap"), (
-            "the PRE_BOOTSTRAP doctor gate must run before"
+            "the initial doctor gate must run before"
             f" bootstrap_secrets; got {call_order!r}"
         )
         assert "run-daemon" in call_order, (
@@ -896,15 +887,15 @@ class TestPreBootstrapDoctorGate:
             result = _run_main_allow_system_exit("--once")
 
         assert result == 1, (
-            "a CRITICAL PRE_BOOTSTRAP doctor failure must produce a"
+            "a CRITICAL initial doctor failure must produce a"
             f" non-zero (1) exit, got {result}"
         )
         _assert_run_gate_called_with_pre_bootstrap(gate_mock)
         assert not bootstrap_called, (
-            "bootstrap_secrets must not run after a CRITICAL PRE_BOOTSTRAP"
+            "bootstrap_secrets must not run after a CRITICAL initial"
             " doctor gate failure"
         )
         assert not run_daemon_called, (
-            "run_daemon must not run after a CRITICAL PRE_BOOTSTRAP doctor"
+            "run_daemon must not run after a CRITICAL initial doctor"
             " gate failure"
         )

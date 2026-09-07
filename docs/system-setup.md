@@ -68,7 +68,7 @@ What it does, in order:
    exits 1 with its manual-install link and makes no network call.
 4. Creates `.venv` (skipped if already present — safe to re-run)
 5. Syncs the package editably with the exact runtime and development
-   dependencies from `uv.lock`: `uv sync --locked --extra dev`
+   dependencies from `uv.lock`: `BH_BUILD_DEVELOPMENT=1 uv sync --locked --extra dev`
 6. Verifies `bh-daemon` is reachable inside the venv
 7. Prints the venv-activation hint
 8. In an interactive terminal, prompts for `BH_PROJECT_ROOT` (the absolute path to your
@@ -96,8 +96,13 @@ cat ~/.config/baton-harness/host.env
 ### Editable development versus immutable production
 
 `bin/setup-env.sh` creates a locked but editable development environment with
-`uv sync --locked --extra dev`. Source changes are immediately visible and the
-quality tools are installed.
+`BH_BUILD_DEVELOPMENT=1 uv sync --locked --extra dev`. Source changes are immediately visible and the
+quality tools are installed. The editable version stays `0.1.0.dev0`; the build-time
+exact commit is recorded in `source_revision`.
+Production consumers pin immutable release tags and install verified standard
+artifacts. Release automation may derive `BH_BUILD_VERSION` (PEP 440) and
+`BH_BUILD_SOURCE_REVISION` (40 hex characters) from a selected tag. Standard builds
+without both assertions fail closed.
 
 Production installation is non-editable and contains runtime dependencies only.
 `bh-verify-foundation` is the executable production-installation reference: it
@@ -115,15 +120,21 @@ stale dependency metadata or packaging drift and never rewrites the lock or
 resource mirrors.
 
 To stage the equivalent non-editable runtime installation manually, run these
-Bash commands from the repository root:
+Bash commands from the repository root. Replace the illustrative version and
+40-hex revision below with the selected immutable release tag's version and exact
+commit (which must match HEAD in a checkout). The hook validates these explicit
+assertions, not the tag name. Unset the development flag for a standard build:
 
 ```bash
+unset BH_BUILD_DEVELOPMENT
 mkdir -p .tmp
 uv lock --check
 uv export --locked --no-emit-project --format requirements.txt \
   --output-file .tmp/runtime-requirements.txt
 uv export --locked --extra dev --no-emit-project --format requirements.txt \
   --output-file .tmp/build-requirements.txt
+BH_BUILD_VERSION=1.0.0 \
+BH_BUILD_SOURCE_REVISION=0123456789abcdef0123456789abcdef01234567 \
 uv build --build-constraints .tmp/build-requirements.txt --require-hashes \
   --sdist --wheel --out-dir .tmp/dist
 uv venv .tmp/runtime-venv --python 3.13
@@ -138,6 +149,27 @@ uv pip check --python "$RUNTIME_PYTHON"
 
 The `dev` export constrains the build backend; it is not synced into the runtime
 environment. Run `bh-verify-foundation` before promoting the wheel.
+
+Check the installed artifact and selected operational phases:
+
+```bash
+bh-daemon --version
+bh-daemon --provenance
+bh-daemon --doctor --phase installation --format json --strict
+bh-daemon --doctor --phase configuration --config /path/to/config.env --strict
+bh-daemon --doctor --phase live --strict
+```
+
+Installation is offline and credential-free; configuration is local-only; live may
+use credentials and network calls. Repeat `--phase` as needed; omission runs all
+three. `--format` defaults to text. `--config` overrides the default
+`$BH_PROJECT_ROOT/.bh/config.env`; non-empty environment overrides still apply.
+Doctor findings are advisory (exit 0) unless `--strict` finds a critical failure
+(exit 1). Unsafe rendering also exits 1; usage errors exit 2. Daemon startup always
+fails closed on critical results. `--check-vault` selects only the live App-key
+check and exits 0 only on PASS. See the
+[operator JSON contract](repository-onboarding.md#5-bh-daemon---doctor--strict--preflight-before-the-first-real-run)
+for schema version 1 fields and config semantics.
 
 If `gh`, `bws`, or `claude` were auto-installed to `~/.local/bin` and are not yet visible
 to `command -v`, add `export PATH="$HOME/.local/bin:$PATH"` to your shell rc and re-run.

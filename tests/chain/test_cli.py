@@ -41,12 +41,10 @@ from baton_harness.resources import read_bytes
 def _auto_patch_pre_bootstrap_gate() -> Iterator[None]:
     """No-op ``doctor.run_gate`` for daemon-path tests that don't test it.
 
-    Phase 3 (#193) wires ``doctor.run_gate(ctx, Phase.PRE_BOOTSTRAP)`` into
-    the normal (non-``--doctor``) daemon-startup path. The tests in this
-    file exercise that path without stubbing the gate, so without this
-    fixture they would hit the real implementation and fail on CRITICAL
-    PRE_BOOTSTRAP checks (no ``gh``/``bws`` on PATH, no ``.bh/config.env``,
-    etc. in the test environment). Scoped to this file only, mirroring
+    Startup invokes installation, configuration, and live gates. These
+    tests exercise startup without provisioning a real host, so the
+    fixture bypasses checks for absent CLIs, config, and credentials.
+    Scoped to this file only, mirroring
     ``tests/chain/test_cli_doctor_gate.py``'s own
     ``_auto_patch_pre_bootstrap_gate`` fixture -- see that file's docstring
     for why this must not live in the shared ``chain/conftest.py`` autouse

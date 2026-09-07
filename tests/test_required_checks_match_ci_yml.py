@@ -139,12 +139,25 @@ def test_composite_setup_selects_python_floor_explicitly() -> None:
     action = yaml.safe_load(action_path.read_text(encoding="utf-8"))
     steps = action["runs"]["steps"]
 
-    assert any(
-        step.get("run") == "uv sync --python 3.10 --locked --extra dev"
+    sync_step = next(
+        step
         for step in steps
+        if step.get("name") == "Install package and dev dependencies"
     )
+    assert sync_step["run"] == "uv sync --python 3.10 --locked --extra dev"
+    assert sync_step.get("env") == {"BH_BUILD_DEVELOPMENT": "1"}
     expected_version_check = (
         ".venv/bin/python -c 'import sys; assert "
         "sys.version_info[:2] == (3, 10), sys.version'"
     )
     assert any(step.get("run") == expected_version_check for step in steps)
+
+
+def test_host_setup_opts_into_editable_development_identity() -> None:
+    """Host setup must opt into the build hook's editable identity."""
+    script = (HARNESS / "bin/setup-env.sh").read_text(encoding="utf-8")
+    sync_lines = [line for line in script.splitlines() if "uv sync --" in line]
+    assert sync_lines == [
+        'BH_BUILD_DEVELOPMENT=1 uv sync --project "${BATON_HARNESS_DIR}" '
+        "--locked --extra dev"
+    ]
