@@ -19,14 +19,17 @@ Coverage:
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Iterator
+from importlib.metadata import version
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from baton_harness.chain.cli import _workflow_path, main
+from baton_harness.provenance import Provenance, ProvenanceError
 from baton_harness.resources import read_bytes
 
 # ---------------------------------------------------------------------------
@@ -38,12 +41,10 @@ from baton_harness.resources import read_bytes
 def _auto_patch_pre_bootstrap_gate() -> Iterator[None]:
     """No-op ``doctor.run_gate`` for daemon-path tests that don't test it.
 
-    Phase 3 (#193) wires ``doctor.run_gate(ctx, Phase.PRE_BOOTSTRAP)`` into
-    the normal (non-``--doctor``) daemon-startup path. The tests in this
-    file exercise that path without stubbing the gate, so without this
-    fixture they would hit the real implementation and fail on CRITICAL
-    PRE_BOOTSTRAP checks (no ``gh``/``bws`` on PATH, no ``.bh/config.env``,
-    etc. in the test environment). Scoped to this file only, mirroring
+    Startup invokes installation, configuration, and live gates. These
+    tests exercise startup without provisioning a real host, so the
+    fixture bypasses checks for absent CLIs, config, and credentials.
+    Scoped to this file only, mirroring
     ``tests/chain/test_cli_doctor_gate.py``'s own
     ``_auto_patch_pre_bootstrap_gate`` fixture -- see that file's docstring
     for why this must not live in the shared ``chain/conftest.py`` autouse
@@ -68,6 +69,94 @@ def _run_main(*args: str) -> int:
         The integer exit code returned by ``main``.
     """
     return main(list(args))
+
+
+def _provenance() -> Provenance:
+    """Return a valid, hand-authored provenance record for CLI tests."""
+    return Provenance(
+        schema_version=1,
+        package_version="1.2.3",
+        source_revision="0123456789abcdef0123456789abcdef01234567",
+        lock_identity=f"sha256:{'a' * 64}",
+        development=False,
+    )
+
+
+def test_version_exits_before_runtime_startup(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--version never touches configuration, bootstrap, or daemon startup."""
+    with (
+        patch(
+            "baton_harness.chain.cli.load_workflow",
+            side_effect=AssertionError("configuration must not load"),
+        ),
+        patch(
+            "baton_harness.chain.cli.bootstrap_secrets",
+            side_effect=AssertionError("bootstrap must not run"),
+        ),
+        patch(
+            "baton_harness.chain.cli.run_daemon",
+            side_effect=AssertionError("daemon must not run"),
+        ),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        _run_main("--version")
+
+    assert exc_info.value.code == 0
+    assert (
+        capsys.readouterr().out.strip()
+        == f"bh-daemon {version('baton-harness')}"
+    )
+
+
+def test_provenance_exits_before_runtime_startup(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--provenance emits only validated JSON before normal startup work."""
+    with (
+        patch(
+            "baton_harness.chain.cli.load_provenance",
+            return_value=_provenance(),
+        ),
+        patch(
+            "baton_harness.chain.cli.load_workflow",
+            side_effect=AssertionError("configuration must not load"),
+        ),
+        patch(
+            "baton_harness.chain.cli.bootstrap_secrets",
+            side_effect=AssertionError("bootstrap must not run"),
+        ),
+        patch(
+            "baton_harness.chain.cli.run_daemon",
+            side_effect=AssertionError("daemon must not run"),
+        ),
+    ):
+        assert _run_main("--provenance") == 0
+
+    assert json.loads(capsys.readouterr().out) == _provenance().as_dict()
+
+
+def test_provenance_reports_invalid_record_before_config_access(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Malformed packaged provenance has a clean early error path."""
+    with (
+        patch(
+            "baton_harness.chain.cli.load_provenance",
+            side_effect=ProvenanceError("invalid record"),
+        ),
+        patch(
+            "baton_harness.chain.cli.load_workflow",
+            side_effect=AssertionError("configuration must not load"),
+        ),
+    ):
+        assert _run_main("--provenance") == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("bh-daemon: provenance error:")
+    assert "Traceback" not in captured.err
 
 
 # ---------------------------------------------------------------------------

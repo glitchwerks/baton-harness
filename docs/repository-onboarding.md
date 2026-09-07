@@ -198,116 +198,75 @@ cat "${BH_PROJECT_ROOT}/.bh/ruleset-baseline.json"
 
 ## 5. `bh-daemon --doctor` / `--strict` — preflight before the first real run
 
-`bh-daemon --doctor` runs the full preflight check catalog (20 checks) and exits without
-starting the poll loop. It does not source `~/.config/baton-harness/host.env`, so
-`BH_PROJECT_ROOT` must be ambient. With that root, provider-aware checks parse
-`${BH_PROJECT_ROOT}/.bh/config.env` and apply non-empty environment overrides without
-exporting the resolved settings. A bare `bh-daemon --doctor` in a genuinely fresh shell
-therefore reports a `BH_PROJECT_ROOT` failure and also failures for the GitHub-API checks
-below (`RULESET_MAIN`,
-`RULESET_FEATURE`, `LABELS_PRESENT`, `GH_REPO_ADMIN` read `BH_REPO_OWNER`/`BH_REPO_NAME`
-directly from the environment; the two ruleset checks also need `BH_GITHUB_APP_ID`) — even
-on a correctly-provisioned host, unless you export all of these first. In this walkthrough's
-normal flow they are already exported from step 2, so this mainly bites when running
-`--doctor` in a fresh shell days later:
+`bh-daemon --doctor` runs selected checks without starting the poll loop or exporting
+resolved config into the process environment. It does not source
+`~/.config/baton-harness/host.env`. Supply `--config PATH` to select a local file,
+or export `BH_PROJECT_ROOT` to select `$BH_PROJECT_ROOT/.bh/config.env`.
+An explicit path does not need that environment variable merely to locate the
+file; configuration checks still require a valid project root. Non-empty supported
+environment overrides take precedence over file values. Missing or malformed
+configuration is reported as a failed check.
 
 ```bash
-export BH_PROJECT_ROOT=<abs-path-to-local-sandbox-clone>   # if not already exported
-# Only when provider bws or either optional BWS secret ID is configured:
-# export BWS_ACCESS_TOKEN=<your-bitwarden-machine-account-token>
-export BH_REPO_OWNER=<owner>                # if not already exported (step 2)
-export BH_REPO_NAME=<sandbox-repo>          # if not already exported (step 2)
-export BH_GITHUB_APP_ID=<app-id>            # if not already exported; only needed for the
-                                             # two ruleset checks below
-
-bh-daemon --doctor --strict
+bh-daemon --version
+bh-daemon --provenance
+bh-daemon --doctor --phase installation --format json --strict
+bh-daemon --doctor --phase configuration --config /path/to/config.env --strict
+bh-daemon --doctor --phase live --strict
 ```
 
-(`.venv/bin/bh-daemon` or `.venv/Scripts/bh-daemon` if the venv is not activated on
-`PATH`.)
+Use the installed venv's `bh-daemon` wrapper when the venv is not on PATH.
+`--version` reports installed distribution metadata. `--provenance` emits the
+validated packaged record, including `schema_version: 1`, `package_version`,
+the exact `source_revision`, `lock_identity` (SHA-256 of the exact lock bytes),
+and boolean `development`. Neither command needs config or credentials, and
+runtime provenance never reads Git. Invalid provenance makes `--provenance`
+exit 1 with a safe stderr diagnostic.
 
-`--strict` makes the command exit non-zero if any **CRITICAL**-severity check ends in
-`FAIL`; without it, `--doctor` always exits 0 regardless of findings, so scripting a
-preflight gate around this command requires `--strict`. A `WARNING`-severity check never
-trips `--strict`'s exit code, even on `FAIL`/`WARN`.
+| Phase | Checks and authority |
+|---|---|
+| `installation` | Offline, credential-free package provenance, imports, resources, entry points, workflow and force-PR tripwire |
+| `configuration` | Local config, project root, provider shape, CLI presence and filesystem metadata; no credential use or network calls |
+| `live` | Credential and remote checks, including App-key usability, GitHub auth/repository/rulesets/labels/admin, helper and OAuth usability |
 
-Each check prints one `[STATUS] Title` line; `FAIL` and `WARN` results additionally print
-`detail:` and `fix:` lines. `PASS` and `SKIP` print only the header line. On a
-correctly-provisioned host with `gh` authenticated against the target repo (and all the
-env vars from the block above exported), a run looks like this. `GH_REPO_ADMIN` is the one
-line here that can legitimately show `WARN` instead of `PASS` even on an otherwise-healthy
-repo — GitHub's collaborators API does not always surface an implicit organization-owner's
-admin rights — and a `WARN` there never trips `--strict`'s exit code (it is
-WARNING-severity):
+Repeat `--phase` to choose multiple phases; duplicates are removed. Omission
+selects installation, configuration, then live. Results follow selected-phase
+order and catalog order within each phase. `--format text` is the default;
+automation should request `--format json` and inspect schema version 1.
 
-```text
-[PASS] GitHub CLI available
-[PASS] Bitwarden Secrets CLI available
-[PASS] Claude CLI available
-[PASS] uv package manager available
-[PASS] Project root is valid
-[PASS] Host environment file present
-[PASS] Sandbox config file present
-[PASS] Required sandbox config keys valid
-[PASS] Optional secret IDs valid
-[PASS] BWS access token present
-[PASS] Symphony state is gitignored
-[PASS] Anthropic API key is unset
-[PASS] Force-PR-not-merge tripwire passes
-[PASS] Git credential helper configured
-[PASS] Main branch ruleset provisioned
-[PASS] Feature branch ruleset provisioned
-[PASS] Required repository labels present
-[PASS] Repository admin collaborator present
-[PASS] GitHub CLI authentication valid
-[PASS] Claude OAuth credential file readable
-```
+JSON stdout contains exactly one document with these fields:
 
-For a file-only configuration, `CLI_BWS` and `ENV_BWS_ACCESS_TOKEN` still print their
-stable `[PASS]` titles above; internally their detail is "BWS is not required by the
-resolved secret configuration." With a file provider plus either optional BWS locator,
-both checks become active again and require the CLI and access token.
+| Field | Value |
+|---|---|
+| `schema_version` | Integer `1` |
+| `provenance` | Object with `package_version`, `source_revision`, `lock_identity`, `development`; `null` if validation failed |
+| `selected_phases` | Array of selected phase strings |
+| `summary` | Integer counts `pass`, `fail`, `warn`, `skip`, `critical_failures` |
+| `checks` | Ordered objects with `id`, `phase`, `status`, `severity`, `title`, `detail`, `remediation` |
 
-A `FAIL` (here, `BWS_ACCESS_TOKEN` forgotten in a fresh shell) looks like this — the
-detail line never reports the token's value, only that it is absent:
+Check IDs are stable. Status values are lowercase `pass`, `fail`, `warn`,
+`skip`; severity values are `critical` or `warning`. Selecting installation
+reports invalid provenance as a critical failed `PKG_PROVENANCE` check. Other
+phase selections do not implicitly run installation to populate provenance.
 
-```text
-[FAIL] BWS access token present
-       detail: BWS_ACCESS_TOKEN is unset or empty.
-       fix:    Set BWS_ACCESS_TOKEN to a non-empty access token.
-```
+Standalone doctor exits 0 despite findings unless `--strict` finds at least
+one critical failed check, in which case it exits 1. Warning-severity failures
+and warning/skip statuses do not trip strict. Usage errors exit 2. If rendering
+or redaction cannot safely complete, the command exits 1 even in advisory mode,
+prints a fixed diagnostic to stderr, and emits no partial report to stdout.
+Human-readable report fields are redacted in both formats; logs and diagnostics
+use stderr.
 
-The 20-check catalog (`src/baton_harness/chain/doctor.py`) covers two groups. The first 14
-are local/CLI/config checks that can run before any GitHub App token exists: the four CLIs
-(`gh`, conditionally `bws`, `claude` — CRITICAL; `uv` — WARNING);
-`BH_PROJECT_ROOT` validity; presence of
-`~/.config/baton-harness/host.env` (WARNING) and `${BH_PROJECT_ROOT}/.bh/config.env`
-(CRITICAL); shape-validation of that config file's required keys and optional secret IDs;
-conditional presence of `BWS_ACCESS_TOKEN`; the exact `.symphony/` `.gitignore` entry;
-absence of
-`ANTHROPIC_API_KEY`; the force-PR-not-merge startup self-test; and a configured git
-credential helper. The remaining 6 need a live GitHub API call and so only make sense once
-repo identity is known: both branch-protection rulesets provisioned (step 4); all six
-required harness labels present; a repository admin collaborator (WARNING — informational);
-GitHub CLI authentication validity; and the Claude OAuth credential file's readability. It
-reports secret presence and configuration shape without printing secret values or
-lengths. The `BWS_ACCESS_TOKEN` check reports only whether the required token is present.
-
-`--doctor` running the full 20-check catalog standalone is not the same as either of the
-daemon's two real startup gates — it lets you see every check's `[STATUS]` ahead of time,
-including the ones a real launch would skip. Five checks (`CRED_ANTHROPIC_UNSET`,
-`FORCE_PR_TRIPWIRE`, `GIT_CRED_HELPER` in the first group; `GH_AUTH`, `CRED_OAUTH_VOLUME` in
-the second) are marked `daemon_native` in the catalog: at a real daemon launch these are
-instead covered by equivalent native startup code (the G3b/G3d checks and the force-PR
-tripwire before secrets bootstrap; G3a/G3c after), not by re-running the catalog check
-itself, so `--doctor` is the only way to see their `[STATUS]` output ahead of a run. See
-step 6 for exactly where each of the daemon's two gates (`PRE_BOOTSTRAP`, `POST_BOOTSTRAP`)
-sits relative to secret bootstrap and the native G-checks.
+In file-only mode, `CLI_BWS` (configuration) and `ENV_BWS_ACCESS_TOKEN` (live)
+pass as not required. With either optional BWS locator configured, both BWS
+prerequisites become active. Live checks need the corresponding credential
+authority; use `--phase installation` for an offline package-only assessment.
+Standalone live checks do not perform the daemon's secret bootstrap.
 
 ## 5a. `bh-daemon --check-vault` — opt-in App-key dry-run
 
 `--check-vault` retains its legacy option name but is provider-aware. It runs one check
-outside the main catalog: load the selected App key (`bws` fetch or secured file read) and
+from the live catalog: load the selected App key (`bws` fetch or secured file read) and
 prove it can sign an App JWT, without making a GitHub request. On `PASS`, only the status
 and title are printed; no provider, path, UUID, content, token, or byte count is reported.
 
@@ -335,12 +294,10 @@ Exit code is `0` on `PASS`, `1` otherwise. `--check-vault` and `--doctor` are mu
 exclusive in effect: if both are passed, only the vault check runs (and `--strict` is
 ignored) — pass `--check-vault` alone.
 
-This check is deliberately **excluded** from both `--doctor`/`--strict`'s catalog and the
-daemon's two startup gates (step 6) — it is redundant there, since daemon bootstrap
-performs the same selected-source load on every real daemon launch. It exists as a
-standalone, opt-in diagnostic for the runtime key-access failures that shape validation
-cannot distinguish: an unreachable BWS secret, or an unavailable/unsafe/unusable host
-file. Run it only when you need to isolate the selected App-key source.
+The same App-key check participates in the live catalog and daemon live gate.
+The compatibility command selects only this check, even if `--phase` is also
+supplied. It accepts `--config PATH` and `--format json`. Use it to isolate an
+unreachable BWS secret or an unavailable, unsafe, or unusable host key file.
 
 ## 6. First daemon run — `bin/run-daemon.sh`
 
@@ -360,33 +317,26 @@ before ever invoking `bh-daemon`:
    in the target repo's `.gitignore` (seeded by step 2); aborts with "this repo is not
    ready for harness work" if not.
 
-It then `cd`s into `BH_PROJECT_ROOT` and execs `bh-daemon`, which runs the CRITICAL,
-non-`daemon_native` subset of the step-5 doctor catalog as a hard gate
-(`doctor.run_gate`, `PRE_BOOTSTRAP` phase) before bootstrapping any secret. A failing
-check here prints `Preflight check <ID> failed: <detail> Fix: <fix>` to stderr and aborts
-before any git or GitHub Actions work begins. `--once` runs exactly one poll-dispatch tick
-then exits; this is the safe default for a first run. Omit `--once` for continuous polling
-(stop with Ctrl-C).
+It then `cd`s into `BH_PROJECT_ROOT` and execs `bh-daemon`. The daemon resolves
+one config snapshot and runs the `installation` and `configuration` gates
+before applying config or bootstrapping secrets. It collects and renders every
+selected critical failure, then exits 1 if any failed. No failed gate proceeds
+to the event loop. Missing config is a critical configuration failure even when
+launching the daemon binary directly.
 
-Once secrets are bootstrapped, the daemon's startup sweep (`reconcile_startup`) runs a
-**second** doctor gate — `doctor.run_gate`, `POST_BOOTSTRAP` phase — covering the checks
-that need a live GitHub API call and so can't run before the App token exists:
-`RULESET_MAIN`, `RULESET_FEATURE`, and `LABELS_PRESENT` (all CRITICAL; `GH_REPO_ADMIN` is
-WARNING and never aborts). This runs after the native G3a–G3d credential checks (GitHub
-token, `ANTHROPIC_API_KEY` absence, OAuth credential volume, git credential helper) and
-before the G2 ungraceful-prior-exit marker check — so a misprovisioned ruleset or a missing
-harness label aborts startup once credentials are already validated, but still before the
-daemon starts polling for issues. A failing check here additionally fires a critical
-escalation alert ("Post-bootstrap doctor gate failed a critical readiness check.") before
-exiting non-zero. A `PRE_BOOTSTRAP` failure (step 6, above) aborts the same way — stderr
-message, exit 1 — but does not fire an escalation alert; it happens earlier in startup,
-before `bootstrap_secrets()` has run.
+After bootstrap and installation-token validation, the same context supplies the
+`live` gate before entering `run_daemon`. This gate includes the credential and
+remote checks in step 5. The reconciliation sweep retains its native credential,
+helper, alert and recovery checks but does not repeat the doctor gate.
+`--once` runs one poll-dispatch tick after successful startup; omit it for
+continuous polling (stop with Ctrl-C).
 
-When the resolved configuration needs BWS, `BWS_ACCESS_TOKEN` has two checkpoints:
-`bin/setup-env.sh` prints a non-fatal setup-time notice, while
-`ENV_BWS_ACCESS_TOKEN` (`PRE_BOOTSTRAP`) is the fatal launch gate. For file-only
-configuration the doctor check passes as not required. Once bootstrap begins, the token
-is removed from `os.environ` in a `finally` block on every success or failure path.
+When the resolved configuration needs BWS, `bin/setup-env.sh` prints a non-fatal
+setup-time notice if the access token is absent. Bootstrap requires that token;
+`ENV_BWS_ACCESS_TOKEN` belongs to the live phase. For file-only configuration it
+passes as not required. Bootstrap removes the token from ambient `os.environ`
+on success or failure; the shared context retains the captured authority for
+the subsequent live check.
 
 For what a fully successful tick looks like in the logs, the CI-gate check-name
 requirement that most often causes a first tick to park instead of merge, and how to seed
@@ -418,8 +368,8 @@ Common first-run stumbling points, in the order you are likely to hit them:
   ID where the App ID goes (or vice versa) into `.bh/config.env` during step 2. Fetch both
   again per the step-1 commands and correct the file.
 - **`bh-daemon --doctor` reports `BH_PROJECT_ROOT` or a BWS prerequisite failure on a host
-  you believe is correctly set up.** `--doctor` does not source `host.env` — export both
-  directly in the shell you're running `--doctor` from. Export `BWS_ACCESS_TOKEN` only
+  you believe is correctly set up.** `--doctor` does not source `host.env` — supply `--config PATH` or export
+  `BH_PROJECT_ROOT` in the shell running doctor. Export `BWS_ACCESS_TOKEN` only
   when the resolved provider/optional-secret composition needs it (see step 5).
 - **`run-daemon.sh` aborts on the label or `.gitignore` preflight.** Do not re-run
   `bin/init-sandbox.sh` to fix this — issue and milestone creation are not idempotent

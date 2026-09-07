@@ -137,7 +137,7 @@ dedicated branch, and use a pull request to integrate changes into `main`.
 # Create the virtual environment, then install the project editably with
 # the exact runtime and development dependencies recorded in uv.lock.
 uv venv .venv
-uv sync --locked --extra dev
+BH_BUILD_DEVELOPMENT=1 uv sync --locked --extra dev
 ```
 
 ### Running the quality gate
@@ -197,17 +197,28 @@ Use repeated `--python VERSION` arguments for a focused diagnostic run. CI and
 release validation use the default 3.10 and 3.13 endpoints. The command only
 reports drift; it never updates the lock or repairs resource mirrors.
 
+Standard builds require an explicit PEP 440 `BH_BUILD_VERSION` and a 40-hex-character
+`BH_BUILD_SOURCE_REVISION`. In a checkout the revision must match HEAD. Production
+pins an immutable release tag (for example `v1.0.0`); release automation may derive
+both assertions from that tag, but the hook validates explicit values, not tag names.
+Editable installs opt in with `BH_BUILD_DEVELOPMENT=1`, use stable `0.1.0.dev0`, and
+record the exact commit at build time in `source_revision`.
+
 To reproduce the non-editable installation manually from the repository root,
 use the following Bash commands. Set `RUNTIME_PYTHON` to the path for the host
-platform as shown:
+platform as shown. Replace the illustrative version and revision with the selected
+release identity; unset any ambient `BH_BUILD_DEVELOPMENT` first:
 
 ```bash
+unset BH_BUILD_DEVELOPMENT
 mkdir -p .tmp
 uv lock --check
 uv export --locked --no-emit-project --format requirements.txt \
   --output-file .tmp/runtime-requirements.txt
 uv export --locked --extra dev --no-emit-project --format requirements.txt \
   --output-file .tmp/build-requirements.txt
+BH_BUILD_VERSION=1.0.0 \
+BH_BUILD_SOURCE_REVISION=0123456789abcdef0123456789abcdef01234567 \
 uv build --build-constraints .tmp/build-requirements.txt --require-hashes \
   --sdist --wheel --out-dir .tmp/dist
 uv venv .tmp/runtime-venv --python 3.13
@@ -222,7 +233,35 @@ uv pip check --python "$RUNTIME_PYTHON"
 
 This staging environment contains the locked runtime closure and the built wheel;
 it does not select the `dev` extra. Run `bh-verify-foundation` before promoting the
-wheel to a deployment environment.
+wheel to a deployment environment. Its installed smoke processes run with empty
+temporary home/config directories and only execution-essential environment values.
+
+### Provenance and preflight
+
+```bash
+bh-daemon --version
+bh-daemon --provenance
+bh-daemon --doctor --phase installation --format json --strict
+bh-daemon --doctor --phase configuration --config /path/to/config.env --strict
+bh-daemon --doctor --phase live --strict
+```
+
+`--version` prints the installed distribution version; `--provenance` prints the
+validated packaged identity JSON without consulting Git or credentials.
+Installation checks are offline and credential-free; configuration checks are
+local-only; live checks may use credentials and network access. Repeat `--phase`
+to select multiple phases; omission runs all three. Text is the default format.
+`--config` selects an explicit file; otherwise selection uses
+`$BH_PROJECT_ROOT/.bh/config.env`, with non-empty environment overrides.
+An explicit `<root>/.bh/config.env` infers the project root when `BH_PROJECT_ROOT`
+is unset or empty; daemon startup applies that root after the readiness gate.
+
+Doctor is advisory (exit 0) unless `--strict` finds a critical failure (exit 1).
+Unsafe report rendering exits 1 even without strict; usage errors exit 2. Daemon
+startup always gates critical failures. `--check-vault` remains a live-check
+compatibility command and exits 0 only on PASS. See
+[operator preflight and JSON schema](docs/repository-onboarding.md#5-bh-daemon---doctor--strict--preflight-before-the-first-real-run)
+for report fields and startup ordering.
 
 ### Console entry-point convention
 
@@ -237,7 +276,7 @@ The three lifecycle hooks and the daemon are installed as console scripts by `py
 | `bh-force-pr-not-merge` | `baton_harness.hooks.force_pr_not_merge:main` | `src/baton_harness/hooks/force_pr_not_merge.py` |
 | `bh-verify-foundation` | `baton_harness.verify_foundation:main` | `src/baton_harness/verify_foundation.py` |
 
-After `uv sync --locked --extra dev`, these commands are on `PATH` inside
+After `BH_BUILD_DEVELOPMENT=1 uv sync --locked --extra dev`, these commands are on `PATH` inside
 the editable development venv.
 WORKFLOW.md hook lines wire them as:
 
@@ -305,7 +344,7 @@ checklist — what to install and export before a first run.
   seeds this automatically for throwaway sandboxes)
 
 The separate `baton` package is **not required** — `symphony` is vendored inside the
-`baton_harness` package. Use `uv sync --locked --extra dev` for an editable local
+`baton_harness` package. Use `BH_BUILD_DEVELOPMENT=1 uv sync --locked --extra dev` for an editable local
 development installation.
 
 ### GitHub App private-key provider

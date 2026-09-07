@@ -13,4 +13,6 @@ The shared CLI helpers (logging, issue-number resolution) live in
 See ``docs/harness-design.md`` for the architecture and integration model.
 """
 
-__version__ = "0.1.0"
+from importlib.metadata import version
+
+__version__ = version("baton-harness")

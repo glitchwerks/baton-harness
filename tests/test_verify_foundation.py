@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
+import io
+import json
+import os
 import sys
 import sysconfig
+import tarfile
 import zipfile
 from collections.abc import Mapping, Sequence
 from importlib import metadata
@@ -25,6 +30,149 @@ from baton_harness.verify_foundation import (
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+_IDENTITY = {
+    "schema_version": 1,
+    "package_version": "0.0.0+foundation",
+    "source_revision": "a" * 40,
+    "lock_identity": "sha256:"
+    + hashlib.sha256((_REPO_ROOT / "uv.lock").read_bytes()).hexdigest(),
+    "development": False,
+}
+
+
+def _write_sdist(root: Path, extra: str | None = None) -> Path:
+    """Create an actual source archive for extraction and identity checks."""
+    path = root / "source.tar.gz"
+    contents = {
+        "source/pyproject.toml": b"[project]\n",
+        "source/hatch_build.py": b"# hook\n",
+        "source/uv.lock": (_REPO_ROOT / "uv.lock").read_bytes(),
+        "source/src/baton_harness/build_provenance.json": json.dumps(
+            _IDENTITY
+        ).encode(),
+    }
+    if extra:
+        contents[extra] = b"malicious"
+    with tarfile.open(path, "w:gz") as archive:
+        for name, data in contents.items():
+            member = tarfile.TarInfo(name)
+            member.size = len(data)
+            archive.addfile(member, io.BytesIO(data))
+    return path
+
+
+@pytest.mark.parametrize("kind", ["wheel", "sdist"])
+def test_archive_provenance_identity(tmp_path: Path, kind: str) -> None:
+    """Both distribution formats must preserve the asserted identity."""
+    path = (
+        _write_wheel(tmp_path) if kind == "wheel" else _write_sdist(tmp_path)
+    )
+    verify_foundation.inspect_provenance_archive(path, _IDENTITY)
+
+
+@pytest.mark.parametrize(
+    "field", ["source_revision", "lock_identity", "package_version"]
+)
+def test_archive_rejects_identity_mismatch(tmp_path: Path, field: str) -> None:
+    """A valid but different record cannot satisfy the expected build."""
+    expected = dict(_IDENTITY, **{field: "wrong"})
+    with pytest.raises(FoundationError):
+        verify_foundation.inspect_provenance_archive(
+            _write_wheel(tmp_path), expected
+        )
+
+
+@pytest.mark.parametrize("record", [None, b"{", b"[]", b"{}"])
+def test_archive_rejects_invalid_record(
+    tmp_path: Path, record: bytes | None
+) -> None:
+    """Missing or malformed records fail closed."""
+    path = tmp_path / "bad.whl"
+    with zipfile.ZipFile(path, "w") as archive:
+        if record is not None:
+            archive.writestr("baton_harness/build_provenance.json", record)
+        archive.writestr(
+            "baton_harness.dist-info/METADATA", "Version: 0.0.0+foundation\n"
+        )
+    with pytest.raises(FoundationError):
+        verify_foundation.inspect_provenance_archive(path, _IDENTITY)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "source/.git/config",
+        "../escape",
+        "/absolute",
+        "source/../../escape",
+        "C:/escape",
+        "source/C:/escape",
+        "source/C:escape",
+        "source/file:stream",
+        "source/UV.LOCK",
+        "source/uv.lock.",
+        "source/uv.lock ",
+        "source/.GiT/config",
+        "source/.git./config",
+        "source/CON.txt",
+        "source/./alias",
+        "source//alias",
+    ],
+)
+def test_sdist_rejects_unsafe_tree(tmp_path: Path, extra: str) -> None:
+    """Git state and escaping paths cannot enter the rebuild tree."""
+    with pytest.raises(FoundationError):
+        verify_foundation.inspect_provenance_archive(
+            _write_sdist(tmp_path, extra), _IDENTITY
+        )
+
+
+@pytest.mark.parametrize(
+    "kind", [tarfile.SYMTYPE, tarfile.LNKTYPE, tarfile.FIFOTYPE]
+)
+def test_source_rejects_links_and_special_files(
+    tmp_path: Path, kind: bytes
+) -> None:
+    """Links and special files are rejected before source extraction."""
+    path = tmp_path / "unsafe.tar.gz"
+    with tarfile.open(path, "w:gz") as archive:
+        member = tarfile.TarInfo("source/link")
+        member.type = kind
+        member.linkname = "../../escape"
+        archive.addfile(member)
+    with pytest.raises(FoundationError, match="unsafe source archive"):
+        verify_foundation.inspect_provenance_archive(path, _IDENTITY)
+
+
+def test_wheel_metadata_version_must_match_record(tmp_path: Path) -> None:
+    """A wheel's record cannot disagree with its Core Metadata version."""
+    path = tmp_path / "mismatch.whl"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(
+            "baton_harness/build_provenance.json", json.dumps(_IDENTITY)
+        )
+        archive.writestr(
+            "baton_harness.dist-info/METADATA", "Version: 9.9.9\n"
+        )
+    with pytest.raises(FoundationError, match="installed version"):
+        verify_foundation.inspect_provenance_archive(path, _IDENTITY)
+
+
+def test_source_lock_bytes_must_match_record(tmp_path: Path) -> None:
+    """A record with the asserted digest cannot hide changed lock bytes."""
+    path = tmp_path / "mismatch.tar.gz"
+    with tarfile.open(path, "w:gz") as archive:
+        for name, data in {
+            "source/src/baton_harness/build_provenance.json": json.dumps(
+                _IDENTITY
+            ).encode(),
+            "source/uv.lock": b"different lock",
+        }.items():
+            member = tarfile.TarInfo(name)
+            member.size = len(data)
+            archive.addfile(member, io.BytesIO(data))
+    with pytest.raises(FoundationError, match="lock digest mismatch"):
+        verify_foundation.inspect_provenance_archive(path, _IDENTITY)
 
 
 class _RecordingRunner:
@@ -65,10 +213,18 @@ class _RecordingRunner:
         )
         if should_fail:
             return CompletedProcess(normalized, 1, "", "lock stale")
+        if normalized == ("git", "rev-parse", "HEAD"):
+            return CompletedProcess(normalized, 0, "a" * 40, "")
         if normalized[:2] == ("uv", "build"):
+            if "--sdist" not in normalized:
+                assert cwd.is_dir()
+                assert (cwd / "pyproject.toml").is_file()
+                assert not (cwd / ".git").exists()
             output = Path(normalized[normalized.index("--out-dir") + 1])
             output.mkdir(parents=True, exist_ok=True)
             _write_wheel(output)
+            if "--sdist" in normalized:
+                _write_sdist(output)
         if normalized[:2] == ("uv", "export"):
             output = Path(normalized[normalized.index("--output-file") + 1])
             packages = "jinja2==3.1.6\n"
@@ -114,7 +270,41 @@ class _SmokeRunner:
         return CompletedProcess(
             normalized,
             1 if command_name in lifecycle else 0,
-            "",
+            json.dumps(_IDENTITY)
+            if "--provenance" in normalized
+            else json.dumps(
+                {
+                    "schema_version": 1,
+                    "provenance": {
+                        key: value
+                        for key, value in _IDENTITY.items()
+                        if key != "schema_version"
+                    },
+                    "selected_phases": ["installation"],
+                    "checks": [
+                        {
+                            "id": "PKG_PROVENANCE",
+                            "phase": "installation",
+                            "status": "pass",
+                            "severity": "critical",
+                            "title": "Provenance",
+                            "detail": "Valid",
+                            "remediation": "",
+                        }
+                    ],
+                    "summary": {
+                        "pass": 1,
+                        "fail": 0,
+                        "warn": 0,
+                        "skip": 0,
+                        "critical_failures": 0,
+                    },
+                }
+            )
+            if "--doctor" in normalized
+            else "bh-daemon 0.0.0+foundation"
+            if "--version" in normalized
+            else "",
             "",
         )
 
@@ -147,6 +337,13 @@ def _write_wheel(
         f"{name} = baton_harness.fake:main" for name in sorted(scripts)
     )
     with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr(
+            "baton_harness/build_provenance.json", json.dumps(_IDENTITY)
+        )
+        archive.writestr(
+            "baton_harness-0.1.0.dist-info/METADATA",
+            "Version: 0.0.0+foundation\n",
+        )
         for name in resources:
             archive.writestr(f"baton_harness/resources/{name}", b"test")
         if duplicate_resource is not None:
@@ -267,6 +464,20 @@ def test_repository_verification_runs_locked_install_sequence(
     verify_foundation.verify_repository(_REPO_ROOT, ("3.10",), runner=runner)
 
     commands = [call[0] for call in runner.calls]
+    build_calls = [
+        call for call in runner.calls if call[0][:2] == ("uv", "build")
+    ]
+    assert len(build_calls) == 2
+    for call in build_calls:
+        assert call[2] is not None
+        assert call[2]["BH_BUILD_VERSION"] == "0.0.0+foundation"
+        assert call[2]["BH_BUILD_SOURCE_REVISION"] == "a" * 40
+        assert "BH_BUILD_DEVELOPMENT" not in call[2]
+    assert build_calls[1][1] != _REPO_ROOT
+    commands = [
+        command for command in commands if command[:2] != ("git", "rev-parse")
+    ]
+    commands.pop(4)  # The separately asserted source-archive wheel rebuild.
     assert commands[0] == ("uv", "lock", "--check")
     assert commands[1][:4] == (
         "uv",
@@ -306,10 +517,10 @@ def test_repository_verification_runs_locked_install_sequence(
         "ruff",
         "types-pyyaml",
     }
-    assert runner.calls[8][1].is_relative_to(tmp_path)
-    assert runner.calls[8][1] != _REPO_ROOT
-    assert runner.calls[8][2] is not None
-    assert "PYTHONPATH" not in runner.calls[8][2]
+    assert runner.calls[-1][1].is_relative_to(tmp_path)
+    assert runner.calls[-1][1] != _REPO_ROOT
+    assert runner.calls[-1][2] is not None
+    assert "PYTHONPATH" not in runner.calls[-1][2]
 
 
 def test_repository_verification_stops_on_stale_lock() -> None:
@@ -322,6 +533,26 @@ def test_repository_verification_stops_on_stale_lock() -> None:
         )
 
     assert len(runner.calls) == 1
+
+
+def test_source_extraction_checks_resolved_containment_before_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A destination resolving outside the extraction tree is never written."""
+    original_resolve = Path.resolve
+    escaped = tmp_path / "escaped.toml"
+
+    def resolve(path: Path, strict: bool = False) -> Path:
+        if path.parts[-3:] == ("source", "source", "pyproject.toml"):
+            return escaped
+        return original_resolve(path, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", resolve)
+    with pytest.raises(FoundationError, match="outside extraction"):
+        verify_foundation.verify_repository(
+            _REPO_ROOT, ("3.13",), runner=_RecordingRunner()
+        )
+    assert not escaped.exists()
 
 
 @pytest.mark.parametrize(
@@ -526,6 +757,89 @@ def test_installed_resource_read_failure_is_normalized() -> None:
         _read_installed_resources(unreadable_resource)
 
 
+@pytest.mark.parametrize("outer", [False, True])
+def test_installation_smokes_have_no_ambient_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outer: bool
+) -> None:
+    """Both installed process hops get fresh homes and no caller secrets."""
+    secret_keys = (
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "GH_ENTERPRISE_TOKEN",
+        "GITHUB_ENTERPRISE_TOKEN",
+        "BWS_ACCESS_TOKEN",
+        "ANTHROPIC_API_KEY",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "BH_PROJECT_ROOT",
+        "BH_REPO_OWNER",
+        "BH_GITHUB_APP_PRIVATE_KEY_FILE",
+        "BWS_PEM_SECRET_ID",
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "UNRECOGNIZED_AUTH_TOKEN",
+    )
+    home_keys = (
+        "HOME",
+        "USERPROFILE",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "XDG_RUNTIME_DIR",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "GH_CONFIG_DIR",
+        "CLAUDE_CONFIG_DIR",
+    )
+    for key in secret_keys:
+        monkeypatch.setenv(key, "dummy-ambient-authority")
+    for key in home_keys:
+        monkeypatch.setenv(key, str(tmp_path / "real-home"))
+    monkeypatch.setenv("PATH", "execution-path")
+    monkeypatch.setenv("SYSTEMROOT", "execution-system-root")
+    monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
+    normal = _RecordingRunner() if outer else _SmokeRunner()
+    smoke_calls: list[tuple[str, ...]] = []
+
+    def runner(
+        command: Sequence[str],
+        *,
+        cwd: Path,
+        env: Mapping[str, str] | None = None,
+        input_text: str | None = None,
+        timeout_seconds: float = 300,
+    ) -> CompletedProcess[str]:
+        """Inspect the real launch environment while temporary homes exist."""
+        if "--installed-smoke" in command or "--doctor" in command:
+            smoke_calls.append(tuple(command))
+            assert env is not None
+            assert not set(secret_keys) & set(env)
+            assert env["PATH"] == "execution-path"
+            assert env["SYSTEMROOT"] == "execution-system-root"
+            for key in home_keys:
+                home = Path(env[key])
+                assert home.is_relative_to(tmp_path)
+                assert home != tmp_path / "real-home"
+                assert home.is_dir()
+                assert not list(home.iterdir())
+        return normal(
+            command,
+            cwd=cwd,
+            env=env,
+            input_text=input_text,
+            timeout_seconds=timeout_seconds,
+        )
+
+    if outer:
+        verify_foundation.verify_repository(
+            _REPO_ROOT, ("3.10",), runner=runner
+        )
+    else:
+        _smoke_entry_points(tmp_path / "bin", runner=runner)
+    assert len(smoke_calls) == 1
+    assert os.environ["GH_TOKEN"] == "dummy-ambient-authority"
+
+
 def test_installed_entry_points_use_only_safe_smokes(tmp_path: Path) -> None:
     """Changing a wrapper smoke into an external workflow is rejected."""
     runner = _SmokeRunner()
@@ -534,12 +848,158 @@ def test_installed_entry_points_use_only_safe_smokes(tmp_path: Path) -> None:
 
     commands = {Path(call[0][0]).stem: call for call in runner.calls}
     assert set(commands) == EXPECTED_ENTRY_POINTS - {"bh-verify-foundation"}
-    assert commands["bh-daemon"][0][1:] == ("--help",)
+    daemon_args = [
+        call[0][1:]
+        for call in runner.calls
+        if Path(call[0][0]).stem == "bh-daemon"
+    ]
+    assert ("--help",) in daemon_args
+    assert ("--version",) in daemon_args
+    assert ("--provenance",) in daemon_args
+    assert (
+        "--doctor",
+        "--phase",
+        "installation",
+        "--format",
+        "json",
+        "--strict",
+    ) in daemon_args
     assert commands["bh-force-pr-not-merge"][3] == "{}"
     for name in ("bh-after-create", "bh-before-run", "bh-after-run"):
         assert commands[name][0][1:] == ()
         assert commands[name][1] != _REPO_ROOT
     assert all(call[4] == 30 for call in runner.calls)
+
+
+@pytest.mark.parametrize("flag", ["--provenance", "--doctor"])
+@pytest.mark.parametrize(
+    "output", ["invalid", "[]", "{}", "wrong-phase", "failed", "empty-checks"]
+)
+def test_installed_json_smoke_rejects_bad_output(
+    tmp_path: Path, flag: str, output: str
+) -> None:
+    """Successful exit alone does not establish a valid installed report."""
+    normal = _SmokeRunner()
+
+    def runner(
+        command: Sequence[str],
+        *,
+        cwd: Path,
+        env: Mapping[str, str] | None = None,
+        input_text: str | None = None,
+        timeout_seconds: float = 300,
+    ) -> CompletedProcess[str]:
+        result = normal(
+            command,
+            cwd=cwd,
+            env=env,
+            input_text=input_text,
+            timeout_seconds=timeout_seconds,
+        )
+        if flag in command:
+            if output in {"wrong-phase", "failed", "empty-checks"}:
+                if flag != "--doctor":
+                    result.stdout = "{}"
+                else:
+                    report = json.loads(result.stdout)
+                    if output == "wrong-phase":
+                        report["selected_phases"] = ["live"]
+                    elif output == "failed":
+                        report["summary"]["critical_failures"] = 1
+                    else:
+                        report["checks"] = []
+                    result.stdout = json.dumps(report)
+            else:
+                result.stdout = output
+        return result
+
+    with pytest.raises(FoundationError):
+        _smoke_entry_points(tmp_path, runner=runner)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("schema_version", True),
+        ("checks", [{}]),
+        ("checks", [None]),
+        ("summary", {"critical_failures": 0}),
+        *[
+            (f"check.{name}", None)
+            for name in (
+                "id",
+                "phase",
+                "status",
+                "severity",
+                "title",
+                "detail",
+                "remediation",
+            )
+        ],
+        ("check.id", ""),
+        ("check.phase", "live"),
+        ("check.status", "unknown"),
+        ("check.severity", "unknown"),
+        ("check.extra", "unexpected"),
+        *[
+            (f"check.{name}", "<missing>")
+            for name in (
+                "id",
+                "phase",
+                "status",
+                "severity",
+                "title",
+                "detail",
+                "remediation",
+            )
+        ],
+        *[
+            (f"summary.{name}", value)
+            for name in ("pass", "fail", "warn", "skip", "critical_failures")
+            for value in (None, True, -1, 0.0, "0", 2)
+        ],
+        ("summary.extra", 0),
+    ],
+)
+def test_installed_doctor_rejects_malformed_schema(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    """Malformed checks and dishonest summary counters cannot pass smoke."""
+    normal = _SmokeRunner()
+
+    def runner(
+        command: Sequence[str],
+        *,
+        cwd: Path,
+        env: Mapping[str, str] | None = None,
+        input_text: str | None = None,
+        timeout_seconds: float = 300,
+    ) -> CompletedProcess[str]:
+        """Replace one report field at the external process boundary."""
+        result = normal(
+            command,
+            cwd=cwd,
+            env=env,
+            input_text=input_text,
+            timeout_seconds=timeout_seconds,
+        )
+        if "--doctor" in command:
+            report = json.loads(result.stdout)
+            if field.startswith("check."):
+                name = field.removeprefix("check.")
+                if value == "<missing>":
+                    del report["checks"][0][name]
+                else:
+                    report["checks"][0][name] = value
+            elif field.startswith("summary."):
+                report["summary"][field.removeprefix("summary.")] = value
+            else:
+                report[field] = value
+            result.stdout = json.dumps(report)
+        return result
+
+    with pytest.raises(FoundationError, match="invalid installed doctor"):
+        _smoke_entry_points(tmp_path, runner=runner)
 
 
 def test_installed_entry_point_timeout_is_normalized(tmp_path: Path) -> None:

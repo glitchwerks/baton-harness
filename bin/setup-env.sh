@@ -443,7 +443,7 @@ fi
 # ---------------------------------------------------------------------------
 
 echo "baton-harness: syncing locked editable package with dev extras ..."
-uv sync --project "${BATON_HARNESS_DIR}" --locked --extra dev
+BH_BUILD_DEVELOPMENT=1 uv sync --project "${BATON_HARNESS_DIR}" --locked --extra dev
 
 # ---------------------------------------------------------------------------
 # Install the git pre-commit hook (prek install is idempotent)

@@ -152,7 +152,7 @@ secured descriptor and proves the PEM can sign an App JWT before any GitHub requ
 | `file` | `BWS_GH_TOKEN_SECRET_ID` and/or `BWS_HEARTBEAT_PING_URL_SECRET_ID` | Required for those fetches |
 
 `bh-daemon --doctor` keeps stable check IDs for automation. In file-only mode,
-`CLI_BWS` and `ENV_BWS_ACCESS_TOKEN` both pass with the safe detail "BWS is not required
+configuration-phase `CLI_BWS` and live-phase `ENV_BWS_ACCESS_TOKEN` both pass with the safe detail "BWS is not required
 by the resolved secret configuration." In mixed file+BWS mode they perform their normal
 CLI/token checks and fail critically when either prerequisite is absent.
 
@@ -161,7 +161,14 @@ Existing configurations must migrate explicitly by adding
 host file, set `BH_GITHUB_APP_KEY_PROVIDER=file`, add
 `BH_GITHUB_APP_PRIVATE_KEY_FILE=<absolute-path>`, and remove `BWS_PEM_SECRET_ID`.
 
-> **Note — missing file is silently skipped by the daemon binary:** `bh-daemon` guards its `.bh/config.env` parse with an `os.path.isfile` check (`cli.py`); if the file is absent the daemon skips validation and starts with whatever is already in the environment. `bin/run-daemon.sh` is the component that hard-checks the file exists before launching — so operators who write a custom systemd `ExecStart=` that bypasses the launcher should ensure `.bh/config.env` is present, or the daemon will start without sandbox config validation.
+The daemon fails closed on missing or malformed selected config, including direct
+binary launches. Use `--config PATH` to override `$BH_PROJECT_ROOT/.bh/config.env`.
+Run `bh-daemon --doctor --phase installation --format json --strict` for offline,
+credential-free installed-package checks, then configuration and live phases as
+described in [repository onboarding](repository-onboarding.md#5-bh-daemon---doctor--strict--preflight-before-the-first-real-run).
+Omitting `--phase` runs all three; repeat it to select multiple phases. Standalone
+findings are advisory unless `--strict` is supplied; daemon startup always rejects
+critical failures. `bh-daemon --check-vault` remains the single live App-key check.
 
 ### Per-host config — set by `bin/setup-env.sh`
 

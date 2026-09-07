@@ -1,10 +1,9 @@
 """Sandbox config reader and validator for ``.bh/config.env`` files.
 
-Provides a single public function, ``read_and_validate``, that reads a
-``KEY=VALUE`` environment file, validates the required sandbox settings,
-confirms the target repository exists via ``gh api``, then populates
-``os.environ`` with the selected App-key provider, its source, the
-remaining parsed keys, and the derived ``BWS_*`` twins.
+Provides pure configuration resolution and explicit effect boundaries for
+``.bh/config.env``. ``read_and_validate`` retains the legacy composition:
+it resolves against ``os.environ``, confirms the target repository through
+``gh api``, then applies the result to ``os.environ``.
 
 The subprocess call is injected via the ``run`` parameter so callers
 control the transport layer in tests — no real ``gh`` binary is
@@ -36,7 +35,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -122,7 +121,7 @@ class SandboxConfigError(RuntimeError):
 # ---------------------------------------------------------------------------
 
 
-@dataclass
+@dataclass(frozen=True)
 class SandboxConfig:
     """Validated sandbox configuration loaded from ``.bh/config.env``.
 
@@ -250,24 +249,48 @@ def resolve_overridable_keys(
     return resolved
 
 
-def read_and_validate(
-    path: str | os.PathLike[str],
-    *,
-    run: RunFn = _default_run,
+def select_config_path(
+    explicit: str | None,
+    env: Mapping[str, str],
+) -> Path:
+    """Select an explicit or project-root-relative sandbox config path.
+
+    Args:
+        explicit: Optional explicit config-file path.
+        env: Environment from which to read ``BH_PROJECT_ROOT``.
+
+    Returns:
+        The resolved config-file path.
+
+    Raises:
+        SandboxConfigError: If no explicit path or project root is supplied.
+    """
+    if explicit:
+        return Path(explicit).resolve()
+    project_root = env.get("BH_PROJECT_ROOT", "")
+    if not project_root:
+        raise SandboxConfigError(
+            "BH_PROJECT_ROOT is required when --config is not supplied"
+        )
+    return (Path(project_root) / ".bh" / "config.env").resolve()
+
+
+def resolve_config(
+    path: Path,
+    env: Mapping[str, str],
 ) -> SandboxConfig:
-    """Read, validate, and export sandbox config from ``.bh/config.env``.
+    """Parse and validate sandbox config without external effects.
 
     Args:
         path: Path to the ``config.env`` file.
-        run: Injected subprocess runner used for the ``gh api`` repo
-            existence check.
+        env: Environment values eligible to override file values.
 
     Returns:
         A validated ``SandboxConfig`` instance.
 
     Raises:
-        SandboxConfigError: If the file is missing, malformed, contains
-            invalid values, omits a required key, or the repo check fails.
+        SandboxConfigError: If the file is missing, malformed, invalid, or
+            omits a required key.
     """
     file_path = os.fspath(path)
     try:
@@ -306,12 +329,10 @@ def read_and_validate(
         parsed[key] = value
         parsed_line_numbers[key] = line_number
 
-    # Resolve each overridable key: a non-empty os.environ value wins
+    # Resolve each overridable key: a non-empty environment value wins
     # over the file's value (empty env is treated as absent). The
     # completely resolved base and optional values are validated below.
-    resolved = resolve_overridable_keys(
-        parsed, os.environ, _ENV_OVERRIDABLE_KEYS
-    )
+    resolved = resolve_overridable_keys(parsed, env, _ENV_OVERRIDABLE_KEYS)
 
     for required_key in _REQUIRED_KEYS:
         if not resolved.get(required_key):
@@ -322,7 +343,7 @@ def read_and_validate(
         if _is_valid(key, value):
             continue
 
-        env_value = os.environ.get(key, "")
+        env_value = env.get(key, "")
         if env_value:
             raise SandboxConfigError(
                 f"{key} invalid (from environment variable): {value!r}"
@@ -340,43 +361,9 @@ def read_and_validate(
     except AppPrivateKeyConfigError as exc:
         raise SandboxConfigError(str(exc)) from exc
 
-    owner = resolved["BH_REPO_OWNER"]
-    repo = resolved["BH_REPO_NAME"]
-    gh_result = run(["gh", "api", f"repos/{owner}/{repo}", "--jq", ".id"])
-    if gh_result.returncode != 0:
-        raise SandboxConfigError(
-            f"sandbox repo validation failed for {owner}/{repo}"
-        )
-
-    os.environ["BH_REPO_OWNER"] = owner
-    os.environ["BH_REPO_NAME"] = repo
-    os.environ["BH_GITHUB_APP_ID"] = resolved["BH_GITHUB_APP_ID"]
-    os.environ["BH_GITHUB_APP_INSTALLATION_ID"] = resolved[
-        "BH_GITHUB_APP_INSTALLATION_ID"
-    ]
-    os.environ["BH_GITHUB_APP_KEY_PROVIDER"] = app_key_config.provider.value
-    if app_key_config.provider is AppPrivateKeyProvider.BWS:
-        assert app_key_config.bws_secret_id is not None
-        os.environ["BWS_PEM_SECRET_ID"] = app_key_config.bws_secret_id
-        os.environ.pop("BH_GITHUB_APP_PRIVATE_KEY_FILE", None)
-    else:
-        assert app_key_config.file_path is not None
-        os.environ["BH_GITHUB_APP_PRIVATE_KEY_FILE"] = str(
-            app_key_config.file_path
-        )
-        os.environ.pop("BWS_PEM_SECRET_ID", None)
-    os.environ["BWS_GH_TOKEN_SECRET_ID"] = resolved["BWS_GH_TOKEN_SECRET_ID"]
-    os.environ["BWS_HEARTBEAT_PING_URL_SECRET_ID"] = resolved[
-        "BWS_HEARTBEAT_PING_URL_SECRET_ID"
-    ]
-    os.environ["BWS_APP_ID"] = resolved["BH_GITHUB_APP_ID"]
-    os.environ["BWS_INSTALLATION_ID"] = resolved[
-        "BH_GITHUB_APP_INSTALLATION_ID"
-    ]
-
     return SandboxConfig(
-        repo_owner=owner,
-        repo_name=repo,
+        repo_owner=resolved["BH_REPO_OWNER"],
+        repo_name=resolved["BH_REPO_NAME"],
         github_app_id=resolved["BH_GITHUB_APP_ID"],
         github_app_installation_id=resolved["BH_GITHUB_APP_INSTALLATION_ID"],
         github_app_key_provider=app_key_config.provider,
@@ -387,3 +374,86 @@ def read_and_validate(
             "BWS_HEARTBEAT_PING_URL_SECRET_ID"
         ],
     )
+
+
+def validate_repository(config: SandboxConfig, run: RunFn) -> None:
+    """Confirm that a resolved sandbox repository exists.
+
+    Args:
+        config: Fully resolved sandbox configuration.
+        run: Injected subprocess runner for the GitHub API probe.
+
+    Raises:
+        SandboxConfigError: If the repository validation command fails.
+    """
+    gh_result = run(
+        [
+            "gh",
+            "api",
+            f"repos/{config.repo_owner}/{config.repo_name}",
+            "--jq",
+            ".id",
+        ]
+    )
+    if gh_result.returncode != 0:
+        raise SandboxConfigError(
+            "sandbox repo validation failed for "
+            f"{config.repo_owner}/{config.repo_name}"
+        )
+
+
+def apply_config(
+    config: SandboxConfig,
+    env: MutableMapping[str, str],
+) -> None:
+    """Apply a resolved sandbox configuration to a mutable environment.
+
+    Args:
+        config: Fully resolved sandbox configuration.
+        env: Target environment to populate with selected configuration.
+    """
+    env["BH_REPO_OWNER"] = config.repo_owner
+    env["BH_REPO_NAME"] = config.repo_name
+    env["BH_GITHUB_APP_ID"] = config.github_app_id
+    env["BH_GITHUB_APP_INSTALLATION_ID"] = config.github_app_installation_id
+    env["BH_GITHUB_APP_KEY_PROVIDER"] = config.github_app_key_provider.value
+    if config.github_app_key_provider is AppPrivateKeyProvider.BWS:
+        assert config.bws_pem_secret_id is not None
+        env["BWS_PEM_SECRET_ID"] = config.bws_pem_secret_id
+        env.pop("BH_GITHUB_APP_PRIVATE_KEY_FILE", None)
+    else:
+        assert config.github_app_private_key_file is not None
+        env["BH_GITHUB_APP_PRIVATE_KEY_FILE"] = str(
+            config.github_app_private_key_file
+        )
+        env.pop("BWS_PEM_SECRET_ID", None)
+    env["BWS_GH_TOKEN_SECRET_ID"] = config.bws_gh_token_secret_id
+    env["BWS_HEARTBEAT_PING_URL_SECRET_ID"] = (
+        config.bws_heartbeat_ping_url_secret_id
+    )
+    env["BWS_APP_ID"] = config.github_app_id
+    env["BWS_INSTALLATION_ID"] = config.github_app_installation_id
+
+
+def read_and_validate(
+    path: str | os.PathLike[str],
+    *,
+    run: RunFn = _default_run,
+) -> SandboxConfig:
+    """Resolve, validate remotely, and apply sandbox config compatibly.
+
+    Args:
+        path: Path to the ``config.env`` file.
+        run: Injected subprocess runner used for the ``gh api`` repo
+            existence check.
+
+    Returns:
+        A validated ``SandboxConfig`` instance.
+
+    Raises:
+        SandboxConfigError: If resolution or repository validation fails.
+    """
+    config = resolve_config(Path(path), os.environ)
+    validate_repository(config, run)
+    apply_config(config, os.environ)
+    return config

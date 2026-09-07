@@ -1,64 +1,9 @@
-"""Tests for the unified preflight "doctor" catalog (issue #193, Phase 1).
+"""Tests for the phase-selectable preflight doctor domain.
 
-Covers the module surface described in the ratified plan
-(``docs/superpowers/plans/2026-07-01-preflight-doctor-193.md``, section 3,
-6, and the Phase 1 bullet under section 15):
-
-- ``Severity`` (``CRITICAL``/``WARNING``), ``CheckStatus``
-  (``PASS``/``FAIL``/``WARN``/``SKIP``), ``Phase``
-  (``PRE_BOOTSTRAP``/``POST_BOOTSTRAP``) enums.
-- ``CheckResult`` dataclass shape.
-- ``DoctorContext`` -- the injected-seam bundle (mirrors the
-  ``runner=``/``run=``/``fetch_secret=`` style already used by
-  ``sandbox_config.py`` and ``daemon.py``).
-- The exception contract (BLOCKING #1, section 3/14): a raising ``Check``
-  is caught by both runners and synthesized into
-  ``CheckResult(status=FAIL, severity=check.severity, detail=repr(exc),
-  fix=check.fix)`` -- never a bare traceback out of ``run_gate``.
-- The ``daemon_native`` filter (BLOCKING #2 / section 3 / section 6):
-  ``run_gate`` excludes every ``daemon_native=True`` check in **both**
-  phases; ``run_report`` includes them unconditionally.
-- Every Phase-1 ``Check`` in ``CATALOG``: ``CLI_GH``, ``CLI_BWS``,
-  ``CLI_CLAUDE``, ``CLI_UV``, ``ENV_PROJECT_ROOT``, ``ENV_HOST_ENV``,
-  ``CFG_CONFIG_ENV``, ``CFG_REQUIRED_KEYS``, ``CFG_OPTIONAL_SECRET_IDS``,
-  ``ENV_BWS_ACCESS_TOKEN``, ``GITIGNORE_SYMPHONY``,
-  ``CRED_ANTHROPIC_UNSET``, ``FORCE_PR_TRIPWIRE``, ``GIT_CRED_HELPER``.
-
-Design notes / contract choices made by this test file (no implementation
-existed to consult, so these are this file's own decisions -- see the
-return summary's "Gaps / assumptions" section for the full list):
-
-- ``Phase`` is introduced as an ``Enum`` with members ``PRE_BOOTSTRAP``
-  and ``POST_BOOTSTRAP`` -- the plan names the two phases but never
-  names an enum class for them.
-- Each ``Check`` callable must expose ``check_id``, ``title``,
-  ``severity``, ``phase``, ``daemon_native``, and ``fix`` as plain
-  attributes (not just be callable) -- required so the exception
-  contract's ``severity=check.severity, fix=check.fix`` synthesis is
-  possible, and so tests can introspect/filter ``CATALOG`` without
-  invoking every check.
-- ``DoctorContext`` carries ``project_root`` and ``home_dir`` as plain
-  resolved string fields (not callables) -- filesystem-backed checks
-  operate against real temporary directories/files (mirrors the
-  ``tmp_path``-based style already used in ``test_sandbox_config.py``),
-  rather than an injected path-existence callable.
-- ``CFG_REQUIRED_KEYS``/``CFG_OPTIONAL_SECRET_IDS`` read
-  ``{project_root}/.bh/config.env`` directly and validate shape only
-  (reusing ``sandbox_config``'s validation *rules*, per the briefing) --
-  they must NOT make the ``gh api`` network call that
-  ``sandbox_config.read_and_validate`` makes, since Phase A
-  (PRE_BOOTSTRAP) is explicitly "no network/auth needed" (plan section
-  4).
-- ``GIT_CRED_HELPER`` (G3d) IS included in this Phase-1 file even though
-  the router's enumerated Phase-1 check list omitted it: the plan's own
-  Phase-1 bullet under section 15 (which the task explicitly pointed at
-  as authoritative) lists it explicitly, alongside the section 6 catalog
-  row. Flagged prominently in the return summary and kept in its own
-  clearly-labeled block (``TestGitCredHelper``) so the router can drop
-  it cheaply if the omission was in fact a deliberate re-scope.
-
-All seams are injected (no real subprocess, filesystem-outside-tmp_path,
-or network I/O). No pytest-asyncio (doctor.py is synchronous).
+The suite covers stable machine enums, the public result/context model,
+selection and aggregated gate behavior, credential-free installation
+integrity, local configuration checks, and live authority checks. External
+operations remain injected except for the real offline installation smoke.
 """
 
 from __future__ import annotations
@@ -70,6 +15,7 @@ import stat
 import subprocess
 import textwrap
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock, patch
@@ -78,14 +24,18 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
+from baton_harness import resources
 from baton_harness.chain import app_auth, doctor
 from baton_harness.chain.cli import main
 from baton_harness.chain.doctor import (
+    CheckFn,
     CheckResult,
     CheckStatus,
     DoctorContext,
     Phase,
     Severity,
+    run_gate,
+    run_report,
 )
 from baton_harness.chain.ruleset_status import RulesetStatus
 
@@ -178,7 +128,7 @@ def _make_check(
     *,
     title: str = "synthetic check",
     severity: Severity = Severity.CRITICAL,
-    phase: Phase = Phase.PRE_BOOTSTRAP,
+    phase: Phase = Phase.CONFIGURATION,
     daemon_native: bool = False,
     fix: str = "synthetic fix",
     fn: Any = None,  # noqa: ANN401
@@ -206,11 +156,12 @@ def _make_check(
         def fn(ctx: DoctorContext) -> CheckResult:  # noqa: ANN001
             return CheckResult(
                 check_id=check_id,
+                phase=phase,
                 title=title,
                 severity=severity,
                 status=CheckStatus.PASS,
                 detail="synthetic pass",
-                fix=fix,
+                remediation=fix,
             )
 
     fn.check_id = check_id
@@ -229,7 +180,7 @@ def _assert_no_secret_leak(result: CheckResult, secret_value: str) -> None:
         result: The result to inspect.
         secret_value: The (fake) secret value that must never leak.
     """
-    for field_name in ("check_id", "title", "detail", "fix"):
+    for field_name in ("check_id", "title", "detail", "remediation"):
         value = getattr(result, field_name)
         assert secret_value not in str(value), (
             f"CheckResult.{field_name} must never contain the secret "
@@ -473,19 +424,31 @@ def test_key_probe_output_excludes_pem_token_and_credential_url(
 # ---------------------------------------------------------------------------
 
 
-def test_severity_enum_members() -> None:
-    """Severity has exactly CRITICAL and WARNING members."""
-    assert {m.name for m in Severity} == {"CRITICAL", "WARNING"}
+def test_severity_enum_has_stable_machine_values() -> None:
+    """Severity exposes stable values for report serialization."""
+    assert {severity.value for severity in Severity} == {
+        "critical",
+        "warning",
+    }
 
 
-def test_check_status_enum_members() -> None:
-    """CheckStatus has exactly PASS/FAIL/WARN/SKIP members."""
-    assert {m.name for m in CheckStatus} == {"PASS", "FAIL", "WARN", "SKIP"}
+def test_check_status_enum_has_stable_machine_values() -> None:
+    """CheckStatus exposes stable values for report serialization."""
+    assert {status.value for status in CheckStatus} == {
+        "pass",
+        "fail",
+        "warn",
+        "skip",
+    }
 
 
-def test_phase_enum_members() -> None:
-    """Phase has exactly PRE_BOOTSTRAP and POST_BOOTSTRAP members."""
-    assert {m.name for m in Phase} == {"PRE_BOOTSTRAP", "POST_BOOTSTRAP"}
+def test_phase_enum_has_stable_machine_values() -> None:
+    """Phase exposes the three stable public machine values."""
+    assert {phase.value for phase in Phase} == {
+        "installation",
+        "configuration",
+        "live",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -493,22 +456,24 @@ def test_phase_enum_members() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_check_result_carries_all_six_fields() -> None:
-    """CheckResult stores check_id/title/severity/status/detail/fix."""
+def test_check_result_carries_all_public_fields() -> None:
+    """CheckResult stores the complete public doctor result contract."""
     result = CheckResult(
         check_id="X",
+        phase=Phase.INSTALLATION,
         title="a title",
         severity=Severity.CRITICAL,
         status=CheckStatus.PASS,
         detail="a detail",
-        fix="a fix",
+        remediation="a remediation",
     )
     assert result.check_id == "X"
+    assert result.phase is Phase.INSTALLATION
     assert result.title == "a title"
     assert result.severity == Severity.CRITICAL
     assert result.status == CheckStatus.PASS
     assert result.detail == "a detail"
-    assert result.fix == "a fix"
+    assert result.remediation == "a remediation"
 
 
 # ---------------------------------------------------------------------------
@@ -554,6 +519,183 @@ def test_doctor_context_declares_run_and_fetch_secret_fields() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _phase_result(check_id: str, phase: Phase) -> CheckResult:
+    """Build a passing result for phase-selection tests."""
+    return CheckResult(
+        check_id=check_id,
+        phase=phase,
+        title=check_id,
+        severity=Severity.CRITICAL,
+        status=CheckStatus.PASS,
+        detail="passed",
+        remediation="none",
+    )
+
+
+def test_run_report_selects_one_phase_without_calling_unselected_checks() -> (
+    None
+):
+    """Selecting one phase executes only checks owned by that phase."""
+    calls: list[str] = []
+
+    def selected(ctx: DoctorContext) -> CheckResult:
+        del ctx
+        calls.append("selected")
+        return _phase_result("selected", Phase.CONFIGURATION)
+
+    def unselected(ctx: DoctorContext) -> CheckResult:
+        del ctx
+        raise AssertionError("unselected check was called")
+
+    checks = (
+        _make_check("selected", phase=Phase.CONFIGURATION, fn=selected),
+        _make_check("unselected", phase=Phase.LIVE, fn=unselected),
+    )
+
+    results = run_report(_make_ctx(), (Phase.CONFIGURATION,), checks=checks)
+
+    assert calls == ["selected"]
+    assert [result.check_id for result in results] == ["selected"]
+
+
+def test_run_report_repeated_phase_is_executed_once() -> None:
+    """Repeated phase selectors do not duplicate catalog execution."""
+    calls: list[str] = []
+
+    def selected(ctx: DoctorContext) -> CheckResult:
+        del ctx
+        calls.append("selected")
+        return _phase_result("selected", Phase.INSTALLATION)
+
+    checks = (_make_check("selected", phase=Phase.INSTALLATION, fn=selected),)
+
+    results = run_report(
+        _make_ctx(),
+        (Phase.INSTALLATION, Phase.INSTALLATION),
+        checks=checks,
+    )
+
+    assert calls == ["selected"]
+    assert [result.check_id for result in results] == ["selected"]
+
+
+@pytest.mark.parametrize(
+    ("phases", "expected"),
+    [
+        (None, ["installation", "configuration", "live", "live-second"]),
+        (
+            (Phase.LIVE, Phase.CONFIGURATION, Phase.LIVE, Phase.INSTALLATION),
+            ["live", "live-second", "configuration", "installation"],
+        ),
+    ],
+)
+def test_run_report_orders_by_selected_phase_then_catalog(
+    phases: tuple[Phase, ...] | None, expected: list[str]
+) -> None:
+    """Phase selection controls execution, with each check executed once."""
+    calls: list[str] = []
+
+    def result_for(check_id: str, phase: Phase) -> CheckFn:
+        def run(ctx: DoctorContext) -> CheckResult:
+            del ctx
+            calls.append(check_id)
+            return _phase_result(check_id, phase)
+
+        return run
+
+    checks = (
+        _make_check(
+            "live",
+            phase=Phase.LIVE,
+            fn=result_for("live", Phase.LIVE),
+        ),
+        _make_check(
+            "installation",
+            phase=Phase.INSTALLATION,
+            fn=result_for("installation", Phase.INSTALLATION),
+        ),
+        _make_check(
+            "configuration",
+            phase=Phase.CONFIGURATION,
+            fn=result_for("configuration", Phase.CONFIGURATION),
+        ),
+        _make_check(
+            "live-second",
+            phase=Phase.LIVE,
+            fn=result_for("live-second", Phase.LIVE),
+        ),
+    )
+
+    results = run_report(_make_ctx(), phases, checks=checks)
+
+    assert calls == expected
+    assert [result.check_id for result in results] == expected
+
+
+def test_run_report_uses_catalog_metadata_for_emitted_results() -> None:
+    """Catalog ownership overrides inconsistent function metadata."""
+
+    def inconsistent(ctx: DoctorContext) -> CheckResult:
+        del ctx
+        return CheckResult(
+            check_id="wrong-id",
+            phase=Phase.INSTALLATION,
+            title="wrong title",
+            severity=Severity.WARNING,
+            status=CheckStatus.PASS,
+            detail="the check-specific outcome",
+            remediation="wrong remediation",
+        )
+
+    check = _make_check(
+        "CATALOG_OWNER",
+        title="Catalog title",
+        severity=Severity.CRITICAL,
+        phase=Phase.LIVE,
+        fix="Catalog remediation",
+        fn=inconsistent,
+    )
+
+    result = run_report(_make_ctx(), (Phase.LIVE,), checks=(check,))[0]
+
+    assert result == CheckResult(
+        check_id="CATALOG_OWNER",
+        phase=Phase.LIVE,
+        title="Catalog title",
+        severity=Severity.CRITICAL,
+        status=CheckStatus.PASS,
+        detail="the check-specific outcome",
+        remediation="Catalog remediation",
+    )
+
+
+def test_run_gate_collects_every_critical_failure() -> None:
+    """The gate reports every selected critical failure together."""
+
+    def critical_failure(check_id: str) -> CheckFn:
+        def run(ctx: DoctorContext) -> CheckResult:
+            del ctx
+            return CheckResult(
+                check_id=check_id,
+                phase=Phase.INSTALLATION,
+                title="failure",
+                severity=Severity.CRITICAL,
+                status=CheckStatus.FAIL,
+                detail="failed",
+                remediation="repair it",
+            )
+
+        return run
+
+    checks = (
+        _make_check("A", phase=Phase.INSTALLATION, fn=critical_failure("A")),
+        _make_check("B", phase=Phase.INSTALLATION, fn=critical_failure("B")),
+    )
+    with pytest.raises(doctor.DoctorGateError) as captured:
+        run_gate(_make_ctx(), (Phase.INSTALLATION,), checks=checks)
+    assert [item.check_id for item in captured.value.results] == ["A", "B"]
+
+
 def test_run_report_catches_raising_check_and_synthesizes_fail(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -583,11 +725,12 @@ def test_run_report_catches_raising_check_and_synthesizes_fail(
         calls.append("second")
         return CheckResult(
             check_id="SYNTH_SECOND",
+            phase=Phase.CONFIGURATION,
             title="t",
             severity=Severity.WARNING,
             status=CheckStatus.PASS,
             detail="ok",
-            fix="",
+            remediation="",
         )
 
     second = _make_check("SYNTH_SECOND", fn=_second)
@@ -607,13 +750,13 @@ def test_run_report_catches_raising_check_and_synthesizes_fail(
     assert failed.status == CheckStatus.FAIL
     assert failed.severity == Severity.CRITICAL
     assert failed.detail == repr(exc)
-    assert failed.fix == "fix the boom"
+    assert failed.remediation == "fix the boom"
 
 
-def test_run_gate_raising_critical_check_exits_cleanly_not_a_traceback(
+def test_run_gate_raising_critical_check_is_aggregated_not_a_traceback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A raising CRITICAL check triggers a clean SystemExit(1) via run_gate.
+    """A raising critical check becomes an aggregated gate failure.
 
     This is the load-bearing half of BLOCKING #1: without the runner's
     catch, the raw exception would propagate out of run_gate and bypass
@@ -629,17 +772,19 @@ def test_run_gate_raising_critical_check_exits_cleanly_not_a_traceback(
     raising = _make_check(
         "SYNTH_GATE_RAISE",
         severity=Severity.CRITICAL,
-        phase=Phase.PRE_BOOTSTRAP,
+        phase=Phase.CONFIGURATION,
         daemon_native=False,
         fix="fix gate boom",
         fn=_boom,
     )
     monkeypatch.setattr(doctor, "CATALOG", [raising])
 
-    with pytest.raises(SystemExit) as exc_info:
-        doctor.run_gate(_make_ctx(), Phase.PRE_BOOTSTRAP)
+    with pytest.raises(doctor.DoctorGateError) as exc_info:
+        doctor.run_gate(_make_ctx(), (Phase.CONFIGURATION,))
 
-    assert exc_info.value.code == 1
+    assert [result.check_id for result in exc_info.value.results] == [
+        "SYNTH_GATE_RAISE"
+    ]
 
 
 def test_run_gate_raising_warning_check_does_not_exit(
@@ -659,7 +804,7 @@ def test_run_gate_raising_warning_check_does_not_exit(
     raising = _make_check(
         "SYNTH_WARN_RAISE",
         severity=Severity.WARNING,
-        phase=Phase.PRE_BOOTSTRAP,
+        phase=Phase.CONFIGURATION,
         daemon_native=False,
         fix="fix warn boom",
         fn=_boom,
@@ -667,8 +812,8 @@ def test_run_gate_raising_warning_check_does_not_exit(
     monkeypatch.setattr(doctor, "CATALOG", [raising])
 
     # Must not raise.
-    result = doctor.run_gate(_make_ctx(), Phase.PRE_BOOTSTRAP)
-    assert result is None
+    result = doctor.run_gate(_make_ctx(), (Phase.CONFIGURATION,))
+    assert [item.check_id for item in result] == ["SYNTH_WARN_RAISE"]
 
 
 # ---------------------------------------------------------------------------
@@ -676,54 +821,58 @@ def test_run_gate_raising_warning_check_does_not_exit(
 # ---------------------------------------------------------------------------
 
 
-def test_run_gate_short_circuits_on_first_critical_fail(
+def test_run_gate_collects_after_first_critical_fail(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """run_gate stops at the first CRITICAL FAIL; later checks don't run."""
+    """run_gate executes the complete selection before raising."""
     calls: list[str] = []
 
     def _pass(ctx: DoctorContext) -> CheckResult:
         calls.append("pass")
         return CheckResult(
             check_id="P",
+            phase=Phase.CONFIGURATION,
             title="p",
             severity=Severity.WARNING,
             status=CheckStatus.PASS,
             detail="ok",
-            fix="",
+            remediation="",
         )
 
     def _warn_fail(ctx: DoctorContext) -> CheckResult:
         calls.append("warn_fail")
         return CheckResult(
             check_id="W",
+            phase=Phase.CONFIGURATION,
             title="w",
             severity=Severity.WARNING,
             status=CheckStatus.WARN,
             detail="meh",
-            fix="fix w",
+            remediation="fix w",
         )
 
     def _critical_fail(ctx: DoctorContext) -> CheckResult:
         calls.append("critical_fail")
         return CheckResult(
             check_id="C",
+            phase=Phase.CONFIGURATION,
             title="c",
             severity=Severity.CRITICAL,
             status=CheckStatus.FAIL,
             detail="bad",
-            fix="fix c",
+            remediation="fix c",
         )
 
     def _never(ctx: DoctorContext) -> CheckResult:
         calls.append("never")
         return CheckResult(
             check_id="N",
+            phase=Phase.CONFIGURATION,
             title="n",
             severity=Severity.CRITICAL,
             status=CheckStatus.PASS,
             detail="ok",
-            fix="",
+            remediation="",
         )
 
     catalog = [
@@ -734,14 +883,16 @@ def test_run_gate_short_circuits_on_first_critical_fail(
     ]
     monkeypatch.setattr(doctor, "CATALOG", catalog)
 
-    with pytest.raises(SystemExit) as exc_info:
-        doctor.run_gate(_make_ctx(), Phase.PRE_BOOTSTRAP)
+    with pytest.raises(doctor.DoctorGateError) as exc_info:
+        doctor.run_gate(_make_ctx(), (Phase.CONFIGURATION,))
 
-    assert exc_info.value.code == 1
-    assert calls == ["pass", "warn_fail", "critical_fail"], (
-        "run_gate must exit on the first CRITICAL FAIL and must not run "
-        f"checks positioned after it; call order was {calls!r}"
-    )
+    assert calls == ["pass", "warn_fail", "critical_fail", "never"]
+    assert [item.check_id for item in exc_info.value.results] == [
+        "P",
+        "W",
+        "C",
+        "N",
+    ]
 
 
 def test_run_gate_only_runs_checks_for_the_requested_phase(
@@ -754,75 +905,61 @@ def test_run_gate_only_runs_checks_for_the_requested_phase(
         calls.append("A")
         return CheckResult(
             check_id="A",
+            phase=Phase.CONFIGURATION,
             title="a",
             severity=Severity.WARNING,
             status=CheckStatus.PASS,
             detail="ok",
-            fix="",
+            remediation="",
         )
 
     def _phase_b(ctx: DoctorContext) -> CheckResult:
         calls.append("B")
         return CheckResult(
             check_id="B",
+            phase=Phase.LIVE,
             title="b",
             severity=Severity.WARNING,
             status=CheckStatus.PASS,
             detail="ok",
-            fix="",
+            remediation="",
         )
 
     catalog = [
-        _make_check("A", phase=Phase.PRE_BOOTSTRAP, fn=_phase_a),
-        _make_check("B", phase=Phase.POST_BOOTSTRAP, fn=_phase_b),
+        _make_check("A", phase=Phase.CONFIGURATION, fn=_phase_a),
+        _make_check("B", phase=Phase.LIVE, fn=_phase_b),
     ]
     monkeypatch.setattr(doctor, "CATALOG", catalog)
 
-    doctor.run_gate(_make_ctx(), Phase.PRE_BOOTSTRAP)
+    doctor.run_gate(_make_ctx(), (Phase.CONFIGURATION,))
 
     assert calls == ["A"], (
-        "run_gate(PRE_BOOTSTRAP) must only run PRE_BOOTSTRAP-phase "
+        "run_gate(configuration) must only run configuration-phase "
         f"checks; got {calls!r}"
     )
 
 
-@pytest.mark.parametrize("phase", [Phase.PRE_BOOTSTRAP, Phase.POST_BOOTSTRAP])
-def test_run_gate_skips_daemon_native_checks_in_every_phase(
+@pytest.mark.parametrize("phase", [Phase.CONFIGURATION, Phase.LIVE])
+def test_run_gate_includes_checks_regardless_of_legacy_native_flag(
     monkeypatch: pytest.MonkeyPatch,
     phase: Phase,
 ) -> None:
-    """run_gate never executes a daemon_native=True check, in any phase.
+    """The phase catalog, not a legacy native flag, controls selection."""
+    calls: list[str] = []
 
-    Rev 3 (BLOCKING #2 / section 3 / section 6 daemon_native note): the
-    daemon path's native code (a reconcile.py G3 gate or the cli.py
-    tripwire) is the SOLE executor for daemon_native checks in BOTH
-    PRE_BOOTSTRAP and POST_BOOTSTRAP -- run_gate must filter them out
-    regardless of which phase is requested, even though every Phase-1
-    daemon_native check happens to be tagged phase=PRE_BOOTSTRAP.
-
-    NOTE: this directly contradicts a parenthetical in this task's own
-    briefing ("run_gate filters OUT daemon_native=True when
-    phase=POST_BOOTSTRAP" -- implying PRE_BOOTSTRAP is NOT filtered).
-    The plan's section 3 ("run_gate excludes every daemon_native=True
-    check"), section 6 Rev-3 note ("run_gate skips these rows in BOTH
-    phases"), and section 15 ("NOT in the Phase-3
-    run_gate(PRE_BOOTSTRAP) execution set") are unanimous and are
-    treated as authoritative here. Flagged in the return summary.
-    """
-
-    def _native_fail(ctx: DoctorContext) -> CheckResult:
-        raise AssertionError(
-            "a daemon_native check must never be invoked by run_gate"
-        )
+    def _native_pass(ctx: DoctorContext) -> CheckResult:
+        calls.append("native")
+        return _phase_result("NATIVE", phase)
 
     def _normal_pass(ctx: DoctorContext) -> CheckResult:
         return CheckResult(
             check_id="NORMAL",
+            phase=phase,
             title="n",
             severity=Severity.CRITICAL,
             status=CheckStatus.PASS,
             detail="ok",
-            fix="",
+            remediation="",
         )
 
     catalog = [
@@ -831,7 +968,7 @@ def test_run_gate_skips_daemon_native_checks_in_every_phase(
             phase=phase,
             daemon_native=True,
             severity=Severity.CRITICAL,
-            fn=_native_fail,
+            fn=_native_pass,
         ),
         _make_check(
             "NORMAL",
@@ -842,10 +979,8 @@ def test_run_gate_skips_daemon_native_checks_in_every_phase(
     ]
     monkeypatch.setattr(doctor, "CATALOG", catalog)
 
-    # Must not raise (the daemon_native check's AssertionError proves it
-    # was never invoked) and must not SystemExit (the only check
-    # run_gate is allowed to execute here passes).
-    doctor.run_gate(_make_ctx(), phase)
+    doctor.run_gate(_make_ctx(), (phase,))
+    assert calls == ["native"]
 
 
 def test_run_report_includes_daemon_native_checks(
@@ -856,11 +991,12 @@ def test_run_report_includes_daemon_native_checks(
     def _native(ctx: DoctorContext) -> CheckResult:
         return CheckResult(
             check_id="NATIVE",
+            phase=Phase.CONFIGURATION,
             title="n",
             severity=Severity.CRITICAL,
             status=CheckStatus.FAIL,
             detail="native fail",
-            fix="native fix",
+            remediation="native fix",
         )
 
     catalog = [_make_check("NATIVE", daemon_native=True, fn=_native)]
@@ -871,6 +1007,335 @@ def test_run_report_includes_daemon_native_checks(
     assert len(results) == 1
     assert results[0].check_id == "NATIVE"
     assert results[0].status == CheckStatus.FAIL
+
+
+# ---------------------------------------------------------------------------
+# Installation phase -- credential-free package integrity
+# ---------------------------------------------------------------------------
+
+
+def test_create_context_accepts_explicit_config_without_project_root(
+    tmp_path: Path,
+) -> None:
+    """An explicit config path is sufficient and never mutates the input."""
+    config_path = tmp_path / ".bh" / "config.env"
+    _write_config_env(tmp_path, _VALID_CONFIG_ENV)
+    environment: dict[str, str] = {}
+
+    ctx = doctor.create_context(
+        env=environment,
+        config_path=config_path,
+        home_dir=str(tmp_path),
+        which=_unused_which,
+        runner=_unused_runner,
+        run=_unused_run,
+        fetch_secret=_unused_fetch_secret,
+    )
+
+    assert environment == {}
+    assert ctx.project_root == str(tmp_path)
+    assert ctx.home_dir == str(tmp_path)
+
+
+def test_configuration_checks_use_an_arbitrary_explicit_config_path(
+    tmp_path: Path,
+) -> None:
+    """Config checks use the selected path rather than reconstructing it."""
+    config_path = tmp_path / "operator-selected.env"
+    config_path.write_text(_VALID_CONFIG_ENV, encoding="utf-8")
+    ctx = doctor.create_context(
+        env={},
+        config_path=config_path,
+        which=_unused_which,
+        runner=_unused_runner,
+        run=_unused_run,
+        fetch_secret=_unused_fetch_secret,
+    )
+    checks = (
+        _get_check("CFG_CONFIG_ENV"),
+        _get_check("CFG_REQUIRED_KEYS"),
+    )
+
+    results = run_report(ctx, (Phase.CONFIGURATION,), checks=checks)
+
+    assert [result.status for result in results] == [
+        CheckStatus.PASS,
+        CheckStatus.PASS,
+    ]
+
+
+def test_malformed_config_is_the_authoritative_configuration_failure(
+    tmp_path: Path,
+) -> None:
+    """Strict resolver errors prevent contradictory required-key PASSes."""
+    config_path = tmp_path / "config.env"
+    config_path.write_text(
+        _VALID_CONFIG_ENV + "not a config assignment\n",
+        encoding="utf-8",
+    )
+    ctx = doctor.create_context(
+        env={},
+        config_path=config_path,
+        which=_unused_which,
+        runner=_unused_runner,
+        run=_unused_run,
+        fetch_secret=_unused_fetch_secret,
+    )
+
+    result = _get_check("CFG_REQUIRED_KEYS")(ctx)
+
+    assert ctx.config is None
+    assert "invalid sandbox config line" in ctx.config_error
+    assert result.status is CheckStatus.FAIL
+    assert result.severity is Severity.CRITICAL
+    assert "invalid sandbox config line" in result.detail
+
+
+def test_export_prefixed_config_uses_the_shared_resolver(
+    tmp_path: Path,
+) -> None:
+    """Supported export assignments produce a valid configuration result."""
+    config_path = tmp_path / "config.env"
+    exported = "\n".join(
+        f"export {line}" for line in _VALID_CONFIG_ENV.splitlines()
+    )
+    config_path.write_text(exported + "\n", encoding="utf-8")
+    ctx = doctor.create_context(
+        env={},
+        config_path=config_path,
+        which=_unused_which,
+        runner=_unused_runner,
+        run=_unused_run,
+        fetch_secret=_unused_fetch_secret,
+    )
+
+    result = _get_check("CFG_REQUIRED_KEYS")(ctx)
+
+    assert ctx.config is not None
+    assert ctx.config_error == ""
+    assert result.status is CheckStatus.PASS
+
+
+@pytest.mark.parametrize(
+    "failure_kind",
+    ["permission", "directory", "invalid-utf8"],
+)
+def test_expected_config_read_errors_do_not_block_installation(
+    tmp_path: Path,
+    failure_kind: str,
+) -> None:
+    """Expected local read failures remain configuration result state."""
+    config_path = tmp_path / "config.env"
+    resolver_patch: AbstractContextManager[object] = nullcontext()
+    if failure_kind == "permission":
+        config_path.write_text(_VALID_CONFIG_ENV, encoding="utf-8")
+        resolver_patch = patch(
+            "baton_harness.chain.doctor.sandbox_config.resolve_config",
+            side_effect=PermissionError("config access denied"),
+        )
+    elif failure_kind == "directory":
+        config_path.mkdir()
+    else:
+        config_path.write_bytes(b"\xff\xfe\xfa")
+
+    with resolver_patch:
+        ctx = doctor.create_context(
+            env={},
+            config_path=config_path,
+            which=lambda name: None,
+            runner=_unused_runner,
+            run=_unused_run,
+            fetch_secret=_unused_fetch_secret,
+        )
+
+    installation = run_report(ctx, (Phase.INSTALLATION,))
+    required = _get_check("CFG_REQUIRED_KEYS")(ctx)
+
+    assert ctx.config is None
+    assert ctx.config_error
+    assert all(result.status is CheckStatus.PASS for result in installation)
+    assert required.status is CheckStatus.FAIL
+    assert required.severity is Severity.CRITICAL
+
+
+def test_live_repository_checks_use_explicit_resolved_config_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Use explicit config for live probes without environment writes."""
+    config_path = tmp_path / "selected.env"
+    config_path.write_text(_VALID_CONFIG_ENV, encoding="utf-8")
+    config_keys = (
+        "BH_REPO_OWNER",
+        "BH_REPO_NAME",
+        "BH_GITHUB_APP_ID",
+        "BH_GITHUB_APP_INSTALLATION_ID",
+        "BH_GITHUB_APP_KEY_PROVIDER",
+        "BWS_PEM_SECRET_ID",
+    )
+    for key in config_keys:
+        monkeypatch.delenv(key, raising=False)
+    caller_env: dict[str, str] = {}
+    ruleset_args: list[tuple[str, str, str]] = []
+    runner_commands: list[list[str]] = []
+
+    def ruleset_probe(
+        owner: str,
+        repo: str,
+        *,
+        app_id: str,
+        runner: Callable[[list[str]], subprocess.CompletedProcess[str]],
+    ) -> RulesetStatus:
+        del runner
+        ruleset_args.append((owner, repo, app_id))
+        return RulesetStatus.MATCH
+
+    def live_runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+        runner_commands.append(args)
+        if args[:3] == ["gh", "label", "list"]:
+            stdout = "\n".join(sorted(_REQUIRED_LABELS)) + "\n"
+        else:
+            stdout = json.dumps([{"login": "operator", "role_name": "admin"}])
+        return subprocess.CompletedProcess(args, 0, stdout, "")
+
+    ctx = doctor.create_context(
+        env=caller_env,
+        config_path=config_path,
+        which=_unused_which,
+        runner=live_runner,
+        run=_unused_run,
+        fetch_secret=_unused_fetch_secret,
+    )
+    checks = tuple(
+        _get_check(check_id)
+        for check_id in (
+            "RULESET_MAIN",
+            "RULESET_FEATURE",
+            "LABELS_PRESENT",
+            "GH_REPO_ADMIN",
+        )
+    )
+
+    with patch(
+        "baton_harness.chain.doctor.ruleset_status.ruleset_is_provisioned",
+        side_effect=ruleset_probe,
+    ):
+        results = run_report(ctx, (Phase.LIVE,), checks=checks)
+
+    assert all(result.status is CheckStatus.PASS for result in results)
+    assert ruleset_args == [
+        ("my-org", "my-sandbox", "12345"),
+        ("my-org", "my-sandbox", "12345"),
+    ]
+    assert any("my-org/my-sandbox" in command for command in runner_commands)
+    assert any(
+        "repos/my-org/my-sandbox/collaborators?permission=admin" in command
+        for command in runner_commands
+    )
+    assert caller_env == {}
+    assert ctx.env == {}
+    assert all(key not in os.environ for key in config_keys)
+
+
+def test_pkg_provenance_check_validates_the_packaged_record() -> None:
+    """PKG_PROVENANCE passes when the runtime provenance loader succeeds."""
+    check = _get_check("PKG_PROVENANCE")
+    with patch.object(
+        doctor, "load_provenance", return_value=object()
+    ) as load:
+        result = check(_make_ctx())
+    assert result.status is CheckStatus.PASS
+    load.assert_called_once_with()
+
+
+def test_pkg_imports_check_imports_every_required_module() -> None:
+    """PKG_IMPORTS imports each supported runtime package boundary."""
+    check = _get_check("PKG_IMPORTS")
+    with patch(
+        "baton_harness.chain.doctor.importlib.import_module"
+    ) as import_module:
+        result = check(_make_ctx())
+    assert result.status is CheckStatus.PASS
+    assert [call.args[0] for call in import_module.call_args_list] == [
+        "baton_harness",
+        "baton_harness.chain.cli",
+        "baton_harness.vendor.symphony.config",
+    ]
+
+
+def test_pkg_entry_points_check_requires_all_console_scripts() -> None:
+    """PKG_ENTRY_POINTS fails when an installed console script is absent."""
+    check = _get_check("PKG_ENTRY_POINTS")
+    distribution = Mock()
+    distribution.entry_points = ()
+    with patch(
+        "baton_harness.chain.doctor.metadata.distribution",
+        return_value=distribution,
+    ):
+        result = check(_make_ctx())
+    assert result.status is CheckStatus.FAIL
+    assert "bh-daemon" in result.detail
+
+
+def test_pkg_resources_check_reads_every_packaged_resource() -> None:
+    """PKG_RESOURCES reads every member of the canonical resource manifest."""
+    check = _get_check("PKG_RESOURCES")
+    with patch(
+        "baton_harness.chain.doctor.resources.read_bytes", return_value=b""
+    ) as read:
+        result = check(_make_ctx())
+    assert result.status is CheckStatus.PASS
+    assert [call.args[0] for call in read.call_args_list] == list(
+        resources.RESOURCE_NAMES
+    )
+
+
+def test_pkg_workflow_check_parses_the_packaged_default() -> None:
+    """PKG_WORKFLOW validates the packaged workflow through the CLI loader."""
+    check = _get_check("PKG_WORKFLOW")
+    packaged_path = Path("packaged-WORKFLOW.md")
+    with (
+        patch(
+            "baton_harness.chain.cli._workflow_path",
+            return_value=nullcontext(packaged_path),
+        ),
+        patch.object(doctor, "load_workflow", return_value=object()) as load,
+    ):
+        result = check(_make_ctx())
+    assert result.status is CheckStatus.PASS
+    load.assert_called_once_with(str(packaged_path))
+
+
+def test_force_pr_tripwire_belongs_to_installation_phase() -> None:
+    """FORCE_PR_TRIPWIRE is part of offline installation integrity."""
+    assert _get_check("FORCE_PR_TRIPWIRE").phase is Phase.INSTALLATION
+
+
+def test_installation_phase_never_uses_live_tools() -> None:
+    """All real installation checks pass without credentials or live tools."""
+
+    def forbidden_runner(
+        command: list[str],
+    ) -> subprocess.CompletedProcess[str]:
+        raise AssertionError(f"live command used: {command}")
+
+    ctx = doctor.create_context(
+        env={},
+        which=lambda name: None,
+        runner=forbidden_runner,
+        run=forbidden_runner,
+        fetch_secret=_unused_fetch_secret,
+    )
+    results = run_report(ctx, (Phase.INSTALLATION,))
+    assert all(result.status is CheckStatus.PASS for result in results)
+    assert [result.check_id for result in results] == [
+        "PKG_PROVENANCE",
+        "PKG_IMPORTS",
+        "PKG_ENTRY_POINTS",
+        "PKG_RESOURCES",
+        "PKG_WORKFLOW",
+        "FORCE_PR_TRIPWIRE",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -907,7 +1372,7 @@ _EXPECTED_METADATA: dict[str, tuple[Severity, bool]] = {
     "ENV_BWS_ACCESS_TOKEN": (Severity.CRITICAL, False),
     "GITIGNORE_SYMPHONY": (Severity.CRITICAL, False),
     "CRED_ANTHROPIC_UNSET": (Severity.CRITICAL, True),
-    "FORCE_PR_TRIPWIRE": (Severity.CRITICAL, True),
+    "FORCE_PR_TRIPWIRE": (Severity.CRITICAL, False),
     "GIT_CRED_HELPER": (Severity.CRITICAL, True),
 }
 
@@ -959,10 +1424,11 @@ def test_catalog_check_metadata_matches_the_plan_catalog(
     expected_severity, expected_daemon_native = expected
     assert check.severity == expected_severity
     assert check.daemon_native is expected_daemon_native
-    assert check.phase == Phase.PRE_BOOTSTRAP, (
-        "every Phase-1 check is authored under phase A (PRE_BOOTSTRAP), "
-        "per plan section 6/15"
-    )
+    expected_phase = {
+        "FORCE_PR_TRIPWIRE": Phase.INSTALLATION,
+        "GIT_CRED_HELPER": Phase.LIVE,
+    }.get(check_id, Phase.CONFIGURATION)
+    assert check.phase is expected_phase
 
 
 # ---------------------------------------------------------------------------
@@ -1000,7 +1466,7 @@ def test_cli_on_path_check_passes_when_which_finds_binary(
     assert result.status == CheckStatus.PASS
     assert result.severity == severity
     assert result.detail
-    assert result.fix is not None
+    assert result.remediation is not None
 
 
 @pytest.mark.parametrize(
@@ -1026,10 +1492,10 @@ def test_cli_on_path_check_reports_failure_when_binary_missing(
         f"{fail_status!r}; got {result.status!r}"
     )
     assert result.severity == severity
-    assert binary in result.detail or binary in result.fix, (
+    assert binary in result.detail or binary in result.remediation, (
         f"{check_id} must name the missing binary {binary!r} in its "
         f"detail or fix text; got detail={result.detail!r} "
-        f"fix={result.fix!r}"
+        f"remediation={result.remediation!r}"
     )
 
 
@@ -1542,8 +2008,9 @@ class TestGitCredHelper:
 
         assert result.status == CheckStatus.FAIL
         assert result.severity == Severity.CRITICAL
-        assert "gh auth setup-git" in result.fix, (
-            f"fix text must name the remediation command; got {result.fix!r}"
+        assert "gh auth setup-git" in result.remediation, (
+            "remediation text must name the command; got "
+            f"{result.remediation!r}"
         )
 
     def test_does_not_crash_when_git_binary_is_missing(
@@ -1592,7 +2059,7 @@ class TestGitCredHelper:
 
 
 # ---------------------------------------------------------------------------
-# Phase 4 (#193): auth-needing checks + the POST_BOOTSTRAP gate.
+# Live phase: credential-bearing checks and the live gate.
 #
 # check_id set added this phase: RULESET_MAIN, RULESET_FEATURE,
 # LABELS_PRESENT, GH_REPO_ADMIN, GH_AUTH, CRED_OAUTH_VOLUME.
@@ -1668,10 +2135,7 @@ def test_phase_4_check_metadata_matches_the_plan_catalog(
     """
     check = _get_check(check_id)
     assert check.severity == severity
-    assert check.phase == Phase.POST_BOOTSTRAP, (
-        "every Phase-4 check is authored under phase B (POST_BOOTSTRAP), "
-        "per plan section 6"
-    )
+    assert check.phase is Phase.LIVE
     assert check.daemon_native is daemon_native
 
 
@@ -1687,7 +2151,6 @@ def test_daemon_native_set_after_phase_4() -> None:
         "CRED_ANTHROPIC_UNSET",
         "CRED_OAUTH_VOLUME",
         "GIT_CRED_HELPER",
-        "FORCE_PR_TRIPWIRE",
     }
     actual = {c.check_id for c in doctor.CATALOG if c.daemon_native}
     assert actual == expected, (
@@ -1864,17 +2327,18 @@ class TestLabelsPresent:
     ``gh label list -R <slug> --json name --jq '.[].name'`` preflight.
     """
 
-    def test_passes_when_all_six_labels_present(self) -> None:
+    def test_passes_when_all_six_labels_present(self, tmp_path: Path) -> None:
         """All six required labels present in the target repo PASSes."""
         check = _get_check("LABELS_PRESENT")
         runner = _fake_gh_label_runner(_REQUIRED_LABELS)
+        _write_config_env(tmp_path, _VALID_CONFIG_ENV)
 
-        result = check(_make_ctx(env=_PHASE_4_ENV, runner=runner))
+        result = check(_make_ctx(project_root=str(tmp_path), runner=runner))
 
         assert result.status == CheckStatus.PASS
         assert result.severity == Severity.CRITICAL
 
-    def test_fails_and_names_each_missing_label(self) -> None:
+    def test_fails_and_names_each_missing_label(self, tmp_path: Path) -> None:
         """Missing labels FAIL and are named individually in the detail."""
         check = _get_check("LABELS_PRESENT")
         present = _REQUIRED_LABELS - {
@@ -1883,8 +2347,9 @@ class TestLabelsPresent:
             "agent-merged",
         }
         runner = _fake_gh_label_runner(present)
+        _write_config_env(tmp_path, _VALID_CONFIG_ENV)
 
-        result = check(_make_ctx(env=_PHASE_4_ENV, runner=runner))
+        result = check(_make_ctx(project_root=str(tmp_path), runner=runner))
 
         assert result.status == CheckStatus.FAIL
         assert result.severity == Severity.CRITICAL
@@ -1899,7 +2364,7 @@ class TestLabelsPresent:
         ).read_text(encoding="utf-8")
         assert '_create_label "agent-failed"      "b60205"' in script
 
-    def test_fails_when_gh_cli_call_errors(self) -> None:
+    def test_fails_when_gh_cli_call_errors(self, tmp_path: Path) -> None:
         """A ``gh`` CLI failure (non-zero exit) FAILs, never crashes."""
         check = _get_check("LABELS_PRESENT")
 
@@ -1910,7 +2375,10 @@ class TestLabelsPresent:
                 args=args, returncode=1, stdout="", stderr="not found"
             )
 
-        result = check(_make_ctx(env=_PHASE_4_ENV, runner=_erroring_runner))
+        _write_config_env(tmp_path, _VALID_CONFIG_ENV)
+        result = check(
+            _make_ctx(project_root=str(tmp_path), runner=_erroring_runner)
+        )
 
         assert result.status == CheckStatus.FAIL
 
@@ -1928,7 +2396,9 @@ class TestGhRepoAdmin:
     (counts entries with ``role_name=="admin"`` or ``permissions.admin``).
     """
 
-    def test_passes_when_an_admin_collaborator_exists(self) -> None:
+    def test_passes_when_an_admin_collaborator_exists(
+        self, tmp_path: Path
+    ) -> None:
         """At least one admin collaborator PASSes."""
         check = _get_check("GH_REPO_ADMIN")
 
@@ -1938,12 +2408,15 @@ class TestGhRepoAdmin:
                 args=args, returncode=0, stdout=body, stderr=""
             )
 
-        result = check(_make_ctx(env=_PHASE_4_ENV, runner=_runner))
+        _write_config_env(tmp_path, _VALID_CONFIG_ENV)
+        result = check(_make_ctx(project_root=str(tmp_path), runner=_runner))
 
         assert result.status == CheckStatus.PASS
         assert result.severity == Severity.WARNING
 
-    def test_warns_when_no_admin_collaborator_found(self) -> None:
+    def test_warns_when_no_admin_collaborator_found(
+        self, tmp_path: Path
+    ) -> None:
         """No admin collaborator found WARNs (informational, non-fatal)."""
         check = _get_check("GH_REPO_ADMIN")
 
@@ -1952,12 +2425,13 @@ class TestGhRepoAdmin:
                 args=args, returncode=0, stdout="[]", stderr=""
             )
 
-        result = check(_make_ctx(env=_PHASE_4_ENV, runner=_runner))
+        _write_config_env(tmp_path, _VALID_CONFIG_ENV)
+        result = check(_make_ctx(project_root=str(tmp_path), runner=_runner))
 
         assert result.status == CheckStatus.WARN
         assert result.severity == Severity.WARNING
 
-    def test_never_fails_when_gh_api_call_errors(self) -> None:
+    def test_never_fails_when_gh_api_call_errors(self, tmp_path: Path) -> None:
         """A ``gh api`` failure degrades to WARN, never CRITICAL FAIL.
 
         GH_REPO_ADMIN is WARNING-severity and purely informational (D6)
@@ -1972,7 +2446,10 @@ class TestGhRepoAdmin:
                 args=args, returncode=1, stdout="", stderr="error"
             )
 
-        result = check(_make_ctx(env=_PHASE_4_ENV, runner=_erroring_runner))
+        _write_config_env(tmp_path, _VALID_CONFIG_ENV)
+        result = check(
+            _make_ctx(project_root=str(tmp_path), runner=_erroring_runner)
+        )
 
         assert result.status != CheckStatus.FAIL
 
@@ -1985,11 +2462,9 @@ class TestGhRepoAdmin:
 class TestGhAuth:
     """gh token valid (CRITICAL, daemon_native=True).
 
-    Standalone ``run_report`` executes this via ``ctx.runner`` (mirrors
-    ``gh auth status``); the daemon path never invokes it through
-    ``run_gate`` (``daemon_native`` filter) -- native G3a
-    (``validate_daemon_token``, reconcile.py:182-208) is the sole
-    daemon-path executor.
+    Standalone reports and daemon live gates execute ``gh auth status``
+    through ``ctx.runner``. Native installation-token validation remains
+    a separate startup check.
     """
 
     def test_passes_when_gh_auth_status_succeeds(self) -> None:
@@ -2027,10 +2502,10 @@ class TestGhAuth:
         assert result.severity == Severity.CRITICAL
 
     def test_is_daemon_native(self) -> None:
-        """GH_AUTH is daemon_native=True, phase POST_BOOTSTRAP."""
+        """GH_AUTH retains native metadata and belongs to live."""
         check = _get_check("GH_AUTH")
         assert check.daemon_native is True
-        assert check.phase == Phase.POST_BOOTSTRAP
+        assert check.phase is Phase.LIVE
 
 
 # ---------------------------------------------------------------------------
@@ -2090,31 +2565,22 @@ class TestCredOauthVolume:
         _assert_no_secret_leak(result, secret_marker)
 
     def test_is_daemon_native(self) -> None:
-        """CRED_OAUTH_VOLUME is daemon_native=True, phase POST_BOOTSTRAP."""
+        """CRED_OAUTH_VOLUME retains native metadata and belongs to live."""
         check = _get_check("CRED_OAUTH_VOLUME")
         assert check.daemon_native is True
-        assert check.phase == Phase.POST_BOOTSTRAP
+        assert check.phase is Phase.LIVE
 
     def test_static_severity_is_warning_for_standalone_dev_box_reporting(
         self,
     ) -> None:
-        """Pinned WARNING -- see the module docstring's ambiguity note.
-
-        run_gate filters daemon_native=True checks in BOTH phases
-        unconditionally, so this Check's own ``.severity`` is only ever
-        consulted by the standalone ``run_report``/``--strict`` path,
-        where the dev-box ("WARN") reading is the only one that can
-        actually apply. If a correct implementation instead pins
-        CRITICAL, this ONE isolated test needs to flip -- not a shared
-        matrix.
-        """
+        """OAuth availability is warning-severity in the shared catalog."""
         check = _get_check("CRED_OAUTH_VOLUME")
         assert check.severity == Severity.WARNING
 
 
 # ---------------------------------------------------------------------------
 # Opt-in App key probe (#193, updated by #359).
-# VAULT_PEM_DRYRUN remains outside CATALOG and retains its stable ID.
+# VAULT_PEM_DRYRUN belongs to the live catalog and retains its stable ID.
 # The selected provider loads key material and local JWT signing proves
 # usability. Transport and signing failures must be sanitized before the
 # generic check wrapper can render them. No GitHub call is permitted.
@@ -2155,14 +2621,10 @@ def _make_vault_ctx(
 class TestVaultPemDryrun:
     """Opt-in ``--check-vault`` live bws PEM dry-run (VAULT_PEM_DRYRUN)."""
 
-    def test_is_excluded_from_the_catalog(self) -> None:
-        """VAULT_PEM_DRYRUN must never auto-run (plan section 11 / D2)."""
+    def test_is_included_in_the_live_catalog(self) -> None:
+        """VAULT_PEM_DRYRUN is selected through the unified live catalog."""
         catalog_ids = {c.check_id for c in doctor.CATALOG}
-        assert "VAULT_PEM_DRYRUN" not in catalog_ids, (
-            "VAULT_PEM_DRYRUN is opt-in/standalone-only per plan section "
-            "11 and decision D2 -- it must be excluded from CATALOG so "
-            "run_report/run_gate never trigger a live bws fetch"
-        )
+        assert "VAULT_PEM_DRYRUN" in catalog_ids
 
     def test_check_exposes_required_static_metadata(self) -> None:
         """The standalone Check has the same metadata shape as CATALOG rows."""
@@ -2170,9 +2632,7 @@ class TestVaultPemDryrun:
         assert check.check_id == "VAULT_PEM_DRYRUN"
         assert isinstance(check.title, str) and check.title
         assert isinstance(check.severity, Severity)
-        assert check.phase == Phase.POST_BOOTSTRAP, (
-            "plan section 6 lists VAULT_PEM_DRYRUN under phase B"
-        )
+        assert check.phase is Phase.LIVE
         assert check.daemon_native is False
         assert isinstance(check.fix, str) and check.fix
 
@@ -2240,4 +2700,4 @@ class TestVaultPemDryrun:
         assert result.severity == check.severity
         assert "bws provider" in result.detail
         assert "bws exited non-zero" not in result.detail
-        assert result.fix == check.fix
+        assert result.remediation == check.fix
