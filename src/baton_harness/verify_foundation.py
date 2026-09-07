@@ -347,6 +347,57 @@ def _smoke_environment(root: Path) -> dict[str, str]:
     return environment
 
 
+def _valid_installation_results(checks: object, summary: object) -> bool:
+    """Validate installation check records and their summary counters.
+
+    Args:
+        checks: Decoded schema-version-1 check records.
+        summary: Decoded report counters.
+
+    Returns:
+        Whether every record is valid, counters agree, and no critical
+        check failed.
+    """
+    if not isinstance(checks, list) or not checks:
+        return False
+    fields = {
+        "id",
+        "phase",
+        "status",
+        "severity",
+        "title",
+        "detail",
+        "remediation",
+    }
+    counts = {"pass": 0, "fail": 0, "warn": 0, "skip": 0}
+    critical_failures = 0
+    for check in checks:
+        if (
+            not isinstance(check, dict)
+            or set(check) != fields
+            or any(type(value) is not str for value in check.values())
+            or not check["id"]
+            or check["phase"] != "installation"
+            or check["status"] not in counts
+            or check["severity"] not in {"critical", "warning"}
+        ):
+            return False
+        counts[check["status"]] += 1
+        critical_failures += (
+            check["status"] == "fail" and check["severity"] == "critical"
+        )
+    counts["critical_failures"] = critical_failures
+    return (
+        isinstance(summary, dict)
+        and set(summary) == set(counts)
+        and all(
+            type(value) is int and value >= 0 for value in summary.values()
+        )
+        and summary == counts
+        and critical_failures == 0
+    )
+
+
 def _smoke_entry_points(
     executable_dir: Path,
     *,
@@ -431,6 +482,7 @@ def _smoke_entry_points(
                     report = json.loads(result.stdout)
                     if (
                         not isinstance(report, dict)
+                        or type(report.get("schema_version")) is not int
                         or report.get("schema_version") != 1
                         or report.get("provenance")
                         != {
@@ -438,10 +490,9 @@ def _smoke_entry_points(
                             for key, value in (smoke_provenance or {}).items()
                             if key != "schema_version"
                         }
-                        or not isinstance(report.get("checks"), list)
-                        or not report["checks"]
-                        or not isinstance(report.get("summary"), dict)
-                        or report["summary"].get("critical_failures") != 0
+                        or not _valid_installation_results(
+                            report.get("checks"), report.get("summary")
+                        )
                         or report.get("selected_phases") != ["installation"]
                     ):
                         raise FoundationError(

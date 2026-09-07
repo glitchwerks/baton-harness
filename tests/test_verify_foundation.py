@@ -289,7 +289,7 @@ class _SmokeRunner:
                             "severity": "critical",
                             "title": "Provenance",
                             "detail": "Valid",
-                            "remediation": None,
+                            "remediation": "",
                         }
                     ],
                     "summary": {
@@ -914,6 +914,91 @@ def test_installed_json_smoke_rejects_bad_output(
         return result
 
     with pytest.raises(FoundationError):
+        _smoke_entry_points(tmp_path, runner=runner)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("schema_version", True),
+        ("checks", [{}]),
+        ("checks", [None]),
+        ("summary", {"critical_failures": 0}),
+        *[
+            (f"check.{name}", None)
+            for name in (
+                "id",
+                "phase",
+                "status",
+                "severity",
+                "title",
+                "detail",
+                "remediation",
+            )
+        ],
+        ("check.id", ""),
+        ("check.phase", "live"),
+        ("check.status", "unknown"),
+        ("check.severity", "unknown"),
+        ("check.extra", "unexpected"),
+        *[
+            (f"check.{name}", "<missing>")
+            for name in (
+                "id",
+                "phase",
+                "status",
+                "severity",
+                "title",
+                "detail",
+                "remediation",
+            )
+        ],
+        *[
+            (f"summary.{name}", value)
+            for name in ("pass", "fail", "warn", "skip", "critical_failures")
+            for value in (None, True, -1, 0.0, "0", 2)
+        ],
+        ("summary.extra", 0),
+    ],
+)
+def test_installed_doctor_rejects_malformed_schema(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    """Malformed checks and dishonest summary counters cannot pass smoke."""
+    normal = _SmokeRunner()
+
+    def runner(
+        command: Sequence[str],
+        *,
+        cwd: Path,
+        env: Mapping[str, str] | None = None,
+        input_text: str | None = None,
+        timeout_seconds: float = 300,
+    ) -> CompletedProcess[str]:
+        """Replace one report field at the external process boundary."""
+        result = normal(
+            command,
+            cwd=cwd,
+            env=env,
+            input_text=input_text,
+            timeout_seconds=timeout_seconds,
+        )
+        if "--doctor" in command:
+            report = json.loads(result.stdout)
+            if field.startswith("check."):
+                name = field.removeprefix("check.")
+                if value == "<missing>":
+                    del report["checks"][0][name]
+                else:
+                    report["checks"][0][name] = value
+            elif field.startswith("summary."):
+                report["summary"][field.removeprefix("summary.")] = value
+            else:
+                report[field] = value
+            result.stdout = json.dumps(report)
+        return result
+
+    with pytest.raises(FoundationError, match="invalid installed doctor"):
         _smoke_entry_points(tmp_path, runner=runner)
 
 
