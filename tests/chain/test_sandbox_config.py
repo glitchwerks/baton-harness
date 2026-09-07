@@ -57,16 +57,22 @@ import os
 import subprocess
 import textwrap
 from collections.abc import Callable
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 
+from baton_harness.chain import sandbox_config
 from baton_harness.chain.app_private_key import AppPrivateKeyProvider
 from baton_harness.chain.sandbox_config import (
     SandboxConfig,
     SandboxConfigError,
+    apply_config,
     read_and_validate,
+    resolve_config,
+    select_config_path,
+    validate_repository,
 )
 
 # ---------------------------------------------------------------------------
@@ -1685,3 +1691,135 @@ class TestRequiredKeySourcedOnlyFromEnv:
             match=r"BWS_PEM_SECRET_ID",
         ):
             read_and_validate(env_file, run=run)
+
+
+# ---------------------------------------------------------------------------
+# Pure shared configuration resolution (issue #358)
+# ---------------------------------------------------------------------------
+
+
+class TestPureConfigResolution:
+    """Resolve, validate, and apply config through explicit boundaries."""
+
+    def test_resolve_config_is_non_mutating_and_offline(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Resolution returns env overrides without changing process state.
+
+        This catches a regression where parsing or validation writes to
+        ``os.environ`` before the explicit application boundary.
+        """
+        path = _write_env(tmp_path, _VALID_ENV_CONTENT)
+        ambient = {"BH_REPO_OWNER": "override-owner"}
+        before = dict(os.environ)
+
+        config = resolve_config(path, ambient)
+
+        assert config.repo_owner == "override-owner"
+        assert dict(os.environ) == before
+
+    def test_resolved_config_is_frozen(self, tmp_path: Path) -> None:
+        """Resolved config cannot be mutated after validation.
+
+        This catches a regression where downstream application can alter
+        validated values after resolution.
+        """
+        config = resolve_config(_write_env(tmp_path, _VALID_ENV_CONTENT), {})
+
+        with pytest.raises(FrozenInstanceError):
+            config.repo_owner = "other-org"  # type: ignore[misc]
+
+    def test_explicit_config_path_does_not_require_project_root(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """An explicit config file bypasses project-root discovery."""
+        explicit = tmp_path / "custom.env"
+
+        assert select_config_path(str(explicit), {}) == explicit.resolve()
+
+    def test_implicit_config_path_requires_project_root(self) -> None:
+        """Implicit selection gives the stable missing-root error."""
+        with pytest.raises(
+            SandboxConfigError,
+            match="BH_PROJECT_ROOT is required when --config is not supplied",
+        ):
+            select_config_path(None, {})
+
+    def test_repository_validation_is_a_separate_effect(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Repository validation invokes its runner only when requested.
+
+        This catches a regression where pure resolution regains an implicit
+        subprocess or network dependency.
+        """
+        run = _repo_probe_mock()
+        monkeypatch.setattr(sandbox_config, "_default_run", run)
+        config = resolve_config(_write_env(tmp_path, _VALID_ENV_CONTENT), {})
+
+        run.assert_not_called()
+
+        validate_repository(config, run)
+
+        run.assert_called_once_with(
+            ["gh", "api", f"repos/{_OWNER}/{_REPO}", "--jq", ".id"]
+        )
+
+    @pytest.mark.parametrize(
+        ("content", "stale_key", "expected_key", "expected_value"),
+        [
+            (
+                _VALID_ENV_CONTENT,
+                "BH_GITHUB_APP_PRIVATE_KEY_FILE",
+                "BWS_PEM_SECRET_ID",
+                _PEM_UUID,
+            ),
+            (
+                textwrap.dedent(
+                    """\
+                    BH_REPO_OWNER=my-org
+                    BH_REPO_NAME=my-sandbox
+                    BH_GITHUB_APP_ID=12345
+                    BH_GITHUB_APP_INSTALLATION_ID=67890
+                    BH_GITHUB_APP_KEY_PROVIDER=file
+                    BH_GITHUB_APP_PRIVATE_KEY_FILE={file_path}
+                    """
+                ),
+                "BWS_PEM_SECRET_ID",
+                "BH_GITHUB_APP_PRIVATE_KEY_FILE",
+                "{file_path}",
+            ),
+        ],
+    )
+    def test_apply_config_exports_selected_source_and_removes_stale_source(
+        self,
+        tmp_path: Path,
+        content: str,
+        stale_key: str,
+        expected_key: str,
+        expected_value: str,
+    ) -> None:
+        """Application emits compatible BWS values and removes stale source.
+
+        This catches a provider switch retaining a conflicting key source in
+        the mutable environment supplied by the caller.
+        """
+        private_key_path = tmp_path.resolve() / "github-app.pem"
+        config = resolve_config(
+            _write_env(tmp_path, content.format(file_path=private_key_path)),
+            {},
+        )
+        target = {stale_key: "stale"}
+
+        apply_config(config, target)
+
+        assert target[expected_key] == expected_value.format(
+            file_path=private_key_path
+        )
+        assert stale_key not in target
+        assert target["BWS_APP_ID"] == _APP_ID
+        assert target["BWS_INSTALLATION_ID"] == _INSTALL_ID
