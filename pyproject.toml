@@ -46,19 +46,19 @@ dev = [
 # ensures they are resolvable before starting Baton.
 [project.scripts]
 codereeve = "codereeve.cli:main"
-bh-after-create = "codereeve.after_create:main"
-bh-before-run = "codereeve.before_run:main"
-bh-after-run = "codereeve.after_run:main"
-bh-daemon = "codereeve.chain.cli:main"
-bh-force-pr-not-merge = "codereeve.hooks.force_pr_not_merge:main"
-bh-verify-foundation = "codereeve.verify_foundation:main"
+bh-after-create = "codereeve.legacy_cli:after_create_main"
+bh-before-run = "codereeve.legacy_cli:before_run_main"
+bh-after-run = "codereeve.legacy_cli:after_run_main"
+bh-daemon = "codereeve.legacy_cli:daemon_main"
+bh-force-pr-not-merge = "codereeve.legacy_cli:force_pr_not_merge_main"
+bh-verify-foundation = "codereeve.legacy_cli:verify_foundation_main"
 
 # ---------------------------------------------------------------------------
 # Tool configuration
 # ---------------------------------------------------------------------------
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/codereeve"]
+packages = ["src/codereeve", "src/baton_harness"]
 
 [tool.hatch.metadata.hooks.custom]
 path = "hatch_build.py"
