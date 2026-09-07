@@ -105,6 +105,17 @@ def test_archive_rejects_invalid_record(
         "/absolute",
         "source/../../escape",
         "C:/escape",
+        "source/C:/escape",
+        "source/C:escape",
+        "source/file:stream",
+        "source/UV.LOCK",
+        "source/uv.lock.",
+        "source/uv.lock ",
+        "source/.GiT/config",
+        "source/.git./config",
+        "source/CON.txt",
+        "source/./alias",
+        "source//alias",
     ],
 )
 def test_sdist_rejects_unsafe_tree(tmp_path: Path, extra: str) -> None:
@@ -204,6 +215,10 @@ class _RecordingRunner:
         if normalized == ("git", "rev-parse", "HEAD"):
             return CompletedProcess(normalized, 0, "a" * 40, "")
         if normalized[:2] == ("uv", "build"):
+            if "--sdist" not in normalized:
+                assert cwd.is_dir()
+                assert (cwd / "pyproject.toml").is_file()
+                assert not (cwd / ".git").exists()
             output = Path(normalized[normalized.index("--out-dir") + 1])
             output.mkdir(parents=True, exist_ok=True)
             _write_wheel(output)
@@ -458,7 +473,6 @@ def test_repository_verification_runs_locked_install_sequence(
         assert call[2]["BH_BUILD_SOURCE_REVISION"] == "a" * 40
         assert "BH_BUILD_DEVELOPMENT" not in call[2]
     assert build_calls[1][1] != _REPO_ROOT
-    assert not (build_calls[1][1] / ".git").exists()
     commands = [
         command for command in commands if command[:2] != ("git", "rev-parse")
     ]
@@ -518,6 +532,26 @@ def test_repository_verification_stops_on_stale_lock() -> None:
         )
 
     assert len(runner.calls) == 1
+
+
+def test_source_extraction_checks_resolved_containment_before_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A destination resolving outside the extraction tree is never written."""
+    original_resolve = Path.resolve
+    escaped = tmp_path / "escaped.toml"
+
+    def resolve(path: Path, strict: bool = False) -> Path:
+        if path.parts[-3:] == ("source", "source", "pyproject.toml"):
+            return escaped
+        return original_resolve(path, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", resolve)
+    with pytest.raises(FoundationError, match="outside extraction"):
+        verify_foundation.verify_repository(
+            _REPO_ROOT, ("3.13",), runner=_RecordingRunner()
+        )
+    assert not escaped.exists()
 
 
 @pytest.mark.parametrize(

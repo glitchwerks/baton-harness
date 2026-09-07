@@ -548,20 +548,32 @@ def _source_members(archive: tarfile.TarFile) -> list[tarfile.TarInfo]:
     roots: set[str] = set()
     for member in members:
         path = PurePosixPath(member.name)
+        components = member.name.removesuffix("/").split("/")
         if (
             path.is_absolute()
             or PureWindowsPath(member.name).drive
             or "\\" in member.name
             or ".." in path.parts
+            or any(
+                not part
+                or part in {".", ".."}
+                or part.endswith((".", " "))
+                or re.search(r'[<>:"|?*\x00-\x1f]', part)
+                or re.match(
+                    r"(?i)^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)",
+                    part,
+                )
+                for part in components
+            )
             or ".git" in (part.lower() for part in path.parts)
             or not path.parts
             or not (member.isfile() or member.isdir())
-            or str(path) in seen
+            or str(path).casefold() in seen
         ):
             raise FoundationError(
                 f"unsafe source archive member: {member.name}"
             )
-        seen.add(str(path))
+        seen.add(str(path).casefold())
         roots.add(path.parts[0])
     if len(roots) != 1:
         raise FoundationError("source archive must contain one root")
@@ -766,15 +778,22 @@ def verify_repository(
             raise FoundationError("expected exactly one source archive")
         inspect_provenance_archive(sources[0], expected)
         extracted = workspace / "source"
-        extracted.mkdir()
         with tarfile.open(sources[0], "r:gz") as archive:
             members = _source_members(archive)
-            # Only regular files/directories survive the full preflight.
-            # Copy manually for identical safety on Python 3.10 and newer.
+            extraction_root = extracted.resolve()
+            destinations = []
             for member in members:
                 destination = extracted.joinpath(
                     *PurePosixPath(member.name).parts
-                )
+                ).resolve()
+                if not destination.is_relative_to(extraction_root):
+                    raise FoundationError(
+                        "source archive destination outside extraction root"
+                    )
+                destinations.append((member, destination))
+            # Only regular files/directories survive the full preflight.
+            # Copy manually for identical safety on Python 3.10 and newer.
+            for member, destination in destinations:
                 if member.isdir():
                     destination.mkdir(parents=True, exist_ok=True)
                 else:
