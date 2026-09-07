@@ -168,6 +168,71 @@ def test_agent_policy_files_are_byte_identical() -> None:
     ).read_bytes()
 
 
+def _assert_no_legacy_cli_invocations(text: str) -> None:
+    """Reject legacy CLI invocations outside their compatibility table."""
+    compatibility_prefix, compatibility_and_after = text.split(
+        "The six legacy scripts remain temporary compatibility shims", 1
+    )
+    _, compatibility_suffix = compatibility_and_after.split(
+        "The hooks derive the issue number", 1
+    )
+    outside_compatibility = (
+        compatibility_prefix
+        + "The hooks derive the issue number"
+        + compatibility_suffix
+    )
+    replacements = {
+        "bh-daemon": "codereeve daemon",
+        "bh-after-create": "codereeve hook after-create",
+        "bh-before-run": "codereeve hook before-run",
+        "bh-after-run": "codereeve hook after-run",
+        "bh-force-pr-not-merge": "codereeve hook force-pr-not-merge",
+        "bh-verify-foundation": "codereeve verify",
+    }
+    fenced_examples = re.findall(
+        r"```[^\n]*\n(.*?)```", outside_compatibility, re.DOTALL
+    )
+    legacy_pattern = "|".join(re.escape(name) for name in replacements)
+    invocation = re.compile(
+        rf"(?m)^[^#\n]*(?:^|[\s:`/])(?:{legacy_pattern})(?:\.exe)?(?=\s|$)"
+    )
+    assert not [
+        line
+        for example in fenced_examples
+        for line in example.splitlines()
+        if invocation.search(line)
+    ], "legacy CLI invocation outside compatibility table"
+    prose_without_fences = re.sub(
+        r"```[^\n]*\n.*?```", "", outside_compatibility, flags=re.DOTALL
+    )
+    for allowed_context in (
+        "temporary compatibility `bh-daemon` binary location",
+        "compatibility-named `bh-daemon` systemd unit",
+    ):
+        prose_without_fences = prose_without_fences.replace(
+            allowed_context,
+            allowed_context.replace("`bh-daemon`", "bh-daemon"),
+        )
+    inline_invocation = re.compile(
+        rf"(?:{legacy_pattern})(?:\.exe)?(?:\s+.*)?"
+    )
+    assert not [
+        span
+        for span in re.findall(
+            r"(?<!`)`([^`\n]+)`(?!`)", prose_without_fences
+        )
+        if inline_invocation.fullmatch(span)
+    ], "legacy CLI invocation outside compatibility table"
+    standalone = re.compile(
+        rf"^\s*`?(?:\S+/)?(?:{legacy_pattern})(?:\.exe)?(?=\s|`|$)"
+    )
+    assert not [
+        line
+        for line in prose_without_fences.splitlines()
+        if standalone.search(line)
+    ], "legacy CLI invocation outside compatibility table"
+
+
 def test_readme_presents_codereeve_as_canonical_cli() -> None:
     """The README presents the unified CodeReeve command as canonical."""
     text = Path("README.md").read_text(encoding="utf-8")
@@ -207,10 +272,10 @@ def test_readme_presents_codereeve_as_canonical_cli() -> None:
             f"| `{canonical}` | `{legacy}` |" in variable_compatibility
         )
 
-    compatibility_prefix, compatibility_and_after = text.split(
+    _, compatibility_and_after = text.split(
         "The six legacy scripts remain temporary compatibility shims", 1
     )
-    compatibility, compatibility_suffix = compatibility_and_after.split(
+    compatibility, _ = compatibility_and_after.split(
         "The hooks derive the issue number", 1
     )
     replacements = {
@@ -226,35 +291,7 @@ def test_readme_presents_codereeve_as_canonical_cli() -> None:
         assert f"| `{legacy}` | `{canonical}` |" in compatibility
     assert "removed in 0.4.0" in compatibility
 
-    outside_compatibility = (
-        compatibility_prefix
-        + "The hooks derive the issue number"
-        + compatibility_suffix
-    )
-    fenced_examples = re.findall(
-        r"```[^\n]*\n(.*?)```", outside_compatibility, re.DOTALL
-    )
-    legacy_pattern = "|".join(re.escape(name) for name in replacements)
-    invocation = re.compile(
-        rf"(?m)^[^#\n]*(?:^|[\s:`/])(?:{legacy_pattern})(?:\.exe)?(?=\s|$)"
-    )
-    assert not [
-        line
-        for example in fenced_examples
-        for line in example.splitlines()
-        if invocation.search(line)
-    ]
-    prose_without_fences = re.sub(
-        r"```[^\n]*\n.*?```", "", outside_compatibility, flags=re.DOTALL
-    )
-    standalone = re.compile(
-        rf"^\s*`?(?:\S+/)?(?:{legacy_pattern})(?:\.exe)?(?=\s|`|$)"
-    )
-    assert not [
-        line
-        for line in prose_without_fences.splitlines()
-        if standalone.search(line)
-    ]
+    _assert_no_legacy_cli_invocations(text)
 
     assert (
         "Derived from the temporary compatibility `bh-daemon` binary "
@@ -280,6 +317,22 @@ def test_readme_presents_codereeve_as_canonical_cli() -> None:
     assert (
         'CODEREEVE_BUILD_SOURCE_REVISION="$SOURCE_REVISION"' in upgrade
     )
+
+
+def test_readme_contract_rejects_inline_legacy_cli_invocation() -> None:
+    """Inline legacy commands cannot evade the README CLI contract."""
+    text = Path("README.md").read_text(encoding="utf-8")
+    mutated = text.replace(
+        "`codereeve doctor --strict`",
+        "`bh-daemon --doctor --strict`",
+        1,
+    )
+    assert mutated != text
+    with pytest.raises(
+        AssertionError,
+        match="legacy CLI invocation outside compatibility table",
+    ):
+        _assert_no_legacy_cli_invocations(mutated)
 
 
 def test_coderabbit_is_label_opt_in_only() -> None:
