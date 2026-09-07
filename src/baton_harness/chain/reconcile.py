@@ -317,8 +317,8 @@ async def reconcile_startup(
         installation_token=doctor_installation_token,
     )
     try:
-        doctor.run_gate(gate_ctx, doctor.Phase.POST_BOOTSTRAP)
-    except SystemExit:
+        doctor.run_gate(gate_ctx, (doctor.Phase.LIVE,))
+    except doctor.DoctorGateError:
         alert(
             owner,
             repo,

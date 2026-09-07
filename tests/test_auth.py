@@ -751,7 +751,7 @@ class TestReconcileUsesDaemonValidator:
     ) -> None:
         """No-op the POST_BOOTSTRAP doctor gate for this class (#193).
 
-        Phase 4 (#193) wires ``doctor.run_gate(ctx, Phase.POST_BOOTSTRAP)``
+        The startup path wires ``doctor.run_gate(ctx, (Phase.LIVE,))``
         into ``reconcile_startup``, between the native G3d block and G2.
         These two tests drive ``reconcile_startup`` end-to-end and
         pre-date that gate; without this stub they would hit the real

@@ -26,7 +26,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from baton_harness.chain.doctor import Phase
+from baton_harness.chain.doctor import DoctorGateError, Phase
 
 # ---------------------------------------------------------------------------
 # Module under test — does not exist yet; tests MUST fail red until
@@ -153,7 +153,7 @@ def _patch_git_credential_helper(monkeypatch: pytest.MonkeyPatch) -> None:
 def _patch_doctor_run_gate(monkeypatch: pytest.MonkeyPatch) -> None:
     """No-op the POST_BOOTSTRAP doctor gate for tests that don't test it.
 
-    Phase 4 (#193) wires ``doctor.run_gate(ctx, Phase.POST_BOOTSTRAP)``
+    The current startup path wires ``doctor.run_gate(ctx, (Phase.LIVE,))``
     into ``reconcile_startup``, between the native G3d block and G2.
     Once wired, any test in this file that doesn't stub the gate would
     hit the real ruleset/label/repo-admin checks (no ruleset provisioned,
@@ -1605,16 +1605,15 @@ class TestReconcileStartupAlertsThreadToken:
 
 
 # ---------------------------------------------------------------------------
-# Phase 4 (#193): doctor.run_gate(ctx, Phase.POST_BOOTSTRAP) wired into
+# The live doctor gate is wired into
 # reconcile_startup, after the native G3a/b/c/d block and before G2.
 # ---------------------------------------------------------------------------
 
 
-def _assert_run_gate_called_with_post_bootstrap(gate_mock: MagicMock) -> None:
-    """Assert ``run_gate`` was invoked once, with ``Phase.POST_BOOTSTRAP``.
+def _assert_run_gate_called_with_live(gate_mock: MagicMock) -> None:
+    """Assert ``run_gate`` was invoked once with only ``Phase.LIVE``.
 
-    Tolerates either a positional (``run_gate(ctx, Phase.POST_BOOTSTRAP)``)
-    or keyword (``run_gate(ctx, phase=Phase.POST_BOOTSTRAP)``) call shape,
+    Tolerates either a positional or keyword ``phases`` call shape,
     mirroring ``test_cli_doctor_gate.py``'s
     ``_assert_run_gate_called_with_pre_bootstrap`` helper for the Phase-3
     gate, so this test pins the observable phase argument, not the call
@@ -1625,12 +1624,12 @@ def _assert_run_gate_called_with_post_bootstrap(gate_mock: MagicMock) -> None:
     """
     gate_mock.assert_called_once()
     call = gate_mock.call_args
-    phase_arg = call.kwargs.get("phase")
-    if phase_arg is None and len(call.args) >= 2:
-        phase_arg = call.args[1]
-    assert phase_arg is Phase.POST_BOOTSTRAP, (
-        "run_gate must be called with phase=Phase.POST_BOOTSTRAP from "
-        f"reconcile_startup, got {phase_arg!r} (call={call!r})"
+    phases_arg = call.kwargs.get("phases")
+    if phases_arg is None and len(call.args) >= 2:
+        phases_arg = call.args[1]
+    assert phases_arg == (Phase.LIVE,), (
+        "run_gate must be called with phases=(Phase.LIVE,) from "
+        f"reconcile_startup, got {phases_arg!r} (call={call!r})"
     )
 
 
@@ -1655,7 +1654,7 @@ class TestPostBootstrapDoctorGate:
 
     Covers the plan's section 8 Phase B bullet and section 4's placement
     rationale: ``reconcile_startup`` must call ``doctor.run_gate(ctx,
-    Phase.POST_BOOTSTRAP)`` strictly AFTER the native G3a/b/c/d credential
+    (Phase.LIVE,))`` strictly AFTER the native G3a/b/c/d credential
     block and strictly BEFORE G2 (the ungraceful-prior-exit marker check)
     -- never as ``reconcile_startup``'s first step, so
     ``bin/verify-recovery.sh``'s G3a/G3b stderr greps are never
@@ -1672,12 +1671,12 @@ class TestPostBootstrapDoctorGate:
     return summary.
     """
 
-    def test_gate_called_with_post_bootstrap_phase(
+    def test_gate_called_with_live_phase(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """reconcile_startup calls the gate with Phase.POST_BOOTSTRAP."""
+        """reconcile_startup calls the gate with only Phase.LIVE."""
         reconcile = _import_reconcile()
 
         monkeypatch.setenv("GH_TOKEN", _INSTALLATION_TOKEN)
@@ -1705,7 +1704,7 @@ class TestPostBootstrapDoctorGate:
                 reconcile.reconcile_startup(repo_cfgs, obs, runlog=None)
             )
 
-        _assert_run_gate_called_with_post_bootstrap(gate_mock)
+        _assert_run_gate_called_with_live(gate_mock)
 
     def test_gate_ctx_carries_reconcile_startups_installation_token(
         self,
@@ -1890,12 +1889,12 @@ class TestPostBootstrapDoctorGate:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """A CRITICAL POST_BOOTSTRAP gate failure alerts then exits 1.
+        """A critical live gate failure alerts then exits 1.
 
         Section 8: "A CRITICAL FAIL emits alert(..., severity='critical')
         then sys.exit(1), matching the existing G3a/b/c/d fatal pattern."
         Simulates the CRITICAL fail via ``run_gate``'s own documented
-        contract (raises ``SystemExit(1)``) rather than constructing a
+        contract (raises ``DoctorGateError``) rather than constructing a
         real failing ``DoctorContext`` -- ``run_gate``'s own
         check-selection/short-circuit behavior is already exhaustively
         covered by ``test_doctor.py``; this test only proves
@@ -1923,7 +1922,7 @@ class TestPostBootstrapDoctorGate:
             patch("baton_harness.chain.reconcile.alert", mock_alert),
             patch(
                 "baton_harness.chain.doctor.run_gate",
-                side_effect=SystemExit(1),
+                side_effect=DoctorGateError(()),
             ) as gate_mock,
         ):
             with pytest.raises(SystemExit) as exc_info:
@@ -1932,7 +1931,7 @@ class TestPostBootstrapDoctorGate:
                 )
 
         assert exc_info.value.code != 0, (
-            "reconcile_startup must exit non-zero when the POST_BOOTSTRAP "
+            "reconcile_startup must exit non-zero when the live "
             "gate reports a CRITICAL failure"
         )
         gate_mock.assert_called_once()

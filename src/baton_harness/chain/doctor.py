@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import importlib
 import json
+import os
 import re
 import subprocess
-import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from enum import Enum, auto
+from enum import Enum
+from importlib import metadata
 from pathlib import Path
 
+from baton_harness import resources
 from baton_harness.chain import app_auth, ruleset_status, sandbox_config
 from baton_harness.chain.app_private_key import (
     AppPrivateKeyConfig,
@@ -20,6 +23,8 @@ from baton_harness.chain.app_private_key import (
     requires_bws,
     resolve_app_private_key_config,
 )
+from baton_harness.provenance import load_provenance
+from baton_harness.vendor.symphony.config import load_workflow
 
 RunFn = Callable[..., subprocess.CompletedProcess[str]]
 FetchSecretFn = Callable[..., str]
@@ -53,27 +58,28 @@ _OPTIONAL_SECRET_IDS = (
 )
 
 
-class Severity(Enum):
+class Severity(str, Enum):
     """Severity assigned to a preflight check."""
 
-    CRITICAL = auto()
-    WARNING = auto()
+    CRITICAL = "critical"
+    WARNING = "warning"
 
 
-class CheckStatus(Enum):
+class CheckStatus(str, Enum):
     """Outcome of a preflight check."""
 
-    PASS = auto()
-    FAIL = auto()
-    WARN = auto()
-    SKIP = auto()
+    PASS = "pass"
+    FAIL = "fail"
+    WARN = "warn"
+    SKIP = "skip"
 
 
-class Phase(Enum):
-    """Daemon startup phase in which a check applies."""
+class Phase(str, Enum):
+    """Stable public phase for a preflight check."""
 
-    PRE_BOOTSTRAP = auto()
-    POST_BOOTSTRAP = auto()
+    INSTALLATION = "installation"
+    CONFIGURATION = "configuration"
+    LIVE = "live"
 
 
 @dataclass
@@ -82,19 +88,21 @@ class CheckResult:
 
     Attributes:
         check_id: Stable identifier for the check.
+        phase: Public preflight phase that owns the check.
         title: Human-readable check title.
         severity: Operational severity of a failure.
         status: Outcome of the check.
         detail: Secret-safe explanation of the outcome.
-        fix: Secret-safe remediation guidance.
+        remediation: Secret-safe remediation guidance.
     """
 
     check_id: str
+    phase: Phase
     title: str
     severity: Severity
     status: CheckStatus
     detail: str
-    fix: str
+    remediation: str
 
 
 @dataclass
@@ -110,6 +118,9 @@ class DoctorContext:
         run: General subprocess seam reserved for later phases.
         fetch_secret: Secret-fetch seam reserved for later phases.
         installation_token: GitHub App token passed by value.
+        config_path: Selected sandbox config path, when available.
+        config: Purely resolved sandbox config, when valid.
+        config_error: Safe local resolution error, when invalid.
     """
 
     project_root: str
@@ -120,6 +131,22 @@ class DoctorContext:
     run: RunFn
     fetch_secret: FetchSecretFn
     installation_token: str = ""
+    config_path: Path | None = None
+    config: sandbox_config.SandboxConfig | None = None
+    config_error: str = ""
+
+
+class DoctorGateError(RuntimeError):
+    """Raised after all selected critical preflight failures are collected."""
+
+    def __init__(self, results: Sequence[CheckResult]) -> None:
+        """Store the complete selected result set for caller rendering.
+
+        Args:
+            results: Complete results collected by the gate.
+        """
+        super().__init__("critical preflight checks failed")
+        self.results = tuple(results)
 
 
 @dataclass
@@ -156,13 +183,141 @@ class Check:
         return self.fn(ctx)
 
 
+_INSTALLATION_CHECK_IDS = frozenset(
+    {
+        "PKG_PROVENANCE",
+        "PKG_IMPORTS",
+        "PKG_ENTRY_POINTS",
+        "PKG_RESOURCES",
+        "PKG_WORKFLOW",
+        "FORCE_PR_TRIPWIRE",
+    }
+)
+_CONFIGURATION_CHECK_IDS = frozenset(
+    {
+        "CLI_GH",
+        "CLI_BWS",
+        "CLI_CLAUDE",
+        "CLI_UV",
+        "ENV_PROJECT_ROOT",
+        "ENV_HOST_ENV",
+        "CFG_CONFIG_ENV",
+        "CFG_REQUIRED_KEYS",
+        "CFG_OPTIONAL_SECRET_IDS",
+        "ENV_BWS_ACCESS_TOKEN",
+        "GITIGNORE_SYMPHONY",
+        "CRED_ANTHROPIC_UNSET",
+    }
+)
+_LIVE_CHECK_IDS = frozenset(
+    {
+        "GIT_CRED_HELPER",
+        "RULESET_MAIN",
+        "RULESET_FEATURE",
+        "LABELS_PRESENT",
+        "GH_REPO_ADMIN",
+        "GH_AUTH",
+        "CRED_OAUTH_VOLUME",
+        "VAULT_PEM_DRYRUN",
+    }
+)
+
+
+def _phase_for(check_id: str) -> Phase:
+    """Return the phase assigned to a stable catalog check ID.
+
+    Args:
+        check_id: Stable preflight check identifier.
+
+    Returns:
+        The phase that owns the check.
+
+    Raises:
+        ValueError: If the check ID is not part of the public catalog.
+    """
+    if check_id in _INSTALLATION_CHECK_IDS:
+        return Phase.INSTALLATION
+    if check_id in _CONFIGURATION_CHECK_IDS:
+        return Phase.CONFIGURATION
+    if check_id in _LIVE_CHECK_IDS:
+        return Phase.LIVE
+    raise ValueError(f"unknown preflight check id: {check_id}")
+
+
+def create_context(
+    *,
+    env: Mapping[str, str],
+    config_path: Path | None = None,
+    home_dir: str | None = None,
+    installation_token: str = "",
+    which: WhichFn,
+    runner: RunnerFn,
+    run: RunFn,
+    fetch_secret: FetchSecretFn,
+) -> DoctorContext:
+    """Create one non-mutating context for every preflight phase.
+
+    Config selection and resolution use the pure sandbox-config APIs. A
+    local config error is retained in the context so installation checks
+    can still run independently and configuration checks can report it.
+
+    Args:
+        env: Environment snapshot available to checks.
+        config_path: Optional explicit sandbox config path.
+        home_dir: Optional effective home directory.
+        installation_token: GitHub App token passed only by value.
+        which: Executable lookup seam.
+        runner: Single-argument subprocess seam.
+        run: General subprocess seam.
+        fetch_secret: Secret-fetch seam.
+
+    Returns:
+        A context with a copied environment and pure config resolution.
+    """
+    environment = dict(env)
+    selected_path: Path | None = None
+    resolved_config: sandbox_config.SandboxConfig | None = None
+    config_error = ""
+    try:
+        selected_path = sandbox_config.select_config_path(
+            os.fspath(config_path) if config_path is not None else None,
+            environment,
+        )
+        resolved_config = sandbox_config.resolve_config(
+            selected_path, environment
+        )
+    except sandbox_config.SandboxConfigError as exc:
+        config_error = str(exc)
+        if config_path is not None:
+            selected_path = config_path.resolve()
+
+    project_root = environment.get("BH_PROJECT_ROOT", "")
+    if not project_root and selected_path is not None:
+        if selected_path.parent.name == ".bh":
+            project_root = str(selected_path.parent.parent)
+
+    return DoctorContext(
+        project_root=project_root,
+        home_dir=home_dir if home_dir is not None else os.path.expanduser("~"),
+        env=environment,
+        which=which,
+        runner=runner,
+        run=run,
+        fetch_secret=fetch_secret,
+        installation_token=installation_token,
+        config_path=selected_path,
+        config=resolved_config,
+        config_error=config_error,
+    )
+
+
 def _result(
     check_id: str,
     title: str,
     severity: Severity,
     status: CheckStatus,
     detail: str,
-    fix: str,
+    remediation: str,
 ) -> CheckResult:
     """Build a check result from secret-safe values.
 
@@ -172,12 +327,20 @@ def _result(
         severity: Operational severity of a failure.
         status: Outcome of the check.
         detail: Secret-safe explanation of the outcome.
-        fix: Secret-safe remediation guidance.
+        remediation: Secret-safe remediation guidance.
 
     Returns:
         A populated check result.
     """
-    return CheckResult(check_id, title, severity, status, detail, fix)
+    return CheckResult(
+        check_id=check_id,
+        phase=_phase_for(check_id),
+        title=title,
+        severity=severity,
+        status=status,
+        detail=detail,
+        remediation=remediation,
+    )
 
 
 def _parse_config(path: Path) -> dict[str, str]:
@@ -206,6 +369,20 @@ def _parse_config(path: Path) -> dict[str, str]:
             value = value[1:-1]
         parsed[key] = value
     return parsed
+
+
+def _config_path(ctx: DoctorContext) -> Path:
+    """Return the selected config path for local configuration checks.
+
+    Args:
+        ctx: Context carrying an explicit path or legacy project root.
+
+    Returns:
+        The config path selected for this context.
+    """
+    if ctx.config_path is not None:
+        return ctx.config_path
+    return Path(ctx.project_root) / ".bh" / "config.env"
 
 
 def _is_valid(key: str, value: str) -> bool:
@@ -242,7 +419,7 @@ def _resolved_private_key_context(
         AppPrivateKeyConfigError: If config is unreadable or invalid.
     """
     try:
-        parsed = _parse_config(Path(ctx.project_root) / ".bh" / "config.env")
+        parsed = _parse_config(_config_path(ctx))
     except (OSError, UnicodeError):
         raise AppPrivateKeyConfigError(
             ".bh/config.env is missing or unreadable."
@@ -251,6 +428,149 @@ def _resolved_private_key_context(
         parsed, ctx.env, _REQUIRED_KEYS + _PROVIDER_KEYS + _OPTIONAL_SECRET_IDS
     )
     return resolve_app_private_key_config(values), values
+
+
+def _check_package_provenance(ctx: DoctorContext) -> CheckResult:
+    """Validate the immutable provenance packaged with the distribution.
+
+    Args:
+        ctx: Injected doctor context, unused by this offline check.
+
+    Returns:
+        A passing result when packaged provenance is valid.
+    """
+    del ctx
+    load_provenance()
+    return _result(
+        "PKG_PROVENANCE",
+        "Runtime provenance is valid",
+        Severity.CRITICAL,
+        CheckStatus.PASS,
+        "Installed metadata matches the packaged provenance record.",
+        "Reinstall a verified baton-harness artifact.",
+    )
+
+
+def _check_package_imports(ctx: DoctorContext) -> CheckResult:
+    """Import each supported runtime package boundary.
+
+    Args:
+        ctx: Injected doctor context, unused by this offline check.
+
+    Returns:
+        A passing result when every required package imports.
+    """
+    del ctx
+    module_names = (
+        "baton_harness",
+        "baton_harness.chain.cli",
+        "baton_harness.vendor.symphony.config",
+    )
+    for module_name in module_names:
+        importlib.import_module(module_name)
+    return _result(
+        "PKG_IMPORTS",
+        "Runtime package imports succeed",
+        Severity.CRITICAL,
+        CheckStatus.PASS,
+        "Required runtime modules import successfully.",
+        "Reinstall the baton-harness package and its runtime dependencies.",
+    )
+
+
+_REQUIRED_ENTRY_POINTS = frozenset(
+    {
+        "bh-after-create",
+        "bh-before-run",
+        "bh-after-run",
+        "bh-daemon",
+        "bh-force-pr-not-merge",
+        "bh-verify-foundation",
+    }
+)
+
+
+def _check_package_entry_points(ctx: DoctorContext) -> CheckResult:
+    """Require every supported console script in installed metadata.
+
+    Args:
+        ctx: Injected doctor context, unused by this offline check.
+
+    Returns:
+        A result listing any missing console scripts.
+    """
+    del ctx
+    installed = {
+        entry_point.name
+        for entry_point in metadata.distribution(
+            "baton-harness"
+        ).entry_points
+        if entry_point.group == "console_scripts"
+    }
+    missing = sorted(_REQUIRED_ENTRY_POINTS - installed)
+    if missing:
+        return _result(
+            "PKG_ENTRY_POINTS",
+            "Installed entry points are complete",
+            Severity.CRITICAL,
+            CheckStatus.FAIL,
+            "Missing installed console scripts: " + ", ".join(missing),
+            "Reinstall a complete baton-harness artifact.",
+        )
+    return _result(
+        "PKG_ENTRY_POINTS",
+        "Installed entry points are complete",
+        Severity.CRITICAL,
+        CheckStatus.PASS,
+        "All required console scripts are installed.",
+        "Reinstall a complete baton-harness artifact.",
+    )
+
+
+def _check_package_resources(ctx: DoctorContext) -> CheckResult:
+    """Read every resource in the packaged-resource manifest.
+
+    Args:
+        ctx: Injected doctor context, unused by this offline check.
+
+    Returns:
+        A passing result when every packaged resource is readable.
+    """
+    del ctx
+    for name in resources.RESOURCE_NAMES:
+        resources.read_bytes(name)
+    return _result(
+        "PKG_RESOURCES",
+        "Packaged resources are complete",
+        Severity.CRITICAL,
+        CheckStatus.PASS,
+        "Every required packaged resource is readable.",
+        "Reinstall a complete baton-harness artifact.",
+    )
+
+
+def _check_package_workflow(ctx: DoctorContext) -> CheckResult:
+    """Parse the packaged default workflow through the runtime loader.
+
+    Args:
+        ctx: Injected doctor context, unused by this offline check.
+
+    Returns:
+        A passing result when the packaged workflow parses.
+    """
+    del ctx
+    from baton_harness.chain.cli import _workflow_path
+
+    with _workflow_path(None) as workflow_path:
+        load_workflow(str(workflow_path))
+    return _result(
+        "PKG_WORKFLOW",
+        "Packaged workflow is valid",
+        Severity.CRITICAL,
+        CheckStatus.PASS,
+        "The packaged default workflow parses successfully.",
+        "Reinstall a verified baton-harness artifact.",
+    )
 
 
 def _cli_result(
@@ -462,7 +782,7 @@ def _check_config_env(ctx: DoctorContext) -> CheckResult:
     """
     title = "Sandbox config file present"
     fix = "Create .bh/config.env in BH_PROJECT_ROOT."
-    path = Path(ctx.project_root) / ".bh" / "config.env"
+    path = _config_path(ctx)
     if path.exists():
         status = CheckStatus.PASS
         detail = ".bh/config.env is present."
@@ -485,7 +805,7 @@ def _check_required_keys(ctx: DoctorContext) -> CheckResult:
     """
     title = "Required sandbox config keys valid"
     fix = "Set all required .bh/config.env keys to valid values."
-    path = Path(ctx.project_root) / ".bh" / "config.env"
+    path = _config_path(ctx)
     if not path.exists():
         return _result(
             "CFG_REQUIRED_KEYS",
@@ -546,7 +866,7 @@ def _check_optional_secret_ids(ctx: DoctorContext) -> CheckResult:
     """
     title = "Optional secret IDs valid"
     fix = "Use UUID values for optional BWS secret ID settings."
-    path = Path(ctx.project_root) / ".bh" / "config.env"
+    path = _config_path(ctx)
     if not path.exists():
         return _result(
             "CFG_OPTIONAL_SECRET_IDS",
@@ -1048,7 +1368,7 @@ VAULT_PEM_DRYRUN_CHECK = Check(
     "VAULT_PEM_DRYRUN",
     "App private key is usable",
     Severity.CRITICAL,
-    Phase.POST_BOOTSTRAP,
+    Phase.LIVE,
     False,
     "Verify the selected App private-key source and its credentials.",
     _check_vault_dryrun,
@@ -1057,10 +1377,64 @@ VAULT_PEM_DRYRUN_CHECK = Check(
 
 CATALOG: list[Check] = [
     Check(
+        "PKG_PROVENANCE",
+        "Runtime provenance is valid",
+        Severity.CRITICAL,
+        Phase.INSTALLATION,
+        False,
+        "Reinstall a verified baton-harness artifact.",
+        _check_package_provenance,
+    ),
+    Check(
+        "PKG_IMPORTS",
+        "Runtime package imports succeed",
+        Severity.CRITICAL,
+        Phase.INSTALLATION,
+        False,
+        "Reinstall the baton-harness package and its runtime dependencies.",
+        _check_package_imports,
+    ),
+    Check(
+        "PKG_ENTRY_POINTS",
+        "Installed entry points are complete",
+        Severity.CRITICAL,
+        Phase.INSTALLATION,
+        False,
+        "Reinstall a complete baton-harness artifact.",
+        _check_package_entry_points,
+    ),
+    Check(
+        "PKG_RESOURCES",
+        "Packaged resources are complete",
+        Severity.CRITICAL,
+        Phase.INSTALLATION,
+        False,
+        "Reinstall a complete baton-harness artifact.",
+        _check_package_resources,
+    ),
+    Check(
+        "PKG_WORKFLOW",
+        "Packaged workflow is valid",
+        Severity.CRITICAL,
+        Phase.INSTALLATION,
+        False,
+        "Reinstall a verified baton-harness artifact.",
+        _check_package_workflow,
+    ),
+    Check(
+        "FORCE_PR_TRIPWIRE",
+        "Force-PR-not-merge tripwire passes",
+        Severity.CRITICAL,
+        Phase.INSTALLATION,
+        False,
+        "Restore the force-pr-not-merge hook and its startup self-test.",
+        _check_force_pr_tripwire,
+    ),
+    Check(
         "CLI_GH",
         "GitHub CLI available",
         Severity.CRITICAL,
-        Phase.PRE_BOOTSTRAP,
+        Phase.CONFIGURATION,
         False,
         "Install gh and ensure it is on PATH.",
         _check_cli_gh,
@@ -1069,7 +1443,7 @@ CATALOG: list[Check] = [
         "CLI_BWS",
         "Bitwarden Secrets CLI available",
         Severity.CRITICAL,
-        Phase.PRE_BOOTSTRAP,
+        Phase.CONFIGURATION,
         False,
         "Install bws and ensure it is on PATH.",
         _check_cli_bws,
@@ -1078,7 +1452,7 @@ CATALOG: list[Check] = [
         "CLI_CLAUDE",
         "Claude CLI available",
         Severity.CRITICAL,
-        Phase.PRE_BOOTSTRAP,
+        Phase.CONFIGURATION,
         False,
         "Install claude and ensure it is on PATH.",
         _check_cli_claude,
@@ -1087,7 +1461,7 @@ CATALOG: list[Check] = [
         "CLI_UV",
         "uv package manager available",
         Severity.WARNING,
-        Phase.PRE_BOOTSTRAP,
+        Phase.CONFIGURATION,
         False,
         "Install uv and ensure it is on PATH.",
         _check_cli_uv,
@@ -1096,7 +1470,7 @@ CATALOG: list[Check] = [
         "ENV_PROJECT_ROOT",
         "Project root is valid",
         Severity.CRITICAL,
-        Phase.PRE_BOOTSTRAP,
+        Phase.CONFIGURATION,
         False,
         "Set BH_PROJECT_ROOT to an existing directory.",
         _check_project_root,
@@ -1105,7 +1479,7 @@ CATALOG: list[Check] = [
         "ENV_HOST_ENV",
         "Host environment file present",
         Severity.WARNING,
-        Phase.PRE_BOOTSTRAP,
+        Phase.CONFIGURATION,
         False,
         "Create ~/.config/baton-harness/host.env if it is needed.",
         _check_host_env,
@@ -1114,7 +1488,7 @@ CATALOG: list[Check] = [
         "CFG_CONFIG_ENV",
         "Sandbox config file present",
         Severity.CRITICAL,
-        Phase.PRE_BOOTSTRAP,
+        Phase.CONFIGURATION,
         False,
         "Create .bh/config.env in BH_PROJECT_ROOT.",
         _check_config_env,
@@ -1123,7 +1497,7 @@ CATALOG: list[Check] = [
         "CFG_REQUIRED_KEYS",
         "Required sandbox config keys valid",
         Severity.CRITICAL,
-        Phase.PRE_BOOTSTRAP,
+        Phase.CONFIGURATION,
         False,
         "Set all required .bh/config.env keys to valid values.",
         _check_required_keys,
@@ -1132,7 +1506,7 @@ CATALOG: list[Check] = [
         "CFG_OPTIONAL_SECRET_IDS",
         "Optional secret IDs valid",
         Severity.WARNING,
-        Phase.PRE_BOOTSTRAP,
+        Phase.CONFIGURATION,
         False,
         "Use UUID values for optional BWS secret ID settings.",
         _check_optional_secret_ids,
@@ -1141,7 +1515,7 @@ CATALOG: list[Check] = [
         "ENV_BWS_ACCESS_TOKEN",
         "BWS access token present",
         Severity.CRITICAL,
-        Phase.PRE_BOOTSTRAP,
+        Phase.CONFIGURATION,
         False,
         "Set BWS_ACCESS_TOKEN to a non-empty access token.",
         _check_bws_access_token,
@@ -1150,7 +1524,7 @@ CATALOG: list[Check] = [
         "GITIGNORE_SYMPHONY",
         "Symphony state is gitignored",
         Severity.CRITICAL,
-        Phase.PRE_BOOTSTRAP,
+        Phase.CONFIGURATION,
         False,
         "Add an exact .symphony/ line to the repository .gitignore.",
         _check_gitignore_symphony,
@@ -1159,25 +1533,16 @@ CATALOG: list[Check] = [
         "CRED_ANTHROPIC_UNSET",
         "Anthropic API key is unset",
         Severity.CRITICAL,
-        Phase.PRE_BOOTSTRAP,
+        Phase.CONFIGURATION,
         True,
         "Unset ANTHROPIC_API_KEY and use mounted OAuth credentials.",
         _check_anthropic_unset,
     ),
     Check(
-        "FORCE_PR_TRIPWIRE",
-        "Force-PR-not-merge tripwire passes",
-        Severity.CRITICAL,
-        Phase.PRE_BOOTSTRAP,
-        True,
-        "Restore the force-pr-not-merge hook and its startup self-test.",
-        _check_force_pr_tripwire,
-    ),
-    Check(
         "GIT_CRED_HELPER",
         "Git credential helper configured",
         Severity.CRITICAL,
-        Phase.PRE_BOOTSTRAP,
+        Phase.LIVE,
         True,
         "Run `gh auth setup-git` to configure a credential helper.",
         _check_git_credential_helper,
@@ -1186,7 +1551,7 @@ CATALOG: list[Check] = [
         "RULESET_MAIN",
         "Main branch ruleset provisioned",
         Severity.CRITICAL,
-        Phase.POST_BOOTSTRAP,
+        Phase.LIVE,
         False,
         "Run bin/provision-ruleset.sh to provision the required rulesets.",
         _check_ruleset_main,
@@ -1195,7 +1560,7 @@ CATALOG: list[Check] = [
         "RULESET_FEATURE",
         "Feature branch ruleset provisioned",
         Severity.CRITICAL,
-        Phase.POST_BOOTSTRAP,
+        Phase.LIVE,
         False,
         "Run bin/provision-ruleset.sh to provision the required rulesets.",
         _check_ruleset_feature,
@@ -1204,7 +1569,7 @@ CATALOG: list[Check] = [
         "LABELS_PRESENT",
         "Required repository labels present",
         Severity.CRITICAL,
-        Phase.POST_BOOTSTRAP,
+        Phase.LIVE,
         False,
         "Create every required harness label in the target repository.",
         _check_labels_present,
@@ -1213,7 +1578,7 @@ CATALOG: list[Check] = [
         "GH_REPO_ADMIN",
         "Repository admin collaborator present",
         Severity.WARNING,
-        Phase.POST_BOOTSTRAP,
+        Phase.LIVE,
         False,
         "Ensure the repository has at least one admin collaborator.",
         _check_gh_repo_admin,
@@ -1222,7 +1587,7 @@ CATALOG: list[Check] = [
         "GH_AUTH",
         "GitHub CLI authentication valid",
         Severity.CRITICAL,
-        Phase.POST_BOOTSTRAP,
+        Phase.LIVE,
         True,
         "Run `gh auth login` to authenticate the GitHub CLI.",
         _check_gh_auth,
@@ -1231,11 +1596,12 @@ CATALOG: list[Check] = [
         "CRED_OAUTH_VOLUME",
         "Claude OAuth credential file readable",
         Severity.WARNING,
-        Phase.POST_BOOTSTRAP,
+        Phase.LIVE,
         True,
         "Mount a readable Claude OAuth credential file before startup.",
         _check_oauth_volume,
     ),
+    VAULT_PEM_DRYRUN_CHECK,
 ]
 
 
@@ -1254,47 +1620,62 @@ def _run_check(check: Check, ctx: DoctorContext) -> CheckResult:
     except Exception as exc:  # noqa: BLE001
         return CheckResult(
             check_id=check.check_id,
+            phase=check.phase,
             title=check.title,
             severity=check.severity,
             status=CheckStatus.FAIL,
             detail=repr(exc),
-            fix=check.fix,
+            remediation=check.fix,
         )
 
 
-def run_report(ctx: DoctorContext) -> list[CheckResult]:
-    """Run every catalog check in order without aborting early.
+def run_report(
+    ctx: DoctorContext,
+    phases: Sequence[Phase] | None = None,
+    checks: Sequence[Check] | None = None,
+) -> list[CheckResult]:
+    """Run selected checks in catalog order without aborting early.
 
     Args:
         ctx: Injected doctor context.
+        phases: Selected phases, defaulting to every public phase.
+        checks: Optional catalog override used by focused callers and tests.
 
     Returns:
-        One result for every catalog check.
+        One result for every selected catalog check.
     """
-    return [_run_check(check, ctx) for check in CATALOG]
+    selected_phases = set(Phase if phases is None else phases)
+    catalog = CATALOG if checks is None else checks
+    return [
+        _run_check(check, ctx)
+        for check in catalog
+        if check.phase in selected_phases
+    ]
 
 
-def run_gate(ctx: DoctorContext, phase: Phase) -> None:
-    """Run non-native checks for one phase and fail on critical errors.
+def run_gate(
+    ctx: DoctorContext,
+    phases: Sequence[Phase],
+    checks: Sequence[Check] | None = None,
+) -> list[CheckResult]:
+    """Collect selected checks and raise once on critical failures.
 
     Args:
         ctx: Injected doctor context.
-        phase: Startup phase whose checks should run.
+        phases: Phases whose checks should run.
+        checks: Optional catalog override used by focused callers and tests.
+
+    Returns:
+        The complete selected result list when no critical check fails.
 
     Raises:
-        SystemExit: With code 1 on the first critical failed check.
+        DoctorGateError: After collection if any critical check failed.
     """
-    for check in CATALOG:
-        if check.phase is not phase or check.daemon_native:
-            continue
-        result = _run_check(check, ctx)
-        if (
-            result.status is CheckStatus.FAIL
-            and result.severity is Severity.CRITICAL
-        ):
-            print(
-                f"Preflight check {result.check_id} failed: "
-                f"{result.detail} Fix: {result.fix}",
-                file=sys.stderr,
-            )
-            raise SystemExit(1)
+    results = run_report(ctx, phases, checks=checks)
+    if any(
+        result.status is CheckStatus.FAIL
+        and result.severity is Severity.CRITICAL
+        for result in results
+    ):
+        raise DoctorGateError(results)
+    return results

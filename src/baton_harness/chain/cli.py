@@ -313,7 +313,7 @@ def main(argv: list[str] | None = None) -> int:
                 doctor.CheckStatus.WARN,
             }:
                 print(f"       detail: {result.detail}")
-                print(f"       fix:    {result.fix}")
+                print(f"       fix:    {result.remediation}")
             return 0 if result.status is doctor.CheckStatus.PASS else 1
 
         results = doctor.run_report(ctx)
@@ -324,7 +324,7 @@ def main(argv: list[str] | None = None) -> int:
                 doctor.CheckStatus.WARN,
             }:
                 print(f"       detail: {result.detail}")
-                print(f"       fix:    {result.fix}")
+                print(f"       fix:    {result.remediation}")
 
         if args.strict and any(
             result.severity is doctor.Severity.CRITICAL
@@ -434,10 +434,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    # Hard-gate on CRITICAL preflight checks before any secret is
-    # bootstrapped.  ``doctor.run_gate`` raises ``SystemExit(1)`` itself
-    # on the first CRITICAL FAIL, so a failure here aborts startup before
-    # bootstrap_secrets()/run_daemon() are ever reached (#193 Phase 3).
+    # Hard-gate on CRITICAL configuration checks before any secret is
+    # bootstrapped. The gate collects its complete selection before raising,
+    # so a critical failure aborts startup before bootstrap_secrets() or
+    # run_daemon() are reached (#193 Phase 3).
     from baton_harness.chain import bws_client, doctor
 
     def _doctor_run_command(
@@ -461,7 +461,7 @@ def main(argv: list[str] | None = None) -> int:
         run=_doctor_run_command,
         fetch_secret=bws_client.fetch_secret,
     )
-    doctor.run_gate(gate_ctx, doctor.Phase.PRE_BOOTSTRAP)
+    doctor.run_gate(gate_ctx, (doctor.Phase.CONFIGURATION,))
 
     # Bootstrap GitHub App installation token (slice 3a).
     # Must run AFTER chdir so the managed repo is the process cwd.

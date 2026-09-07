@@ -108,7 +108,7 @@ def _patch_oauth_cred_path(
 def _patch_doctor_run_gate(monkeypatch: pytest.MonkeyPatch) -> None:
     """No-op the POST_BOOTSTRAP doctor gate for every test in this file.
 
-    Phase 4 (#193) wires ``doctor.run_gate(ctx, Phase.POST_BOOTSTRAP)``
+    The startup path wires ``doctor.run_gate(ctx, (Phase.LIVE,))``
     into ``reconcile_startup``, after the native G3d block and before G2.
     This file's tests call ``reconcile.reconcile_startup(...)`` directly
     and pre-date that gate; without this stub they would hit the real
