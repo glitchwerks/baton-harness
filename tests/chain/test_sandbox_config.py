@@ -66,14 +66,17 @@ import pytest
 from codereeve.chain import sandbox_config
 from codereeve.chain.app_private_key import AppPrivateKeyProvider
 from codereeve.chain.sandbox_config import (
+    ResolvedSandboxConfig,
     SandboxConfig,
     SandboxConfigError,
     apply_config,
     read_and_validate,
     resolve_config,
+    resolve_config_sources,
     select_config_path,
     validate_repository,
 )
+from codereeve.paths import PathConflictError, PathLayout
 
 # ---------------------------------------------------------------------------
 # Type alias — matches bws_client.RunFn shape
@@ -157,7 +160,7 @@ def _write_env(tmp_path: Path, content: str) -> Path:
         Absolute path to the written file.
     """
     p = tmp_path / "config.env"
-    p.write_text(content, encoding="utf-8")
+    p.write_text(content.replace("\\", "/"), encoding="utf-8")
     return p
 
 
@@ -866,20 +869,27 @@ class TestRequiredKeysMissing:
     """Each required key absent → SandboxConfigError naming that key."""
 
     @pytest.mark.parametrize(
-        "missing_key",
+        ("missing_key", "diagnostic_key"),
         [
-            "BH_REPO_OWNER",
-            "BH_REPO_NAME",
-            "BH_GITHUB_APP_ID",
-            "BH_GITHUB_APP_INSTALLATION_ID",
-            "BH_GITHUB_APP_KEY_PROVIDER",
-            "BWS_PEM_SECRET_ID",
+            ("BH_REPO_OWNER", "CODEREEVE_REPO_OWNER"),
+            ("BH_REPO_NAME", "CODEREEVE_REPO_NAME"),
+            ("BH_GITHUB_APP_ID", "CODEREEVE_GITHUB_APP_ID"),
+            (
+                "BH_GITHUB_APP_INSTALLATION_ID",
+                "CODEREEVE_GITHUB_APP_INSTALLATION_ID",
+            ),
+            (
+                "BH_GITHUB_APP_KEY_PROVIDER",
+                "CODEREEVE_GITHUB_APP_KEY_PROVIDER",
+            ),
+            ("BWS_PEM_SECRET_ID", "BWS_PEM_SECRET_ID"),
         ],
     )
     def test_missing_required_key_raises_error_naming_the_key(
         self,
         tmp_path: Path,
         missing_key: str,
+        diagnostic_key: str,
     ) -> None:
         """SandboxConfigError is raised and names the missing required key.
 
@@ -900,7 +910,7 @@ class TestRequiredKeysMissing:
         env_file = _write_env(tmp_path, content)
         run = _make_run_stub()
 
-        with pytest.raises(SandboxConfigError, match=missing_key):
+        with pytest.raises(SandboxConfigError, match=diagnostic_key):
             read_and_validate(env_file, run=run)
 
 
@@ -935,7 +945,7 @@ class TestMalformedValues:
 
         msg = str(exc_info.value)
         assert "3" in msg, f"Expected line number '3' in error, got: {msg!r}"
-        assert "not-a-number" in msg
+        assert "not-a-number" not in msg
 
     def test_app_id_zero_raises_error(
         self,
@@ -1026,7 +1036,7 @@ class TestMalformedValues:
 
         msg = str(exc_info.value)
         assert "1" in msg, f"Expected line number '1' in error, got: {msg!r}"
-        assert "bad!owner" in msg
+        assert "bad!owner" not in msg
 
     def test_negative_installation_id_raises_error(
         self,
@@ -1120,7 +1130,7 @@ class TestOptionalSecretIds:
         with pytest.raises(SandboxConfigError) as exc_info:
             read_and_validate(env_file, run=run)
 
-        assert "not-a-valid-uuid" in str(exc_info.value)
+        assert "not-a-valid-uuid" not in str(exc_info.value)
 
     def test_optional_heartbeat_malformed_uuid_raises_error(
         self,
@@ -1152,7 +1162,7 @@ class TestOptionalSecretIds:
         with pytest.raises(SandboxConfigError) as exc_info:
             read_and_validate(env_file, run=run)
 
-        assert "definitely-not-a-uuid" in str(exc_info.value)
+        assert "definitely-not-a-uuid" not in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------
@@ -1832,3 +1842,103 @@ class TestPureConfigResolution:
         assert stale_key not in target
         assert target["BWS_APP_ID"] == _APP_ID
         assert target["BWS_INSTALLATION_ID"] == _INSTALL_ID
+
+
+class TestCanonicalConfigSourceSelection:
+    """Select the 0.2 canonical config with a fail-closed fallback."""
+
+    def test_selects_canonical_config_and_canonical_product_keys(
+        self, tmp_path: Path
+    ) -> None:
+        """Canonical configuration is parsed into semantic config fields."""
+        layout = PathLayout.for_environment(tmp_path, {})
+        layout.canonical_state.mkdir()
+        layout.canonical_config.write_text(
+            _VALID_ENV_CONTENT.replace("BH_", "CODEREEVE_"),
+            encoding="utf-8",
+        )
+
+        resolved = resolve_config_sources(
+            None, {"CODEREEVE_PROJECT_ROOT": str(tmp_path)}, layout
+        )
+
+        assert isinstance(resolved, ResolvedSandboxConfig)
+        assert resolved.path == layout.canonical_config
+        assert resolved.uses_legacy is False
+        assert resolved.config.repo_owner == _OWNER
+
+    def test_selects_legacy_config_when_canonical_config_is_absent(
+        self, tmp_path: Path
+    ) -> None:
+        """A legacy-only project remains readable during compatibility."""
+        layout = PathLayout.for_environment(tmp_path, {})
+        layout.legacy_config.parent.mkdir()
+        layout.legacy_config.write_text(_VALID_ENV_CONTENT, encoding="utf-8")
+
+        resolved = resolve_config_sources(
+            None, {"CODEREEVE_PROJECT_ROOT": str(tmp_path)}, layout
+        )
+
+        assert resolved.path == layout.legacy_config
+        assert resolved.uses_legacy is True
+        assert resolved.config.repo_name == _REPO
+
+    def test_blocks_coexisting_config_files_without_exposing_values(
+        self, tmp_path: Path
+    ) -> None:
+        """Equivalent canonical and legacy values remain ambiguous."""
+        layout = PathLayout.for_environment(tmp_path, {})
+        layout.canonical_state.mkdir()
+        layout.legacy_config.parent.mkdir()
+        layout.canonical_config.write_text(
+            _VALID_ENV_CONTENT, encoding="utf-8"
+        )
+        layout.legacy_config.write_text(_VALID_ENV_CONTENT, encoding="utf-8")
+
+        with pytest.raises(PathConflictError) as exc_info:
+            resolve_config_sources(
+                None, {"CODEREEVE_PROJECT_ROOT": str(tmp_path)}, layout
+            )
+
+        message = str(exc_info.value)
+        assert str(layout.canonical_config) in message
+        assert str(layout.legacy_config) in message
+        assert _PEM_UUID not in message
+
+    def test_explicit_config_symlink_is_rejected_without_following_it(
+        self, tmp_path: Path
+    ) -> None:
+        """An explicit configuration symlink is unsafe like default paths."""
+        target = tmp_path / "target.env"
+        target.write_text(_VALID_ENV_CONTENT, encoding="utf-8")
+        explicit = tmp_path / "operator.env"
+        try:
+            explicit.symlink_to(target)
+        except OSError as exc:
+            pytest.skip(f"symlinks are unavailable: {exc}")
+        layout = PathLayout.for_environment(tmp_path, {})
+
+        with pytest.raises(PathConflictError, match="sandbox config"):
+            resolve_config_sources(explicit, {}, layout)
+
+    def test_reports_invalid_value_by_key_source_and_line_without_value(
+        self, tmp_path: Path
+    ) -> None:
+        """Config diagnostics identify location without exposing content."""
+        config_path = tmp_path / "operator.env"
+        config_path.write_text(
+            _VALID_ENV_CONTENT.replace(
+                "BH_GITHUB_APP_ID=12345", "CODEREEVE_GITHUB_APP_ID=bad-id"
+            ).replace("BH_", "CODEREEVE_"),
+            encoding="utf-8",
+        )
+        layout = PathLayout.for_environment(tmp_path, {})
+
+        with pytest.raises(SandboxConfigError) as exc_info:
+            resolve_config_sources(config_path, {}, layout)
+
+        message = str(exc_info.value)
+        assert "CODEREEVE_GITHUB_APP_ID" in message
+        assert str(config_path) in message
+        assert "3" in message
+        assert "bad-id" not in message
