@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -188,9 +189,30 @@ def test_readme_presents_codereeve_as_canonical_cli() -> None:
     ):
         assert variable in text
 
-    compatibility = text.split(
+    variable_compatibility = text.split(
+        "The old build-variable names are accepted only as temporary", 1
+    )[1].split("Do not set both names for one value", 1)[0]
+    variable_replacements = {
+        "BH_BUILD_VERSION": "CODEREEVE_BUILD_VERSION",
+        "BH_BUILD_SOURCE_REVISION": (
+            "CODEREEVE_BUILD_SOURCE_REVISION"
+        ),
+        "BH_BUILD_DEVELOPMENT": "CODEREEVE_BUILD_DEVELOPMENT",
+    }
+    assert variable_compatibility.count("| `BH_BUILD_") == len(
+        variable_replacements
+    )
+    for legacy, canonical in variable_replacements.items():
+        assert (
+            f"| `{canonical}` | `{legacy}` |" in variable_compatibility
+        )
+
+    compatibility_prefix, compatibility_and_after = text.split(
         "The six legacy scripts remain temporary compatibility shims", 1
-    )[1].split("The hooks derive the issue number", 1)[0]
+    )
+    compatibility, compatibility_suffix = compatibility_and_after.split(
+        "The hooks derive the issue number", 1
+    )
     replacements = {
         "bh-daemon": "codereeve daemon",
         "bh-after-create": "codereeve hook after-create",
@@ -203,6 +225,46 @@ def test_readme_presents_codereeve_as_canonical_cli() -> None:
     for legacy, canonical in replacements.items():
         assert f"| `{legacy}` | `{canonical}` |" in compatibility
     assert "removed in 0.4.0" in compatibility
+
+    outside_compatibility = (
+        compatibility_prefix
+        + "The hooks derive the issue number"
+        + compatibility_suffix
+    )
+    fenced_examples = re.findall(
+        r"```[^\n]*\n(.*?)```", outside_compatibility, re.DOTALL
+    )
+    legacy_pattern = "|".join(re.escape(name) for name in replacements)
+    invocation = re.compile(
+        rf"(?m)^[^#\n]*(?:^|[\s:`/])(?:{legacy_pattern})(?:\.exe)?(?=\s|$)"
+    )
+    assert not [
+        line
+        for example in fenced_examples
+        for line in example.splitlines()
+        if invocation.search(line)
+    ]
+    prose_without_fences = re.sub(
+        r"```[^\n]*\n.*?```", "", outside_compatibility, flags=re.DOTALL
+    )
+    standalone = re.compile(
+        rf"^\s*`?(?:\S+/)?(?:{legacy_pattern})(?:\.exe)?(?=\s|`|$)"
+    )
+    assert not [
+        line
+        for line in prose_without_fences.splitlines()
+        if standalone.search(line)
+    ]
+
+    assert (
+        "Derived from the temporary compatibility `bh-daemon` binary "
+        "location" in text
+    )
+    development = text.split("## Python development", 1)[1].split(
+        "## Prerequisites (runtime)", 1
+    )[0]
+    assert "src/codereeve/vendor/symphony/" in development
+    assert "src/baton_harness/vendor/symphony/" not in development
 
     upgrade = text.split("### Supported 0.2 upgrade and rollback", 1)[1].split(
         "### Provenance and preflight", 1

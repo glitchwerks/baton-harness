@@ -171,10 +171,10 @@ pushing:
 .venv/bin/codereeve verify                        # macOS/Linux
 ```
 
-Note: `src/baton_harness/vendor/symphony/` is **not** excluded from these checks. Issue `#224`
+Note: `src/codereeve/vendor/symphony/` is **not** excluded from these checks. Issue `#224`
 assimilated the vendored symphony tree as owned code — it is linted and type-checked
-(`strict = true`) identically to the rest of `src/baton_harness/`. `patches/` and
-`src/baton_harness/vendor/symphony/VENDORING.md` hold a historical record of the tree's
+(`strict = true`) identically to the rest of `src/codereeve/`. `patches/` and
+`src/codereeve/vendor/symphony/VENDORING.md` hold a historical record of the tree's
 provenance and pre-#224 patches, not an active exclusion or re-vendor procedure.
 
 ### Production wheel verification
@@ -558,7 +558,7 @@ codereeve daemon           # continuous
 | Variable | How it is set | Purpose |
 |---|---|---|
 | `BATON_HARNESS_DIR` | Derived from the script's own location | Harness repo root; available to hook scripts |
-| `BH_VENV` | Derived from the `codereeve` binary location | Hooks self-activate the venv |
+| `BH_VENV` | Derived from the temporary compatibility `bh-daemon` binary location | Hooks self-activate the venv |
 
 **Optional:**
 
