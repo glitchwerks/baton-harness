@@ -1,50 +1,16 @@
-"""Unit tests for the Phase 2/3 CLI doctor wiring (#193).
-
-Phase 2 (``--doctor``/``--strict`` standalone report mode) and Phase 3
-(the ``run_gate(ctx, PRE_BOOTSTRAP)`` hard gate wired into the normal
-daemon-startup path) both live in this file per the plan's section 15
-task breakdown, which assigns ``test_cli_doctor_gate.py`` to both phases.
-
-Covers the plan's Mode 1 (standalone doctor) contract
-(``docs/superpowers/plans/2026-07-01-preflight-doctor-193.md``, section 7,
-the Phase 2 bullet under section 15, and decisions D1/D7 in section 13):
-
-- ``--doctor`` runs ``doctor.run_report`` over the full catalog, prints the
-  report, and returns BEFORE ``bootstrap_secrets``/``run_daemon`` are
-  reached -- regardless of check outcomes (D1).
-- ``--strict`` flips the doctor's exit code (D7): 0 by default even when a
-  CRITICAL check FAILs; 1 under ``--strict`` when any CRITICAL-severity
-  check has ``status=FAIL``; still 0 under ``--strict`` when only
-  WARNING-severity checks fail/warn.
-- Without ``--doctor``, the existing daemon-launch path is unchanged and
-  ``doctor.run_report`` is never invoked.
-
-Deliberately NOT covered here (per the briefing): the individual 14
-Phase-1 ``Check`` behaviors (already exhaustively covered by
-``test_doctor.py``), and ``--strict`` used without ``--doctor`` (undefined
-by the plan).
-
-Patch-target note: ``doctor.run_report`` is patched at its defining module
-(``baton_harness.chain.doctor.run_report``), mirroring the existing
-``from baton_harness.chain import sandbox_config as _sandbox_cfg`` /
-``_sandbox_cfg.read_and_validate(...)`` dotted-module-call idiom already
-used in ``cli.py`` (cli.py:286-293) and the briefing's own phrasing
-("``cli.main`` runs ``doctor.run_report(ctx)``"). If the implementation
-instead does ``from baton_harness.chain.doctor import run_report`` and
-calls the bare name, this patch target will need to move to
-``baton_harness.chain.cli.run_report`` -- flagged in the return summary.
-"""
+"""CLI preflight selection, reporting, and daemon startup gates (#358)."""
 
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Iterator
+import json
+from collections.abc import Iterator, Mapping, MutableMapping
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from baton_harness.chain import doctor
+from baton_harness.chain import doctor, sandbox_config
 from baton_harness.chain.cli import main
 from baton_harness.chain.doctor import (
     CheckResult,
@@ -54,6 +20,288 @@ from baton_harness.chain.doctor import (
 )
 
 _REAL_RUN_GATE = doctor.run_gate
+
+
+def test_doctor_probe_filters_retained_bootstrap_authority() -> None:
+    """Live worker probes retain the established credential isolation."""
+    from baton_harness.chain import cli
+
+    ctx = cli._doctor_context(None)
+    ctx.env = {
+        "GH_TOKEN": "worker-pat",
+        "BWS_ACCESS_TOKEN": "vault-token",
+        "GH_INSTALLATION_TOKEN": "app-token",
+    }
+    ctx.installation_token = "app-token"
+    with patch.object(cli.subprocess, "run") as run:
+        ctx.runner(["gh", "auth", "status"])
+    probe_env = run.call_args.kwargs["env"]
+    assert "GH_TOKEN" not in probe_env
+    assert "BWS_ACCESS_TOKEN" not in probe_env
+    assert "GH_INSTALLATION_TOKEN" not in probe_env
+
+
+@pytest.mark.parametrize("status", list(CheckStatus))
+def test_check_vault_selects_only_vault_and_requires_pass(
+    status: CheckStatus, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Compatibility mode selects only the vault and treats skip as failure."""
+    result = CheckResult(
+        "VAULT_PEM_DRYRUN",
+        Phase.LIVE,
+        "vault",
+        Severity.CRITICAL,
+        status,
+        "detail",
+        "fix",
+    )
+    with patch.object(doctor, "run_report", return_value=[result]) as report:
+        assert main(["--check-vault", "--format", "json"]) == (
+            0 if status is CheckStatus.PASS else 1
+        )
+    assert report.call_args.args[1] == (Phase.LIVE,)
+    assert report.call_args.kwargs["checks"] == (
+        doctor.VAULT_PEM_DRYRUN_CHECK,
+    )
+    assert (
+        json.loads(capsys.readouterr().out)["checks"][0]["id"]
+        == "VAULT_PEM_DRYRUN"
+    )
+
+
+@pytest.mark.parametrize(
+    "failed_phase", [None, Phase.INSTALLATION, Phase.LIVE]
+)
+def test_daemon_config_and_gate_order(
+    tmp_path: Path,
+    failed_phase: Phase | None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Resolution precedes effects; either gate failure stops startup."""
+    import os
+
+    from baton_harness.chain import cli
+
+    path = tmp_path / "selected.env"
+    path.write_text(
+        "BH_REPO_OWNER=my-org\nBH_REPO_NAME=my-sandbox\nBH_GITHUB_APP_ID=12345\nBH_GITHUB_APP_INSTALLATION_ID=67890\nBH_GITHUB_APP_KEY_PROVIDER=bws\nBWS_PEM_SECRET_ID=11111111-2222-3333-4444-555555555555\n",
+        encoding="utf-8",
+    )
+    events = []
+    resolve = sandbox_config.resolve_config
+    apply = sandbox_config.apply_config
+
+    def resolve_spy(
+        selected: Path, env: Mapping[str, str]
+    ) -> sandbox_config.SandboxConfig:
+        """Record config resolution without replacing its validation."""
+        assert selected == path
+        events.append("resolve_config")
+        return resolve(selected, env)
+
+    def apply_spy(
+        config: sandbox_config.SandboxConfig, env: MutableMapping[str, str]
+    ) -> None:
+        """Record explicit environment application."""
+        events.append("apply_config")
+        apply(config, env)
+
+    def gate(ctx: doctor.DoctorContext, phases: tuple[Phase, ...]) -> None:
+        """Expose each selected gate's position and terminal behavior."""
+        assert ctx.config_path == path
+        events.append(
+            "live_gate"
+            if phases == (Phase.LIVE,)
+            else "installation_configuration_gate"
+        )
+        if failed_phase in phases:
+            raise doctor.DoctorGateError(
+                [
+                    CheckResult(
+                        "SENTINEL",
+                        failed_phase,
+                        "unsafe ghp_abcdefghijklmnopqrstuvwxyz123456",
+                        Severity.CRITICAL,
+                        CheckStatus.FAIL,
+                        "retained-secret",
+                        "fix",
+                    )
+                ]
+            )
+
+    def bootstrap() -> str:
+        """Record secret bootstrap and return installation authority."""
+        events.append("bootstrap_secrets")
+        return "ghs_TESTTOKEN_sentinel"
+
+    async def daemon(*args: object, **kwargs: object) -> None:
+        """Record entry to the daemon event loop."""
+        events.append("run_daemon")
+
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "BH_PROJECT_ROOT": str(tmp_path),
+                "BWS_ACCESS_TOKEN": "retained-secret",
+            },
+            clear=True,
+        ),
+        patch.object(
+            sandbox_config, "resolve_config", side_effect=resolve_spy
+        ),
+        patch.object(sandbox_config, "apply_config", side_effect=apply_spy),
+        patch.object(doctor, "run_gate", side_effect=gate),
+        patch.object(cli, "load_workflow", return_value=MagicMock()),
+        patch.object(
+            cli,
+            "load_registry",
+            return_value=[MagicMock(project_root=str(tmp_path))],
+        ),
+        patch.object(cli.os, "chdir"),
+        patch.object(cli, "_assert_force_pr_not_merge_tripwire"),
+        patch.object(cli, "bootstrap_secrets", side_effect=bootstrap),
+        patch.object(cli, "validate_daemon_token"),
+        patch.object(cli, "run_daemon", side_effect=daemon),
+    ):
+        assert main(["--once", "--config", str(path)]) == int(
+            failed_phase is not None
+        )
+    expected = [
+        "resolve_config",
+        "installation_configuration_gate",
+        "apply_config",
+        "bootstrap_secrets",
+        "live_gate",
+        "run_daemon",
+    ]
+    assert (
+        events == expected[:2]
+        if failed_phase is Phase.INSTALLATION
+        else events == expected[:5]
+        if failed_phase is Phase.LIVE
+        else events == expected
+    )
+    captured = capsys.readouterr()
+    assert "retained-secret" not in captured.err
+    assert "ghp_abcdefghijklmnopqrstuvwxyz123456" not in captured.err
+
+
+@pytest.mark.parametrize(
+    "phases", [[], ["installation"], ["configuration", "live"]]
+)
+def test_selected_phases_emit_one_json_document(
+    phases: list[str], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Selection is ordered and explicit config reaches the shared factory."""
+    path = tmp_path / "operator.env"
+    args = ["--doctor", "--format", "json", "--config", str(path)]
+    for phase in phases:
+        args.extend(["--phase", phase])
+    with (
+        patch.object(
+            doctor, "create_context", wraps=doctor.create_context
+        ) as factory,
+        patch.object(doctor, "run_report", return_value=[]) as report,
+    ):
+        assert main(args) == 0
+    captured = capsys.readouterr()
+    expected = phases or ["installation", "configuration", "live"]
+    assert json.loads(captured.out)["selected_phases"] == expected
+    assert captured.err == ""
+    assert factory.call_args.kwargs["config_path"] == path
+    assert list(report.call_args.args[1]) == [Phase(p) for p in expected]
+
+
+@pytest.mark.parametrize("format", ["text", "json"])
+def test_report_render_failure_is_fixed_and_atomic(
+    format: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Unsafe renderer failures cannot leak payloads or partial output."""
+    with (
+        patch.object(doctor, "run_report", return_value=[]),
+        patch(
+            f"baton_harness.chain.doctor_report.render_{format}",
+            side_effect=RuntimeError("secret-sentinel"),
+        ),
+    ):
+        assert main(["--doctor", "--format", format]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert (
+        captured.err
+        == "bh-daemon: doctor report could not be safely rendered\n"
+    )
+
+
+def test_live_vault_retains_prebootstrap_authority(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Real vault check sees retained BWS authority after environment scrub."""
+    import os
+
+    from baton_harness.chain import cli
+
+    path = tmp_path / "operator.env"
+    path.write_text(
+        "BH_REPO_OWNER=my-org\nBH_REPO_NAME=my-sandbox\nBH_GITHUB_APP_ID=12345\nBH_GITHUB_APP_INSTALLATION_ID=67890\nBH_GITHUB_APP_KEY_PROVIDER=bws\nBWS_PEM_SECRET_ID=11111111-2222-3333-4444-555555555555\n",
+        encoding="utf-8",
+    )
+    events = []
+
+    def bootstrap() -> str:
+        """Reproduce bootstrap's mandatory environment scrub."""
+        events.append("bootstrap")
+        os.environ.pop("BWS_ACCESS_TOKEN")
+        return "ghs_TESTTOKEN_sentinel"
+
+    def fetch(secret_id: str, *, access_token: str) -> str:
+        """Require captured BWS authority after the ambient scrub."""
+        assert "BWS_ACCESS_TOKEN" not in os.environ
+        assert access_token == "retained-vault-secret"
+        events.append("vault")
+        return (
+            "-----BEGIN PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----"
+        )
+
+    async def daemon(*args: object, **kwargs: object) -> None:
+        """Verify the scrub remains intact when the event loop starts."""
+        assert "BWS_ACCESS_TOKEN" not in os.environ
+        events.append("daemon")
+
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "BH_PROJECT_ROOT": str(tmp_path),
+                "BWS_ACCESS_TOKEN": "retained-vault-secret",
+            },
+            clear=True,
+        ),
+        patch.object(doctor, "CATALOG", [doctor.VAULT_PEM_DRYRUN_CHECK]),
+        patch.object(doctor, "run_gate", new=_REAL_RUN_GATE),
+        patch.object(cli, "load_workflow", return_value=MagicMock()),
+        patch.object(
+            cli,
+            "load_registry",
+            return_value=[MagicMock(project_root=str(tmp_path))],
+        ),
+        patch.object(cli.os, "chdir"),
+        patch.object(cli, "_assert_force_pr_not_merge_tripwire"),
+        patch.object(cli, "bootstrap_secrets", side_effect=bootstrap),
+        patch.object(cli, "validate_daemon_token"),
+        patch(
+            "baton_harness.chain.bws_client.fetch_secret", side_effect=fetch
+        ),
+        patch(
+            "baton_harness.chain.app_auth.build_app_jwt",
+            return_value="signed-jwt",
+        ),
+        patch.object(cli, "run_daemon", side_effect=daemon),
+    ):
+        assert main(["--once", "--config", str(path)]) == 0
+    assert events == ["bootstrap", "vault", "daemon"]
+    assert "retained-vault-secret" not in capsys.readouterr().err
 
 
 def _run_file_provider_gate(
@@ -133,23 +381,7 @@ def test_cli_doctor_gate_blocks_file_provider_optional_bws_without_token(
 
 @pytest.fixture(autouse=True)
 def _auto_patch_pre_bootstrap_gate() -> Iterator[None]:
-    """No-op ``doctor.run_gate`` for tests that don't exercise it directly.
-
-    Once Phase 3 wires ``doctor.run_gate(ctx, Phase.PRE_BOOTSTRAP)`` into
-    the normal daemon-startup path, any ``--once``/daemon-path test in
-    this file that doesn't stub the gate would hit the real
-    implementation and fail on the CRITICAL PRE_BOOTSTRAP checks (no
-    ``bws`` on PATH, no ``.bh/config.env``, etc. in the test
-    environment) -- mirroring the rationale behind
-    ``chain/conftest.py``'s ``_auto_patch_reconcile_startup`` fixture,
-    but scoped to this file only: ``test_doctor.py`` calls
-    ``doctor.run_gate`` directly and needs the real implementation, so
-    this must NOT move into the shared ``chain/conftest.py`` autouse set.
-
-    Tests that DO exercise the gate (``TestPreBootstrapDoctorGate``)
-    override this fixture with their own explicit ``patch(...)`` inside
-    a ``with`` block, which takes precedence as the innermost patch.
-    """
+    """No-op both doctor gates for tests exercising other CLI behavior."""
     with patch("baton_harness.chain.doctor.run_gate", return_value=None):
         yield
 
@@ -198,11 +430,12 @@ def _result(
     """
     return CheckResult(
         check_id=check_id,
+        phase=Phase.CONFIGURATION,
         title=title or f"{check_id} sentinel title",
         severity=severity,
         status=status,
         detail=detail or f"{check_id} sentinel detail",
-        fix=fix or f"{check_id} sentinel fix",
+        remediation=fix or f"{check_id} sentinel fix",
     )
 
 
@@ -318,15 +551,15 @@ def test_doctor_flag_prints_report_and_exits_0_even_with_critical_fail(
     bootstrap_mock.assert_not_called()
     run_daemon_mock.assert_not_called()
 
-    assert "[PASS]" in output
+    assert "[pass]" in output
     assert "GitHub CLI available" in output
 
-    assert "[FAIL]" in output
+    assert "[fail]" in output
     assert "Sandbox config file present" in output
     assert "Sentinel-detail: .bh/config.env is missing." in output
     assert "Sentinel-fix: create .bh/config.env in BH_PROJECT_ROOT." in output
 
-    assert "[WARN]" in output
+    assert "[warn]" in output
     assert "uv package manager available" in output
     assert "Sentinel-detail: uv is not available on PATH." in output
     assert "Sentinel-fix: install uv and ensure it is on PATH." in output
@@ -512,63 +745,25 @@ def _run_main_allow_system_exit(*args: str) -> int:
 
 
 def _assert_run_gate_called_with_pre_bootstrap(gate_mock: MagicMock) -> None:
-    """Assert ``run_gate`` was invoked once, with ``Phase.PRE_BOOTSTRAP``.
-
-    Tolerates either a positional (``run_gate(ctx, Phase.PRE_BOOTSTRAP)``)
-    or keyword (``run_gate(ctx, phase=Phase.PRE_BOOTSTRAP)``) call shape,
-    so the test pins the observable phase argument, not the call
-    convention the implementer chooses.
-
-    Args:
-        gate_mock: The mock standing in for ``doctor.run_gate``.
-    """
-    gate_mock.assert_called_once()
-    call = gate_mock.call_args
+    """Require installation and configuration in the first startup gate."""
+    assert gate_mock.call_count in (1, 2)
+    call = gate_mock.call_args_list[0]
     phase_arg = call.kwargs.get("phase")
     if phase_arg is None and len(call.args) >= 2:
         phase_arg = call.args[1]
-    assert phase_arg is Phase.PRE_BOOTSTRAP, (
+    assert phase_arg == (Phase.INSTALLATION, Phase.CONFIGURATION), (
         "run_gate must be called with phase=Phase.PRE_BOOTSTRAP in the"
         f" normal daemon-startup path, got {phase_arg!r} (call={call!r})"
     )
 
 
 class TestPreBootstrapDoctorGate:
-    """Phase 3 (#193): the Phase-A hard gate in the normal startup path.
+    """Installation and configuration gate precedes startup side effects."""
 
-    Covers the plan's Phase 3 bullet (section 15) and section 8's Phase A
-    integration point: ``cli.main`` must call
-    ``doctor.run_gate(ctx, Phase.PRE_BOOTSTRAP)`` after the
-    force-pr-not-merge tripwire self-test and before ``bootstrap_secrets``
-    -- mirroring the call-order/short-circuit test style already
-    established for the tripwire in
-    ``TestForcePrNotMergeStartupSelfTest`` (test_cli.py).
-
-    Patch-target note: mirrors this file's existing ``--doctor`` tests --
-    ``doctor.run_gate`` is patched at its defining module
-    (``baton_harness.chain.doctor.run_gate``), on the assumption
-    ``cli.py`` calls it as ``doctor.run_gate(...)`` after a
-    ``from baton_harness.chain import doctor`` import (the same
-    dotted-module-call idiom already used for the ``--doctor`` branch and
-    for ``sandbox_config``, cli.py:277,339). If the implementation
-    instead imports the bare name (``from baton_harness.chain.doctor
-    import run_gate``), this patch target will need to move to
-    ``baton_harness.chain.cli.run_gate`` -- flagged in the return
-    summary.
-    """
-
-    def test_gate_runs_after_tripwire_and_before_bootstrap_on_pass(
+    def test_gate_runs_before_tripwire_and_bootstrap_on_pass(
         self,
     ) -> None:
-        """A passing gate lets startup reach run_daemon unimpeded.
-
-        A passing gate runs between the tripwire and bootstrap, then
-        execution continues through to ``run_daemon`` unimpeded.
-        Combines the call-order assertion with a happy-path continuation
-        check (mirrors ``test_main_runs_tripwire_self_test_before_
-        bootstrap`` in test_cli.py) so a bug that wires the gate in but
-        accidentally always short-circuits afterward is also caught.
-        """
+        """Both gates pass before the daemon loop can start."""
         call_order: list[str] = []
 
         fake_repo_cfg = MagicMock()
@@ -626,8 +821,8 @@ class TestPreBootstrapDoctorGate:
 
         _assert_run_gate_called_with_pre_bootstrap(gate_mock)
 
-        assert call_order.index("self-test") < call_order.index("gate"), (
-            "the PRE_BOOTSTRAP doctor gate must run after the"
+        assert call_order.index("gate") < call_order.index("self-test"), (
+            "the installation/configuration gate must run before the"
             f" force-pr-not-merge self-test; got {call_order!r}"
         )
         assert call_order.index("gate") < call_order.index("bootstrap"), (
@@ -686,7 +881,7 @@ class TestPreBootstrapDoctorGate:
             ),
             patch(
                 "baton_harness.chain.doctor.run_gate",
-                side_effect=SystemExit(1),
+                side_effect=doctor.DoctorGateError(()),
             ) as gate_mock,
             patch(
                 "baton_harness.chain.cli.bootstrap_secrets",

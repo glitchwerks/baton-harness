@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Iterator
+from importlib.metadata import version
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -105,7 +106,10 @@ def test_version_exits_before_runtime_startup(
         _run_main("--version")
 
     assert exc_info.value.code == 0
-    assert capsys.readouterr().out.strip()
+    assert (
+        capsys.readouterr().out.strip()
+        == f"bh-daemon {version('baton-harness')}"
+    )
 
 
 def test_provenance_exits_before_runtime_startup(

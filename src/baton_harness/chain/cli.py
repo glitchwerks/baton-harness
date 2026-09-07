@@ -34,6 +34,7 @@ from baton_harness._auth import (
     validate_daemon_token,
     validate_gh_token,
 )
+from baton_harness.chain import bws_client, doctor, doctor_report
 from baton_harness.chain.app_auth import (
     AppAuthError,
     InstallationTokenSource,
@@ -48,12 +49,82 @@ from baton_harness.chain.app_private_key import (
 from baton_harness.chain.daemon import run_daemon
 from baton_harness.chain.identity import Identity, env_for
 from baton_harness.chain.registry import load_registry
-from baton_harness.provenance import ProvenanceError, load_provenance
+from baton_harness.provenance import (
+    Provenance,
+    ProvenanceError,
+    load_provenance,
+)
 from baton_harness.resources import as_path
 from baton_harness.vendor.symphony.config import load_workflow
 
 _log = logging.getLogger(__name__)
 _BOOTSTRAPPED_GH_TOKEN = ""
+
+
+def _doctor_context(config_path: Path | None) -> doctor.DoctorContext:
+    """Capture startup authority and resolve the selected local config.
+
+    Args:
+        config_path: Explicit config file, or the default selection.
+
+    Returns:
+        Shared doctor context retaining environment values by value.
+    """
+
+    def run_command(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        """Run a bounded worker probe with captured UTF-8 output."""
+        return subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            env=env_for(
+                Identity.WORKER,
+                base_env=ctx.env,
+                installation_token=ctx.installation_token,
+            ),
+        )
+
+    ctx = doctor.create_context(
+        env=dict(os.environ),
+        config_path=config_path,
+        which=shutil.which,
+        runner=run_command,
+        run=run_command,
+        fetch_secret=bws_client.fetch_secret,
+    )
+    return ctx
+
+
+def _doctor_gate(
+    ctx: doctor.DoctorContext, phases: tuple[doctor.Phase, ...]
+) -> bool:
+    """Run a fail-closed gate and render failures without leaking secrets.
+
+    Args:
+        ctx: Resolved configuration and captured startup authority.
+        phases: Ordered phases to execute.
+
+    Returns:
+        Whether the selected critical checks passed.
+    """
+    try:
+        doctor.run_gate(ctx, phases)
+        return True
+    except doctor.DoctorGateError as exc:
+        try:
+            output = doctor_report.render_text(
+                exc.results,
+                secret_values=doctor_report.secret_values_from_context(ctx),
+            )
+        except Exception:
+            output = "bh-daemon: doctor report could not be safely rendered\n"
+        print(output, end="", file=sys.stderr)
+    except Exception:
+        print("bh-daemon: doctor preflight failed", file=sys.stderr)
+    return False
+
 
 _FORCE_PR_NOT_MERGE_SELF_TEST_PAYLOAD = json.dumps(
     {
@@ -270,6 +341,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Print validated build provenance as JSON and exit.",
     )
 
+    parser.add_argument(
+        "--phase",
+        action="append",
+        choices=tuple(p.value for p in doctor.Phase),
+    )
+    parser.add_argument("--format", choices=("text", "json"), default="text")
+    parser.add_argument("--config", type=Path, metavar="PATH")
+
     args = parser.parse_args(argv)
 
     if args.provenance:
@@ -282,57 +361,53 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.doctor or args.check_vault:
-        from baton_harness.chain import bws_client, doctor
-
-        def run_command(
-            cmd: list[str],
-        ) -> subprocess.CompletedProcess[str]:
-            """Run a doctor probe and capture its UTF-8 output."""
-            return subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                env=env_for(Identity.WORKER),
-            )
-
-        ctx = doctor.DoctorContext(
-            project_root=os.environ.get("BH_PROJECT_ROOT", ""),
-            home_dir=os.path.expanduser("~"),
-            env=dict(os.environ),
-            which=shutil.which,
-            runner=run_command,
-            run=run_command,
-            fetch_secret=bws_client.fetch_secret,
+        ctx = _doctor_context(args.config)
+        phases = (
+            (doctor.Phase.LIVE,)
+            if args.check_vault
+            else tuple(dict.fromkeys(doctor.Phase(p) for p in args.phase))
+            if args.phase
+            else tuple(doctor.Phase)
         )
-        if args.check_vault:
-            result = doctor._run_check(doctor.VAULT_PEM_DRYRUN_CHECK, ctx)
-            print(f"[{result.status.name}] {result.title}")
-            if result.status in {
-                doctor.CheckStatus.FAIL,
-                doctor.CheckStatus.WARN,
-            }:
-                print(f"       detail: {result.detail}")
-                print(f"       fix:    {result.remediation}")
-            return 0 if result.status is doctor.CheckStatus.PASS else 1
-
-        results = doctor.run_report(ctx)
-        for result in results:
-            print(f"[{result.status.name}] {result.title}")
-            if result.status in {
-                doctor.CheckStatus.FAIL,
-                doctor.CheckStatus.WARN,
-            }:
-                print(f"       detail: {result.detail}")
-                print(f"       fix:    {result.remediation}")
-
-        if args.strict and any(
-            result.severity is doctor.Severity.CRITICAL
-            and result.status is doctor.CheckStatus.FAIL
-            for result in results
-        ):
+        try:
+            results = doctor.run_report(
+                ctx,
+                phases,
+                checks=(doctor.VAULT_PEM_DRYRUN_CHECK,)
+                if args.check_vault
+                else None,
+            )
+            report_provenance: Provenance | None
+            try:
+                report_provenance = load_provenance()
+            except ProvenanceError:
+                report_provenance = None
+            secrets = doctor_report.secret_values_from_context(ctx)
+            output = (
+                doctor_report.render_json(
+                    results, phases, report_provenance, secret_values=secrets
+                )
+                if args.format == "json"
+                else doctor_report.render_text(results, secret_values=secrets)
+            )
+        except Exception:
+            print(
+                "bh-daemon: doctor report could not be safely rendered",
+                file=sys.stderr,
+            )
             return 1
-        return 0
+        print(output, end="")
+        if args.check_vault:
+            return (
+                0
+                if len(results) == 1
+                and results[0].status is doctor.CheckStatus.PASS
+                else 1
+            )
+        return int(
+            args.strict
+            and doctor_report.summarize(results).critical_failures > 0
+        )
 
     workflow_description = (
         str(Path(args.workflow).resolve())
@@ -350,22 +425,16 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    # Read and validate sandbox config (populates os.environ with
-    # BH_REPO_OWNER, BH_REPO_NAME, BWS_APP_ID, BWS_INSTALLATION_ID, etc.)
     from baton_harness.chain import sandbox_config as _sandbox_cfg
 
-    _config_path = os.path.join(
-        os.environ.get("BH_PROJECT_ROOT", ""), ".bh", "config.env"
-    )
-    if os.path.isfile(_config_path):
-        try:
-            _sandbox_cfg.read_and_validate(_config_path)
-        except _sandbox_cfg.SandboxConfigError as exc:
-            print(
-                f"bh-daemon: error: sandbox config invalid: {exc.message}",
-                file=sys.stderr,
-            )
-            return 1
+    # One snapshot owns config and pre-bootstrap BWS authority for both gates.
+    gate_ctx = _doctor_context(args.config)
+    if not _doctor_gate(
+        gate_ctx, (doctor.Phase.INSTALLATION, doctor.Phase.CONFIGURATION)
+    ):
+        return 1
+    if gate_ctx.config is not None:
+        _sandbox_cfg.apply_config(gate_ctx.config, os.environ)
 
     # Load registry.
     try:
@@ -434,35 +503,6 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    # Hard-gate on CRITICAL configuration checks before any secret is
-    # bootstrapped. The gate collects its complete selection before raising,
-    # so a critical failure aborts startup before bootstrap_secrets() or
-    # run_daemon() are reached (#193 Phase 3).
-    from baton_harness.chain import bws_client, doctor
-
-    def _doctor_run_command(
-        cmd: list[str],
-    ) -> subprocess.CompletedProcess[str]:
-        """Run a doctor probe and capture its UTF-8 output."""
-        return subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            env=env_for(Identity.WORKER),
-        )
-
-    gate_ctx = doctor.DoctorContext(
-        project_root=os.environ.get("BH_PROJECT_ROOT", ""),
-        home_dir=os.path.expanduser("~"),
-        env=dict(os.environ),
-        which=shutil.which,
-        runner=_doctor_run_command,
-        run=_doctor_run_command,
-        fetch_secret=bws_client.fetch_secret,
-    )
-    doctor.run_gate(gate_ctx, (doctor.Phase.CONFIGURATION,))
-
     # Bootstrap GitHub App installation token (slice 3a).
     # Must run AFTER chdir so the managed repo is the process cwd.
     # bootstrap_secrets removes BWS_ACCESS_TOKEN from os.environ in
@@ -498,13 +538,19 @@ def main(argv: list[str] | None = None) -> int:
 
     # Validate the minted token before entering the event loop.
     try:
-        validate_daemon_token(resolve_installation_token(installation_token))
+        resolved_token = resolve_installation_token(installation_token)
+        validate_daemon_token(resolved_token)
     except TokenValidationError as exc:
         print(
             f"bh-daemon: error: invalid installation token from bootstrap:"
             f" {exc}",
             file=sys.stderr,
         )
+        return 1
+
+    gate_ctx.installation_token = resolved_token
+    gate_ctx.env["GH_TOKEN"] = worker_gh_pat
+    if not _doctor_gate(gate_ctx, (doctor.Phase.LIVE,)):
         return 1
 
     # Run the daemon.  run_daemon calls reconcile_startup internally as
