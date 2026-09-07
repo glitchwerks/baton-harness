@@ -83,7 +83,7 @@
 - Test: `tests/test_resources.py`
 
 **Interfaces:**
-- Consumes: current `baton_harness` module graph and Hatch build hook. The current distribution/package/script coupling is declared in `pyproject.toml:L9-L66`, and provenance currently names both the old distribution and record path (`src/baton_harness/provenance.py:L105-L138`).
+- Consumes: current `baton_harness` module graph and Hatch build hook. The current distribution/package/script coupling is declared in `pyproject.toml:L9-L66`, and provenance currently names both the old distribution and record path (`b40e499:src/baton_harness/provenance.py:L105-L138`).
 - Produces: importable `codereeve`, `codereeve.__version__: str`, canonical package resources, canonical artifact provenance, and a test suite whose internal imports no longer depend on `baton_harness`.
 
 - [ ] **Step 1: Write the failing canonical namespace tests**

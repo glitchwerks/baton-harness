@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -235,6 +236,13 @@ def _assert_no_legacy_cli_invocations(text: str) -> None:
 def test_readme_presents_codereeve_as_canonical_cli() -> None:
     """The README presents the unified CodeReeve command as canonical."""
     text = Path("README.md").read_text(encoding="utf-8")
+    current_state = text.split("## Why vendor instead of depend upstream?", 1)[
+        0
+    ]
+    assert "src/codereeve/vendor/symphony/" in current_state
+    assert "src/codereeve/chain/" in current_state
+    assert "src/baton_harness/vendor/symphony/" not in current_state
+    assert "src/baton_harness/chain/" not in current_state
     for command in (
         "codereeve daemon",
         "codereeve doctor",
@@ -309,6 +317,42 @@ def test_readme_presents_codereeve_as_canonical_cli() -> None:
     )
     assert 'SOURCE_REVISION="$(git rev-parse HEAD)"' in upgrade
     assert 'CODEREEVE_BUILD_SOURCE_REVISION="$SOURCE_REVISION"' in upgrade
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        Path("README.md"),
+        Path("docs/superpowers/specs/2026-09-07-codereeve-rename-design.md"),
+    ],
+)
+def test_package_docs_reference_persisted_repo_paths(document: Path) -> None:
+    """Durable package docs reference committed repository paths."""
+    tracked = set(
+        subprocess.run(
+            ["git", "ls-tree", "-r", "--name-only", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.splitlines()
+    )
+    generated_artifacts = {"src/codereeve/build_provenance.json"}
+    references = re.findall(
+        r"(?<!`)`((?:src|docs|bin|config|tests)/[A-Za-z0-9_./-]+)"
+        r"(?::L\d+(?:-L\d+)?)?`(?!`)",
+        document.read_text(encoding="utf-8"),
+    )
+
+    missing = sorted(
+        reference
+        for reference in references
+        if reference not in generated_artifacts
+        and reference not in tracked
+        and not any(
+            path.startswith(f"{reference.rstrip('/')}/") for path in tracked
+        )
+    )
+    assert not missing, f"{document} references uncommitted paths: {missing}"
 
 
 @pytest.mark.parametrize(

@@ -7,7 +7,7 @@ always-on daemon. The orchestration engine (`symphony`, from
 called directly as a library.
 
 **Current state [implemented, #27]:** the `symphony` package is vendored at
-`src/baton_harness/vendor/symphony/` and the always-on daemon (`src/baton_harness/chain/`)
+`src/codereeve/vendor/symphony/` and the always-on daemon (`src/codereeve/chain/`)
 calls `Orchestrator._run_worker(issue)` directly — no subprocess, no `baton start`. The
 daemon is the entry point; `bin/run-daemon.sh` is the launcher. See
 [docs/harness-design.md §1 and §10](docs/harness-design.md) for the design rationale.
@@ -27,7 +27,7 @@ compatibility shims for the 0.2 and 0.3 release lines only.
 The orchestration engine (`symphony`) is vendored into the package rather than installed
 as an external dependency. Upstream `mraza007/baton` is dormant (3 commits, no releases,
 no external PRs ever merged). The harness is the de facto maintainer of the vendored
-source; `src/baton_harness/vendor/symphony/` is linted and type-checked as owned code
+source; `src/codereeve/vendor/symphony/` is linted and type-checked as owned code
 (issue #224) and Baton bugs are fixed directly in it, the same as any other module.
 `patches/` holds a frozen historical record of pre-#224 patches; it is not required for
 new changes.

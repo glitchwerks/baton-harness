@@ -2,6 +2,9 @@
 
 import importlib.util
 import json
+import os
+import subprocess
+import tarfile
 from hashlib import sha256
 from pathlib import Path
 
@@ -15,6 +18,64 @@ from hatch_build import (
 
 REVISION = "0123456789abcdef0123456789abcdef01234567"
 LOCK_CONTENT = b"locked\n"
+
+
+def test_sdist_excludes_ignored_workspace_state(tmp_path: Path) -> None:
+    """An sdist cannot capture ignored runtime, ledger, or scratch files."""
+    root = Path(__file__).resolve().parents[1]
+    marker_name = "sdist-boundary-sentinel.txt"
+    markers = [
+        root / directory / marker_name
+        for directory in (".baton-harness", ".superpowers", ".tmp")
+    ]
+    created_directories: list[Path] = []
+    for marker in markers:
+        if not marker.parent.exists():
+            marker.parent.mkdir()
+            created_directories.append(marker.parent)
+        marker.write_text("must not ship\n", encoding="utf-8")
+
+    revision = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    environment = {
+        **os.environ,
+        "CODEREEVE_BUILD_VERSION": "0.2.0",
+        "CODEREEVE_BUILD_SOURCE_REVISION": revision,
+        "UV_CACHE_DIR": str(tmp_path / "uv-cache"),
+    }
+    output = tmp_path / "dist"
+    try:
+        subprocess.run(
+            [
+                "uv",
+                "build",
+                "--sdist",
+                "--no-build-isolation",
+                "--out-dir",
+                str(output),
+            ],
+            cwd=root,
+            check=True,
+            env=environment,
+        )
+        (sdist,) = output.glob("codereeve-0.2.0.tar.gz")
+        with tarfile.open(sdist) as archive:
+            members = archive.getnames()
+
+        for marker in markers:
+            relative_marker = marker.relative_to(root).as_posix()
+            assert not any(
+                member.endswith(f"/{relative_marker}") for member in members
+            ), f"sdist captured ignored workspace file {marker}"
+    finally:
+        for marker in markers:
+            marker.unlink(missing_ok=True)
+        for directory in created_directories:
+            directory.rmdir()
 
 
 def test_hook_module_loads_without_a_registered_module() -> None:
