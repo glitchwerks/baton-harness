@@ -29,7 +29,7 @@ Coverage:
   so a human/implementer can jump straight to the site.
 - The helper fails closed: a missing or empty scan root raises rather
   than silently reporting zero violations.
-- The real guard: walking the actual ``src/baton_harness/chain/``
+- The real guard: walking the actual ``src/codereeve/chain/``
   package must find zero unexempted spawn sites. This is the
   steady-state post-migration invariant — Phase 2 already migrated
   every pre-existing bare ``subprocess.run`` call site (e.g.
@@ -432,7 +432,7 @@ class TestFindUnguardedSpawnCallsHelper:
 class TestChainPackageSpawnGuard:
     """Every real spawn site in ``chain/`` must pass an explicit env.
 
-    Covers the actual ``src/baton_harness/chain/`` package, not a
+    Covers the actual ``src/codereeve/chain/`` package, not a
     synthetic fixture.
     """
 
@@ -452,10 +452,7 @@ class TestChainPackageSpawnGuard:
         regression it exists to catch.
         """
         chain_root = (
-            Path(__file__).resolve().parents[2]
-            / "src"
-            / "baton_harness"
-            / "chain"
+            Path(__file__).resolve().parents[2] / "src" / "codereeve" / "chain"
         )
 
         violations = _find_unguarded_spawn_calls(chain_root)

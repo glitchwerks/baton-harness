@@ -75,14 +75,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import baton_harness.chain.daemon as daemon_mod
-import baton_harness.chain.merge as merge_mod
-from baton_harness.chain.daemon import run_daemon
-from baton_harness.chain.merge import MergeOutcome
-from baton_harness.chain.recovery import RecoveryResult
-from baton_harness.chain.registry import RepoConfig
-from baton_harness.chain.session_report import SessionReport
-from baton_harness.vendor.symphony.config import WorkflowConfig
+import codereeve.chain.daemon as daemon_mod
+import codereeve.chain.merge as merge_mod
+from codereeve.chain.daemon import run_daemon
+from codereeve.chain.merge import MergeOutcome
+from codereeve.chain.recovery import RecoveryResult
+from codereeve.chain.registry import RepoConfig
+from codereeve.chain.session_report import SessionReport
+from codereeve.vendor.symphony.config import WorkflowConfig
 
 # ---------------------------------------------------------------------------
 # Helpers (mirrors tests/chain/test_daemon.py's conventions; duplicated
@@ -307,7 +307,7 @@ def _patch_run_worker(return_value: str = "pr_created") -> Any:  # noqa: ANN401
     from unittest.mock import AsyncMock
 
     return patch(
-        "baton_harness.vendor.symphony.orchestrator.Orchestrator._run_worker",
+        "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
         new_callable=AsyncMock,
         return_value=return_value,
     )
@@ -321,17 +321,17 @@ def _common_success_patches() -> Any:  # noqa: ANN401
     def ctx() -> Any:  # noqa: ANN401
         with (
             patch(
-                "baton_harness.chain.daemon.fetch_blocked_by",
+                "codereeve.chain.daemon.fetch_blocked_by",
                 return_value=[],
             ),
-            patch("baton_harness.chain.branches.create_feature_branch"),
-            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch("codereeve.chain.branches.create_feature_branch"),
+            patch("codereeve.chain.branches.checkout_feature_branch"),
             patch(
-                "baton_harness.chain.branches.record_cut_point",
+                "codereeve.chain.branches.record_cut_point",
                 return_value="deadbeef" * 5,
             ),
             patch(
-                "baton_harness.chain.recovery.reconstruct",
+                "codereeve.chain.recovery.reconstruct",
                 return_value=RecoveryResult(
                     done=set(),
                     parked_seed=set(),
@@ -340,10 +340,10 @@ def _common_success_patches() -> Any:  # noqa: ANN401
                 ),
             ),
             patch(
-                "baton_harness.chain.daemon.merge_issue_branch",
+                "codereeve.chain.daemon.merge_issue_branch",
                 return_value=MergeOutcome.MERGED,
             ),
-            patch("baton_harness.chain.daemon.alert", return_value=True),
+            patch("codereeve.chain.daemon.alert", return_value=True),
         ):
             yield
 
@@ -474,7 +474,7 @@ def test_report_captures_parked_issue_with_block_kind_and_escalation(
             ),
         ),
         patch(
-            "baton_harness.chain.daemon._fetch_issue_labels",
+            "codereeve.chain.daemon._fetch_issue_labels",
             return_value={"blocked"},
         ),
         _common_success_patches()(),
@@ -728,21 +728,21 @@ def test_tick_error_recorded_and_partial_state_survives_on_exception(
             ),
         ),
         patch(
-            "baton_harness.chain.daemon._fetch_issue_labels",
+            "codereeve.chain.daemon._fetch_issue_labels",
             side_effect=fake_fetch_issue_labels,
         ),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             side_effect=fake_fetch_blocked_by,
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -751,10 +751,10 @@ def test_tick_error_recorded_and_partial_state_survives_on_exception(
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         _patch_run_worker("pr_created"),
     ):
         # Must NOT raise — the daemon survives the mid-tick exception
@@ -806,11 +806,11 @@ def test_run_ci_gate_returns_merge_outcome_directly() -> None:
 
     with (
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
-        patch("baton_harness.chain.daemon._label_edit"),
+        patch("codereeve.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon._label_edit"),
     ):
         result = daemon_mod._run_ci_gate(
             owner=_OWNER,
@@ -985,10 +985,10 @@ class TestRunCiGateRecordsEscalationDetail:
 
         with (
             patch.object(merge_mod, "_query_action_jobs", return_value=[]),
-            patch("baton_harness.chain.daemon.alert", mock_alert),
-            patch("baton_harness.chain.daemon._label_edit"),
+            patch("codereeve.chain.daemon.alert", mock_alert),
+            patch("codereeve.chain.daemon._label_edit"),
             patch(
-                "baton_harness.chain.daemon._fetch_issue_labels",
+                "codereeve.chain.daemon._fetch_issue_labels",
                 return_value={"agent-done"},
             ),
         ):
@@ -1092,10 +1092,10 @@ class TestRunCiGateRecordsEscalationDetail:
                 return_value=_green_required_jobs(),
             ),
             patch.object(merge_mod, "_run", side_effect=fake_run),
-            patch("baton_harness.chain.daemon.alert", return_value=True),
-            patch("baton_harness.chain.daemon._label_edit"),
+            patch("codereeve.chain.daemon.alert", return_value=True),
+            patch("codereeve.chain.daemon._label_edit"),
             patch(
-                "baton_harness.chain.daemon._fetch_issue_labels",
+                "codereeve.chain.daemon._fetch_issue_labels",
                 return_value={"agent-done"},
             ),
         ):

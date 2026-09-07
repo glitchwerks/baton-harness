@@ -1,4 +1,4 @@
-"""Tests for baton_harness.chain.identity — subprocess auth-identity broker.
+"""Tests for codereeve.chain.identity — subprocess auth-identity broker.
 
 Coverage:
 - ``Identity`` is a typed enum exposing ``APP`` and ``WORKER`` members.
@@ -66,7 +66,7 @@ import os
 
 import pytest
 
-from baton_harness.chain.identity import Identity, env_for
+from codereeve.chain.identity import Identity, env_for
 
 _APP_TOKEN = "ghs_FAKEFAKEFAKEFAKEFAKEFAKEFAKE"
 _STALE_TOKEN = "ghs_STALE_AMBIENT_TOKEN_00000000"

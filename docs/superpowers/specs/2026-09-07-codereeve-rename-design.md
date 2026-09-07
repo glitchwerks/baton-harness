@@ -28,15 +28,15 @@ split between `~/.config/baton-harness/host.env` and the managed repository's
 `.bh/config.env` (`bin/lib/load-config.sh:L135-L163`). CodeReeve-owned runtime
 files currently use `.baton-harness`, including the heartbeat, run log,
 dispatch counters, failure counters, and liveness marker
-(`src/baton_harness/chain/obs_config.py:L16-L60`,
-`src/baton_harness/chain/reconcile.py:L19-L19`).
+(`b40e499:src/baton_harness/chain/obs_config.py:L16-L60`,
+`b40e499:src/baton_harness/chain/reconcile.py:L19-L19`).
 
 The service installer currently emits `bh-daemon.service`, defaults secrets to
 `/etc/bh-daemon/secrets.env`, and starts the `bh-daemon` executable
 (`bin/install-daemon-service.sh:L2-L6`,
 `bin/install-daemon-service.sh:L323-L399`). Build provenance is also coupled to
 the old distribution and package paths (`hatch_build.py:L20-L20`,
-`hatch_build.py:L69-L117`, `src/baton_harness/provenance.py:L105-L138`). These
+`hatch_build.py:L69-L117`, `b40e499:src/baton_harness/provenance.py:L105-L138`). These
 surfaces must move together so a built artifact cannot report one identity
 while executing another.
 
@@ -87,7 +87,7 @@ Third-party names are not product branding and remain unchanged. Examples
 include `BWS_ACCESS_TOKEN`, `BWS_*_SECRET_ID`, `GH_TOKEN`, and
 `ANTHROPIC_API_KEY`. The current config parser already distinguishes these
 provider-specific values from `BH_*` application identity
-(`src/baton_harness/chain/sandbox_config.py:L65-L92`).
+(`b40e499:src/baton_harness/chain/sandbox_config.py:L65-L92`).
 
 ## Unified CLI
 
@@ -106,7 +106,7 @@ provider-specific values from `BH_*` application identity
 | `bh-verify-foundation` | `codereeve verify` |
 
 The current daemon combines runtime, doctor, version, and provenance modes in
-one argument parser (`src/baton_harness/chain/cli.py:L263-L350`). The canonical
+one argument parser (`b40e499:src/baton_harness/chain/cli.py:L263-L350`). The canonical
 CLI separates those modes at the command boundary but delegates to the same
 application functions. Legacy executables are wrappers around canonical
 handlers; they do not retain separate implementations.
@@ -144,8 +144,8 @@ special `BATON_HARNESS_DIR` variable becomes `CODEREEVE_ROOT`. Examples include
 `BH_PROJECT_ROOT` -> `CODEREEVE_PROJECT_ROOT`, `BH_VENV` ->
 `CODEREEVE_VENV`, and `BH_FEATURE_BRANCH` -> `CODEREEVE_FEATURE_BRANCH`. The
 existing code reads these names across registry, observability, configuration,
-and hook execution (`src/baton_harness/chain/registry.py:L66-L73`,
-`src/baton_harness/chain/obs_config.py:L175-L204`,
+and hook execution (`b40e499:src/baton_harness/chain/registry.py:L66-L73`,
+`b40e499:src/baton_harness/chain/obs_config.py:L175-L204`,
 `config/WORKFLOW.md:L14-L16`).
 
 Resolution follows one shared rule in 0.2 and 0.3:
@@ -211,7 +211,7 @@ The host move is `~/.config/baton-harness/host.env` ->
 engine's `.symphony/` directory is not renamed by this epic because it remains
 Symphony-owned state; CodeReeve-owned state is the content currently rooted at
 `.baton-harness` (`docs/smoke-test-daemon.md:L11-L11`,
-`src/baton_harness/chain/obs_config.py:L16-L60`).
+`b40e499:src/baton_harness/chain/obs_config.py:L16-L60`).
 
 ## Service cutover
 
@@ -307,8 +307,8 @@ The 0.2 work uses a primary feature branch with child branches, as required by
 - the retained Symphony import, resources, state behavior, and provenance.
 
 The existing foundation verifier enumerates installed entry points and performs
-installed CLI smoke tests (`src/baton_harness/verify_foundation.py:L37-L37`,
-`src/baton_harness/verify_foundation.py:L416-L481`). That verifier must become a
+installed CLI smoke tests (`b40e499:src/baton_harness/verify_foundation.py:L37-L37`,
+`b40e499:src/baton_harness/verify_foundation.py:L416-L481`). That verifier must become a
 canonical CodeReeve consumer and test the temporary legacy wrappers separately.
 
 ## Risks and controls

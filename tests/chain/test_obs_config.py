@@ -1,4 +1,4 @@
-"""Unit tests for baton_harness.chain.obs_config.
+"""Unit tests for codereeve.chain.obs_config.
 
 Tests the ``ObsConfig`` dataclass and ``load_obs_config`` factory.
 All environment variable injection uses ``monkeypatch`` so tests are
@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from baton_harness.chain.obs_config import ObsConfig, load_obs_config
+from codereeve.chain.obs_config import ObsConfig, load_obs_config
 
 # ---------------------------------------------------------------------------
 # Environment variable names (mirrors the contract exactly)

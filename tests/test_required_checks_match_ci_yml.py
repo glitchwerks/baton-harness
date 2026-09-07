@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from baton_harness.chain.merge import REQUIRED_CHECKS
+from codereeve.chain.merge import REQUIRED_CHECKS
 
 HARNESS = Path(__file__).resolve().parents[1]
 pytestmark = pytest.mark.fast

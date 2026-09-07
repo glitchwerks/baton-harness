@@ -10,8 +10,8 @@ from urllib.error import HTTPError
 
 import pytest
 
-import baton_harness.pr_policy as pr_policy
-from baton_harness.pr_policy import (
+import codereeve.pr_policy as pr_policy
+from codereeve.pr_policy import (
     PullRequestEvent,
     evaluate_pr_policy,
     fetch_issue_has_milestone,

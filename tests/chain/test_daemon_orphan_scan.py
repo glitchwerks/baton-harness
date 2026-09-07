@@ -33,13 +33,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-import baton_harness.chain.daemon as daemon_mod
-from baton_harness.chain.daemon import run_daemon
-from baton_harness.chain.heartbeat import LivenessState
-from baton_harness.chain.merge import MergeOutcome
-from baton_harness.chain.recovery import RecoveryResult
-from baton_harness.chain.registry import RepoConfig
-from baton_harness.vendor.symphony.config import WorkflowConfig
+import codereeve.chain.daemon as daemon_mod
+from codereeve.chain.daemon import run_daemon
+from codereeve.chain.heartbeat import LivenessState
+from codereeve.chain.merge import MergeOutcome
+from codereeve.chain.recovery import RecoveryResult
+from codereeve.chain.registry import RepoConfig
+from codereeve.vendor.symphony.config import WorkflowConfig
 
 # ---------------------------------------------------------------------------
 # Helpers (mirrors test_daemon.py exactly)
@@ -293,18 +293,18 @@ def test_lone_orphan_milestone_triggers_reconstruct_and_tally(
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             return_value=[],
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         # reconstruct returns redispatch={10} so the tally path runs.
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -313,23 +313,22 @@ def test_lone_orphan_milestone_triggers_reconstruct_and_tally(
             ),
         ),
         patch(
-            "baton_harness.chain.daemon._fetch_full_milestone_members",
+            "codereeve.chain.daemon._fetch_full_milestone_members",
             return_value=frozenset({10}),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         # Spy on RedispatchTally.record_and_check.
         patch(
-            "baton_harness.chain.redispatch.RedispatchTally.record_and_check",
+            "codereeve.chain.redispatch.RedispatchTally.record_and_check",
             autospec=True,
             side_effect=spy_record_and_check,
         ),
         patch(
-            "baton_harness.vendor.symphony.orchestrator."
-            "Orchestrator._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             new_callable=AsyncMock,
             return_value="pr_created",
         ),
@@ -415,17 +414,17 @@ def test_milestone_with_ready_and_orphan_runs_work_unit_exactly_once() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             return_value=[],
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -434,22 +433,21 @@ def test_milestone_with_ready_and_orphan_runs_work_unit_exactly_once() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon._fetch_full_milestone_members",
+            "codereeve.chain.daemon._fetch_full_milestone_members",
             return_value=frozenset({20, 21}),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         patch.object(
             daemon_mod,
             "_run_work_unit",
             side_effect=spy_run_work_unit,
         ),
         patch(
-            "baton_harness.vendor.symphony.orchestrator."
-            "Orchestrator._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             new_callable=AsyncMock,
             return_value="pr_created",
         ),
@@ -544,18 +542,18 @@ def test_lone_orphan_populates_liveness_state(
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             return_value=[],
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         # reconstruct returns redispatch={10} so the dispatch path runs.
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -564,14 +562,14 @@ def test_lone_orphan_populates_liveness_state(
             ),
         ),
         patch(
-            "baton_harness.chain.daemon._fetch_full_milestone_members",
+            "codereeve.chain.daemon._fetch_full_milestone_members",
             return_value=frozenset({10}),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         patch.object(
             LivenessState,
             "mark_in_progress",
@@ -579,8 +577,7 @@ def test_lone_orphan_populates_liveness_state(
             side_effect=spy_mark_in_progress,
         ),
         patch(
-            "baton_harness.vendor.symphony.orchestrator."
-            "Orchestrator._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             new_callable=AsyncMock,
             return_value="pr_created",
         ),

@@ -6,7 +6,7 @@ Also carries #351's T3 coverage — hook diagnostics threading (D6 steps
 ``before_run`` ``RuntimeError`` embeds both, and the two best-effort
 ``after_run`` call sites (F4: orchestrator.py ~L274-279 and ~L387-397)
 continue to swallow hook failures rather than propagate them. These
-tests import ``baton_harness.vendor.symphony.hooks`` as a module (not
+tests import ``codereeve.vendor.symphony.hooks`` as a module (not
 ``from ... import HookResult``) so the pre-existing #347 tests above
 keep collecting and passing independently of the new #351 symbol —
 only the new tests below fail (cleanly, via ``AttributeError`` on
@@ -47,7 +47,7 @@ Coverage:
 
 Mock strategy follows ``tests/vendor/test_exclude_labels_recheck.py``:
 ``run_hook`` is patched at the module level it is imported into
-(``baton_harness.vendor.symphony.orchestrator.run_hook``), and all
+(``codereeve.vendor.symphony.orchestrator.run_hook``), and all
 async calls are driven with ``asyncio.run`` (no pytest-asyncio dep).
 """
 
@@ -59,10 +59,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from baton_harness.vendor.symphony import hooks as hooks_mod
-from baton_harness.vendor.symphony.config import WorkflowConfig
-from baton_harness.vendor.symphony.orchestrator import Orchestrator
-from baton_harness.vendor.symphony.tracker import Issue
+from codereeve.vendor.symphony import hooks as hooks_mod
+from codereeve.vendor.symphony.config import WorkflowConfig
+from codereeve.vendor.symphony.orchestrator import Orchestrator
+from codereeve.vendor.symphony.tracker import Issue
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -195,7 +195,7 @@ def _run_worker_capturing_hook_calls(
             side_effect=fake_fetch_issue_state,
         ),
         patch(
-            "baton_harness.vendor.symphony.orchestrator.run_hook",
+            "codereeve.vendor.symphony.orchestrator.run_hook",
             side_effect=fake_run_hook,
         ),
         patch.object(
@@ -582,7 +582,7 @@ def _run_worker_expecting_runtime_error(
             side_effect=fake_fetch_issue_state,
         ),
         patch(
-            "baton_harness.vendor.symphony.orchestrator.run_hook",
+            "codereeve.vendor.symphony.orchestrator.run_hook",
             side_effect=fake_run_hook,
         ),
     ):
@@ -707,7 +707,7 @@ class TestAfterRunSwallowsHookFailure:
                 side_effect=fake_fetch_issue_state,
             ),
             patch(
-                "baton_harness.vendor.symphony.orchestrator.run_hook",
+                "codereeve.vendor.symphony.orchestrator.run_hook",
                 side_effect=fake_run_hook,
             ),
             patch.object(

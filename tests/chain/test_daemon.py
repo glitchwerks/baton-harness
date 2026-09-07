@@ -1,4 +1,4 @@
-"""Unit tests for baton_harness.chain.daemon.
+"""Unit tests for codereeve.chain.daemon.
 
 Tests the always-on serial daemon loop.  All I/O is mocked:
 ``_run_worker`` is patched to return predetermined outcomes; git/gh
@@ -45,17 +45,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import baton_harness.chain.daemon as daemon_mod
-import baton_harness.chain.merge as merge_mod
-from baton_harness.chain.daemon import run_daemon
-from baton_harness.chain.failure_tally import FailureTally
-from baton_harness.chain.heartbeat import LivenessState
-from baton_harness.chain.label_ops import fetch_daemon_labels
-from baton_harness.chain.merge import MergeOutcome
-from baton_harness.chain.obs_config import ObsConfig
-from baton_harness.chain.recovery import RecoveryResult
-from baton_harness.chain.registry import RepoConfig
-from baton_harness.vendor.symphony.config import WorkflowConfig
+import codereeve.chain.daemon as daemon_mod
+import codereeve.chain.merge as merge_mod
+from codereeve.chain.daemon import run_daemon
+from codereeve.chain.failure_tally import FailureTally
+from codereeve.chain.heartbeat import LivenessState
+from codereeve.chain.label_ops import fetch_daemon_labels
+from codereeve.chain.merge import MergeOutcome
+from codereeve.chain.obs_config import ObsConfig
+from codereeve.chain.recovery import RecoveryResult
+from codereeve.chain.registry import RepoConfig
+from codereeve.vendor.symphony.config import WorkflowConfig
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -225,21 +225,21 @@ def _common_patches(
                 ),
             ) as mock_run,
             patch(
-                "baton_harness.chain.daemon.fetch_blocked_by",
+                "codereeve.chain.daemon.fetch_blocked_by",
                 side_effect=lambda o, r, n, **_kw: blocked_by.get(n, []),
             ),
             patch(
-                "baton_harness.chain.branches.create_feature_branch",
+                "codereeve.chain.branches.create_feature_branch",
             ),
             patch(
-                "baton_harness.chain.branches.checkout_feature_branch",
+                "codereeve.chain.branches.checkout_feature_branch",
             ),
             patch(
-                "baton_harness.chain.branches.record_cut_point",
+                "codereeve.chain.branches.record_cut_point",
                 return_value="deadbeef" * 5,
             ),
             patch(
-                "baton_harness.chain.recovery.reconstruct",
+                "codereeve.chain.recovery.reconstruct",
                 return_value=RecoveryResult(
                     done=set(),
                     parked_seed=set(),
@@ -248,11 +248,11 @@ def _common_patches(
                 ),
             ),
             patch(
-                "baton_harness.chain.daemon.merge_issue_branch",
+                "codereeve.chain.daemon.merge_issue_branch",
                 return_value=merge_outcome,
             ) as mock_merge,
             patch(
-                "baton_harness.chain.daemon.alert",
+                "codereeve.chain.daemon.alert",
                 return_value=True,
             ) as mock_escalate,
         ):
@@ -360,7 +360,7 @@ def _make_run_side_effect(
 def _patch_run_worker(return_value: str = "pr_created") -> Any:  # noqa: ANN401
     """Patch Orchestrator._run_worker with an AsyncMock."""
     return patch(
-        "baton_harness.vendor.symphony.orchestrator.Orchestrator._run_worker",
+        "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
         new_callable=AsyncMock,
         return_value=return_value,
     )
@@ -405,15 +405,15 @@ def test_happy_linear_dag_merges_and_opens_pr() -> None:
 
     with (
         patch.object(daemon_mod, "_run", side_effect=recording_run),
-        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -422,10 +422,10 @@ def test_happy_linear_dag_merges_and_opens_pr() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         _patch_run_worker("pr_created"),
     ):
         # After _run_worker returns "pr_created", after_run label state
@@ -484,15 +484,15 @@ def test_draft_pr_flag_absent_from_pr_create() -> None:
         patch.object(
             daemon_mod, "_open_pr", wraps=daemon_mod._open_pr
         ) as mock_open_pr,
-        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -501,10 +501,10 @@ def test_draft_pr_flag_absent_from_pr_create() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         _patch_run_worker("pr_created"),
     ):
         asyncio.run(
@@ -560,15 +560,15 @@ def test_never_merges_to_main() -> None:
 
     with (
         patch.object(daemon_mod, "_run", side_effect=recording_run),
-        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -577,10 +577,10 @@ def test_never_merges_to_main() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         _patch_run_worker("pr_created"),
     ):
         asyncio.run(
@@ -633,15 +633,15 @@ def test_no_pr_result_parks_and_escalates_without_retry() -> None:
                 feature_branch_exists=False,
             ),
         ),
-        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -650,12 +650,12 @@ def test_no_pr_result_parks_and_escalates_without_retry() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", mock_escalate),
+        patch("codereeve.chain.daemon.alert", mock_escalate),
         patch(
-            "baton_harness.vendor.symphony.orchestrator.Orchestrator._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
         ),
     ):
@@ -709,17 +709,15 @@ def test_agent_in_progress_removed_on_every_terminal_outcome() -> None:
 
         with (
             patch.object(daemon_mod, "_run", side_effect=recording_run),
+            patch("codereeve.chain.daemon.fetch_blocked_by", return_value=[]),
+            patch("codereeve.chain.branches.create_feature_branch"),
+            patch("codereeve.chain.branches.checkout_feature_branch"),
             patch(
-                "baton_harness.chain.daemon.fetch_blocked_by", return_value=[]
-            ),
-            patch("baton_harness.chain.branches.create_feature_branch"),
-            patch("baton_harness.chain.branches.checkout_feature_branch"),
-            patch(
-                "baton_harness.chain.branches.record_cut_point",
+                "codereeve.chain.branches.record_cut_point",
                 return_value="deadbeef" * 5,
             ),
             patch(
-                "baton_harness.chain.recovery.reconstruct",
+                "codereeve.chain.recovery.reconstruct",
                 return_value=RecoveryResult(
                     done=set(),
                     parked_seed=set(),
@@ -728,12 +726,12 @@ def test_agent_in_progress_removed_on_every_terminal_outcome() -> None:
                 ),
             ),
             patch(
-                "baton_harness.chain.daemon.merge_issue_branch",
+                "codereeve.chain.daemon.merge_issue_branch",
                 return_value=MergeOutcome.MERGED,
             ),
-            patch("baton_harness.chain.daemon.alert", return_value=True),
+            patch("codereeve.chain.daemon.alert", return_value=True),
             patch(
-                "baton_harness.vendor.symphony.orchestrator.Orchestrator._run_worker",
+                "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
                 new_callable=AsyncMock,
                 return_value=outcome,
             ),
@@ -793,15 +791,15 @@ def test_fully_parked_dag_exits_work_unit_daemon_stays_alive() -> None:
                 feature_branch_exists=False,
             ),
         ),
-        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -810,12 +808,12 @@ def test_fully_parked_dag_exits_work_unit_daemon_stays_alive() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", mock_escalate),
+        patch("codereeve.chain.daemon.alert", mock_escalate),
         patch(
-            "baton_harness.vendor.symphony.orchestrator.Orchestrator._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
         ),
     ):
@@ -888,17 +886,17 @@ def test_serial_dispatch_one_worker_at_a_time() -> None:
     with (
         patch.object(daemon_mod, "_run", side_effect=side_effect),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             side_effect=lambda o, r, n, **_kw: blocked_by.get(n, []),
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -907,12 +905,12 @@ def test_serial_dispatch_one_worker_at_a_time() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         patch(
-            "baton_harness.vendor.symphony.orchestrator.Orchestrator._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
         ),
     ):
@@ -961,15 +959,15 @@ def test_ci_gated_merge_relabels_to_agent_merged() -> None:
 
     with (
         patch.object(daemon_mod, "_run", side_effect=recording_run),
-        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -978,12 +976,12 @@ def test_ci_gated_merge_relabels_to_agent_merged() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         patch(
-            "baton_harness.vendor.symphony.orchestrator.Orchestrator._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             new_callable=AsyncMock,
             return_value="pr_created",
         ),
@@ -1011,7 +1009,7 @@ def test_registry_unset_raises_clean_error() -> None:
     """load_registry raises ValueError if env vars unset."""
     import os
 
-    from baton_harness.chain.registry import load_registry
+    from codereeve.chain.registry import load_registry
 
     env_backup = {
         k: os.environ.pop(k, None)
@@ -1148,21 +1146,21 @@ def test_milestone_membership_uses_full_set_not_just_agent_ready() -> None:
     with (
         patch.object(daemon_mod, "_run", side_effect=run_side_effect),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             side_effect=lambda o, r, n, **_kw: [1] if n == 2 else [],
         ),
         patch(
-            "baton_harness.chain.daemon._fetch_full_milestone_members",
+            "codereeve.chain.daemon._fetch_full_milestone_members",
             return_value=full_membership,
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -1171,12 +1169,12 @@ def test_milestone_membership_uses_full_set_not_just_agent_ready() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         patch(
-            "baton_harness.vendor.symphony.orchestrator.Orchestrator._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
         ),
     ):
@@ -1265,21 +1263,21 @@ def test_milestone_dispatch_order_a_before_b_when_both_ready() -> None:
     with (
         patch.object(daemon_mod, "_run", side_effect=run_side_effect),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             side_effect=lambda o, r, n, **_kw: [1] if n == 2 else [],
         ),
         patch(
-            "baton_harness.chain.daemon._fetch_full_milestone_members",
+            "codereeve.chain.daemon._fetch_full_milestone_members",
             return_value=full_membership,
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -1288,12 +1286,12 @@ def test_milestone_dispatch_order_a_before_b_when_both_ready() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         patch(
-            "baton_harness.vendor.symphony.orchestrator.Orchestrator._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
         ),
     ):
@@ -1361,21 +1359,21 @@ def test_waiting_for_greenlight_exits_work_unit_without_escalating() -> None:
     with (
         patch.object(daemon_mod, "_run", side_effect=run_side_effect),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             side_effect=lambda o, r, n, **_kw: [1] if n == 2 else [],
         ),
         patch(
-            "baton_harness.chain.daemon._fetch_full_milestone_members",
+            "codereeve.chain.daemon._fetch_full_milestone_members",
             return_value=full_membership,
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -1384,10 +1382,10 @@ def test_waiting_for_greenlight_exits_work_unit_without_escalating() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", side_effect=fake_escalate),
+        patch("codereeve.chain.daemon.alert", side_effect=fake_escalate),
     ):
         # Must NOT raise; daemon stays alive.
         asyncio.run(
@@ -1452,15 +1450,15 @@ def test_merge_issue_branch_raises_parks_issue_and_daemon_survives() -> None:
 
     with (
         patch.object(daemon_mod, "_run", side_effect=recording_run),
-        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -1469,10 +1467,10 @@ def test_merge_issue_branch_raises_parks_issue_and_daemon_survives() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             side_effect=RuntimeError("transient git failure"),
         ),
-        patch("baton_harness.chain.daemon.alert", side_effect=fake_escalate),
+        patch("codereeve.chain.daemon.alert", side_effect=fake_escalate),
         _patch_run_worker("pr_created"),
     ):
         # Must NOT raise — daemon survives the merge failure.
@@ -1533,10 +1531,10 @@ def test_work_unit_exception_daemon_survives_and_proceeds() -> None:
 
     with (
         patch.object(daemon_mod, "_run", side_effect=run_side_effect),
-        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         patch(
-            "baton_harness.chain.daemon._run_work_unit",
+            "codereeve.chain.daemon._run_work_unit",
             side_effect=exploding_run_work_unit,
         ),
     ):
@@ -1594,15 +1592,15 @@ def test_bh_feature_branch_exported_before_run_worker() -> None:
                 feature_branch_exists=False,
             ),
         ),
-        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -1611,12 +1609,12 @@ def test_bh_feature_branch_exported_before_run_worker() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         patch(
-            "baton_harness.vendor.symphony.orchestrator.Orchestrator._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
         ),
     ):
@@ -1712,19 +1710,19 @@ def test_bh_feature_branch_exported_for_milestone_work_unit() -> None:
 
     with (
         patch.object(daemon_mod, "_run", side_effect=run_side_effect),
-        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("codereeve.chain.daemon.fetch_blocked_by", return_value=[]),
         patch(
-            "baton_harness.chain.daemon._fetch_full_milestone_members",
+            "codereeve.chain.daemon._fetch_full_milestone_members",
             return_value=full_membership,
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -1733,12 +1731,12 @@ def test_bh_feature_branch_exported_for_milestone_work_unit() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         patch(
-            "baton_harness.vendor.symphony.orchestrator.Orchestrator._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
         ),
     ):
@@ -1797,15 +1795,15 @@ def test_integration_pr_body_contains_closes_keyword_per_issue() -> None:
 
     with (
         patch.object(daemon_mod, "_run", side_effect=recording_run),
-        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -1814,10 +1812,10 @@ def test_integration_pr_body_contains_closes_keyword_per_issue() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         _patch_run_worker("pr_created"),
     ):
         asyncio.run(
@@ -1950,21 +1948,21 @@ def test_integration_pr_body_contains_closes_keyword_per_issue_multi() -> None:
     with (
         patch.object(daemon_mod, "_run", side_effect=recording_run),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             side_effect=lambda o, r, n, **_kw: [],
         ),
         patch(
-            "baton_harness.chain.daemon._fetch_full_milestone_members",
+            "codereeve.chain.daemon._fetch_full_milestone_members",
             return_value=full_membership,
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -1973,10 +1971,10 @@ def test_integration_pr_body_contains_closes_keyword_per_issue_multi() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         _patch_run_worker("pr_created"),
     ):
         asyncio.run(
@@ -2094,15 +2092,15 @@ def test_feature_branch_pushed_to_origin_before_run_worker() -> None:
 
     with (
         patch.object(daemon_mod, "_run", side_effect=recording_run),
-        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -2111,12 +2109,12 @@ def test_feature_branch_pushed_to_origin_before_run_worker() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         patch(
-            "baton_harness.vendor.symphony.orchestrator.Orchestrator._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
         ),
     ):
@@ -2209,15 +2207,15 @@ def test_zero_commit_branch_skips_pr_and_logs_info(
 
     with (
         patch.object(daemon_mod, "_run", side_effect=recording_run),
-        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -2226,15 +2224,15 @@ def test_zero_commit_branch_skips_pr_and_logs_info(
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         _patch_run_worker("pr_created"),
     ):
         import logging
 
-        with caplog.at_level(logging.INFO, logger="baton_harness"):
+        with caplog.at_level(logging.INFO, logger="codereeve"):
             asyncio.run(
                 run_daemon(
                     _minimal_wf_config(),
@@ -2311,15 +2309,15 @@ def test_nonzero_commit_branch_proceeds_to_pr() -> None:
 
     with (
         patch.object(daemon_mod, "_run", side_effect=recording_run),
-        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -2328,10 +2326,10 @@ def test_nonzero_commit_branch_proceeds_to_pr() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         _patch_run_worker("pr_created"),
     ):
         asyncio.run(
@@ -2392,15 +2390,15 @@ def test_revlist_count_failure_falls_through_to_pr() -> None:
 
     with (
         patch.object(daemon_mod, "_run", side_effect=recording_run),
-        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -2409,10 +2407,10 @@ def test_revlist_count_failure_falls_through_to_pr() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         _patch_run_worker("pr_created"),
     ):
         asyncio.run(
@@ -2480,17 +2478,17 @@ class TestRunlogObservabilityWiring:
                 ),
             ),
             patch(
-                "baton_harness.chain.daemon.fetch_blocked_by",
+                "codereeve.chain.daemon.fetch_blocked_by",
                 return_value=[],
             ),
-            patch("baton_harness.chain.branches.create_feature_branch"),
-            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch("codereeve.chain.branches.create_feature_branch"),
+            patch("codereeve.chain.branches.checkout_feature_branch"),
             patch(
-                "baton_harness.chain.branches.record_cut_point",
+                "codereeve.chain.branches.record_cut_point",
                 return_value="deadbeef" * 5,
             ),
             patch(
-                "baton_harness.chain.recovery.reconstruct",
+                "codereeve.chain.recovery.reconstruct",
                 return_value=RecoveryResult(
                     done=set(),
                     parked_seed=set(),
@@ -2499,10 +2497,10 @@ class TestRunlogObservabilityWiring:
                 ),
             ),
             patch(
-                "baton_harness.chain.daemon.merge_issue_branch",
+                "codereeve.chain.daemon.merge_issue_branch",
                 return_value=MergeOutcome.MERGED,
             ),
-            patch("baton_harness.chain.daemon.alert", return_value=True),
+            patch("codereeve.chain.daemon.alert", return_value=True),
             _patch_run_worker("pr_created"),
         ):
             asyncio.run(
@@ -2525,7 +2523,7 @@ class TestRunlogObservabilityWiring:
         under tmp_path, then patches the _write_line seam to capture
         what is written without touching the real filesystem.
         """
-        import baton_harness.chain.runlog as runlog_mod
+        import codereeve.chain.runlog as runlog_mod
 
         monkeypatch.setenv("BH_PROJECT_ROOT", str(tmp_path))
         for var in (
@@ -2556,17 +2554,17 @@ class TestRunlogObservabilityWiring:
                 ),
             ),
             patch(
-                "baton_harness.chain.daemon.fetch_blocked_by",
+                "codereeve.chain.daemon.fetch_blocked_by",
                 return_value=[],
             ),
-            patch("baton_harness.chain.branches.create_feature_branch"),
-            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch("codereeve.chain.branches.create_feature_branch"),
+            patch("codereeve.chain.branches.checkout_feature_branch"),
             patch(
-                "baton_harness.chain.branches.record_cut_point",
+                "codereeve.chain.branches.record_cut_point",
                 return_value="deadbeef" * 5,
             ),
             patch(
-                "baton_harness.chain.recovery.reconstruct",
+                "codereeve.chain.recovery.reconstruct",
                 return_value=RecoveryResult(
                     done=set(),
                     parked_seed=set(),
@@ -2575,10 +2573,10 @@ class TestRunlogObservabilityWiring:
                 ),
             ),
             patch(
-                "baton_harness.chain.daemon.merge_issue_branch",
+                "codereeve.chain.daemon.merge_issue_branch",
                 return_value=MergeOutcome.MERGED,
             ),
-            patch("baton_harness.chain.daemon.alert", return_value=True),
+            patch("codereeve.chain.daemon.alert", return_value=True),
             _patch_run_worker("pr_created"),
         ):
             asyncio.run(
@@ -2618,11 +2616,11 @@ class TestRunlogObservabilityWiring:
         (the RunLog handle inside run_daemon could have been a local
         variable inaccessible to patching).  The implementation exposes
         the ``_write_line`` module-level seam in
-        ``baton_harness.chain.runlog``, which allows direct patching
+        ``codereeve.chain.runlog``, which allows direct patching
         without touching the RunLog instance itself — so the xfail marker
         was never needed and this test runs strict.
         """
-        import baton_harness.chain.runlog as runlog_mod
+        import codereeve.chain.runlog as runlog_mod
 
         monkeypatch.setenv("BH_PROJECT_ROOT", str(tmp_path))
         for var in (
@@ -2666,17 +2664,17 @@ class TestRunlogObservabilityWiring:
                 ),
             ),
             patch(
-                "baton_harness.chain.daemon.fetch_blocked_by",
+                "codereeve.chain.daemon.fetch_blocked_by",
                 return_value=[],
             ),
-            patch("baton_harness.chain.branches.create_feature_branch"),
-            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch("codereeve.chain.branches.create_feature_branch"),
+            patch("codereeve.chain.branches.checkout_feature_branch"),
             patch(
-                "baton_harness.chain.branches.record_cut_point",
+                "codereeve.chain.branches.record_cut_point",
                 return_value="deadbeef" * 5,
             ),
             patch(
-                "baton_harness.chain.recovery.reconstruct",
+                "codereeve.chain.recovery.reconstruct",
                 return_value=RecoveryResult(
                     done=set(),
                     parked_seed=set(),
@@ -2685,10 +2683,10 @@ class TestRunlogObservabilityWiring:
                 ),
             ),
             patch(
-                "baton_harness.chain.daemon.merge_issue_branch",
+                "codereeve.chain.daemon.merge_issue_branch",
                 return_value=MergeOutcome.MERGED,
             ),
-            patch("baton_harness.chain.daemon.alert", return_value=True),
+            patch("codereeve.chain.daemon.alert", return_value=True),
             _patch_run_worker("pr_created"),
         ):
             asyncio.run(
@@ -2756,17 +2754,17 @@ def test_ci_gate_failed_park_routes_through_alert_severity_critical() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             return_value=[],
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -2776,11 +2774,11 @@ def test_ci_gate_failed_park_routes_through_alert_severity_critical() -> None:
         ),
         # Simulate a CI_FAILED outcome from the merge gate.
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.CI_FAILED,
         ),
         # Patch alert (not escalate) — impl agent will add this name.
-        patch("baton_harness.chain.daemon.alert", mock_alert),
+        patch("codereeve.chain.daemon.alert", mock_alert),
         _patch_run_worker("pr_created"),
     ):
         asyncio.run(
@@ -2840,17 +2838,17 @@ def test_worker_exception_routes_through_alert_severity_warn() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             return_value=[],
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -2859,13 +2857,12 @@ def test_worker_exception_routes_through_alert_severity_warn() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", mock_alert),
+        patch("codereeve.chain.daemon.alert", mock_alert),
         patch(
-            "baton_harness.vendor.symphony.orchestrator.Orchestrator"
-            "._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=exploding_worker,
         ),
     ):
@@ -2926,17 +2923,17 @@ def test_ci_gate_reentry_no_open_pr_alert_is_critical() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             return_value=[],
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.daemon.reconstruct",
+            "codereeve.chain.daemon.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -2946,10 +2943,10 @@ def test_ci_gate_reentry_no_open_pr_alert_is_critical() -> None:
         ),
         # No open PR found for the ci_gate_reentry issue.
         patch(
-            "baton_harness.chain.daemon._find_issue_pr",
+            "codereeve.chain.daemon._find_issue_pr",
             return_value=(None, None),
         ),
-        patch("baton_harness.chain.daemon.alert", mock_alert),
+        patch("codereeve.chain.daemon.alert", mock_alert),
         _patch_run_worker("pr_created"),
     ):
         asyncio.run(
@@ -3008,17 +3005,17 @@ def test_ci_gate_reentry_failed_outcome_alert_is_critical() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             return_value=[],
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.daemon.reconstruct",
+            "codereeve.chain.daemon.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -3028,15 +3025,15 @@ def test_ci_gate_reentry_failed_outcome_alert_is_critical() -> None:
         ),
         # Open PR found — reentry proceeds to merge_issue_branch.
         patch(
-            "baton_harness.chain.daemon._find_issue_pr",
+            "codereeve.chain.daemon._find_issue_pr",
             return_value=("baton/issue-10-10", "abc123"),
         ),
         # Simulate CI_FAILED from the re-entry merge gate.
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.CI_FAILED,
         ),
-        patch("baton_harness.chain.daemon.alert", mock_alert),
+        patch("codereeve.chain.daemon.alert", mock_alert),
         _patch_run_worker("pr_created"),
     ):
         asyncio.run(
@@ -3072,13 +3069,13 @@ def test_repo_level_tick_failure_alert_is_critical() -> None:
 
     with (
         patch(
-            "baton_harness.chain.daemon._poll_and_run",
+            "codereeve.chain.daemon._poll_and_run",
             side_effect=RuntimeError("poll explodes"),
         ),
-        patch("baton_harness.chain.daemon.alert", mock_alert),
+        patch("codereeve.chain.daemon.alert", mock_alert),
         # Suppress observability startup so runlog is None; simpler env.
         patch(
-            "baton_harness.chain.daemon.load_obs_config",
+            "codereeve.chain.daemon.load_obs_config",
             side_effect=RuntimeError("no obs"),
         ),
     ):
@@ -3113,8 +3110,8 @@ def test_repo_level_tick_failure_alert_is_critical() -> None:
 # labels and fire alert(severity='critical') + park when a torn state is found.
 #
 # Mocking style mirrors the existing #75 tests above: patch
-# ``baton_harness.chain.daemon.alert`` (where daemon imports it) and
-# ``baton_harness.chain.daemon._fetch_issue_labels`` (module-level helper).
+# ``codereeve.chain.daemon.alert`` (where daemon imports it) and
+# ``codereeve.chain.daemon._fetch_issue_labels`` (module-level helper).
 # ---------------------------------------------------------------------------
 
 
@@ -3225,21 +3222,21 @@ def test_torn_labels_post_worker_fires_critical_alert_and_parks() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon._fetch_issue_labels",
+            "codereeve.chain.daemon._fetch_issue_labels",
             return_value={"agent-done", "blocked"},
         ),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             return_value=[],
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -3248,10 +3245,10 @@ def test_torn_labels_post_worker_fires_critical_alert_and_parks() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", mock_alert),
+        patch("codereeve.chain.daemon.alert", mock_alert),
         _patch_run_worker("pr_created"),
     ):
         # Must not raise — daemon survives and exits normally with once=True.
@@ -3307,26 +3304,26 @@ def test_no_state_label_no_pr_post_worker_fires_critical_alert_and_parks() -> (
             ),
         ),
         patch(
-            "baton_harness.chain.daemon._fetch_issue_labels",
+            "codereeve.chain.daemon._fetch_issue_labels",
             return_value={"agent-in-progress"},
         ),
         # No open PR → backstop cannot converge; must park + alert.
         patch(
-            "baton_harness.chain.daemon._find_issue_pr",
+            "codereeve.chain.daemon._find_issue_pr",
             return_value=(None, None),
         ),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             return_value=[],
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -3335,10 +3332,10 @@ def test_no_state_label_no_pr_post_worker_fires_critical_alert_and_parks() -> (
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", mock_alert),
+        patch("codereeve.chain.daemon.alert", mock_alert),
         _patch_run_worker("pr_created"),
     ):
         asyncio.run(
@@ -3389,21 +3386,21 @@ def test_torn_labels_post_worker_parks_the_issue() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon._fetch_issue_labels",
+            "codereeve.chain.daemon._fetch_issue_labels",
             return_value={"agent-done", "blocked"},
         ),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             return_value=[],
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -3412,10 +3409,10 @@ def test_torn_labels_post_worker_parks_the_issue() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", mock_alert),
+        patch("codereeve.chain.daemon.alert", mock_alert),
         _patch_run_worker("pr_created"),
     ):
         asyncio.run(
@@ -3463,21 +3460,21 @@ def test_single_blocked_post_worker_does_not_fire_invariant_critical() -> None:
         ),
         # Post-worker: exactly one state label (blocked) — valid.
         patch(
-            "baton_harness.chain.daemon._fetch_issue_labels",
+            "codereeve.chain.daemon._fetch_issue_labels",
             return_value={"blocked"},
         ),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             return_value=[],
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -3486,10 +3483,10 @@ def test_single_blocked_post_worker_does_not_fire_invariant_critical() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", mock_alert),
+        patch("codereeve.chain.daemon.alert", mock_alert),
         _patch_run_worker("pr_created"),
     ):
         asyncio.run(
@@ -3550,21 +3547,21 @@ def test_single_agent_done_pr_created_does_not_fire_invariant_critical() -> (
         ),
         # Post-worker: exactly one state label (agent-done) — valid.
         patch(
-            "baton_harness.chain.daemon._fetch_issue_labels",
+            "codereeve.chain.daemon._fetch_issue_labels",
             return_value={"agent-done"},
         ),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             return_value=[],
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -3573,10 +3570,10 @@ def test_single_agent_done_pr_created_does_not_fire_invariant_critical() -> (
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", mock_alert),
+        patch("codereeve.chain.daemon.alert", mock_alert),
         _patch_run_worker("pr_created"),
     ):
         asyncio.run(
@@ -3624,21 +3621,21 @@ def test_torn_labels_post_worker_removes_agent_in_progress() -> None:
     with (
         patch.object(daemon_mod, "_run", side_effect=recording_run),
         patch(
-            "baton_harness.chain.daemon._fetch_issue_labels",
+            "codereeve.chain.daemon._fetch_issue_labels",
             return_value={"agent-done", "blocked"},
         ),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             return_value=[],
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -3647,10 +3644,10 @@ def test_torn_labels_post_worker_removes_agent_in_progress() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         _patch_run_worker("pr_created"),
     ):
         asyncio.run(
@@ -3681,7 +3678,7 @@ def test_torn_labels_post_worker_mark_parked_is_called() -> None:
     from the critical alert.  The method must be called with the torn issue
     number (10) as the argument.
     """
-    from baton_harness.chain.scheduler import IssueScheduler
+    from codereeve.chain.scheduler import IssueScheduler
 
     ready_issues = _make_ready_issue_10()
     mark_parked_calls: list[int] = []
@@ -3705,21 +3702,21 @@ def test_torn_labels_post_worker_mark_parked_is_called() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon._fetch_issue_labels",
+            "codereeve.chain.daemon._fetch_issue_labels",
             return_value={"agent-done", "blocked"},
         ),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             return_value=[],
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -3728,10 +3725,10 @@ def test_torn_labels_post_worker_mark_parked_is_called() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         patch.object(
             IssueScheduler,
             "mark_parked",
@@ -3767,7 +3764,7 @@ def test_runlog_emit_raises_daemon_still_alerts_parks_and_continues() -> None:
     - calls sched.mark_parked(10)
     - returns normally (once=True)
     """
-    from baton_harness.chain.scheduler import IssueScheduler
+    from codereeve.chain.scheduler import IssueScheduler
 
     ready_issues = _make_ready_issue_10()
     mock_alert = MagicMock(return_value=True)
@@ -3804,21 +3801,21 @@ def test_runlog_emit_raises_daemon_still_alerts_parks_and_continues() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon._fetch_issue_labels",
+            "codereeve.chain.daemon._fetch_issue_labels",
             return_value={"agent-done", "blocked"},
         ),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             return_value=[],
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -3827,10 +3824,10 @@ def test_runlog_emit_raises_daemon_still_alerts_parks_and_continues() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", mock_alert),
+        patch("codereeve.chain.daemon.alert", mock_alert),
         patch.object(
             IssueScheduler,
             "mark_parked",
@@ -3949,7 +3946,7 @@ def test_redispatch_loop_breach_skips_worker_and_parks(
         tmp_path: pytest fixture providing a temporary directory.
         monkeypatch: pytest fixture for hermetic env-var injection.
     """
-    import baton_harness.chain.runlog as runlog_mod
+    import codereeve.chain.runlog as runlog_mod
 
     # Point obs config at tmp_path so redispatch_counts_path resolves there.
     monkeypatch.setenv("BH_PROJECT_ROOT", str(tmp_path))
@@ -3995,17 +3992,17 @@ def test_redispatch_loop_breach_skips_worker_and_parks(
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             return_value=[],
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -4014,13 +4011,12 @@ def test_redispatch_loop_breach_skips_worker_and_parks(
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", mock_alert),
+        patch("codereeve.chain.daemon.alert", mock_alert),
         patch(
-            "baton_harness.vendor.symphony.orchestrator."
-            "Orchestrator._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=tracking_worker,
         ),
     ):
@@ -4064,7 +4060,7 @@ def test_redispatch_loop_breach_emits_redispatch_loop_event(
         tmp_path: pytest fixture providing a temporary directory.
         monkeypatch: pytest fixture for hermetic env-var injection.
     """
-    import baton_harness.chain.runlog as runlog_mod
+    import codereeve.chain.runlog as runlog_mod
 
     monkeypatch.setenv("BH_PROJECT_ROOT", str(tmp_path))
     for var in (
@@ -4100,17 +4096,17 @@ def test_redispatch_loop_breach_emits_redispatch_loop_event(
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             return_value=[],
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -4119,10 +4115,10 @@ def test_redispatch_loop_breach_emits_redispatch_loop_event(
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         _patch_run_worker("pr_created"),
     ):
         asyncio.run(
@@ -4203,17 +4199,17 @@ def test_redispatch_below_threshold_dispatches_worker(
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             return_value=[],
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -4222,13 +4218,12 @@ def test_redispatch_below_threshold_dispatches_worker(
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", mock_alert),
+        patch("codereeve.chain.daemon.alert", mock_alert),
         patch(
-            "baton_harness.vendor.symphony.orchestrator."
-            "Orchestrator._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=tracking_worker,
         ),
     ):
@@ -4282,11 +4277,11 @@ def test_redispatch_below_threshold_dispatches_worker(
 # (zero state labels, no PR, not blocked — no completion evidence).
 #
 # Seams used (match existing #76 tests above):
-#   patch("baton_harness.chain.daemon._fetch_issue_labels", ...)
-#   patch("baton_harness.chain.daemon._find_issue_pr", ...)
-#   patch("baton_harness.chain.daemon.alert", mock_alert)
+#   patch("codereeve.chain.daemon._fetch_issue_labels", ...)
+#   patch("codereeve.chain.daemon._find_issue_pr", ...)
+#   patch("codereeve.chain.daemon.alert", mock_alert)
 #   patch.object(daemon_mod, "_run", side_effect=recording_run)
-#   patch("baton_harness.chain.scheduler.IssueScheduler.mark_parked", ...)
+#   patch("codereeve.chain.scheduler.IssueScheduler.mark_parked", ...)
 # ---------------------------------------------------------------------------
 
 
@@ -4408,33 +4403,33 @@ class TestBackstopConvergence:
             ),
             # Post-worker: only agent-in-progress — zero STATE labels.
             patch(
-                "baton_harness.chain.daemon._fetch_issue_labels",
+                "codereeve.chain.daemon._fetch_issue_labels",
                 return_value={"agent-in-progress"},
             ),
             # PR exists for issue #10 — covers both the backstop
             # convergence call and the CI-gate call (daemon.py:1031).
             patch(
-                "baton_harness.chain.daemon._find_issue_pr",
+                "codereeve.chain.daemon._find_issue_pr",
                 return_value=("baton/issue-10-10", "abc123"),
             ),
-            patch("baton_harness.chain.daemon.alert", mock_alert),
+            patch("codereeve.chain.daemon.alert", mock_alert),
             patch(
-                "baton_harness.chain.scheduler.IssueScheduler.mark_parked",
+                "codereeve.chain.scheduler.IssueScheduler.mark_parked",
                 autospec=True,
                 side_effect=recording_mark_parked,
             ),
             patch(
-                "baton_harness.chain.daemon.fetch_blocked_by",
+                "codereeve.chain.daemon.fetch_blocked_by",
                 return_value=[],
             ),
-            patch("baton_harness.chain.branches.create_feature_branch"),
-            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch("codereeve.chain.branches.create_feature_branch"),
+            patch("codereeve.chain.branches.checkout_feature_branch"),
             patch(
-                "baton_harness.chain.branches.record_cut_point",
+                "codereeve.chain.branches.record_cut_point",
                 return_value="deadbeef" * 5,
             ),
             patch(
-                "baton_harness.chain.recovery.reconstruct",
+                "codereeve.chain.recovery.reconstruct",
                 return_value=RecoveryResult(
                     done=set(),
                     parked_seed=set(),
@@ -4443,7 +4438,7 @@ class TestBackstopConvergence:
                 ),
             ),
             patch(
-                "baton_harness.chain.daemon.merge_issue_branch",
+                "codereeve.chain.daemon.merge_issue_branch",
                 mock_merge_fn,
             ),
             # Spy on LivenessState.clear so we can assert call_count.
@@ -4636,32 +4631,32 @@ class TestBackstopConvergence:
             ),
             # Post-worker: only agent-in-progress — zero STATE labels.
             patch(
-                "baton_harness.chain.daemon._fetch_issue_labels",
+                "codereeve.chain.daemon._fetch_issue_labels",
                 return_value={"agent-in-progress"},
             ),
             # No PR exists.
             patch(
-                "baton_harness.chain.daemon._find_issue_pr",
+                "codereeve.chain.daemon._find_issue_pr",
                 return_value=(None, None),
             ),
-            patch("baton_harness.chain.daemon.alert", mock_alert),
+            patch("codereeve.chain.daemon.alert", mock_alert),
             patch(
-                "baton_harness.chain.scheduler.IssueScheduler.mark_parked",
+                "codereeve.chain.scheduler.IssueScheduler.mark_parked",
                 autospec=True,
                 side_effect=recording_mark_parked,
             ),
             patch(
-                "baton_harness.chain.daemon.fetch_blocked_by",
+                "codereeve.chain.daemon.fetch_blocked_by",
                 return_value=[],
             ),
-            patch("baton_harness.chain.branches.create_feature_branch"),
-            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch("codereeve.chain.branches.create_feature_branch"),
+            patch("codereeve.chain.branches.checkout_feature_branch"),
             patch(
-                "baton_harness.chain.branches.record_cut_point",
+                "codereeve.chain.branches.record_cut_point",
                 return_value="deadbeef" * 5,
             ),
             patch(
-                "baton_harness.chain.recovery.reconstruct",
+                "codereeve.chain.recovery.reconstruct",
                 return_value=RecoveryResult(
                     done=set(),
                     parked_seed=set(),
@@ -4670,7 +4665,7 @@ class TestBackstopConvergence:
                 ),
             ),
             patch(
-                "baton_harness.chain.daemon.merge_issue_branch",
+                "codereeve.chain.daemon.merge_issue_branch",
                 return_value=MergeOutcome.MERGED,
             ),
             _patch_run_worker("pr_created"),
@@ -4747,7 +4742,7 @@ class TestBackstopConvergence:
         FALSE → falls to the ``else`` park path → issue parked, PR never
         merged.  This test is RED on the current code for that reason.
         """
-        from baton_harness.chain.scheduler import IssueScheduler
+        from codereeve.chain.scheduler import IssueScheduler
 
         label_edits: list[list[str]] = []
         mock_alert = MagicMock(return_value=True)
@@ -4782,37 +4777,37 @@ class TestBackstopConvergence:
             ),
             # Post-worker: only agent-in-progress — zero STATE labels.
             patch(
-                "baton_harness.chain.daemon._fetch_issue_labels",
+                "codereeve.chain.daemon._fetch_issue_labels",
                 return_value={"agent-in-progress"},
             ),
             # PR exists — convergence fires with this observation.
             patch(
-                "baton_harness.chain.daemon._find_issue_pr",
+                "codereeve.chain.daemon._find_issue_pr",
                 return_value=("baton/issue-10-10", "abc123"),
             ),
-            patch("baton_harness.chain.daemon.alert", mock_alert),
+            patch("codereeve.chain.daemon.alert", mock_alert),
             patch(
-                "baton_harness.chain.scheduler.IssueScheduler.mark_parked",
+                "codereeve.chain.scheduler.IssueScheduler.mark_parked",
                 autospec=True,
                 side_effect=recording_mark_parked,
             ),
             patch(
-                "baton_harness.chain.scheduler.IssueScheduler.mark_done",
+                "codereeve.chain.scheduler.IssueScheduler.mark_done",
                 autospec=True,
                 side_effect=spy_mark_done,
             ),
             patch(
-                "baton_harness.chain.daemon.fetch_blocked_by",
+                "codereeve.chain.daemon.fetch_blocked_by",
                 return_value=[],
             ),
-            patch("baton_harness.chain.branches.create_feature_branch"),
-            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch("codereeve.chain.branches.create_feature_branch"),
+            patch("codereeve.chain.branches.checkout_feature_branch"),
             patch(
-                "baton_harness.chain.branches.record_cut_point",
+                "codereeve.chain.branches.record_cut_point",
                 return_value="deadbeef" * 5,
             ),
             patch(
-                "baton_harness.chain.recovery.reconstruct",
+                "codereeve.chain.recovery.reconstruct",
                 return_value=RecoveryResult(
                     done=set(),
                     parked_seed=set(),
@@ -4821,7 +4816,7 @@ class TestBackstopConvergence:
                 ),
             ),
             patch(
-                "baton_harness.chain.daemon.merge_issue_branch",
+                "codereeve.chain.daemon.merge_issue_branch",
                 mock_merge_fn,
             ),
             # KEY: worker returns "no_pr" — the bug trigger.
@@ -4943,31 +4938,31 @@ class TestBackstopConvergence:
                 side_effect=self._make_recording_run(label_edits),
             ),
             patch(
-                "baton_harness.chain.daemon._fetch_issue_labels",
+                "codereeve.chain.daemon._fetch_issue_labels",
                 return_value={"agent-in-progress"},
             ),
             patch(
-                "baton_harness.chain.daemon._find_issue_pr",
+                "codereeve.chain.daemon._find_issue_pr",
                 mock_find_pr,
             ),
-            patch("baton_harness.chain.daemon.alert", mock_alert),
+            patch("codereeve.chain.daemon.alert", mock_alert),
             patch(
-                "baton_harness.chain.scheduler.IssueScheduler.mark_parked",
+                "codereeve.chain.scheduler.IssueScheduler.mark_parked",
                 autospec=True,
                 side_effect=recording_mark_parked,
             ),
             patch(
-                "baton_harness.chain.daemon.fetch_blocked_by",
+                "codereeve.chain.daemon.fetch_blocked_by",
                 return_value=[],
             ),
-            patch("baton_harness.chain.branches.create_feature_branch"),
-            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch("codereeve.chain.branches.create_feature_branch"),
+            patch("codereeve.chain.branches.checkout_feature_branch"),
             patch(
-                "baton_harness.chain.branches.record_cut_point",
+                "codereeve.chain.branches.record_cut_point",
                 return_value="deadbeef" * 5,
             ),
             patch(
-                "baton_harness.chain.recovery.reconstruct",
+                "codereeve.chain.recovery.reconstruct",
                 return_value=RecoveryResult(
                     done=set(),
                     parked_seed=set(),
@@ -4976,7 +4971,7 @@ class TestBackstopConvergence:
                 ),
             ),
             patch(
-                "baton_harness.chain.daemon.merge_issue_branch",
+                "codereeve.chain.daemon.merge_issue_branch",
                 mock_merge_fn,
             ),
             _patch_run_worker("no_pr"),
@@ -5037,7 +5032,7 @@ class TestBackstopConvergence:
         Expected: ``merge_issue_branch`` called; on ``MERGED``,
         ``mark_done`` called; issue NOT parked.
         """
-        from baton_harness.chain.scheduler import IssueScheduler
+        from codereeve.chain.scheduler import IssueScheduler
 
         label_edits: list[list[str]] = []
         mock_alert = MagicMock(return_value=True)
@@ -5072,36 +5067,36 @@ class TestBackstopConvergence:
             ),
             # Single-state: agent-done present → no invariant violation.
             patch(
-                "baton_harness.chain.daemon._fetch_issue_labels",
+                "codereeve.chain.daemon._fetch_issue_labels",
                 return_value={"agent-done"},
             ),
             patch(
-                "baton_harness.chain.daemon._find_issue_pr",
+                "codereeve.chain.daemon._find_issue_pr",
                 return_value=("baton/issue-10-10", "abc123"),
             ),
-            patch("baton_harness.chain.daemon.alert", mock_alert),
+            patch("codereeve.chain.daemon.alert", mock_alert),
             patch(
-                "baton_harness.chain.scheduler.IssueScheduler.mark_parked",
+                "codereeve.chain.scheduler.IssueScheduler.mark_parked",
                 autospec=True,
                 side_effect=recording_mark_parked,
             ),
             patch(
-                "baton_harness.chain.scheduler.IssueScheduler.mark_done",
+                "codereeve.chain.scheduler.IssueScheduler.mark_done",
                 autospec=True,
                 side_effect=spy_mark_done,
             ),
             patch(
-                "baton_harness.chain.daemon.fetch_blocked_by",
+                "codereeve.chain.daemon.fetch_blocked_by",
                 return_value=[],
             ),
-            patch("baton_harness.chain.branches.create_feature_branch"),
-            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch("codereeve.chain.branches.create_feature_branch"),
+            patch("codereeve.chain.branches.checkout_feature_branch"),
             patch(
-                "baton_harness.chain.branches.record_cut_point",
+                "codereeve.chain.branches.record_cut_point",
                 return_value="deadbeef" * 5,
             ),
             patch(
-                "baton_harness.chain.recovery.reconstruct",
+                "codereeve.chain.recovery.reconstruct",
                 return_value=RecoveryResult(
                     done=set(),
                     parked_seed=set(),
@@ -5110,7 +5105,7 @@ class TestBackstopConvergence:
                 ),
             ),
             patch(
-                "baton_harness.chain.daemon.merge_issue_branch",
+                "codereeve.chain.daemon.merge_issue_branch",
                 mock_merge_fn,
             ),
             _patch_run_worker("pr_created"),
@@ -5188,7 +5183,7 @@ class TestBackstopConvergence:
             mark_parked_calls.append(issue)
             self_sched.parked.add(issue)
 
-        from baton_harness.chain.scheduler import IssueScheduler
+        from codereeve.chain.scheduler import IssueScheduler
 
         real_mark_done = IssueScheduler.mark_done
 
@@ -5210,36 +5205,36 @@ class TestBackstopConvergence:
                 side_effect=self._make_recording_run(label_edits),
             ),
             patch(
-                "baton_harness.chain.daemon._fetch_issue_labels",
+                "codereeve.chain.daemon._fetch_issue_labels",
                 return_value={"agent-in-progress"},
             ),
             patch(
-                "baton_harness.chain.daemon._find_issue_pr",
+                "codereeve.chain.daemon._find_issue_pr",
                 return_value=("baton/issue-10-10", "abc123"),
             ),
-            patch("baton_harness.chain.daemon.alert", mock_alert),
+            patch("codereeve.chain.daemon.alert", mock_alert),
             patch(
-                "baton_harness.chain.scheduler.IssueScheduler.mark_parked",
+                "codereeve.chain.scheduler.IssueScheduler.mark_parked",
                 autospec=True,
                 side_effect=recording_mark_parked,
             ),
             patch(
-                "baton_harness.chain.scheduler.IssueScheduler.mark_done",
+                "codereeve.chain.scheduler.IssueScheduler.mark_done",
                 autospec=True,
                 side_effect=spy_mark_done,
             ),
             patch(
-                "baton_harness.chain.daemon.fetch_blocked_by",
+                "codereeve.chain.daemon.fetch_blocked_by",
                 return_value=[],
             ),
-            patch("baton_harness.chain.branches.create_feature_branch"),
-            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch("codereeve.chain.branches.create_feature_branch"),
+            patch("codereeve.chain.branches.checkout_feature_branch"),
             patch(
-                "baton_harness.chain.branches.record_cut_point",
+                "codereeve.chain.branches.record_cut_point",
                 return_value="deadbeef" * 5,
             ),
             patch(
-                "baton_harness.chain.recovery.reconstruct",
+                "codereeve.chain.recovery.reconstruct",
                 return_value=RecoveryResult(
                     done=set(),
                     parked_seed=set(),
@@ -5248,7 +5243,7 @@ class TestBackstopConvergence:
                 ),
             ),
             patch(
-                "baton_harness.chain.daemon.merge_issue_branch",
+                "codereeve.chain.daemon.merge_issue_branch",
                 mock_merge_fn,
             ),
             patch.object(
@@ -5366,36 +5361,36 @@ class TestBackstopConvergence:
                 side_effect=self._make_recording_run(label_edits),
             ),
             patch(
-                "baton_harness.chain.daemon._fetch_issue_labels",
+                "codereeve.chain.daemon._fetch_issue_labels",
                 return_value={"agent-in-progress"},
             ),
             patch(
-                "baton_harness.chain.daemon._find_issue_pr",
+                "codereeve.chain.daemon._find_issue_pr",
                 return_value=("baton/issue-10-10", "abc123"),
             ),
             # Inject a violation string that contains '%' — the bug trigger.
             patch(
-                "baton_harness.chain.daemon.assert_single_state",
+                "codereeve.chain.daemon.assert_single_state",
                 return_value="zero state (100% certain)",
             ),
-            patch("baton_harness.chain.daemon.alert", mock_alert),
+            patch("codereeve.chain.daemon.alert", mock_alert),
             patch(
-                "baton_harness.chain.scheduler.IssueScheduler.mark_parked",
+                "codereeve.chain.scheduler.IssueScheduler.mark_parked",
                 autospec=True,
                 side_effect=recording_mark_parked,
             ),
             patch(
-                "baton_harness.chain.daemon.fetch_blocked_by",
+                "codereeve.chain.daemon.fetch_blocked_by",
                 return_value=[],
             ),
-            patch("baton_harness.chain.branches.create_feature_branch"),
-            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch("codereeve.chain.branches.create_feature_branch"),
+            patch("codereeve.chain.branches.checkout_feature_branch"),
             patch(
-                "baton_harness.chain.branches.record_cut_point",
+                "codereeve.chain.branches.record_cut_point",
                 return_value="deadbeef" * 5,
             ),
             patch(
-                "baton_harness.chain.recovery.reconstruct",
+                "codereeve.chain.recovery.reconstruct",
                 return_value=RecoveryResult(
                     done=set(),
                     parked_seed=set(),
@@ -5404,7 +5399,7 @@ class TestBackstopConvergence:
                 ),
             ),
             patch(
-                "baton_harness.chain.daemon.merge_issue_branch",
+                "codereeve.chain.daemon.merge_issue_branch",
                 return_value=MergeOutcome.MERGED,
             ),
             # Inject the mock RunLog class so both startup and convergence
@@ -5497,30 +5492,30 @@ class TestBackstopConvergence:
             # agent-failed is a STATE_LABELS member this is a single
             # valid state, not zero-state.
             patch(
-                "baton_harness.chain.daemon._fetch_issue_labels",
+                "codereeve.chain.daemon._fetch_issue_labels",
                 return_value={"agent-in-progress", "agent-failed"},
             ),
             patch(
-                "baton_harness.chain.daemon._find_issue_pr",
+                "codereeve.chain.daemon._find_issue_pr",
                 mock_find_issue_pr,
             ),
-            patch("baton_harness.chain.daemon.alert", return_value=True),
+            patch("codereeve.chain.daemon.alert", return_value=True),
             patch(
-                "baton_harness.chain.scheduler.IssueScheduler.mark_parked",
+                "codereeve.chain.scheduler.IssueScheduler.mark_parked",
                 autospec=True,
             ),
             patch(
-                "baton_harness.chain.daemon.fetch_blocked_by",
+                "codereeve.chain.daemon.fetch_blocked_by",
                 return_value=[],
             ),
-            patch("baton_harness.chain.branches.create_feature_branch"),
-            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch("codereeve.chain.branches.create_feature_branch"),
+            patch("codereeve.chain.branches.checkout_feature_branch"),
             patch(
-                "baton_harness.chain.branches.record_cut_point",
+                "codereeve.chain.branches.record_cut_point",
                 return_value="deadbeef" * 5,
             ),
             patch(
-                "baton_harness.chain.recovery.reconstruct",
+                "codereeve.chain.recovery.reconstruct",
                 return_value=RecoveryResult(
                     done=set(),
                     parked_seed=set(),
@@ -5529,7 +5524,7 @@ class TestBackstopConvergence:
                 ),
             ),
             patch(
-                "baton_harness.chain.daemon.merge_issue_branch",
+                "codereeve.chain.daemon.merge_issue_branch",
                 mock_merge_fn,
             ),
             # worker_result != "pr_created" so the unrelated outcome-
@@ -5586,7 +5581,7 @@ class TestBackstopConvergence:
 #   converge — it must conservatively park+alert ("labels unreadable /
 #   unknown state"), since the single-state invariant cannot be verified.
 #
-# Seam: patch("baton_harness.chain.daemon._fetch_issue_labels", ...) is the
+# Seam: patch("codereeve.chain.daemon._fetch_issue_labels", ...) is the
 # same approach used by the #76/#31 tests above.  Unit test drives
 # daemon._fetch_issue_labels directly via patch.object(daemon_mod, "_run").
 # ---------------------------------------------------------------------------
@@ -5660,33 +5655,33 @@ def test_backstop_does_not_converge_when_labels_unreadable() -> None:
         patch.object(daemon_mod, "_run", side_effect=recording_run),
         # Simulate fetch failure: None sentinel (not set()).
         patch(
-            "baton_harness.chain.daemon._fetch_issue_labels",
+            "codereeve.chain.daemon._fetch_issue_labels",
             return_value=None,
         ),
         # PR exists — this would cause convergence if None were not
         # handled conservatively.
         patch(
-            "baton_harness.chain.daemon._find_issue_pr",
+            "codereeve.chain.daemon._find_issue_pr",
             return_value=("baton/issue-10-10", "abc123"),
         ),
-        patch("baton_harness.chain.daemon.alert", mock_alert),
+        patch("codereeve.chain.daemon.alert", mock_alert),
         patch(
-            "baton_harness.chain.scheduler.IssueScheduler.mark_parked",
+            "codereeve.chain.scheduler.IssueScheduler.mark_parked",
             autospec=True,
             side_effect=recording_mark_parked,
         ),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             return_value=[],
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -5695,7 +5690,7 @@ def test_backstop_does_not_converge_when_labels_unreadable() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             mock_merge_fn,
         ),
         _patch_run_worker("pr_created"),
@@ -5874,23 +5869,21 @@ class TestAsyncEscalationStartupWarning:
         """
         import logging
 
-        from baton_harness.chain.daemon import (
+        from codereeve.chain.daemon import (
             warn_if_async_escalation_unconfigured,
         )
 
         monkeypatch.delenv("BH_SLACK_WEBHOOK_URL", raising=False)
         obs = _minimal_obs_config(heartbeat_ping_url=None)
 
-        with caplog.at_level(
-            logging.WARNING, logger="baton_harness.chain.daemon"
-        ):
+        with caplog.at_level(logging.WARNING, logger="codereeve.chain.daemon"):
             warn_if_async_escalation_unconfigured(obs)
 
         warning_records = [
             r
             for r in caplog.records
             if r.levelno == logging.WARNING
-            and r.name == "baton_harness.chain.daemon"
+            and r.name == "codereeve.chain.daemon"
         ]
         assert len(warning_records) == 1, (
             "Expected exactly 1 WARNING from warn_if_async_escalation"
@@ -5917,7 +5910,7 @@ class TestAsyncEscalationStartupWarning:
         """
         import logging
 
-        from baton_harness.chain.daemon import (
+        from codereeve.chain.daemon import (
             warn_if_async_escalation_unconfigured,
         )
 
@@ -5926,16 +5919,14 @@ class TestAsyncEscalationStartupWarning:
             heartbeat_ping_url="https://uptime.example/ping"
         )
 
-        with caplog.at_level(
-            logging.WARNING, logger="baton_harness.chain.daemon"
-        ):
+        with caplog.at_level(logging.WARNING, logger="codereeve.chain.daemon"):
             warn_if_async_escalation_unconfigured(obs)
 
         warning_records = [
             r
             for r in caplog.records
             if r.levelno == logging.WARNING
-            and r.name == "baton_harness.chain.daemon"
+            and r.name == "codereeve.chain.daemon"
         ]
         assert len(warning_records) == 0, (
             "Expected zero WARNINGs when heartbeat_ping_url is configured; "
@@ -5952,7 +5943,7 @@ class TestAsyncEscalationStartupWarning:
         """
         import logging
 
-        from baton_harness.chain.daemon import (
+        from codereeve.chain.daemon import (
             warn_if_async_escalation_unconfigured,
         )
 
@@ -5961,16 +5952,14 @@ class TestAsyncEscalationStartupWarning:
         )
         obs = _minimal_obs_config(heartbeat_ping_url=None)
 
-        with caplog.at_level(
-            logging.WARNING, logger="baton_harness.chain.daemon"
-        ):
+        with caplog.at_level(logging.WARNING, logger="codereeve.chain.daemon"):
             warn_if_async_escalation_unconfigured(obs)
 
         warning_records = [
             r
             for r in caplog.records
             if r.levelno == logging.WARNING
-            and r.name == "baton_harness.chain.daemon"
+            and r.name == "codereeve.chain.daemon"
         ]
         assert len(warning_records) == 0, (
             "Expected zero WARNINGs when BH_SLACK_WEBHOOK_URL is set; "
@@ -5987,7 +5976,7 @@ class TestAsyncEscalationStartupWarning:
         """
         import logging
 
-        from baton_harness.chain.daemon import (
+        from codereeve.chain.daemon import (
             warn_if_async_escalation_unconfigured,
         )
 
@@ -5998,16 +5987,14 @@ class TestAsyncEscalationStartupWarning:
             heartbeat_ping_url="https://uptime.example/ping"
         )
 
-        with caplog.at_level(
-            logging.WARNING, logger="baton_harness.chain.daemon"
-        ):
+        with caplog.at_level(logging.WARNING, logger="codereeve.chain.daemon"):
             warn_if_async_escalation_unconfigured(obs)
 
         warning_records = [
             r
             for r in caplog.records
             if r.levelno == logging.WARNING
-            and r.name == "baton_harness.chain.daemon"
+            and r.name == "codereeve.chain.daemon"
         ]
         assert len(warning_records) == 0, (
             "Expected zero WARNINGs when both channels are configured; "
@@ -6024,23 +6011,21 @@ class TestAsyncEscalationStartupWarning:
         """
         import logging
 
-        from baton_harness.chain.daemon import (
+        from codereeve.chain.daemon import (
             warn_if_async_escalation_unconfigured,
         )
 
         monkeypatch.setenv("BH_SLACK_WEBHOOK_URL", "")
         obs = _minimal_obs_config(heartbeat_ping_url=None)
 
-        with caplog.at_level(
-            logging.WARNING, logger="baton_harness.chain.daemon"
-        ):
+        with caplog.at_level(logging.WARNING, logger="codereeve.chain.daemon"):
             warn_if_async_escalation_unconfigured(obs)
 
         warning_records = [
             r
             for r in caplog.records
             if r.levelno == logging.WARNING
-            and r.name == "baton_harness.chain.daemon"
+            and r.name == "codereeve.chain.daemon"
         ]
         assert len(warning_records) == 1, (
             "Expected exactly 1 WARNING when BH_SLACK_WEBHOOK_URL is empty "
@@ -6173,17 +6158,17 @@ class TestP2MarkInProgressCallSites:
                 ),
             ),
             patch(
-                "baton_harness.chain.daemon.fetch_blocked_by",
+                "codereeve.chain.daemon.fetch_blocked_by",
                 return_value=[],
             ),
-            patch("baton_harness.chain.branches.create_feature_branch"),
-            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch("codereeve.chain.branches.create_feature_branch"),
+            patch("codereeve.chain.branches.checkout_feature_branch"),
             patch(
-                "baton_harness.chain.branches.record_cut_point",
+                "codereeve.chain.branches.record_cut_point",
                 return_value="deadbeef" * 5,
             ),
             patch(
-                "baton_harness.chain.recovery.reconstruct",
+                "codereeve.chain.recovery.reconstruct",
                 return_value=RecoveryResult(
                     done=set(),
                     parked_seed=set(),
@@ -6192,10 +6177,10 @@ class TestP2MarkInProgressCallSites:
                 ),
             ),
             patch(
-                "baton_harness.chain.daemon.merge_issue_branch",
+                "codereeve.chain.daemon.merge_issue_branch",
                 return_value=MergeOutcome.MERGED,
             ),
-            patch("baton_harness.chain.daemon.alert", return_value=True),
+            patch("codereeve.chain.daemon.alert", return_value=True),
             _patch_run_worker("pr_created"),
         ):
             asyncio.run(
@@ -6286,17 +6271,17 @@ class TestP2MarkInProgressCallSites:
                 ),
             ),
             patch(
-                "baton_harness.chain.daemon.fetch_blocked_by",
+                "codereeve.chain.daemon.fetch_blocked_by",
                 return_value=[],
             ),
-            patch("baton_harness.chain.branches.create_feature_branch"),
-            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch("codereeve.chain.branches.create_feature_branch"),
+            patch("codereeve.chain.branches.checkout_feature_branch"),
             patch(
-                "baton_harness.chain.branches.record_cut_point",
+                "codereeve.chain.branches.record_cut_point",
                 return_value="deadbeef" * 5,
             ),
             patch(
-                "baton_harness.chain.recovery.reconstruct",
+                "codereeve.chain.recovery.reconstruct",
                 return_value=RecoveryResult(
                     done=set(),
                     parked_seed=set(),
@@ -6305,10 +6290,10 @@ class TestP2MarkInProgressCallSites:
                 ),
             ),
             patch(
-                "baton_harness.chain.daemon.merge_issue_branch",
+                "codereeve.chain.daemon.merge_issue_branch",
                 return_value=MergeOutcome.MERGED,
             ),
-            patch("baton_harness.chain.daemon.alert", return_value=True),
+            patch("codereeve.chain.daemon.alert", return_value=True),
             _patch_run_worker("pr_created"),
         ):
             asyncio.run(
@@ -6374,15 +6359,15 @@ def test_run_daemon_calls_reconcile_startup_exactly_once() -> None:
                 feature_branch_exists=False,
             ),
         ),
-        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -6391,12 +6376,12 @@ def test_run_daemon_calls_reconcile_startup_exactly_once() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         patch(
-            "baton_harness.chain.daemon.poll.reconcile_startup",
+            "codereeve.chain.daemon.poll.reconcile_startup",
             side_effect=fake_reconcile_startup,
         ),
     ):
@@ -6473,15 +6458,15 @@ def test_run_daemon_reconcile_startup_called_before_heartbeat_thread() -> None:
                 feature_branch_exists=False,
             ),
         ),
-        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -6490,12 +6475,12 @@ def test_run_daemon_reconcile_startup_called_before_heartbeat_thread() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         patch(
-            "baton_harness.chain.daemon.poll.reconcile_startup",
+            "codereeve.chain.daemon.poll.reconcile_startup",
             side_effect=fake_reconcile_startup,
         ),
         patch("threading.Thread", _SpyThread),
@@ -6558,7 +6543,7 @@ def test_run_daemon_registers_sigterm_handler_on_startup() -> None:
       (``signal.SIG_DFL``) or ignore (``signal.SIG_IGN``) disposition.
 
     Seam: ``signal.signal`` is patched at the daemon module import level
-    (``baton_harness.chain.daemon.signal.signal`` or the stdlib module
+    (``codereeve.chain.daemon.signal.signal`` or the stdlib module
     used by daemon.py — we patch the stdlib directly so the daemon's import
     always resolves to the spy).
     """
@@ -6589,15 +6574,15 @@ def test_run_daemon_registers_sigterm_handler_on_startup() -> None:
                 feature_branch_exists=False,
             ),
         ),
-        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -6606,12 +6591,12 @@ def test_run_daemon_registers_sigterm_handler_on_startup() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         patch(
-            "baton_harness.chain.daemon.poll.reconcile_startup",
+            "codereeve.chain.daemon.poll.reconcile_startup",
             side_effect=lambda *a, **kw: None,
         ),
     ):
@@ -6661,7 +6646,7 @@ def test_sigterm_handler_clears_marker_on_invocation(
     import tempfile
     from pathlib import Path as _Path
 
-    from baton_harness.chain.registry import RepoConfig
+    from codereeve.chain.registry import RepoConfig
 
     # Build a real tmp dir for the marker path so the handler can unlink it.
     real_tmp = _Path(tempfile.mkdtemp())
@@ -6699,15 +6684,15 @@ def test_sigterm_handler_clears_marker_on_invocation(
                 feature_branch_exists=False,
             ),
         ),
-        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -6716,12 +6701,12 @@ def test_sigterm_handler_clears_marker_on_invocation(
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         patch(
-            "baton_harness.chain.daemon.poll.reconcile_startup",
+            "codereeve.chain.daemon.poll.reconcile_startup",
             side_effect=lambda *a, **kw: None,
         ),
     ):
@@ -6768,7 +6753,7 @@ def test_sigterm_handler_clears_marker_on_invocation(
 # ``agent-ready`` (in the snapshot) AND ``blocked`` (live on GitHub) must
 # NOT be dispatched — it must be parked/skipped instead.
 #
-# All three tests patch ``baton_harness.chain.daemon._fetch_issue_labels``
+# All three tests patch ``codereeve.chain.daemon._fetch_issue_labels``
 # directly so the live-label state can differ from the snapshot without
 # having to wire through the ``_run`` seam.
 # ---------------------------------------------------------------------------
@@ -6878,21 +6863,21 @@ def test_blocked_live_label_prevents_dispatch() -> None:
             side_effect=_run_side_effect_for_128(ready_issues),
         ),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             return_value=[],
         ),
         patch(
-            "baton_harness.chain.daemon._fetch_issue_labels",
+            "codereeve.chain.daemon._fetch_issue_labels",
             side_effect=fake_fetch_labels,
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -6901,13 +6886,12 @@ def test_blocked_live_label_prevents_dispatch() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         patch(
-            "baton_harness.vendor.symphony.orchestrator.Orchestrator"
-            "._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
         ),
     ):
@@ -6968,21 +6952,21 @@ def test_non_blocked_live_label_still_dispatches() -> None:
             side_effect=_run_side_effect_for_128(ready_issues),
         ),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             return_value=[],
         ),
         patch(
-            "baton_harness.chain.daemon._fetch_issue_labels",
+            "codereeve.chain.daemon._fetch_issue_labels",
             side_effect=fake_fetch_labels,
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -6991,13 +6975,12 @@ def test_non_blocked_live_label_still_dispatches() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         patch(
-            "baton_harness.vendor.symphony.orchestrator.Orchestrator"
-            "._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
         ),
     ):
@@ -7114,21 +7097,21 @@ def test_mixed_frontier_only_non_blocked_dispatched() -> None:
             side_effect=mixed_run_side_effect,
         ),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             side_effect=lambda o, r, n, **_kw: [],
         ),
         patch(
-            "baton_harness.chain.daemon._fetch_issue_labels",
+            "codereeve.chain.daemon._fetch_issue_labels",
             side_effect=fake_fetch_labels,
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -7137,13 +7120,12 @@ def test_mixed_frontier_only_non_blocked_dispatched() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         patch(
-            "baton_harness.vendor.symphony.orchestrator.Orchestrator"
-            "._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
         ),
     ):
@@ -7213,21 +7195,21 @@ def test_label_fetch_failure_is_fail_closed_no_dispatch() -> None:
             side_effect=_run_side_effect_for_128(ready_issues),
         ),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             return_value=[],
         ),
         patch(
-            "baton_harness.chain.daemon._fetch_issue_labels",
+            "codereeve.chain.daemon._fetch_issue_labels",
             side_effect=fake_fetch_labels_none,
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -7236,13 +7218,12 @@ def test_label_fetch_failure_is_fail_closed_no_dispatch() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         patch(
-            "baton_harness.vendor.symphony.orchestrator.Orchestrator"
-            "._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
         ),
     ):
@@ -7382,11 +7363,11 @@ def test_unmilestoned_issue_dispatched_alongside_milestoned_in_same_tick() -> (
     with (
         patch.object(daemon_mod, "_run", side_effect=run_side_effect),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             return_value=[],
         ),
         patch(
-            "baton_harness.chain.daemon._fetch_full_milestone_members",
+            "codereeve.chain.daemon._fetch_full_milestone_members",
             return_value=frozenset({20}),
         ),
         # Both issues remain greenlit throughout the drain (neither loses
@@ -7395,17 +7376,17 @@ def test_unmilestoned_issue_dispatched_alongside_milestoned_in_same_tick() -> (
         # mid-drain fetch; without this patch the real _run stub returns
         # agent-done labels, which would incorrectly trigger a skip.
         patch(
-            "baton_harness.chain.daemon._fetch_issue_labels",
+            "codereeve.chain.daemon._fetch_issue_labels",
             return_value={"agent-ready"},
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -7414,13 +7395,12 @@ def test_unmilestoned_issue_dispatched_alongside_milestoned_in_same_tick() -> (
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         patch(
-            "baton_harness.vendor.symphony.orchestrator.Orchestrator"
-            "._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
         ),
     ):
@@ -7606,21 +7586,21 @@ def test_second_work_unit_skipped_when_blocked_mid_drain() -> None:
     with (
         patch.object(daemon_mod, "_run", side_effect=run_side_effect),
         patch(
-            "baton_harness.chain.daemon._fetch_issue_labels",
+            "codereeve.chain.daemon._fetch_issue_labels",
             side_effect=fake_fetch_labels,
         ),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             return_value=[],
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -7629,16 +7609,15 @@ def test_second_work_unit_skipped_when_blocked_mid_drain() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
         patch(
-            "baton_harness.chain.daemon.alert",
+            "codereeve.chain.daemon.alert",
             side_effect=fake_alert,
         ),
         patch(
-            "baton_harness.vendor.symphony.orchestrator.Orchestrator"
-            "._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
         ),
     ):
@@ -7830,21 +7809,21 @@ def test_second_work_unit_skipped_on_non_blocked_exclude_label_mid_drain() -> (
         patch.object(daemon_mod, "_DISPATCH_EXCLUDE_LABELS", extended_exclude),
         patch.object(daemon_mod, "_run", side_effect=run_side_effect),
         patch(
-            "baton_harness.chain.daemon._fetch_issue_labels",
+            "codereeve.chain.daemon._fetch_issue_labels",
             side_effect=fake_fetch_labels,
         ),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             return_value=[],
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -7853,16 +7832,15 @@ def test_second_work_unit_skipped_on_non_blocked_exclude_label_mid_drain() -> (
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
         patch(
-            "baton_harness.chain.daemon.alert",
+            "codereeve.chain.daemon.alert",
             side_effect=fake_alert,
         ),
         patch(
-            "baton_harness.vendor.symphony.orchestrator.Orchestrator"
-            "._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
         ),
     ):
@@ -8032,21 +8010,21 @@ def test_agent_ready_and_agent_failed_issue_alerts_once_across_restarts(
     with (
         patch.object(daemon_mod, "_run", side_effect=run_side_effect),
         patch(
-            "baton_harness.chain.daemon._fetch_issue_labels",
+            "codereeve.chain.daemon._fetch_issue_labels",
             side_effect=fake_fetch_labels,
         ),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             return_value=[],
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -8055,16 +8033,15 @@ def test_agent_ready_and_agent_failed_issue_alerts_once_across_restarts(
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
         patch(
-            "baton_harness.chain.daemon.alert",
+            "codereeve.chain.daemon.alert",
             side_effect=fake_alert,
         ),
         patch(
-            "baton_harness.vendor.symphony.orchestrator.Orchestrator"
-            "._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
         ),
     ):
@@ -8294,21 +8271,21 @@ def test_second_work_unit_skipped_when_agent_ready_removed_mid_drain() -> None:
     with (
         patch.object(daemon_mod, "_run", side_effect=run_side_effect),
         patch(
-            "baton_harness.chain.daemon._fetch_issue_labels",
+            "codereeve.chain.daemon._fetch_issue_labels",
             side_effect=fake_fetch_labels,
         ),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             return_value=[],
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -8317,16 +8294,15 @@ def test_second_work_unit_skipped_when_agent_ready_removed_mid_drain() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
         patch(
-            "baton_harness.chain.daemon.alert",
+            "codereeve.chain.daemon.alert",
             side_effect=fake_alert,
         ),
         patch(
-            "baton_harness.vendor.symphony.orchestrator.Orchestrator"
-            "._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
         ),
     ):
@@ -8463,7 +8439,7 @@ def test_malformed_3_label_state_fires_critical_alert() -> None:
     - ``alert`` is called with ``severity="critical"`` at least once, and
       the message identifies issue #10 or the malformed multi-state.
     """
-    from baton_harness.chain.labels import (
+    from codereeve.chain.labels import (
         LABEL_AGENT_DONE,
         LABEL_AGENT_READY,
     )
@@ -8520,21 +8496,21 @@ def test_malformed_3_label_state_fires_critical_alert() -> None:
             side_effect=_run_side_effect_for_135(ready_issues),
         ),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             return_value=[],
         ),
         patch(
-            "baton_harness.chain.daemon._fetch_issue_labels",
+            "codereeve.chain.daemon._fetch_issue_labels",
             side_effect=fake_fetch_labels,
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -8543,16 +8519,15 @@ def test_malformed_3_label_state_fires_critical_alert() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
         patch(
-            "baton_harness.chain.daemon.alert",
+            "codereeve.chain.daemon.alert",
             side_effect=capturing_alert,
         ),
         patch(
-            "baton_harness.vendor.symphony.orchestrator.Orchestrator"
-            "._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
         ),
     ):
@@ -8598,7 +8573,7 @@ def test_two_label_torn_state_no_multi_state_critical_alert() -> None:
     - No critical alert whose message mentions ``agent-done`` is emitted
       (there is no extra state label to name).
     """
-    from baton_harness.chain.labels import LABEL_AGENT_READY
+    from codereeve.chain.labels import LABEL_AGENT_READY
 
     ready_issues = [
         {
@@ -8652,21 +8627,21 @@ def test_two_label_torn_state_no_multi_state_critical_alert() -> None:
             side_effect=_run_side_effect_for_135(ready_issues),
         ),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             return_value=[],
         ),
         patch(
-            "baton_harness.chain.daemon._fetch_issue_labels",
+            "codereeve.chain.daemon._fetch_issue_labels",
             side_effect=fake_fetch_labels,
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -8675,16 +8650,15 @@ def test_two_label_torn_state_no_multi_state_critical_alert() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
         patch(
-            "baton_harness.chain.daemon.alert",
+            "codereeve.chain.daemon.alert",
             side_effect=capturing_alert,
         ),
         patch(
-            "baton_harness.vendor.symphony.orchestrator.Orchestrator"
-            "._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
         ),
     ):
@@ -8991,21 +8965,21 @@ class TestDrainAgentReadyRevalidation:
                 ),
             ),
             patch(
-                "baton_harness.chain.daemon._fetch_issue_labels",
+                "codereeve.chain.daemon._fetch_issue_labels",
                 side_effect=fake_fetch_labels,
             ),
             patch(
-                "baton_harness.chain.daemon.fetch_blocked_by",
+                "codereeve.chain.daemon.fetch_blocked_by",
                 return_value=[],
             ),
-            patch("baton_harness.chain.branches.create_feature_branch"),
-            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch("codereeve.chain.branches.create_feature_branch"),
+            patch("codereeve.chain.branches.checkout_feature_branch"),
             patch(
-                "baton_harness.chain.branches.record_cut_point",
+                "codereeve.chain.branches.record_cut_point",
                 return_value="deadbeef" * 5,
             ),
             patch(
-                "baton_harness.chain.recovery.reconstruct",
+                "codereeve.chain.recovery.reconstruct",
                 return_value=RecoveryResult(
                     done=set(),
                     parked_seed=set(),
@@ -9014,15 +8988,15 @@ class TestDrainAgentReadyRevalidation:
                 ),
             ),
             patch(
-                "baton_harness.chain.daemon.merge_issue_branch",
+                "codereeve.chain.daemon.merge_issue_branch",
                 return_value=MergeOutcome.MERGED,
             ),
             patch(
-                "baton_harness.chain.daemon.alert",
+                "codereeve.chain.daemon.alert",
                 side_effect=fake_alert,
             ),
             patch(
-                "baton_harness.vendor.symphony.orchestrator"
+                "codereeve.vendor.symphony.orchestrator"
                 ".Orchestrator._run_worker",
                 side_effect=fake_run_worker,
             ),
@@ -9288,25 +9262,25 @@ class TestDrainAgentReadyRevalidation:
         with (
             patch.object(daemon_mod, "_run", side_effect=run_side_effect),
             patch(
-                "baton_harness.chain.daemon._fetch_issue_labels",
+                "codereeve.chain.daemon._fetch_issue_labels",
                 side_effect=fake_fetch_labels,
             ),
             patch(
-                "baton_harness.chain.daemon.fetch_blocked_by",
+                "codereeve.chain.daemon.fetch_blocked_by",
                 return_value=[],
             ),
             patch(
-                "baton_harness.chain.daemon._fetch_full_milestone_members",
+                "codereeve.chain.daemon._fetch_full_milestone_members",
                 side_effect=fake_full_members,
             ),
-            patch("baton_harness.chain.branches.create_feature_branch"),
-            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch("codereeve.chain.branches.create_feature_branch"),
+            patch("codereeve.chain.branches.checkout_feature_branch"),
             patch(
-                "baton_harness.chain.branches.record_cut_point",
+                "codereeve.chain.branches.record_cut_point",
                 return_value="deadbeef" * 5,
             ),
             patch(
-                "baton_harness.chain.recovery.reconstruct",
+                "codereeve.chain.recovery.reconstruct",
                 return_value=RecoveryResult(
                     done=set(),
                     parked_seed=set(),
@@ -9315,12 +9289,12 @@ class TestDrainAgentReadyRevalidation:
                 ),
             ),
             patch(
-                "baton_harness.chain.daemon.merge_issue_branch",
+                "codereeve.chain.daemon.merge_issue_branch",
                 return_value=MergeOutcome.MERGED,
             ),
-            patch("baton_harness.chain.daemon.alert", return_value=True),
+            patch("codereeve.chain.daemon.alert", return_value=True),
             patch(
-                "baton_harness.vendor.symphony.orchestrator"
+                "codereeve.vendor.symphony.orchestrator"
                 ".Orchestrator._run_worker",
                 side_effect=fake_run_worker,
             ),
@@ -9433,17 +9407,17 @@ class TestDaemonGhCallsUseInstallationToken:
                 side_effect=recording_run,
             ),
             patch(
-                "baton_harness.chain.daemon.fetch_blocked_by",
+                "codereeve.chain.daemon.fetch_blocked_by",
                 return_value=[],
             ),
-            patch("baton_harness.chain.branches.create_feature_branch"),
-            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch("codereeve.chain.branches.create_feature_branch"),
+            patch("codereeve.chain.branches.checkout_feature_branch"),
             patch(
-                "baton_harness.chain.branches.record_cut_point",
+                "codereeve.chain.branches.record_cut_point",
                 return_value="deadbeef" * 5,
             ),
             patch(
-                "baton_harness.chain.recovery.reconstruct",
+                "codereeve.chain.recovery.reconstruct",
                 return_value=RecoveryResult(
                     done=set(),
                     parked_seed=set(),
@@ -9452,12 +9426,12 @@ class TestDaemonGhCallsUseInstallationToken:
                 ),
             ),
             patch(
-                "baton_harness.chain.daemon.merge_issue_branch",
+                "codereeve.chain.daemon.merge_issue_branch",
                 return_value=MergeOutcome.MERGED,
             ),
-            patch("baton_harness.chain.daemon.alert", return_value=True),
+            patch("codereeve.chain.daemon.alert", return_value=True),
             patch(
-                "baton_harness.vendor.symphony.orchestrator"
+                "codereeve.vendor.symphony.orchestrator"
                 ".Orchestrator._run_worker",
                 new_callable=AsyncMock,
                 return_value="pr_created",
@@ -9527,17 +9501,17 @@ class TestDaemonGhCallsUseInstallationToken:
                 ),
             ),
             patch(
-                "baton_harness.chain.daemon.fetch_blocked_by",
+                "codereeve.chain.daemon.fetch_blocked_by",
                 return_value=[],
             ),
-            patch("baton_harness.chain.branches.create_feature_branch"),
-            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch("codereeve.chain.branches.create_feature_branch"),
+            patch("codereeve.chain.branches.checkout_feature_branch"),
             patch(
-                "baton_harness.chain.branches.record_cut_point",
+                "codereeve.chain.branches.record_cut_point",
                 return_value="deadbeef" * 5,
             ),
             patch(
-                "baton_harness.chain.recovery.reconstruct",
+                "codereeve.chain.recovery.reconstruct",
                 return_value=RecoveryResult(
                     done=set(),
                     parked_seed=set(),
@@ -9546,12 +9520,12 @@ class TestDaemonGhCallsUseInstallationToken:
                 ),
             ),
             patch(
-                "baton_harness.chain.daemon.merge_issue_branch",
+                "codereeve.chain.daemon.merge_issue_branch",
                 return_value=MergeOutcome.MERGED,
             ),
-            patch("baton_harness.chain.daemon.alert", return_value=True),
+            patch("codereeve.chain.daemon.alert", return_value=True),
             patch(
-                "baton_harness.vendor.symphony.orchestrator"
+                "codereeve.vendor.symphony.orchestrator"
                 ".Orchestrator._run_worker",
                 new_callable=AsyncMock,
                 return_value="pr_created",
@@ -9587,7 +9561,7 @@ class TestDaemonGhCallsUseInstallationToken:
         """
         import json as _json  # noqa: PLC0415
 
-        import baton_harness.chain.merge as merge_mod  # noqa: PLC0415
+        import codereeve.chain.merge as merge_mod  # noqa: PLC0415
 
         env_dicts_seen: list[dict[str, str] | None] = []
 
@@ -9641,7 +9615,7 @@ class TestDaemonGhCallsUseInstallationToken:
         Today FAILS because escalation._run() calls subprocess.run without
         an env kwarg.
         """
-        import baton_harness.chain.escalation as escalation_mod  # noqa: PLC0415
+        import codereeve.chain.escalation as escalation_mod  # noqa: PLC0415
 
         env_dicts_seen: list[dict[str, str] | None] = []
 
@@ -9663,7 +9637,7 @@ class TestDaemonGhCallsUseInstallationToken:
             patch.object(subprocess, "run", side_effect=recording_run),
             # Suppress Slack webhook calls.
             monkeypatch.delenv("BH_SLACK_WEBHOOK_URL", raising=False)
-            or patch("baton_harness.chain.escalation.urllib"),
+            or patch("codereeve.chain.escalation.urllib"),
         ):
             escalation_mod.escalate(
                 "glitchwerks",
@@ -9780,7 +9754,7 @@ class TestRunDaemonThreadsTokenIntoReconcileStartup:
 
         with (
             patch(
-                "baton_harness.chain.daemon.poll.reconcile_startup",
+                "codereeve.chain.daemon.poll.reconcile_startup",
                 side_effect=_spy_reconcile,
             ),
             patch.object(
@@ -9789,11 +9763,11 @@ class TestRunDaemonThreadsTokenIntoReconcileStartup:
                 return_value=_ok("[]"),
             ),
             patch(
-                "baton_harness.chain.daemon.fetch_blocked_by",
+                "codereeve.chain.daemon.fetch_blocked_by",
                 return_value=[],
             ),
             patch(
-                "baton_harness.chain.daemon.load_obs_config",
+                "codereeve.chain.daemon.load_obs_config",
                 side_effect=RuntimeError("no obs"),
             ),
         ):
@@ -9837,7 +9811,7 @@ class TestRunCiGateForwardsToken:
         """_run_ci_gate must call merge_issue_branch(installation_token=...).
 
         Patches merge_issue_branch at
-        baton_harness.chain.daemon.merge_issue_branch to record kwargs.
+        codereeve.chain.daemon.merge_issue_branch to record kwargs.
         Calls _run_ci_gate directly with
         installation_token="ghs_TEST_ci_gate".  Asserts the recorded call
         includes installation_token= with the correct value.
@@ -9845,7 +9819,7 @@ class TestRunCiGateForwardsToken:
         Currently FAILS because daemon.py:579 calls merge_issue_branch
         without installation_token=.
         """
-        import baton_harness.chain.daemon as _dm  # noqa: PLC0415
+        import codereeve.chain.daemon as _dm  # noqa: PLC0415
 
         _token = "ghs_TEST_ci_gate_merge"
         merge_kwargs: dict[str, object] = {}
@@ -9860,11 +9834,11 @@ class TestRunCiGateForwardsToken:
 
         with (
             patch(
-                "baton_harness.chain.daemon.merge_issue_branch",
+                "codereeve.chain.daemon.merge_issue_branch",
                 side_effect=_capture_merge,
             ),
-            patch("baton_harness.chain.daemon.alert", return_value=True),
-            patch("baton_harness.chain.daemon._label_edit"),
+            patch("codereeve.chain.daemon.alert", return_value=True),
+            patch("codereeve.chain.daemon._label_edit"),
         ):
             _dm._run_ci_gate(
                 owner=_OWNER,
@@ -9948,18 +9922,18 @@ class TestRunCiGateForwardsToken:
         with (
             patch.object(daemon_mod, "_run", side_effect=_run_side),
             patch(
-                "baton_harness.chain.daemon.fetch_blocked_by",
+                "codereeve.chain.daemon.fetch_blocked_by",
                 return_value=[],
             ),
-            patch("baton_harness.chain.branches.create_feature_branch"),
-            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch("codereeve.chain.branches.create_feature_branch"),
+            patch("codereeve.chain.branches.checkout_feature_branch"),
             patch(
-                "baton_harness.chain.branches.record_cut_point",
+                "codereeve.chain.branches.record_cut_point",
                 return_value="deadbeef" * 5,
             ),
             # Put issue into ci_gate_reentry so the inline path fires.
             patch(
-                "baton_harness.chain.recovery.reconstruct",
+                "codereeve.chain.recovery.reconstruct",
                 return_value=RecoveryResult(
                     done=set(),
                     parked_seed=set(),
@@ -9968,11 +9942,11 @@ class TestRunCiGateForwardsToken:
                 ),
             ),
             patch(
-                "baton_harness.chain.daemon.merge_issue_branch",
+                "codereeve.chain.daemon.merge_issue_branch",
                 side_effect=_capture_merge,
             ),
-            patch("baton_harness.chain.daemon.alert", return_value=True),
-            patch("baton_harness.chain.daemon._label_edit"),
+            patch("codereeve.chain.daemon.alert", return_value=True),
+            patch("codereeve.chain.daemon._label_edit"),
         ):
             asyncio.run(
                 daemon_mod._run_work_unit(
@@ -10018,7 +9992,7 @@ class TestRunWorkUnitForwardsTokenToDagAndRecovery:
     ) -> None:
         """_run_work_unit must call fetch_blocked_by(installation_token=...).
 
-        Patches fetch_blocked_by at baton_harness.chain.daemon.fetch_blocked_by
+        Patches fetch_blocked_by at codereeve.chain.daemon.fetch_blocked_by
         to record call kwargs.  Drives _run_work_unit with once=False (returns
         after scheduling exits).  Asserts installation_token= is present
         in every recorded call.
@@ -10054,10 +10028,10 @@ class TestRunWorkUnitForwardsTokenToDagAndRecovery:
                 return_value=_ok("[]"),
             ),
             patch(
-                "baton_harness.chain.daemon.fetch_blocked_by",
+                "codereeve.chain.daemon.fetch_blocked_by",
                 side_effect=_capture_and_stop,
             ),
-            patch("baton_harness.chain.branches.create_feature_branch"),
+            patch("codereeve.chain.branches.create_feature_branch"),
         ):
             try:
                 asyncio.run(
@@ -10090,7 +10064,7 @@ class TestRunWorkUnitForwardsTokenToDagAndRecovery:
     ) -> None:
         """_run_work_unit must call reconstruct(installation_token=...).
 
-        Patches reconstruct at baton_harness.chain.daemon.reconstruct to
+        Patches reconstruct at codereeve.chain.daemon.reconstruct to
         record call kwargs.  Drives _run_work_unit and asserts the kwarg
         is present.
 
@@ -10127,12 +10101,12 @@ class TestRunWorkUnitForwardsTokenToDagAndRecovery:
                 return_value=_ok("[]"),
             ),
             patch(
-                "baton_harness.chain.daemon.fetch_blocked_by",
+                "codereeve.chain.daemon.fetch_blocked_by",
                 return_value=[],
             ),
-            patch("baton_harness.chain.branches.create_feature_branch"),
+            patch("codereeve.chain.branches.create_feature_branch"),
             patch(
-                "baton_harness.chain.daemon.reconstruct",
+                "codereeve.chain.daemon.reconstruct",
                 side_effect=_capture_and_stop,
             ),
         ):
@@ -10296,10 +10270,10 @@ class TestAuthedGitPush:
         with (
             patch.object(daemon_mod, "_run", side_effect=_run_side),
             patch(
-                "baton_harness.chain.daemon.fetch_blocked_by",
+                "codereeve.chain.daemon.fetch_blocked_by",
                 return_value=[],
             ),
-            patch("baton_harness.chain.branches.create_feature_branch"),
+            patch("codereeve.chain.branches.create_feature_branch"),
         ):
             try:
                 asyncio.run(
@@ -10370,17 +10344,17 @@ class TestAuthedGitPush:
         with (
             patch.object(daemon_mod, "_run", side_effect=_run_side),
             patch(
-                "baton_harness.chain.daemon.fetch_blocked_by",
+                "codereeve.chain.daemon.fetch_blocked_by",
                 return_value=[],
             ),
-            patch("baton_harness.chain.branches.create_feature_branch"),
-            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch("codereeve.chain.branches.create_feature_branch"),
+            patch("codereeve.chain.branches.checkout_feature_branch"),
             patch(
-                "baton_harness.chain.branches.record_cut_point",
+                "codereeve.chain.branches.record_cut_point",
                 return_value="deadbeef" * 5,
             ),
             patch(
-                "baton_harness.chain.recovery.reconstruct",
+                "codereeve.chain.recovery.reconstruct",
                 return_value=RecoveryResult(
                     done=set(),
                     parked_seed=set(),
@@ -10389,10 +10363,10 @@ class TestAuthedGitPush:
                 ),
             ),
             patch(
-                "baton_harness.chain.daemon.merge_issue_branch",
+                "codereeve.chain.daemon.merge_issue_branch",
                 return_value=MergeOutcome.MERGED,
             ),
-            patch("baton_harness.chain.daemon.alert", return_value=True),
+            patch("codereeve.chain.daemon.alert", return_value=True),
             _patch_run_worker("pr_created"),
         ):
             asyncio.run(
@@ -10540,15 +10514,15 @@ def test_configured_required_checks_reach_merge_gate() -> None:
                 feature_branch_exists=False,
             ),
         ),
-        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -10557,10 +10531,10 @@ def test_configured_required_checks_reach_merge_gate() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ) as mock_merge,
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         _patch_run_worker("pr_created"),
     ):
         asyncio.run(
@@ -10618,15 +10592,15 @@ def test_ci_gate_reentry_passes_configured_required_checks() -> None:
                 feature_branch_exists=False,
             ),
         ),
-        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -10636,14 +10610,14 @@ def test_ci_gate_reentry_passes_configured_required_checks() -> None:
         ),
         # Open PR found — reentry proceeds to merge_issue_branch.
         patch(
-            "baton_harness.chain.daemon._find_issue_pr",
+            "codereeve.chain.daemon._find_issue_pr",
             return_value=("baton/issue-10-10", "abc123"),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ) as mock_merge,
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         _patch_run_worker("pr_created"),
     ):
         asyncio.run(
@@ -10686,7 +10660,7 @@ def test_unset_required_checks_falls_back_and_warns(
     """
     import logging
 
-    from baton_harness.chain.merge import REQUIRED_CHECKS
+    from codereeve.chain.merge import REQUIRED_CHECKS
 
     ready_issues = [
         {
@@ -10712,15 +10686,15 @@ def test_unset_required_checks_falls_back_and_warns(
                 feature_branch_exists=False,
             ),
         ),
-        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -10729,13 +10703,13 @@ def test_unset_required_checks_falls_back_and_warns(
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ) as mock_merge,
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         _patch_run_worker("pr_created"),
     ):
-        with caplog.at_level(logging.WARNING, logger="baton_harness"):
+        with caplog.at_level(logging.WARNING, logger="codereeve"):
             asyncio.run(
                 run_daemon(
                     _minimal_wf_config(),  # required_checks unset/default
@@ -10810,10 +10784,10 @@ class TestRunCiGateDiagnosticEnrichment:
 
         with (
             patch.object(merge_mod, "_query_action_jobs", return_value=[]),
-            patch("baton_harness.chain.daemon.alert", mock_alert),
-            patch("baton_harness.chain.daemon._label_edit"),
+            patch("codereeve.chain.daemon.alert", mock_alert),
+            patch("codereeve.chain.daemon._label_edit"),
             patch(
-                "baton_harness.chain.daemon._fetch_issue_labels",
+                "codereeve.chain.daemon._fetch_issue_labels",
                 return_value={"agent-done"},
             ),
         ):
@@ -10861,10 +10835,10 @@ class TestRunCiGateDiagnosticEnrichment:
 
         with (
             patch.object(merge_mod, "_query_action_jobs", return_value=[]),
-            patch("baton_harness.chain.daemon.alert", return_value=True),
-            patch("baton_harness.chain.daemon._label_edit"),
+            patch("codereeve.chain.daemon.alert", return_value=True),
+            patch("codereeve.chain.daemon._label_edit"),
             patch(
-                "baton_harness.chain.daemon._fetch_issue_labels",
+                "codereeve.chain.daemon._fetch_issue_labels",
                 return_value={"agent-done"},
             ),
         ):
@@ -10910,13 +10884,13 @@ class TestRunCiGateDiagnosticEnrichment:
 
         with (
             patch(
-                "baton_harness.chain.daemon.merge_issue_branch",
+                "codereeve.chain.daemon.merge_issue_branch",
                 return_value=MergeOutcome.CI_TIMEOUT,
             ),
-            patch("baton_harness.chain.daemon.alert", mock_alert),
-            patch("baton_harness.chain.daemon._label_edit"),
+            patch("codereeve.chain.daemon.alert", mock_alert),
+            patch("codereeve.chain.daemon._label_edit"),
             patch(
-                "baton_harness.chain.daemon._fetch_issue_labels",
+                "codereeve.chain.daemon._fetch_issue_labels",
                 return_value={"agent-done"},
             ),
         ):
@@ -10960,7 +10934,7 @@ class TestRunCiGateDiagnosticEnrichment:
         f-string — so #351's future ``park_issue(reason=..., detail=...)``
         can absorb it unchanged.
         """
-        import baton_harness.chain.daemon.gh_api_helpers as gh_api_helpers_mod
+        import codereeve.chain.daemon.gh_api_helpers as gh_api_helpers_mod
 
         mock_sched = MagicMock()
         mock_sched.mark_done = MagicMock()
@@ -10969,10 +10943,10 @@ class TestRunCiGateDiagnosticEnrichment:
 
         with (
             patch.object(merge_mod, "_query_action_jobs", return_value=[]),
-            patch("baton_harness.chain.daemon.alert", mock_alert),
-            patch("baton_harness.chain.daemon._label_edit"),
+            patch("codereeve.chain.daemon.alert", mock_alert),
+            patch("codereeve.chain.daemon._label_edit"),
             patch(
-                "baton_harness.chain.daemon._fetch_issue_labels",
+                "codereeve.chain.daemon._fetch_issue_labels",
                 return_value={"agent-done"},
             ),
         ):
@@ -11043,10 +11017,10 @@ class TestRunCiGateDiagnosticEnrichment:
                 return_value=_green_required_jobs(),
             ),
             patch.object(merge_mod, "_run", side_effect=fake_run),
-            patch("baton_harness.chain.daemon.alert", mock_alert),
-            patch("baton_harness.chain.daemon._label_edit"),
+            patch("codereeve.chain.daemon.alert", mock_alert),
+            patch("codereeve.chain.daemon._label_edit"),
             patch(
-                "baton_harness.chain.daemon._fetch_issue_labels",
+                "codereeve.chain.daemon._fetch_issue_labels",
                 return_value={"agent-done"},
             ),
         ):
@@ -11115,10 +11089,10 @@ class TestRunCiGateDiagnosticEnrichment:
             patch.object(
                 merge_mod, "_query_action_jobs", return_value=red_jobs
             ),
-            patch("baton_harness.chain.daemon.alert", mock_alert),
-            patch("baton_harness.chain.daemon._label_edit"),
+            patch("codereeve.chain.daemon.alert", mock_alert),
+            patch("codereeve.chain.daemon._label_edit"),
             patch(
-                "baton_harness.chain.daemon._fetch_issue_labels",
+                "codereeve.chain.daemon._fetch_issue_labels",
                 return_value={"agent-done"},
             ),
         ):
@@ -11320,25 +11294,25 @@ def test_pre_dispatch_race_excludes_label_on_final_fetch() -> None:
     with (
         patch.object(daemon_mod, "_run", side_effect=run_side_effect),
         patch(
-            "baton_harness.chain.daemon._fetch_issue_labels",
+            "codereeve.chain.daemon._fetch_issue_labels",
             side_effect=fake_fetch_labels,
         ),
         patch(
-            "baton_harness.chain.daemon._label_edit",
+            "codereeve.chain.daemon._label_edit",
             side_effect=fake_label_edit,
         ),
         patch(
-            "baton_harness.chain.daemon.fetch_blocked_by",
+            "codereeve.chain.daemon.fetch_blocked_by",
             return_value=[],
         ),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=RecoveryResult(
                 done=set(),
                 parked_seed=set(),
@@ -11347,13 +11321,12 @@ def test_pre_dispatch_race_excludes_label_on_final_fetch() -> None:
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         patch(
-            "baton_harness.vendor.symphony.orchestrator.Orchestrator"
-            "._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
         ),
     ):

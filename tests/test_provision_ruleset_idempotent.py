@@ -258,7 +258,7 @@ def _invoke(
         "BH_FAKE_GH_CANNED_DIR": str(canned_state_dir),
         # #200: the script now unconditionally obtains App-auth credentials
         # before any gh call. These two overrides stand in for the real
-        # `python -m baton_harness.chain.app_auth {jwt|token}` invocation so
+        # `python -m codereeve.chain.app_auth {jwt|token}` invocation so
         # this suite's pre-existing cases keep exercising the ruleset
         # write/idempotency behavior without needing real BWS_* secrets.
         # #326: the App JWT this produces is also what the curl-based

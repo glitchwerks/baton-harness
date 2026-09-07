@@ -25,7 +25,7 @@ Test conventions mirror the existing ``test_reconcile.py``:
 - ``asyncio.run(reconcile.reconcile_startup(...))`` (no pytest-asyncio).
 - Fatal signal: ``pytest.raises(SystemExit)`` with non-zero code.
 - Alert assertions via ``MagicMock`` on
-  ``baton_harness.chain.reconcile.alert``.
+  ``codereeve.chain.reconcile.alert``.
 """
 
 from __future__ import annotations
@@ -51,12 +51,12 @@ def _import_reconcile() -> Any:  # noqa: ANN401
     """Return the reconcile module, raising ImportError if absent."""
     import importlib
 
-    return importlib.import_module("baton_harness.chain.reconcile")
+    return importlib.import_module("codereeve.chain.reconcile")
 
 
 def _make_obs(tmp_path: Path) -> Any:  # noqa: ANN401
     """Return an ObsConfig-like object rooted at tmp_path."""
-    from baton_harness.chain.obs_config import ObsConfig
+    from codereeve.chain.obs_config import ObsConfig
 
     harness_dir = tmp_path / ".baton-harness"
     harness_dir.mkdir(parents=True, exist_ok=True)
@@ -73,7 +73,7 @@ def _make_obs(tmp_path: Path) -> Any:  # noqa: ANN401
 
 def _make_repo_cfg(tmp_path: Path) -> Any:  # noqa: ANN401
     """Return a minimal RepoConfig pointing at tmp_path."""
-    from baton_harness.chain.registry import RepoConfig
+    from codereeve.chain.registry import RepoConfig
 
     return RepoConfig(
         owner=_OWNER,
@@ -101,7 +101,7 @@ def _patch_passing_prereqs(
     monkeypatch.setenv("GH_TOKEN", _INSTALLATION_TOKEN)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setattr(
-        "baton_harness.chain.reconcile._get_git_credential_helpers",
+        "codereeve.chain.reconcile._get_git_credential_helpers",
         lambda: ["!fake credential helper for tests"],
     )
 
@@ -148,16 +148,16 @@ class TestG3cCredentialFilePresent:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
-            patch("baton_harness.chain.reconcile.alert", mock_alert),
+            patch("codereeve.chain.reconcile.alert", mock_alert),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 return_value=[],
             ),
             patch(
-                "baton_harness.chain.reconcile._OAUTH_CRED_PATH",
+                "codereeve.chain.reconcile._OAUTH_CRED_PATH",
                 cred_file,
             ),
         ):
@@ -206,16 +206,16 @@ class TestG3cCredentialFilePresent:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
-            patch("baton_harness.chain.reconcile.alert", return_value=True),
+            patch("codereeve.chain.reconcile.alert", return_value=True),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 return_value=[],
             ),
             patch(
-                "baton_harness.chain.reconcile._OAUTH_CRED_PATH",
+                "codereeve.chain.reconcile._OAUTH_CRED_PATH",
                 cred_file,
             ),
         ):
@@ -258,16 +258,16 @@ class TestG3cCredentialFileAbsent:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
-            patch("baton_harness.chain.reconcile.alert", mock_alert),
+            patch("codereeve.chain.reconcile.alert", mock_alert),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 return_value=[],
             ),
             patch(
-                "baton_harness.chain.reconcile._OAUTH_CRED_PATH",
+                "codereeve.chain.reconcile._OAUTH_CRED_PATH",
                 missing_cred,
                 create=True,
             ),
@@ -309,16 +309,16 @@ class TestG3cCredentialFileAbsent:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
-            patch("baton_harness.chain.reconcile.alert", mock_alert),
+            patch("codereeve.chain.reconcile.alert", mock_alert),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 return_value=[],
             ),
             patch(
-                "baton_harness.chain.reconcile._OAUTH_CRED_PATH",
+                "codereeve.chain.reconcile._OAUTH_CRED_PATH",
                 missing_cred,
                 create=True,
             ),
@@ -355,16 +355,16 @@ class TestG3cCredentialFileAbsent:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
-            patch("baton_harness.chain.reconcile.alert", return_value=True),
+            patch("codereeve.chain.reconcile.alert", return_value=True),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 mock_lister,
             ),
             patch(
-                "baton_harness.chain.reconcile._OAUTH_CRED_PATH",
+                "codereeve.chain.reconcile._OAUTH_CRED_PATH",
                 missing_cred,
                 create=True,
             ),
@@ -433,16 +433,16 @@ class TestG3cCredentialFileUnreadable:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
-            patch("baton_harness.chain.reconcile.alert", mock_alert),
+            patch("codereeve.chain.reconcile.alert", mock_alert),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 return_value=[],
             ),
             patch(
-                "baton_harness.chain.reconcile._OAUTH_CRED_PATH",
+                "codereeve.chain.reconcile._OAUTH_CRED_PATH",
                 cred_file,
                 create=True,
             ),
@@ -497,16 +497,16 @@ class TestG3cCredentialFileUnreadable:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
-            patch("baton_harness.chain.reconcile.alert", mock_alert),
+            patch("codereeve.chain.reconcile.alert", mock_alert),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 return_value=[],
             ),
             patch(
-                "baton_harness.chain.reconcile._OAUTH_CRED_PATH",
+                "codereeve.chain.reconcile._OAUTH_CRED_PATH",
                 cred_file,
                 create=True,
             ),
@@ -554,16 +554,16 @@ class TestG3cCredentialFileUnreadable:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
-            patch("baton_harness.chain.reconcile.alert", return_value=True),
+            patch("codereeve.chain.reconcile.alert", return_value=True),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 mock_lister,
             ),
             patch(
-                "baton_harness.chain.reconcile._OAUTH_CRED_PATH",
+                "codereeve.chain.reconcile._OAUTH_CRED_PATH",
                 cred_file,
                 create=True,
             ),
@@ -619,16 +619,16 @@ class TestG3cStructuralOnly:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
-            patch("baton_harness.chain.reconcile.alert", mock_alert),
+            patch("codereeve.chain.reconcile.alert", mock_alert),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 return_value=[],
             ),
             patch(
-                "baton_harness.chain.reconcile._OAUTH_CRED_PATH",
+                "codereeve.chain.reconcile._OAUTH_CRED_PATH",
                 cred_file,
             ),
         ):

@@ -1,4 +1,4 @@
-"""Unit tests for baton_harness.chain.failure_tally.
+"""Unit tests for codereeve.chain.failure_tally.
 
 Tests the ``FailureTally`` durable persistence class that tracks the
 per-issue *consecutive charged-failure* count across daemon restarts
@@ -38,7 +38,7 @@ from unittest.mock import patch
 
 import pytest
 
-from baton_harness.chain.failure_tally import FailureTally
+from codereeve.chain.failure_tally import FailureTally
 
 # ---------------------------------------------------------------------------
 # Construction / tolerance

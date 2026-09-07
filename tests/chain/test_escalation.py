@@ -1,4 +1,4 @@
-"""Unit tests for baton_harness.chain.escalation.
+"""Unit tests for codereeve.chain.escalation.
 
 Tests the dual-channel escalation module.  All subprocess calls are
 intercepted by patching the module-local ``_run`` seam; Slack HTTP calls
@@ -29,10 +29,10 @@ from unittest.mock import patch
 
 import pytest
 
-import baton_harness.chain.escalation as esc_mod
-import baton_harness.chain.runlog as runlog_mod
-from baton_harness.chain.escalation import escalate
-from baton_harness.chain.runlog import RunLog
+import codereeve.chain.escalation as esc_mod
+import codereeve.chain.runlog as runlog_mod
+from codereeve.chain.escalation import escalate
+from codereeve.chain.runlog import RunLog
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -113,7 +113,7 @@ def test_escalate_github_failure_returns_false_and_logs_warning(
         patch.dict("os.environ", {}, clear=False),
         caplog.at_level(
             logging.WARNING,
-            logger="baton_harness.chain.escalation",
+            logger="codereeve.chain.escalation",
         ),
     ):
         import os
@@ -206,7 +206,7 @@ def test_escalate_slack_failure_logs_warning(
         ),
         caplog.at_level(
             logging.WARNING,
-            logger="baton_harness.chain.escalation",
+            logger="codereeve.chain.escalation",
         ),
     ):
         escalate(_OWNER, _REPO, _ISSUE, "stalled!")
@@ -251,7 +251,7 @@ def test_escalate_none_issue_skips_gh_comment(
         patch.dict("os.environ", {}, clear=False),
         caplog.at_level(
             logging.WARNING,
-            logger="baton_harness.chain.escalation",
+            logger="codereeve.chain.escalation",
         ),
     ):
         os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
@@ -284,7 +284,7 @@ def test_escalate_zero_issue_skips_gh_comment(
         patch.dict("os.environ", {}, clear=False),
         caplog.at_level(
             logging.WARNING,
-            logger="baton_harness.chain.escalation",
+            logger="codereeve.chain.escalation",
         ),
     ):
         os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
@@ -314,7 +314,7 @@ def test_escalate_none_issue_still_posts_slack_when_env_set(
         ),
         caplog.at_level(
             logging.WARNING,
-            logger="baton_harness.chain.escalation",
+            logger="codereeve.chain.escalation",
         ),
     ):
         result = escalate(_OWNER, _REPO, None, "daemon tick error")
@@ -369,7 +369,7 @@ def test_alert_info_does_not_call_escalate_and_returns_true(
         patch.object(esc_mod, "_run") as mock_run,
         patch.dict("os.environ", {}, clear=False),
         patch(
-            "baton_harness.chain.runlog._write_line",
+            "codereeve.chain.runlog._write_line",
             side_effect=lambda p, ln: captured.append(
                 json.loads(ln.rstrip("\n"))
             ),
@@ -379,7 +379,7 @@ def test_alert_info_does_not_call_escalate_and_returns_true(
 
         os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
         # alert() does not exist yet; this import will fail (red phase).
-        from baton_harness.chain.escalation import alert
+        from codereeve.chain.escalation import alert
 
         result = alert(
             _OWNER,
@@ -412,7 +412,7 @@ def test_alert_warn_calls_escalate_with_unchanged_body(
         patch.object(esc_mod, "_run", return_value=_ok()) as mock_run,
         patch.dict("os.environ", {}, clear=False),
         patch(
-            "baton_harness.chain.runlog._write_line",
+            "codereeve.chain.runlog._write_line",
             side_effect=lambda p, ln: captured.append(
                 json.loads(ln.rstrip("\n"))
             ),
@@ -421,7 +421,7 @@ def test_alert_warn_calls_escalate_with_unchanged_body(
         import os
 
         os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
-        from baton_harness.chain.escalation import alert
+        from codereeve.chain.escalation import alert
 
         result = alert(
             _OWNER,
@@ -473,7 +473,7 @@ def test_alert_critical_prefixes_body_with_loud_marker(
         patch.object(esc_mod, "_run", side_effect=_capture_run),
         patch.dict("os.environ", {}, clear=False),
         patch(
-            "baton_harness.chain.runlog._write_line",
+            "codereeve.chain.runlog._write_line",
             side_effect=lambda p, ln: captured.append(
                 json.loads(ln.rstrip("\n"))
             ),
@@ -482,7 +482,7 @@ def test_alert_critical_prefixes_body_with_loud_marker(
         import os
 
         os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
-        from baton_harness.chain.escalation import alert
+        from codereeve.chain.escalation import alert
 
         result = alert(
             _OWNER,
@@ -524,7 +524,7 @@ def test_alert_warn_without_runlog_still_calls_escalate() -> None:
         import os
 
         os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
-        from baton_harness.chain.escalation import alert
+        from codereeve.chain.escalation import alert
 
         result = alert(
             _OWNER,
@@ -548,7 +548,7 @@ def test_alert_critical_without_runlog_still_calls_escalate() -> None:
         import os
 
         os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
-        from baton_harness.chain.escalation import alert
+        from codereeve.chain.escalation import alert
 
         result = alert(
             _OWNER,
@@ -572,7 +572,7 @@ def test_alert_info_without_runlog_returns_true_and_does_not_raise() -> None:
         import os
 
         os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
-        from baton_harness.chain.escalation import alert
+        from codereeve.chain.escalation import alert
 
         result = alert(
             _OWNER,
@@ -615,7 +615,7 @@ def test_alert_runlog_failure_does_not_propagate_and_escalate_still_fires(
         import os
 
         os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
-        from baton_harness.chain.escalation import alert
+        from codereeve.chain.escalation import alert
 
         # Must not raise despite emit() failing — alert()'s guard protects
         # the caller.
@@ -703,7 +703,7 @@ class TestAlertThreadsInstallationToken:
             patch.dict("os.environ", {}, clear=False),
         ):
             os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
-            from baton_harness.chain.escalation import alert
+            from codereeve.chain.escalation import alert
 
             # Must not raise TypeError — the kwarg must exist.
             result = alert(
@@ -747,7 +747,7 @@ class TestAlertThreadsInstallationToken:
             patch.dict("os.environ", {}, clear=False),
         ):
             os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
-            from baton_harness.chain.escalation import alert
+            from codereeve.chain.escalation import alert
 
             alert(
                 _OWNER,
@@ -794,7 +794,7 @@ class TestAlertThreadsInstallationToken:
         monkeypatch.delenv("BH_SLACK_WEBHOOK_URL", raising=False)
 
         with patch.object(esc_mod, "_run", side_effect=_spy_run):
-            from baton_harness.chain.escalation import alert
+            from codereeve.chain.escalation import alert
 
             alert(
                 _OWNER,
@@ -843,8 +843,8 @@ class TestAlertThreadsInstallationToken:
         Args:
             monkeypatch: Pytest monkeypatch fixture.
         """
-        import baton_harness.chain.daemon as daemon_mod
-        from baton_harness.chain.merge import MergeOutcome
+        import codereeve.chain.daemon as daemon_mod
+        from codereeve.chain.merge import MergeOutcome
 
         alert_calls: list[dict[str, object]] = []
 
@@ -901,7 +901,7 @@ class TestAlertThreadsInstallationToken:
             import ast
             import inspect
 
-            from baton_harness.chain.daemon import poll
+            from codereeve.chain.daemon import poll
 
             daemon_src = inspect.getsource(poll)
             tree = ast.parse(daemon_src)

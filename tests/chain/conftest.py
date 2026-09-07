@@ -25,13 +25,13 @@ def _auto_patch_reconcile_startup() -> None:  # type: ignore[return]
 
     Patch-target note (#277, Phase 6e): ``run_daemon`` moved to
     ``daemon/poll.py`` and imports ``reconcile_startup`` directly from
-    ``baton_harness.chain.reconcile`` rather than reaching it via a live
+    ``codereeve.chain.reconcile`` rather than reaching it via a live
     ``_daemon_mod`` lookup (RATIFIED explicit multi-target patching, plan
     §6 Q6 -- see poll.py's module docstring). The patch target below is
     repointed to that binding's actual location accordingly.
     """
     with patch(
-        "baton_harness.chain.daemon.poll.reconcile_startup",
+        "codereeve.chain.daemon.poll.reconcile_startup",
         new=AsyncMock(return_value=None),
     ):
         yield

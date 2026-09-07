@@ -1,4 +1,4 @@
-"""Unit tests for baton_harness._auth — GitHub PAT validation gate.
+"""Unit tests for codereeve._auth — GitHub PAT validation gate.
 
 Coverage:
 - Missing/empty token is rejected with a clear error message.
@@ -24,7 +24,7 @@ Coverage:
   worker path regression guard.
 
 All ``gh`` subprocess calls are intercepted by patching
-``baton_harness._auth._run`` so no real network calls are made.
+``codereeve._auth._run`` so no real network calls are made.
 """
 
 from __future__ import annotations
@@ -35,8 +35,8 @@ from unittest.mock import patch
 
 import pytest
 
-import baton_harness._auth as auth_mod
-from baton_harness._auth import (
+import codereeve._auth as auth_mod
+from codereeve._auth import (
     TokenValidationError,
     validate_daemon_token,
     validate_github_token,
@@ -740,7 +740,7 @@ class TestReconcileUsesDaemonValidator:
                 patching.
         """
         monkeypatch.setattr(
-            "baton_harness.chain.reconcile._get_git_credential_helpers",
+            "codereeve.chain.reconcile._get_git_credential_helpers",
             lambda: ["!fake credential helper for tests"],
         )
 
@@ -760,9 +760,9 @@ class TestReconcileUsesDaemonValidator:
         import importlib  # noqa: PLC0415
         from unittest.mock import patch  # noqa: PLC0415
 
-        reconcile = importlib.import_module("baton_harness.chain.reconcile")
-        from baton_harness.chain.obs_config import ObsConfig  # noqa: PLC0415
-        from baton_harness.chain.registry import RepoConfig  # noqa: PLC0415
+        reconcile = importlib.import_module("codereeve.chain.reconcile")
+        from codereeve.chain.obs_config import ObsConfig  # noqa: PLC0415
+        from codereeve.chain.registry import RepoConfig  # noqa: PLC0415
 
         harness_dir = tmp_path / ".baton-harness"
         harness_dir.mkdir(parents=True, exist_ok=True)
@@ -787,7 +787,7 @@ class TestReconcileUsesDaemonValidator:
         cred_file = tmp_path / "fake_credentials.json"
         cred_file.write_text("{}", encoding="utf-8")
         monkeypatch.setattr(
-            "baton_harness.chain.reconcile._OAUTH_CRED_PATH",
+            "codereeve.chain.reconcile._OAUTH_CRED_PATH",
             cred_file,
         )
 
@@ -796,19 +796,19 @@ class TestReconcileUsesDaemonValidator:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 side_effect=lambda token: daemon_called.append(True),
             ),
             patch(
-                "baton_harness.chain.reconcile.validate_github_token",
+                "codereeve.chain.reconcile.validate_github_token",
                 side_effect=lambda **kw: worker_called.append(True),
             ),
             patch(
-                "baton_harness.chain.reconcile.alert",
+                "codereeve.chain.reconcile.alert",
                 return_value=True,
             ),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 return_value=[],
             ),
         ):
@@ -843,9 +843,9 @@ class TestReconcileUsesDaemonValidator:
         import importlib  # noqa: PLC0415
         from unittest.mock import patch  # noqa: PLC0415
 
-        reconcile = importlib.import_module("baton_harness.chain.reconcile")
-        from baton_harness.chain.obs_config import ObsConfig  # noqa: PLC0415
-        from baton_harness.chain.registry import RepoConfig  # noqa: PLC0415
+        reconcile = importlib.import_module("codereeve.chain.reconcile")
+        from codereeve.chain.obs_config import ObsConfig  # noqa: PLC0415
+        from codereeve.chain.registry import RepoConfig  # noqa: PLC0415
 
         harness_dir = tmp_path / ".baton-harness"
         harness_dir.mkdir(parents=True, exist_ok=True)
@@ -872,7 +872,7 @@ class TestReconcileUsesDaemonValidator:
         cred_file = tmp_path / "fake_credentials.json"
         cred_file.write_text("{}", encoding="utf-8")
         monkeypatch.setattr(
-            "baton_harness.chain.reconcile._OAUTH_CRED_PATH",
+            "codereeve.chain.reconcile._OAUTH_CRED_PATH",
             cred_file,
         )
 
@@ -881,11 +881,11 @@ class TestReconcileUsesDaemonValidator:
         # ghs_ tokens — that is the RED signal for this test.
         with (
             patch(
-                "baton_harness.chain.reconcile.alert",
+                "codereeve.chain.reconcile.alert",
                 return_value=True,
             ),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 return_value=[],
             ),
         ):
@@ -923,7 +923,7 @@ class TestWorkerPathAuthUnchanged:
         """
         from unittest.mock import patch  # noqa: PLC0415
 
-        import baton_harness.before_run as before_run_mod  # noqa: PLC0415
+        import codereeve.before_run as before_run_mod  # noqa: PLC0415
 
         worktree = tmp_path / "feat-2-sync"
         worktree.mkdir()
@@ -969,10 +969,10 @@ class TestWorkerPathAuthUnchanged:
         # Also patch validate_daemon_token if it somehow ends up imported
         # in before_run after slice 3a changes.
         with patch(
-            "baton_harness._auth.validate_daemon_token",
+            "codereeve._auth.validate_daemon_token",
             side_effect=fake_daemon_validate,
         ):
-            from baton_harness.before_run import main  # noqa: PLC0415
+            from codereeve.before_run import main  # noqa: PLC0415
 
             result = main()
 

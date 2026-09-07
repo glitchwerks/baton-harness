@@ -1,4 +1,4 @@
-"""Unit tests for baton_harness.after_create — per-worktree dependency setup.
+"""Unit tests for codereeve.after_create — per-worktree dependency setup.
 
 All subprocess calls are intercepted by monkeypatching the module-local
 ``_run`` helper so no real ``npm``/``pip``/``uv`` processes are spawned.
@@ -26,8 +26,8 @@ from unittest.mock import patch
 
 import pytest
 
-import baton_harness.after_create as after_create_mod
-from baton_harness.after_create import main
+import codereeve.after_create as after_create_mod
+from codereeve.after_create import main
 
 # ---------------------------------------------------------------------------
 # Module-level fixtures

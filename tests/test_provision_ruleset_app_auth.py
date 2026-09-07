@@ -1,19 +1,19 @@
 """Issue #200 — bin/provision-ruleset.sh must obtain App-auth credentials.
 
-via ``baton_harness.chain.app_auth`` instead of relying on ambient ``gh``
+via ``codereeve.chain.app_auth`` instead of relying on ambient ``gh``
 auth, and must never fall back to ambient auth if that fails.
 
 Two new optional overrides the script must honour (agreed with the
 router as the seam for this suite, replacing a direct
-``python -m baton_harness.chain.app_auth {jwt|token}`` subprocess call
+``python -m codereeve.chain.app_auth {jwt|token}`` subprocess call
 so tests do not need real BWS_*/PEM credentials):
 
   BH_APP_AUTH_JWT_CMD    — if non-empty, run this value as a shell
                             command to obtain the App JWT (captured
                             stdout), INSTEAD OF invoking
-                            "$_PYTHON" -m baton_harness.chain.app_auth jwt.
+                            "$_PYTHON" -m codereeve.chain.app_auth jwt.
   BH_APP_AUTH_TOKEN_CMD  — same, for the installation token, replacing
-                            "$_PYTHON" -m baton_harness.chain.app_auth token.
+                            "$_PYTHON" -m codereeve.chain.app_auth token.
 
 When either override is unset, the script must fall back to the real
 module invocation (default/production behavior) — see
@@ -58,7 +58,7 @@ Coverage:
 5. Unset-override default path
    (``test_unset_overrides_fall_back_to_real_app_auth_module``): with
    both overrides unset, the script must attempt the real
-   ``"$_PYTHON" -m baton_harness.chain.app_auth {jwt|token}``
+   ``"$_PYTHON" -m codereeve.chain.app_auth {jwt|token}``
    invocation. BWS_PEM_SECRET_ID / BWS_ACCESS_TOKEN are deliberately
    excluded from the subprocess environment (never inherited from the
    ambient environment, regardless of what may be set on the host) so
@@ -669,7 +669,7 @@ def owner_only(real_stat):
 
 
 record("auth_" + sys.argv[-1])
-sys.argv = ["baton_harness.chain.app_auth", sys.argv[-1]]
+sys.argv = ["codereeve.chain.app_auth", sys.argv[-1]]
 with patch("subprocess.run", vault_command), patch(
     "urllib.request.urlopen", mint_response
 ):
@@ -678,10 +678,10 @@ with patch("subprocess.run", vault_command), patch(
             "os.fstat", owner_only(os.fstat)
         ):
             runpy.run_module(
-                "baton_harness.chain.app_auth", run_name="__main__"
+                "codereeve.chain.app_auth", run_name="__main__"
             )
     else:
-        runpy.run_module("baton_harness.chain.app_auth", run_name="__main__")
+        runpy.run_module("codereeve.chain.app_auth", run_name="__main__")
 '''
 
 
@@ -713,7 +713,7 @@ def test_real_app_auth_provider_fallback_precedes_ruleset_mutations(
     python_shim.write_text(
         "#!/usr/bin/env bash\n"
         'if [[ "${1:-}" == -m && '
-        '"${2:-}" == baton_harness.chain.app_auth ]]; then\n'
+        '"${2:-}" == codereeve.chain.app_auth ]]; then\n'
         f'    exec {interpreter} {shlex.quote(driver.as_posix())} "$3"\n'
         "fi\n"
         f'exec {interpreter} "$@"\n',

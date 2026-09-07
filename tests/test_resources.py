@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from baton_harness.resources import (
+from codereeve.resources import (
     RESOURCE_NAMES,
     PackagedResourceError,
     as_path,

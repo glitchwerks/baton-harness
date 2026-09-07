@@ -1,4 +1,4 @@
-"""Unit tests for baton_harness.chain.runlog.
+"""Unit tests for codereeve.chain.runlog.
 
 Tests the JSONL run-record substrate.  All filesystem I/O is
 intercepted by patching the module-local ``_write_line`` seam (mirrors
@@ -28,8 +28,8 @@ from unittest.mock import patch
 
 import pytest
 
-import baton_harness.chain.runlog as runlog_mod
-from baton_harness.chain.runlog import RunLog
+import codereeve.chain.runlog as runlog_mod
+from codereeve.chain.runlog import RunLog
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -192,7 +192,7 @@ def test_emit_swallows_oserror_from_write_line(
         ),
         caplog.at_level(
             logging.WARNING,
-            logger="baton_harness.chain.runlog",
+            logger="codereeve.chain.runlog",
         ),
     ):
         result = log.emit({"event": "test"})
@@ -218,7 +218,7 @@ def test_emit_swallows_file_not_found_from_write_line(
         ),
         caplog.at_level(
             logging.WARNING,
-            logger="baton_harness.chain.runlog",
+            logger="codereeve.chain.runlog",
         ),
     ):
         result = log.emit({"event": "test"})

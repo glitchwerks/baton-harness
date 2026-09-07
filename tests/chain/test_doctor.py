@@ -24,10 +24,10 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from baton_harness import resources
-from baton_harness.chain import app_auth, doctor
-from baton_harness.chain.cli import main
-from baton_harness.chain.doctor import (
+from codereeve import resources
+from codereeve.chain import app_auth, doctor
+from codereeve.chain.cli import main
+from codereeve.chain.doctor import (
     CheckFn,
     CheckResult,
     CheckStatus,
@@ -37,7 +37,7 @@ from baton_harness.chain.doctor import (
     run_gate,
     run_report,
 )
-from baton_harness.chain.ruleset_status import RulesetStatus
+from codereeve.chain.ruleset_status import RulesetStatus
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -357,7 +357,7 @@ def test_file_key_probe_reads_secure_file_without_bws(
     # Windows chmod cannot express POSIX bits; preserve real identity and
     # file I/O while supplying the descriptor mode enforced in production.
     with patch(
-        "baton_harness.chain.app_private_key.os.fstat",
+        "codereeve.chain.app_private_key.os.fstat",
         return_value=os.stat_result(metadata),
     ):
         result = doctor.VAULT_PEM_DRYRUN_CHECK(
@@ -1130,7 +1130,7 @@ def test_expected_config_read_errors_do_not_block_installation(
     if failure_kind == "permission":
         config_path.write_text(_VALID_CONFIG_ENV, encoding="utf-8")
         resolver_patch = patch(
-            "baton_harness.chain.doctor.sandbox_config.resolve_config",
+            "codereeve.chain.doctor.sandbox_config.resolve_config",
             side_effect=PermissionError("config access denied"),
         )
     elif failure_kind == "directory":
@@ -1217,7 +1217,7 @@ def test_live_repository_checks_use_explicit_resolved_config_only(
     )
 
     with patch(
-        "baton_harness.chain.doctor.ruleset_status.ruleset_is_provisioned",
+        "codereeve.chain.doctor.ruleset_status.ruleset_is_provisioned",
         side_effect=ruleset_probe,
     ):
         results = run_report(ctx, (Phase.LIVE,), checks=checks)
@@ -1252,14 +1252,14 @@ def test_pkg_imports_check_imports_every_required_module() -> None:
     """PKG_IMPORTS imports each supported runtime package boundary."""
     check = _get_check("PKG_IMPORTS")
     with patch(
-        "baton_harness.chain.doctor.importlib.import_module"
+        "codereeve.chain.doctor.importlib.import_module"
     ) as import_module:
         result = check(_make_ctx())
     assert result.status is CheckStatus.PASS
     assert [call.args[0] for call in import_module.call_args_list] == [
-        "baton_harness",
-        "baton_harness.chain.cli",
-        "baton_harness.vendor.symphony.config",
+        "codereeve",
+        "codereeve.chain.cli",
+        "codereeve.vendor.symphony.config",
     ]
 
 
@@ -1269,19 +1269,48 @@ def test_pkg_entry_points_check_requires_all_console_scripts() -> None:
     distribution = Mock()
     distribution.entry_points = ()
     with patch(
-        "baton_harness.chain.doctor.metadata.distribution",
+        "codereeve.chain.doctor.metadata.distribution",
+        return_value=distribution,
+    ) as distribution_lookup:
+        result = check(_make_ctx())
+    assert result.status is CheckStatus.FAIL
+    assert "bh-daemon" in result.detail
+    distribution_lookup.assert_called_once_with("codereeve")
+
+
+def test_pkg_entry_points_check_requires_canonical_command() -> None:
+    """Legacy scripts alone cannot satisfy the CodeReeve installation check."""
+    check = _get_check("PKG_ENTRY_POINTS")
+    distribution = Mock()
+    distribution.entry_points = tuple(
+        doctor.metadata.EntryPoint(
+            name=name,
+            value=f"codereeve.legacy_cli:{handler}",
+            group="console_scripts",
+        )
+        for name, handler in (
+            ("bh-after-create", "after_create_main"),
+            ("bh-before-run", "before_run_main"),
+            ("bh-after-run", "after_run_main"),
+            ("bh-daemon", "daemon_main"),
+            ("bh-force-pr-not-merge", "force_pr_not_merge_main"),
+            ("bh-verify-foundation", "verify_foundation_main"),
+        )
+    )
+    with patch(
+        "codereeve.chain.doctor.metadata.distribution",
         return_value=distribution,
     ):
         result = check(_make_ctx())
     assert result.status is CheckStatus.FAIL
-    assert "bh-daemon" in result.detail
+    assert result.detail == "Missing installed console scripts: codereeve"
 
 
 def test_pkg_resources_check_reads_every_packaged_resource() -> None:
     """PKG_RESOURCES reads every member of the canonical resource manifest."""
     check = _get_check("PKG_RESOURCES")
     with patch(
-        "baton_harness.chain.doctor.resources.read_bytes", return_value=b""
+        "codereeve.chain.doctor.resources.read_bytes", return_value=b""
     ) as read:
         result = check(_make_ctx())
     assert result.status is CheckStatus.PASS
@@ -1296,7 +1325,7 @@ def test_pkg_workflow_check_parses_the_packaged_default() -> None:
     packaged_path = Path("packaged-WORKFLOW.md")
     with (
         patch(
-            "baton_harness.chain.cli._workflow_path",
+            "codereeve.chain.cli._workflow_path",
             return_value=nullcontext(packaged_path),
         ),
         patch.object(doctor, "load_workflow", return_value=object()) as load,
@@ -1898,7 +1927,7 @@ class TestForcePrTripwire:
         check = _get_check("FORCE_PR_TRIPWIRE")
         monkeypatch.setattr(doctor, "CATALOG", [check])
         with patch(
-            "baton_harness.chain.cli._assert_force_pr_not_merge_tripwire",
+            "codereeve.chain.cli._assert_force_pr_not_merge_tripwire",
             return_value=None,
         ):
             results = doctor.run_report(_make_ctx())
@@ -1913,7 +1942,7 @@ class TestForcePrTripwire:
         check = _get_check("FORCE_PR_TRIPWIRE")
         monkeypatch.setattr(doctor, "CATALOG", [check])
         with patch(
-            "baton_harness.chain.cli._assert_force_pr_not_merge_tripwire",
+            "codereeve.chain.cli._assert_force_pr_not_merge_tripwire",
             side_effect=RuntimeError("hook parser drifted"),
         ):
             results = doctor.run_report(_make_ctx())
@@ -2174,14 +2203,14 @@ class TestRulesetChecks:
     identically here via shared parametrization.
 
     Patch-target note: patched at ``ruleset_status``'s own defining
-    module (``baton_harness.chain.ruleset_status.ruleset_is_provisioned``),
+    module (``codereeve.chain.ruleset_status.ruleset_is_provisioned``),
     mirroring the ``FORCE_PR_TRIPWIRE`` precedent above (a Check calling
     a dotted-imported function is patched at that function's *source*
     module, not a re-exported name on ``doctor.py``). If the
-    implementation instead does ``from baton_harness.chain.ruleset_status
+    implementation instead does ``from codereeve.chain.ruleset_status
     import ruleset_is_provisioned`` (a bare name) inside ``doctor.py``,
     this patch target will need to move to
-    ``baton_harness.chain.doctor.ruleset_is_provisioned`` -- flagged in
+    ``codereeve.chain.doctor.ruleset_is_provisioned`` -- flagged in
     the return summary.
 
     Every test supplies BOTH ``ctx.env`` (``BH_REPO_OWNER``/
@@ -2198,7 +2227,7 @@ class TestRulesetChecks:
         _write_config_env(tmp_path, _VALID_CONFIG_ENV)
 
         with patch(
-            "baton_harness.chain.ruleset_status.ruleset_is_provisioned",
+            "codereeve.chain.ruleset_status.ruleset_is_provisioned",
             return_value=RulesetStatus.MATCH,
         ):
             result = check(
@@ -2231,7 +2260,7 @@ class TestRulesetChecks:
         _write_config_env(tmp_path, _VALID_CONFIG_ENV)
 
         with patch(
-            "baton_harness.chain.ruleset_status.ruleset_is_provisioned",
+            "codereeve.chain.ruleset_status.ruleset_is_provisioned",
             return_value=status,
         ):
             result = check(
@@ -2262,7 +2291,7 @@ class TestRulesetChecks:
         _write_config_env(tmp_path, _VALID_CONFIG_ENV)
 
         with patch(
-            "baton_harness.chain.ruleset_status.ruleset_is_provisioned",
+            "codereeve.chain.ruleset_status.ruleset_is_provisioned",
             return_value=RulesetStatus.ERROR,
         ):
             result = check(

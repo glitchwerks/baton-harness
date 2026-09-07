@@ -1,4 +1,4 @@
-"""Unit tests for baton_harness.chain.recovery.
+"""Unit tests for codereeve.chain.recovery.
 
 Tests provenance-hardened crash / unblock recovery reconstruction.
 All subprocess calls are intercepted by patching the module-local
@@ -34,8 +34,8 @@ from unittest.mock import patch
 
 import pytest
 
-import baton_harness.chain.recovery as recovery_mod
-from baton_harness.chain.recovery import (
+import codereeve.chain.recovery as recovery_mod
+from codereeve.chain.recovery import (
     RecoveryResult,
     _fetch_labels,
     _fetch_open_prs,

@@ -18,6 +18,7 @@ Thumbs.db
 
 # Python
 .venv/
+/.venv-codereeve/
 __pycache__/
 *.egg-info/
 .pytest_cache/

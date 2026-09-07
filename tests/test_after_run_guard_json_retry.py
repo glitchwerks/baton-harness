@@ -55,8 +55,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from baton_harness import after_run
-from baton_harness.after_run import RunOutcome, _classify, _current_labels
+from codereeve import after_run
+from codereeve.after_run import RunOutcome, _classify, _current_labels
 
 # ---------------------------------------------------------------------------
 # Re-use the same helper the existing test suite uses
@@ -127,14 +127,14 @@ class TestClassifyGuardedJsonLoadsNonJson:
         ``JSONDecodeError`` on any non-JSON string.  After the fix this
         must be caught and treated as transient.
         """
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             # Every gh pr list attempt returns a non-JSON banner
             mock_run.side_effect = (
                 list(_GIT_PREFIX_CLEAN)
                 + [_completed(stdout=_NON_JSON_BANNERS[0])] * 5
             )
             with patch(
-                "baton_harness.after_run.time",
+                "codereeve.after_run.time",
                 create=True,
             ) as mock_time:
                 mock_time.sleep = MagicMock()
@@ -157,13 +157,13 @@ class TestClassifyGuardedJsonLoadsNonJson:
         ``COMMITTED_NO_PR`` triggers ``agent-ready`` removal.  A transient
         API response banner must not be misread as "no PR found".
         """
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = (
                 list(_GIT_PREFIX_CLEAN)
                 + [_completed(stdout=_NON_JSON_BANNERS[1])] * 5
             )
             with patch(
-                "baton_harness.after_run.time",
+                "codereeve.after_run.time",
                 create=True,
             ) as mock_time:
                 mock_time.sleep = MagicMock()
@@ -186,13 +186,13 @@ class TestClassifyGuardedJsonLoadsNonJson:
 
         The implementation must not parse garbage as a truthy list of PRs.
         """
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = (
                 list(_GIT_PREFIX_CLEAN)
                 + [_completed(stdout=_NON_JSON_BANNERS[2])] * 5
             )
             with patch(
-                "baton_harness.after_run.time",
+                "codereeve.after_run.time",
                 create=True,
             ) as mock_time:
                 mock_time.sleep = MagicMock()
@@ -228,7 +228,7 @@ class TestMainGuardedJsonLoadsNoAgentReadyRemoval:
         monkeypatch.chdir(worktree)
         monkeypatch.delenv("CHAIN_BASE_BRANCH", raising=False)
 
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             # Provide enough responses: git prefix + repeated non-JSON for
             # all retry attempts
             mock_run.side_effect = list(_GIT_PREFIX_CLEAN) + [
@@ -238,7 +238,7 @@ class TestMainGuardedJsonLoadsNoAgentReadyRemoval:
                 _completed(stdout=_NON_JSON_BANNERS[0]),
                 _completed(stdout=_NON_JSON_BANNERS[0]),
             ]
-            with patch("baton_harness.after_run.time", create=True) as _mt:
+            with patch("codereeve.after_run.time", create=True) as _mt:
                 _mt.sleep = MagicMock()
                 result = after_run.main()
 
@@ -274,13 +274,13 @@ class TestMainGuardedJsonLoadsNoAgentReadyRemoval:
         monkeypatch.chdir(worktree)
         monkeypatch.delenv("CHAIN_BASE_BRANCH", raising=False)
 
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = (
                 list(_GIT_PREFIX_CLEAN)
                 + [_completed(stdout=banner) for banner in _NON_JSON_BANNERS]
                 + [_completed(stdout=_NON_JSON_BANNERS[0])]
             )
-            with patch("baton_harness.after_run.time", create=True) as _mt:
+            with patch("codereeve.after_run.time", create=True) as _mt:
                 _mt.sleep = MagicMock()
                 result = after_run.main()
 
@@ -315,12 +315,12 @@ class TestClassifyReturncodeChecked:
         ``COMMITTED_NO_PR`` falsely signals "no PR exists, re-run" and
         would cause a duplicate dispatch.
         """
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = (
                 list(_GIT_PREFIX_CLEAN)
                 + [_completed(returncode=1, stdout="")] * 5
             )
-            with patch("baton_harness.after_run.time", create=True) as _mt:
+            with patch("codereeve.after_run.time", create=True) as _mt:
                 _mt.sleep = MagicMock()
                 try:
                     result = _classify()
@@ -346,12 +346,12 @@ class TestClassifyReturncodeChecked:
         monkeypatch.chdir(worktree)
         monkeypatch.delenv("CHAIN_BASE_BRANCH", raising=False)
 
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = (
                 list(_GIT_PREFIX_CLEAN)
                 + [_completed(returncode=1, stdout="")] * 5
             )
-            with patch("baton_harness.after_run.time", create=True) as _mt:
+            with patch("codereeve.after_run.time", create=True) as _mt:
                 _mt.sleep = MagicMock()
                 result = after_run.main()
 
@@ -378,7 +378,7 @@ class TestClassifyReturncodeChecked:
         A gh auth / network error appears in stderr with a non-zero code; the
         empty stdout must not be misread as an empty PR list.
         """
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = (
                 list(_GIT_PREFIX_CLEAN)
                 + [
@@ -390,7 +390,7 @@ class TestClassifyReturncodeChecked:
                 ]
                 * 5
             )
-            with patch("baton_harness.after_run.time", create=True) as _mt:
+            with patch("codereeve.after_run.time", create=True) as _mt:
                 _mt.sleep = MagicMock()
                 try:
                     result = _classify()
@@ -421,13 +421,13 @@ class TestClassifyRetryWithRecovery:
         The retry must exhaust transient failures and succeed on the valid
         third attempt.
         """
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = list(_GIT_PREFIX_CLEAN) + [
                 _completed(stdout=_NON_JSON_BANNERS[0]),  # attempt 1 fail
                 _completed(stdout=_NON_JSON_BANNERS[1]),  # attempt 2 fail
                 _completed(stdout=_PR_JSON_OPEN),  # attempt 3 success
             ]
-            with patch("baton_harness.after_run.time", create=True) as _mt:
+            with patch("codereeve.after_run.time", create=True) as _mt:
                 _mt.sleep = MagicMock()
                 result = _classify()
 
@@ -440,13 +440,13 @@ class TestClassifyRetryWithRecovery:
         self,
     ) -> None:
         """First 2 gh pr list calls non-zero, 3rd valid → PR_OPENED."""
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = list(_GIT_PREFIX_CLEAN) + [
                 _completed(returncode=1, stdout=""),  # attempt 1 fail
                 _completed(returncode=1, stdout=""),  # attempt 2 fail
                 _completed(stdout=_PR_JSON_OPEN),  # attempt 3 success
             ]
-            with patch("baton_harness.after_run.time", create=True) as _mt:
+            with patch("codereeve.after_run.time", create=True) as _mt:
                 _mt.sleep = MagicMock()
                 result = _classify()
 
@@ -465,14 +465,12 @@ class TestClassifyRetryWithRecovery:
         module-level alias) so this patch point is valid.
         """
         sleep_mock = MagicMock()
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = list(_GIT_PREFIX_CLEAN) + [
                 _completed(stdout=_NON_JSON_BANNERS[0]),  # attempt 1 fail
                 _completed(stdout=_PR_JSON_OPEN),  # attempt 2 success
             ]
-            with patch(
-                "baton_harness.after_run.time", create=True
-            ) as mock_time:
+            with patch("codereeve.after_run.time", create=True) as mock_time:
                 mock_time.sleep = sleep_mock
                 _classify()
 
@@ -508,11 +506,9 @@ class TestClassifyRetryWithRecovery:
                 return _completed(stdout="feat-32-guard\n")
             return _completed(stdout="")
 
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = _tracking_side_effect
-            with patch(
-                "baton_harness.after_run.time", create=True
-            ) as mock_time:
+            with patch("codereeve.after_run.time", create=True) as mock_time:
                 mock_time.sleep = MagicMock()
                 try:
                     _classify()
@@ -532,13 +528,11 @@ class TestClassifyRetryWithRecovery:
         wrapper must only sleep when there is actually a transient failure.
         """
         sleep_mock = MagicMock()
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = list(_GIT_PREFIX_CLEAN) + [
                 _completed(stdout=_PR_JSON_OPEN)
             ]
-            with patch(
-                "baton_harness.after_run.time", create=True
-            ) as mock_time:
+            with patch("codereeve.after_run.time", create=True) as mock_time:
                 mock_time.sleep = sleep_mock
                 result = _classify()
 
@@ -590,7 +584,7 @@ class TestCurrentLabelsGuardedParse:
         Asserts the internal function does not raise; the observable effect
         on the label-mutation contract is asserted in the main() tests below.
         """
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.return_value = _completed(
                 stdout="<!DOCTYPE html>rate limited</html>"
             )
@@ -609,7 +603,7 @@ class TestCurrentLabelsGuardedParse:
         ``JSONDecodeError`` or ``KeyError``.  Observable mutation contract
         is asserted in the main() tests below.
         """
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.return_value = _completed(
                 returncode=1, stdout="", stderr="auth error"
             )
@@ -644,7 +638,7 @@ class TestCurrentLabelsGuardedParse:
         monkeypatch.chdir(worktree)
         monkeypatch.delenv("CHAIN_BASE_BRANCH", raising=False)
 
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             # _classify: git status, git rev-parse, git cherry (ahead),
             #            git rev-parse --abbrev-ref (branch), gh pr list (ok)
             # _current_labels: gh issue view → non-JSON
@@ -663,7 +657,7 @@ class TestCurrentLabelsGuardedParse:
                 _completed(stdout=""),
                 _completed(stdout=""),
             ]
-            with patch("baton_harness.after_run.time", create=True) as _mt:
+            with patch("codereeve.after_run.time", create=True) as _mt:
                 _mt.sleep = MagicMock()
                 result = after_run.main()
 
@@ -702,7 +696,7 @@ class TestCurrentLabelsGuardedParse:
         monkeypatch.chdir(worktree)
         monkeypatch.delenv("CHAIN_BASE_BRANCH", raising=False)
 
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 _completed(stdout=""),  # git status — clean
                 _completed(stdout="abc123\n"),  # git rev-parse base SHA
@@ -715,7 +709,7 @@ class TestCurrentLabelsGuardedParse:
                 _completed(stdout=""),
                 _completed(stdout=""),
             ]
-            with patch("baton_harness.after_run.time", create=True) as _mt:
+            with patch("codereeve.after_run.time", create=True) as _mt:
                 _mt.sleep = MagicMock()
                 result = after_run.main()
 
@@ -750,7 +744,7 @@ class TestCurrentLabelsGuardedParse:
         monkeypatch.chdir(worktree)
         monkeypatch.delenv("CHAIN_BASE_BRANCH", raising=False)
 
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             # Use NO_COMMITS path (no commits ahead) so _reconcile_labels
             # is called for a non-TRANSIENT_ERROR outcome — the current
             # Priority 3 path would normally remove agent-ready + add blocked.
@@ -766,7 +760,7 @@ class TestCurrentLabelsGuardedParse:
                 _completed(stdout=""),
                 _completed(stdout=""),
             ]
-            with patch("baton_harness.after_run.time", create=True) as _mt:
+            with patch("codereeve.after_run.time", create=True) as _mt:
                 _mt.sleep = MagicMock()
                 result = after_run.main()
 
@@ -797,7 +791,7 @@ class TestCurrentLabelsGuardedParse:
         monkeypatch.chdir(worktree)
         monkeypatch.delenv("CHAIN_BASE_BRANCH", raising=False)
 
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 _completed(stdout=""),  # git status — clean
                 _completed(stdout="abc123\n"),  # git rev-parse base SHA
@@ -810,7 +804,7 @@ class TestCurrentLabelsGuardedParse:
                 _completed(stdout=""),
                 _completed(stdout=""),
             ]
-            with patch("baton_harness.after_run.time", create=True) as _mt:
+            with patch("codereeve.after_run.time", create=True) as _mt:
                 _mt.sleep = MagicMock()
                 result = after_run.main()
 
@@ -871,7 +865,7 @@ class TestClassifyGitCherryReturncodeChecked:
 
         FORWARD-SPEC: RED until Phase 2 — current code returns NO_COMMITS.
         """
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 _completed(stdout=""),  # git status — clean
                 _completed(stdout="abc123\n"),  # git rev-parse base SHA
@@ -906,7 +900,7 @@ class TestClassifyGitCherryReturncodeChecked:
         monkeypatch.chdir(worktree)
         monkeypatch.delenv("CHAIN_BASE_BRANCH", raising=False)
 
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             # Provide extra completeds to absorb the gh issue view call and
             # any label-mutation calls that unfixed code makes via the
             # NO_COMMITS / _current_labels path; the assertion catches the
@@ -921,7 +915,7 @@ class TestClassifyGitCherryReturncodeChecked:
                 _completed(stdout=""),
                 _completed(stdout=""),
             ]
-            with patch("baton_harness.after_run.time", create=True) as _mt:
+            with patch("codereeve.after_run.time", create=True) as _mt:
                 _mt.sleep = MagicMock()
                 result = after_run.main()
 
@@ -956,7 +950,7 @@ class TestClassifyGitCherryReturncodeChecked:
         monkeypatch.chdir(worktree)
         monkeypatch.delenv("CHAIN_BASE_BRANCH", raising=False)
 
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 _completed(stdout=""),  # git status — clean
                 _completed(stdout="abc123\n"),  # git rev-parse base SHA
@@ -966,7 +960,7 @@ class TestClassifyGitCherryReturncodeChecked:
                 _completed(stdout=""),
                 _completed(stdout=""),
             ]
-            with patch("baton_harness.after_run.time", create=True) as _mt:
+            with patch("codereeve.after_run.time", create=True) as _mt:
                 _mt.sleep = MagicMock()
                 after_run.main()
 
@@ -988,7 +982,7 @@ class TestClassifyGitCherryReturncodeChecked:
 
         FORWARD-SPEC: RED until Phase 2.
         """
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 _completed(stdout=""),  # git status — clean
                 _completed(stdout="abc123\n"),  # git rev-parse base SHA

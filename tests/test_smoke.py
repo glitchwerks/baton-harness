@@ -6,15 +6,15 @@ importable and the declared version is present.
 
 import pytest
 
-import baton_harness
+import codereeve
 
 pytestmark = pytest.mark.fast
 
 
 def test_version_is_string() -> None:
     """__version__ must be a non-empty string."""
-    assert isinstance(baton_harness.__version__, str)
-    assert baton_harness.__version__
+    assert isinstance(codereeve.__version__, str)
+    assert codereeve.__version__
 
 
 def test_version_matches_pyproject() -> None:
@@ -25,6 +25,4 @@ def test_version_matches_pyproject() -> None:
     """
     import importlib.metadata
 
-    assert baton_harness.__version__ == importlib.metadata.version(
-        "baton-harness"
-    )
+    assert codereeve.__version__ == importlib.metadata.version("codereeve")

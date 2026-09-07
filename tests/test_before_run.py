@@ -1,4 +1,4 @@
-"""Unit tests for baton_harness.before_run — branch sync onto chain base.
+"""Unit tests for codereeve.before_run — branch sync onto chain base.
 
 All subprocess calls are intercepted by monkeypatching the module-local
 ``_run`` helper so no real git operations are performed.
@@ -28,9 +28,9 @@ from pathlib import Path
 
 import pytest
 
-import baton_harness.before_run as before_run_mod
-from baton_harness._auth import TokenValidationError
-from baton_harness.before_run import _run_capture, main
+import codereeve.before_run as before_run_mod
+from codereeve._auth import TokenValidationError
+from codereeve.before_run import _run_capture, main
 
 # ---------------------------------------------------------------------------
 # Helpers

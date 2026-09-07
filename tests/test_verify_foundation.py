@@ -17,9 +17,9 @@ from subprocess import CompletedProcess, TimeoutExpired
 
 import pytest
 
-import baton_harness.verify_foundation as verify_foundation
-from baton_harness.resources import RESOURCE_NAMES
-from baton_harness.verify_foundation import (
+import codereeve.verify_foundation as verify_foundation
+from codereeve.resources import RESOURCE_NAMES
+from codereeve.verify_foundation import (
     EXPECTED_ENTRY_POINTS,
     FoundationError,
     _dev_only_distributions,
@@ -39,6 +39,18 @@ _IDENTITY = {
     "development": False,
 }
 
+_CANONICAL_ENTRY_POINTS = frozenset({"codereeve"})
+_LEGACY_ENTRY_POINTS = frozenset(
+    {
+        "bh-after-create",
+        "bh-before-run",
+        "bh-after-run",
+        "bh-daemon",
+        "bh-force-pr-not-merge",
+        "bh-verify-foundation",
+    }
+)
+
 
 def _write_sdist(root: Path, extra: str | None = None) -> Path:
     """Create an actual source archive for extraction and identity checks."""
@@ -47,7 +59,7 @@ def _write_sdist(root: Path, extra: str | None = None) -> Path:
         "source/pyproject.toml": b"[project]\n",
         "source/hatch_build.py": b"# hook\n",
         "source/uv.lock": (_REPO_ROOT / "uv.lock").read_bytes(),
-        "source/src/baton_harness/build_provenance.json": json.dumps(
+        "source/src/codereeve/build_provenance.json": json.dumps(
             _IDENTITY
         ).encode(),
     }
@@ -90,9 +102,10 @@ def test_archive_rejects_invalid_record(
     path = tmp_path / "bad.whl"
     with zipfile.ZipFile(path, "w") as archive:
         if record is not None:
-            archive.writestr("baton_harness/build_provenance.json", record)
+            archive.writestr("codereeve/build_provenance.json", record)
         archive.writestr(
-            "baton_harness.dist-info/METADATA", "Version: 0.0.0+foundation\n"
+            "codereeve-0.0.0+foundation.dist-info/METADATA",
+            "Version: 0.0.0+foundation\n",
         )
     with pytest.raises(FoundationError):
         verify_foundation.inspect_provenance_archive(path, _IDENTITY)
@@ -149,10 +162,10 @@ def test_wheel_metadata_version_must_match_record(tmp_path: Path) -> None:
     path = tmp_path / "mismatch.whl"
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr(
-            "baton_harness/build_provenance.json", json.dumps(_IDENTITY)
+            "codereeve/build_provenance.json", json.dumps(_IDENTITY)
         )
         archive.writestr(
-            "baton_harness.dist-info/METADATA", "Version: 9.9.9\n"
+            "codereeve-9.9.9.dist-info/METADATA", "Version: 9.9.9\n"
         )
     with pytest.raises(FoundationError, match="installed version"):
         verify_foundation.inspect_provenance_archive(path, _IDENTITY)
@@ -163,7 +176,7 @@ def test_source_lock_bytes_must_match_record(tmp_path: Path) -> None:
     path = tmp_path / "mismatch.tar.gz"
     with tarfile.open(path, "w:gz") as archive:
         for name, data in {
-            "source/src/baton_harness/build_provenance.json": json.dumps(
+            "source/src/codereeve/build_provenance.json": json.dumps(
                 _IDENTITY
             ).encode(),
             "source/uv.lock": b"different lock",
@@ -266,12 +279,25 @@ class _SmokeRunner:
         normalized = tuple(str(part) for part in command)
         self.calls.append((normalized, cwd, env, input_text, timeout_seconds))
         command_name = Path(normalized[0]).stem
-        lifecycle = {"bh-after-create", "bh-before-run", "bh-after-run"}
+        lifecycle = {
+            ("codereeve", "hook", "after-create"),
+            ("codereeve", "hook", "before-run"),
+            ("codereeve", "hook", "after-run"),
+            ("bh-after-create",),
+            ("bh-before-run",),
+            ("bh-after-run",),
+        }
+        command_identity = (command_name, *normalized[1:])
+        is_legacy = command_name in _LEGACY_ENTRY_POINTS
+        is_provenance = (
+            "provenance" in normalized or "--provenance" in normalized
+        )
+        is_doctor = "doctor" in normalized or "--doctor" in normalized
         return CompletedProcess(
             normalized,
-            1 if command_name in lifecycle else 0,
+            1 if command_identity in lifecycle else 0,
             json.dumps(_IDENTITY)
-            if "--provenance" in normalized
+            if is_provenance
             else json.dumps(
                 {
                     "schema_version": 1,
@@ -301,11 +327,20 @@ class _SmokeRunner:
                     },
                 }
             )
-            if "--doctor" in normalized
-            else "bh-daemon 0.0.0+foundation"
+            if is_doctor
+            else (
+                "codereeve daemon 0.0.0+foundation"
+                if command_name == "bh-daemon"
+                else "codereeve 0.0.0+foundation"
+            )
             if "--version" in normalized
             else "",
-            "",
+            (
+                f"{command_name} is deprecated; use codereeve; "
+                "removed in 0.4.0\n"
+                if is_legacy
+                else ""
+            ),
         )
 
 
@@ -331,33 +366,33 @@ def _write_wheel(
     Returns:
         Path to the generated archive.
     """
-    wheel = root / "baton_harness-0.1.0-py3-none-any.whl"
+    wheel = root / "codereeve-0.1.0-py3-none-any.whl"
     scripts = EXPECTED_ENTRY_POINTS if entry_points is None else entry_points
     declarations = "\n".join(
-        f"{name} = baton_harness.fake:main" for name in sorted(scripts)
+        f"{name} = codereeve.fake:main" for name in sorted(scripts)
     )
     with zipfile.ZipFile(wheel, "w") as archive:
         archive.writestr(
-            "baton_harness/build_provenance.json", json.dumps(_IDENTITY)
+            "codereeve/build_provenance.json", json.dumps(_IDENTITY)
         )
         archive.writestr(
-            "baton_harness-0.1.0.dist-info/METADATA",
+            "codereeve-0.1.0.dist-info/METADATA",
             "Version: 0.0.0+foundation\n",
         )
         for name in resources:
-            archive.writestr(f"baton_harness/resources/{name}", b"test")
+            archive.writestr(f"codereeve/resources/{name}", b"test")
         if duplicate_resource is not None:
             archive.writestr(
-                f"baton_harness/resources/{duplicate_resource}",
+                f"codereeve/resources/{duplicate_resource}",
                 b"duplicate",
             )
         if shadow_resource is not None:
             archive.writestr(
-                f"shadow/baton_harness/resources/{shadow_resource}",
+                f"shadow/codereeve/resources/{shadow_resource}",
                 b"shadow",
             )
         archive.writestr(
-            "baton_harness-0.1.0.dist-info/entry_points.txt",
+            "codereeve-0.1.0.dist-info/entry_points.txt",
             entry_points_text
             if entry_points_text is not None
             else f"[console_scripts]\n{declarations}\n",
@@ -390,6 +425,21 @@ def test_cli_defaults_to_python_floor_and_313(
 def test_complete_wheel_archive_passes(tmp_path: Path) -> None:
     """A wheel carrying every resource and entry point is accepted."""
     inspect_wheel(_write_wheel(tmp_path))
+
+
+def test_entry_point_sets_keep_canonical_and_compatibility_distinct() -> None:
+    """Canonical validation cannot hide a missing compatibility wrapper."""
+    assert (
+        getattr(verify_foundation, "CANONICAL_ENTRY_POINTS", frozenset())
+        == _CANONICAL_ENTRY_POINTS
+    )
+    assert (
+        getattr(verify_foundation, "LEGACY_ENTRY_POINTS", frozenset())
+        == _LEGACY_ENTRY_POINTS
+    )
+    assert EXPECTED_ENTRY_POINTS == (
+        _CANONICAL_ENTRY_POINTS | _LEGACY_ENTRY_POINTS
+    )
 
 
 def test_wheel_without_resource_fails_closed(tmp_path: Path) -> None:
@@ -425,7 +475,7 @@ def test_shadow_resource_path_cannot_satisfy_wheel_contract(
 
 def test_invalid_wheel_archive_is_normalized(tmp_path: Path) -> None:
     """A corrupt wheel reports a stable foundation error."""
-    wheel = tmp_path / "baton_harness-0.1.0-py3-none-any.whl"
+    wheel = tmp_path / "codereeve-0.1.0-py3-none-any.whl"
     wheel.write_bytes(b"not a zip archive")
 
     with pytest.raises(FoundationError, match="could not inspect wheel"):
@@ -443,15 +493,69 @@ def test_malformed_entry_point_metadata_is_normalized(tmp_path: Path) -> None:
         inspect_wheel(wheel)
 
 
-def test_wheel_without_entry_point_fails_closed(tmp_path: Path) -> None:
-    """Omitting an installed command wrapper cannot pass validation."""
+def test_wheel_without_canonical_entry_point_fails_closed(
+    tmp_path: Path,
+) -> None:
+    """Omitting the canonical command cannot pass wheel validation."""
+    wheel = _write_wheel(
+        tmp_path,
+        entry_points=EXPECTED_ENTRY_POINTS - {"codereeve"},
+    )
+
+    with pytest.raises(FoundationError, match="codereeve"):
+        inspect_wheel(wheel)
+
+
+def test_wheel_without_compatibility_entry_point_fails_closed(
+    tmp_path: Path,
+) -> None:
+    """Omitting a supported 0.2 compatibility wrapper fails validation."""
     wheel = _write_wheel(
         tmp_path,
         entry_points=EXPECTED_ENTRY_POINTS - {"bh-daemon"},
     )
 
-    with pytest.raises(FoundationError, match="wheel entry points missing"):
+    with pytest.raises(FoundationError, match="bh-daemon"):
         inspect_wheel(wheel)
+
+
+def test_wheel_rejects_provenance_only_under_legacy_package(
+    tmp_path: Path,
+) -> None:
+    """Legacy package placement cannot satisfy canonical provenance."""
+    wheel = tmp_path / "legacy-provenance.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr(
+            "baton_harness/build_provenance.json", json.dumps(_IDENTITY)
+        )
+        archive.writestr(
+            "codereeve-0.0.0+foundation.dist-info/METADATA",
+            "Version: 0.0.0+foundation\n",
+        )
+
+    with pytest.raises(FoundationError, match="canonical provenance record"):
+        verify_foundation.inspect_provenance_archive(wheel, _IDENTITY)
+
+
+def test_sdist_rejects_provenance_only_under_legacy_package(
+    tmp_path: Path,
+) -> None:
+    """The sdist must carry provenance under the canonical source tree."""
+    source = tmp_path / "legacy-provenance.tar.gz"
+    contents = {
+        "source/src/baton_harness/build_provenance.json": json.dumps(
+            _IDENTITY
+        ).encode(),
+        "source/uv.lock": (_REPO_ROOT / "uv.lock").read_bytes(),
+    }
+    with tarfile.open(source, "w:gz") as archive:
+        for name, data in contents.items():
+            member = tarfile.TarInfo(name)
+            member.size = len(data)
+            archive.addfile(member, io.BytesIO(data))
+
+    with pytest.raises(FoundationError, match="canonical provenance record"):
+        verify_foundation.inspect_provenance_archive(source, _IDENTITY)
 
 
 def test_repository_verification_runs_locked_install_sequence(
@@ -470,9 +574,14 @@ def test_repository_verification_runs_locked_install_sequence(
     assert len(build_calls) == 2
     for call in build_calls:
         assert call[2] is not None
-        assert call[2]["BH_BUILD_VERSION"] == "0.0.0+foundation"
-        assert call[2]["BH_BUILD_SOURCE_REVISION"] == "a" * 40
-        assert "BH_BUILD_DEVELOPMENT" not in call[2]
+        assert call[2]["CODEREEVE_BUILD_VERSION"] == "0.0.0+foundation"
+        assert call[2]["CODEREEVE_BUILD_SOURCE_REVISION"] == "a" * 40
+        assert "CODEREEVE_BUILD_DEVELOPMENT" not in call[2]
+        assert not {
+            "BH_BUILD_VERSION",
+            "BH_BUILD_SOURCE_REVISION",
+            "BH_BUILD_DEVELOPMENT",
+        } & set(call[2])
     assert build_calls[1][1] != _REPO_ROOT
     commands = [
         command for command in commands if command[:2] != ("git", "rev-parse")
@@ -504,7 +613,7 @@ def test_repository_verification_runs_locked_install_sequence(
     assert commands[6][0:3] == ("uv", "pip", "install")
     assert "--no-deps" in commands[6]
     assert commands[7][0:3] == ("uv", "pip", "check")
-    assert commands[8][1] == "--installed-smoke"
+    assert commands[8][1:3] == ("verify", "--installed-smoke")
     forbidden = {
         commands[8][index + 1]
         for index, argument in enumerate(commands[8])
@@ -604,21 +713,22 @@ def test_dev_only_distributions_exclude_runtime_closure(
 
 def test_complete_installed_state_passes(tmp_path: Path) -> None:
     """A non-editable in-prefix install with all commands is accepted."""
-    package_file = tmp_path / "venv" / "site-packages" / "baton_harness"
+    package_file = tmp_path / "venv" / "site-packages" / "codereeve"
     package_file.mkdir(parents=True)
     _validate_installed_state(
         direct_url_json='{"archive_info": {}}',
         package_file=package_file / "__init__.py",
         prefix=tmp_path / "venv",
         entry_points=EXPECTED_ENTRY_POINTS,
-        installed_distributions=frozenset({"baton-harness", "jinja2"}),
+        installed_distributions=frozenset({"codereeve", "jinja2"}),
+        incompatible_distributions=frozenset({"baton-harness"}),
         forbidden_distributions=frozenset({"pytest", "ruff"}),
     )
 
 
 def test_editable_installed_state_fails_closed(tmp_path: Path) -> None:
     """An editable wheel replacement cannot pass production validation."""
-    package_file = tmp_path / "venv" / "site-packages" / "baton_harness.py"
+    package_file = tmp_path / "venv" / "site-packages" / "codereeve.py"
 
     with pytest.raises(FoundationError, match="editable installation"):
         _validate_installed_state(
@@ -626,7 +736,8 @@ def test_editable_installed_state_fails_closed(tmp_path: Path) -> None:
             package_file=package_file,
             prefix=tmp_path / "venv",
             entry_points=EXPECTED_ENTRY_POINTS,
-            installed_distributions=frozenset({"baton-harness"}),
+            installed_distributions=frozenset({"codereeve"}),
+            incompatible_distributions=frozenset({"baton-harness"}),
             forbidden_distributions=frozenset(),
         )
 
@@ -640,7 +751,7 @@ def test_invalid_direct_url_shape_fails_closed(
     direct_url_json: str,
 ) -> None:
     """Structurally corrupt direct-URL metadata cannot raise AttributeError."""
-    package_file = tmp_path / "venv" / "site-packages" / "baton_harness.py"
+    package_file = tmp_path / "venv" / "site-packages" / "codereeve.py"
 
     with pytest.raises(
         FoundationError, match="invalid installed direct_url.json"
@@ -650,7 +761,8 @@ def test_invalid_direct_url_shape_fails_closed(
             package_file=package_file,
             prefix=tmp_path / "venv",
             entry_points=EXPECTED_ENTRY_POINTS,
-            installed_distributions=frozenset({"baton-harness"}),
+            installed_distributions=frozenset({"codereeve"}),
+            incompatible_distributions=frozenset({"baton-harness"}),
             forbidden_distributions=frozenset(),
         )
 
@@ -662,25 +774,31 @@ def test_package_imported_outside_environment_fails_closed(
     with pytest.raises(FoundationError, match="outside environment"):
         _validate_installed_state(
             direct_url_json=None,
-            package_file=tmp_path / "checkout" / "baton_harness.py",
+            package_file=tmp_path / "checkout" / "codereeve.py",
             prefix=tmp_path / "venv",
             entry_points=EXPECTED_ENTRY_POINTS,
-            installed_distributions=frozenset({"baton-harness"}),
+            installed_distributions=frozenset({"codereeve"}),
+            incompatible_distributions=frozenset({"baton-harness"}),
             forbidden_distributions=frozenset(),
         )
 
 
-def test_missing_installed_entry_point_fails_closed(tmp_path: Path) -> None:
-    """A missing generated wrapper cannot pass installed validation."""
+@pytest.mark.parametrize("missing", ["codereeve", "bh-daemon"])
+def test_missing_installed_entry_point_fails_closed(
+    tmp_path: Path,
+    missing: str,
+) -> None:
+    """Missing canonical or compatibility wrappers fail validation."""
     with pytest.raises(
-        FoundationError, match="installed entry points missing"
+        FoundationError, match=f"installed entry points missing: {missing}"
     ):
         _validate_installed_state(
             direct_url_json=None,
-            package_file=tmp_path / "venv" / "baton_harness.py",
+            package_file=tmp_path / "venv" / "codereeve.py",
             prefix=tmp_path / "venv",
-            entry_points=EXPECTED_ENTRY_POINTS - {"bh-daemon"},
-            installed_distributions=frozenset({"baton-harness"}),
+            entry_points=EXPECTED_ENTRY_POINTS - {missing},
+            installed_distributions=frozenset({"codereeve"}),
+            incompatible_distributions=frozenset({"baton-harness"}),
             forbidden_distributions=frozenset(),
         )
 
@@ -690,11 +808,35 @@ def test_dev_only_distribution_fails_closed(tmp_path: Path) -> None:
     with pytest.raises(FoundationError, match="dev-only distributions"):
         _validate_installed_state(
             direct_url_json=None,
-            package_file=tmp_path / "venv" / "baton_harness.py",
+            package_file=tmp_path / "venv" / "codereeve.py",
             prefix=tmp_path / "venv",
             entry_points=EXPECTED_ENTRY_POINTS,
-            installed_distributions=frozenset({"baton-harness", "pytest"}),
+            installed_distributions=frozenset({"codereeve", "pytest"}),
+            incompatible_distributions=frozenset({"baton-harness"}),
             forbidden_distributions=frozenset({"pytest", "ruff"}),
+        )
+
+
+@pytest.mark.parametrize(
+    "legacy_name", ["baton-harness", "BATON_HARNESS", "Baton.Harness"]
+)
+def test_incompatible_distribution_fails_closed(
+    tmp_path: Path,
+    legacy_name: str,
+) -> None:
+    """An overlapping old distribution makes the installation ambiguous."""
+    with pytest.raises(
+        FoundationError,
+        match="incompatible distributions installed: baton-harness",
+    ):
+        _validate_installed_state(
+            direct_url_json=None,
+            package_file=tmp_path / "venv" / "codereeve.py",
+            prefix=tmp_path / "venv",
+            entry_points=EXPECTED_ENTRY_POINTS,
+            installed_distributions=frozenset({"codereeve", legacy_name}),
+            incompatible_distributions=frozenset({"baton-harness"}),
+            forbidden_distributions=frozenset(),
         )
 
 
@@ -721,14 +863,25 @@ def test_installed_smoke_uses_environment_scripts_directory(
     scripts = prefix / "bin"
     resolved_interpreter = tmp_path / "uv-python" / "bin" / "python"
     selected_directories: list[Path] = []
+    validation_calls: list[dict[str, object]] = []
+    distribution_names: list[str] = []
+    distribution_lookup = metadata.distribution
+
+    def record_distribution(name: str) -> metadata.Distribution:
+        distribution_names.append(name)
+        return distribution_lookup(name)
+
+    def record_validation(**kwargs: object) -> None:
+        validation_calls.append(kwargs)
 
     monkeypatch.setattr(sys, "prefix", str(prefix))
     monkeypatch.setattr(sys, "executable", str(resolved_interpreter))
     monkeypatch.setattr(sysconfig, "get_path", lambda name: str(scripts))
+    monkeypatch.setattr(metadata, "distribution", record_distribution)
     monkeypatch.setattr(
         verify_foundation,
         "_validate_installed_state",
-        lambda **kwargs: None,
+        record_validation,
     )
     monkeypatch.setattr(
         verify_foundation,
@@ -745,6 +898,10 @@ def test_installed_smoke_uses_environment_scripts_directory(
 
     assert selected_directories == [scripts]
     assert selected_directories[0].is_relative_to(Path(sys.prefix))
+    assert distribution_names == ["codereeve"]
+    assert validation_calls[0]["incompatible_distributions"] == frozenset(
+        {"baton-harness"}
+    )
 
 
 def test_installed_resource_read_failure_is_normalized() -> None:
@@ -810,12 +967,17 @@ def test_installation_smokes_have_no_ambient_authority(
         timeout_seconds: float = 300,
     ) -> CompletedProcess[str]:
         """Inspect the real launch environment while temporary homes exist."""
-        if "--installed-smoke" in command or "--doctor" in command:
+        if (
+            "--installed-smoke" in command
+            or "doctor" in command
+            or "--doctor" in command
+        ):
             smoke_calls.append(tuple(command))
             assert env is not None
             assert not set(secret_keys) & set(env)
             assert env["PATH"] == "execution-path"
             assert env["SYSTEMROOT"] == "execution-system-root"
+            assert env["PYTHONUTF8"] == "1"
             for key in home_keys:
                 home = Path(env[key])
                 assert home.is_relative_to(tmp_path)
@@ -836,7 +998,7 @@ def test_installation_smokes_have_no_ambient_authority(
         )
     else:
         _smoke_entry_points(tmp_path / "bin", runner=runner)
-    assert len(smoke_calls) == 1
+    assert len(smoke_calls) == (1 if outer else 2)
     assert os.environ["GH_TOKEN"] == "dummy-ambient-authority"
 
 
@@ -846,32 +1008,127 @@ def test_installed_entry_points_use_only_safe_smokes(tmp_path: Path) -> None:
 
     _smoke_entry_points(tmp_path / "bin", runner=runner)
 
-    commands = {Path(call[0][0]).stem: call for call in runner.calls}
-    assert set(commands) == EXPECTED_ENTRY_POINTS - {"bh-verify-foundation"}
-    daemon_args = [
-        call[0][1:]
-        for call in runner.calls
-        if Path(call[0][0]).stem == "bh-daemon"
+    canonical = [
+        call for call in runner.calls if Path(call[0][0]).stem == "codereeve"
     ]
-    assert ("--help",) in daemon_args
-    assert ("--version",) in daemon_args
-    assert ("--provenance",) in daemon_args
-    assert (
-        "--doctor",
-        "--phase",
-        "installation",
-        "--format",
-        "json",
-        "--strict",
-    ) in daemon_args
-    assert commands["bh-force-pr-not-merge"][3] == "{}"
-    for name in ("bh-after-create", "bh-before-run", "bh-after-run"):
-        assert commands[name][0][1:] == ()
-        assert commands[name][1] != _REPO_ROOT
+    assert {call[0][1:] for call in canonical} == {
+        ("--version",),
+        ("provenance",),
+        (
+            "doctor",
+            "--phase",
+            "installation",
+            "--format",
+            "json",
+            "--strict",
+        ),
+        ("hook", "after-create"),
+        ("hook", "before-run"),
+        ("hook", "after-run"),
+        ("hook", "force-pr-not-merge"),
+        ("verify", "--help"),
+    }
+    legacy = [
+        call
+        for call in runner.calls
+        if Path(call[0][0]).stem in _LEGACY_ENTRY_POINTS
+    ]
+    assert {Path(call[0][0]).stem for call in legacy} == _LEGACY_ENTRY_POINTS
+    guard_calls = [
+        call
+        for call in runner.calls
+        if call[0][1:]
+        in {
+            ("hook", "force-pr-not-merge"),
+            (),
+        }
+        and Path(call[0][0]).stem in {"codereeve", "bh-force-pr-not-merge"}
+    ]
+    assert len(guard_calls) == 2
+    assert all(call[3] == "{}" for call in guard_calls)
+    lifecycle_names = {
+        "codereeve",
+        "bh-after-create",
+        "bh-before-run",
+        "bh-after-run",
+    }
+    lifecycle_calls = [
+        call
+        for call in runner.calls
+        if Path(call[0][0]).stem in lifecycle_names
+        and (Path(call[0][0]).stem != "codereeve" or call[0][1:2] == ("hook",))
+        and call[0][1:] != ("hook", "force-pr-not-merge")
+    ]
+    assert len(lifecycle_calls) == 6
+    assert all(call[1] != _REPO_ROOT for call in lifecycle_calls)
     assert all(call[4] == 30 for call in runner.calls)
 
 
-@pytest.mark.parametrize("flag", ["--provenance", "--doctor"])
+@pytest.mark.parametrize("notice_mode", ["missing", "stdout"])
+def test_legacy_smoke_requires_removal_notice_on_stderr(
+    tmp_path: Path,
+    notice_mode: str,
+) -> None:
+    """A legacy wrapper must keep its notice off machine-readable stdout."""
+    normal = _SmokeRunner()
+
+    def runner(
+        command: Sequence[str],
+        *,
+        cwd: Path,
+        env: Mapping[str, str] | None = None,
+        input_text: str | None = None,
+        timeout_seconds: float = 300,
+    ) -> CompletedProcess[str]:
+        result = normal(
+            command,
+            cwd=cwd,
+            env=env,
+            input_text=input_text,
+            timeout_seconds=timeout_seconds,
+        )
+        if Path(command[0]).stem == "bh-daemon":
+            if notice_mode == "stdout":
+                result.stdout += result.stderr
+            result.stderr = ""
+        return result
+
+    with pytest.raises(FoundationError, match="removal notice"):
+        _smoke_entry_points(tmp_path / "bin", runner=runner)
+
+
+def test_legacy_smoke_rejects_duplicate_removal_notice(
+    tmp_path: Path,
+) -> None:
+    """A legacy wrapper must emit its removal notice exactly once."""
+    normal = _SmokeRunner()
+
+    def runner(
+        command: Sequence[str],
+        *,
+        cwd: Path,
+        env: Mapping[str, str] | None = None,
+        input_text: str | None = None,
+        timeout_seconds: float = 300,
+    ) -> CompletedProcess[str]:
+        result = normal(
+            command,
+            cwd=cwd,
+            env=env,
+            input_text=input_text,
+            timeout_seconds=timeout_seconds,
+        )
+        if Path(command[0]).stem == "bh-daemon":
+            result.stderr *= 2
+        return result
+
+    with pytest.raises(FoundationError, match="removal notice"):
+        _smoke_entry_points(tmp_path / "bin", runner=runner)
+
+
+@pytest.mark.parametrize(
+    "flag", ["provenance", "--provenance", "doctor", "--doctor"]
+)
 @pytest.mark.parametrize(
     "output", ["invalid", "[]", "{}", "wrong-phase", "failed", "empty-checks"]
 )
@@ -898,7 +1155,7 @@ def test_installed_json_smoke_rejects_bad_output(
         )
         if flag in command:
             if output in {"wrong-phase", "failed", "empty-checks"}:
-                if flag != "--doctor":
+                if flag not in {"doctor", "--doctor"}:
                     result.stdout = "{}"
                 else:
                     report = json.loads(result.stdout)
@@ -983,7 +1240,7 @@ def test_installed_doctor_rejects_malformed_schema(
             input_text=input_text,
             timeout_seconds=timeout_seconds,
         )
-        if "--doctor" in command:
+        if "doctor" in command:
             report = json.loads(result.stdout)
             if field.startswith("check."):
                 name = field.removeprefix("check.")
@@ -1048,3 +1305,83 @@ def test_installed_smoke_mode_skips_repository_build(
         == 0
     )
     assert calls == [frozenset({"pytest", "ruff"})]
+
+
+def test_public_installed_mode_verifies_active_install(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Public installed verification cannot enter the repository build path."""
+    calls: list[frozenset[str]] = []
+
+    monkeypatch.setattr(
+        verify_foundation,
+        "verify_installed",
+        calls.append,
+    )
+    monkeypatch.setattr(
+        verify_foundation,
+        "verify_repository",
+        lambda *_args, **_kwargs: pytest.fail(
+            "public installed mode entered repository verification"
+        ),
+    )
+
+    assert verify_foundation.main(["--installed"]) == 0
+    assert calls == [frozenset()]
+
+
+def test_verifier_rejects_abbreviated_installed_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reject abbreviated selection of installed verification."""
+    monkeypatch.setattr(
+        verify_foundation,
+        "verify_installed",
+        lambda _forbidden: None,
+    )
+
+    with pytest.raises(SystemExit, match="2"):
+        verify_foundation.main(["--inst"])
+
+
+def test_verifier_help_exposes_only_public_installed_mode(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Name the canonical command and hide recursion internals in help."""
+    with pytest.raises(SystemExit, match="0"):
+        verify_foundation.main(["--help"])
+
+    output = capsys.readouterr().out
+    assert output.startswith("usage: codereeve verify")
+    assert "--installed" in output
+    assert "--installed-smoke" not in output
+
+
+def test_verifier_output_uses_canonical_command_name(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Verifier success and failure messages use the canonical command name."""
+    monkeypatch.setattr(
+        verify_foundation,
+        "verify_installed",
+        lambda _forbidden: None,
+    )
+    assert verify_foundation.main(["--installed"]) == 0
+    assert (
+        capsys.readouterr().out == "codereeve verify: all invariants passed\n"
+    )
+
+    def fail_installed(_forbidden: frozenset[str]) -> None:
+        raise FoundationError("staged install rejected")
+
+    monkeypatch.setattr(
+        verify_foundation,
+        "verify_installed",
+        fail_installed,
+    )
+    assert verify_foundation.main(["--installed"]) == 1
+    assert (
+        capsys.readouterr().err
+        == "codereeve verify: staged install rejected\n"
+    )

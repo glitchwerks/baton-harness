@@ -63,9 +63,9 @@ from unittest.mock import Mock
 
 import pytest
 
-from baton_harness.chain import sandbox_config
-from baton_harness.chain.app_private_key import AppPrivateKeyProvider
-from baton_harness.chain.sandbox_config import (
+from codereeve.chain import sandbox_config
+from codereeve.chain.app_private_key import AppPrivateKeyProvider
+from codereeve.chain.sandbox_config import (
     SandboxConfig,
     SandboxConfigError,
     apply_config,

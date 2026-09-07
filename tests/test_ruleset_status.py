@@ -1,4 +1,4 @@
-"""Unit tests for baton_harness.chain.ruleset_status.
+"""Unit tests for codereeve.chain.ruleset_status.
 
 Drives ``ruleset_is_provisioned`` with a hand-rolled fake runner that
 returns canned ``subprocess.CompletedProcess`` objects.
@@ -71,7 +71,7 @@ import pytest
 
 # ---------------------------------------------------------------------------
 # We deliberately do NOT import the implementation here at module level.
-# Each test imports from ``baton_harness.chain.ruleset_status`` inline so
+# Each test imports from ``codereeve.chain.ruleset_status`` inline so
 # that an ImportError in one test is isolated and doesn't abort collection.
 # ---------------------------------------------------------------------------
 
@@ -84,8 +84,8 @@ _COMPARE_KEYS_CFG = _HARNESS / "config" / "ruleset.compare-keys.json"
 
 def test_default_ruleset_sources_are_packaged_resources() -> None:
     """Ruleset status must not require the harness checkout at runtime."""
-    import baton_harness.chain.ruleset_status as rs_mod
-    from baton_harness.resources import resource
+    import codereeve.chain.ruleset_status as rs_mod
+    from codereeve.resources import resource
 
     expected = {
         "_MAIN_CFG": "ruleset.main.json",
@@ -355,7 +355,7 @@ def test_match_when_both_rulesets_present_and_content_equal() -> None:
     placeholder-substituted local configs.  The function must return
     ``RulesetStatus.MATCH``.
     """
-    from baton_harness.chain.ruleset_status import (
+    from codereeve.chain.ruleset_status import (
         RulesetStatus,
         ruleset_is_provisioned,
     )
@@ -380,7 +380,7 @@ def test_drift_when_feature_ruleset_content_differs() -> None:
     The feature ruleset returned by BY-ID has an empty bypass_actors list.
     The module must detect the difference and return ``RulesetStatus.DRIFT``.
     """
-    from baton_harness.chain.ruleset_status import (
+    from codereeve.chain.ruleset_status import (
         RulesetStatus,
         ruleset_is_provisioned,
     )
@@ -409,7 +409,7 @@ def test_drift_when_main_ruleset_content_differs() -> None:
     instead of the expected ``"active"``.  The module must detect the
     difference and return ``RulesetStatus.DRIFT``.
     """
-    from baton_harness.chain.ruleset_status import (
+    from codereeve.chain.ruleset_status import (
         RulesetStatus,
         ruleset_is_provisioned,
     )
@@ -437,7 +437,7 @@ def test_drift_not_triggered_by_comment_key_in_live_ruleset() -> None:
     The ``_comment`` key is excluded from the compare-keys set.  A live
     ruleset that adds a ``_comment`` operator note must NOT cause DRIFT.
     """
-    from baton_harness.chain.ruleset_status import (
+    from codereeve.chain.ruleset_status import (
         RulesetStatus,
         ruleset_is_provisioned,
     )
@@ -467,7 +467,7 @@ def test_drift_not_triggered_by_server_managed_keys() -> None:
     Fields like ``created_at``, ``updated_at``, ``id``, and ``_links``
     are not in the compare-keys set and must not trigger DRIFT.
     """
-    from baton_harness.chain.ruleset_status import (
+    from codereeve.chain.ruleset_status import (
         RulesetStatus,
         ruleset_is_provisioned,
     )
@@ -502,7 +502,7 @@ def test_absent_when_main_ruleset_missing_from_list() -> None:
     When the LIST response contains only the feature ruleset, the main
     ruleset is missing and the function must return ``RulesetStatus.ABSENT``.
     """
-    from baton_harness.chain.ruleset_status import (
+    from codereeve.chain.ruleset_status import (
         RulesetStatus,
         ruleset_is_provisioned,
     )
@@ -526,7 +526,7 @@ def test_absent_when_feature_ruleset_missing_from_list() -> None:
     When the LIST response contains only the main ruleset, the feature
     ruleset is missing and the function must return ``RulesetStatus.ABSENT``.
     """
-    from baton_harness.chain.ruleset_status import (
+    from codereeve.chain.ruleset_status import (
         RulesetStatus,
         ruleset_is_provisioned,
     )
@@ -553,7 +553,7 @@ def test_absent_when_byid_returns_http_404_via_stdout_status_line() -> None:
 
     Stdout of the 404 response starts with ``HTTP/2.0 404 Not Found``.
     """
-    from baton_harness.chain.ruleset_status import (
+    from codereeve.chain.ruleset_status import (
         RulesetStatus,
         ruleset_is_provisioned,
     )
@@ -580,7 +580,7 @@ def test_error_when_list_returns_http_500_via_stdout_status_line() -> None:
     Charge 8: the HTTP status is parsed from the first line of stdout.
     A 500-class error on the LIST call must return ``RulesetStatus.ERROR``.
     """
-    from baton_harness.chain.ruleset_status import (
+    from codereeve.chain.ruleset_status import (
         RulesetStatus,
         ruleset_is_provisioned,
     )
@@ -602,7 +602,7 @@ def test_error_when_byid_returns_http_500_after_successful_list() -> None:
     the daemon halts startup rather than attempting to re-provision a
     ruleset that may exist but is unreachable.
     """
-    from baton_harness.chain.ruleset_status import (
+    from codereeve.chain.ruleset_status import (
         RulesetStatus,
         ruleset_is_provisioned,
     )
@@ -630,7 +630,7 @@ def test_error_when_list_body_is_non_json() -> None:
     A non-JSON body (e.g. HTML error page) after a 200 status line
     cannot be parsed.  The module must return ``RulesetStatus.ERROR``.
     """
-    from baton_harness.chain.ruleset_status import (
+    from codereeve.chain.ruleset_status import (
         RulesetStatus,
         ruleset_is_provisioned,
     )
@@ -655,7 +655,7 @@ def test_b1_runner_called_with_discovered_numeric_ids() -> None:
       path after ``/rulesets/``.
     - Final status is MATCH (bodies match after id resolution).
     """
-    from baton_harness.chain.ruleset_status import (
+    from codereeve.chain.ruleset_status import (
         RulesetStatus,
         ruleset_is_provisioned,
     )
@@ -718,7 +718,7 @@ def test_b1_all_gh_api_calls_include_flag_present() -> None:
     ``--include`` to every ``gh api`` invocation.  This test verifies via
     call-args inspection that ``--include`` appears in all runner calls.
     """
-    from baton_harness.chain.ruleset_status import (
+    from codereeve.chain.ruleset_status import (
         RulesetStatus,
         ruleset_is_provisioned,
     )
@@ -756,7 +756,7 @@ def test_compare_keys_loaded_from_shared_config_file(
     This locks the contract that the compare-keys are loaded from disk,
     not from any in-module ``_COMPARE_KEYS`` literal.
     """
-    from baton_harness.chain.ruleset_status import (
+    from codereeve.chain.ruleset_status import (
         RulesetStatus,
         ruleset_is_provisioned,
     )
@@ -784,7 +784,7 @@ def test_compare_keys_loaded_from_shared_config_file(
     )
 
     # Monkeypatch the module's resolved config path.
-    import baton_harness.chain.ruleset_status as rs_mod
+    import codereeve.chain.ruleset_status as rs_mod
 
     monkeypatch.setattr(rs_mod, "_COMPARE_KEYS_CFG", tmp_cfg)
 
@@ -824,8 +824,8 @@ def test_compare_keys_config_missing_produces_defined_behavior(
         tmp_path: Pytest tmp_path fixture.
         monkeypatch: Pytest monkeypatch fixture.
     """
-    import baton_harness.chain.ruleset_status as rs_mod
-    from baton_harness.chain.ruleset_status import ruleset_is_provisioned
+    import codereeve.chain.ruleset_status as rs_mod
+    from codereeve.chain.ruleset_status import ruleset_is_provisioned
 
     # Point the module at a non-existent file.
     missing = tmp_path / "does-not-exist.json"
@@ -843,7 +843,7 @@ def test_compare_keys_config_missing_produces_defined_behavior(
     try:
         result = ruleset_is_provisioned("o", "r", app_id="111", runner=runner)
         # If no exception: must not silently return MATCH on drifted content.
-        from baton_harness.chain.ruleset_status import RulesetStatus
+        from codereeve.chain.ruleset_status import RulesetStatus
 
         assert result is not RulesetStatus.MATCH, (
             "When compare-keys config is missing, a drifted ruleset must "
@@ -873,8 +873,8 @@ def test_compare_keys_config_malformed_non_json(
         tmp_path: Pytest tmp_path fixture.
         monkeypatch: Pytest monkeypatch fixture.
     """
-    import baton_harness.chain.ruleset_status as rs_mod
-    from baton_harness.chain.ruleset_status import ruleset_is_provisioned
+    import codereeve.chain.ruleset_status as rs_mod
+    from codereeve.chain.ruleset_status import ruleset_is_provisioned
 
     bad_cfg = tmp_path / "bad.json"
     bad_cfg.write_text("not json at all }{", encoding="utf-8")
@@ -891,7 +891,7 @@ def test_compare_keys_config_malformed_non_json(
 
     try:
         result = ruleset_is_provisioned("o", "r", app_id="111", runner=runner)
-        from baton_harness.chain.ruleset_status import RulesetStatus
+        from codereeve.chain.ruleset_status import RulesetStatus
 
         assert result is not RulesetStatus.MATCH, (
             "Non-JSON compare-keys config must not silently yield MATCH "
@@ -922,8 +922,8 @@ def test_compare_keys_config_empty_list_does_not_silently_match(
         tmp_path: Pytest tmp_path fixture.
         monkeypatch: Pytest monkeypatch fixture.
     """
-    import baton_harness.chain.ruleset_status as rs_mod
-    from baton_harness.chain.ruleset_status import ruleset_is_provisioned
+    import codereeve.chain.ruleset_status as rs_mod
+    from codereeve.chain.ruleset_status import ruleset_is_provisioned
 
     empty_cfg = tmp_path / "empty.json"
     empty_cfg.write_text("[]", encoding="utf-8")
@@ -940,7 +940,7 @@ def test_compare_keys_config_empty_list_does_not_silently_match(
 
     try:
         result = ruleset_is_provisioned("o", "r", app_id="111", runner=runner)
-        from baton_harness.chain.ruleset_status import RulesetStatus
+        from codereeve.chain.ruleset_status import RulesetStatus
 
         assert result is not RulesetStatus.MATCH, (
             "Empty compare-keys list must not silently yield MATCH "
@@ -964,7 +964,7 @@ def test_placeholder_substituted_with_int_app_id_before_compare() -> None:
     This confirms the module converts the string to int before comparing
     against the live API response (which returns numbers as integers).
     """
-    from baton_harness.chain.ruleset_status import (
+    from codereeve.chain.ruleset_status import (
         RulesetStatus,
         ruleset_is_provisioned,
     )
@@ -993,7 +993,7 @@ def test_drift_when_app_id_does_not_match_live_actor_id() -> None:
     Confirms the placeholder substitution actually affects the comparison:
     passing a different app_id must detect the mismatch as DRIFT.
     """
-    from baton_harness.chain.ruleset_status import (
+    from codereeve.chain.ruleset_status import (
         RulesetStatus,
         ruleset_is_provisioned,
     )
@@ -1026,7 +1026,7 @@ def test_stderr_containing_404_digits_with_http_200_stdout_not_absent() -> (
 
     The result is MATCH (both rulesets present and content-equal).
     """
-    from baton_harness.chain.ruleset_status import (
+    from codereeve.chain.ruleset_status import (
         RulesetStatus,
         ruleset_is_provisioned,
     )
@@ -1055,7 +1055,7 @@ def test_stderr_http_404_string_ignored_when_stdout_says_200() -> None:
     the stdout status line indicates HTTP 200.  The old brittle heuristic
     (``'HTTP 404' in stderr``) is explicitly removed by Charge 8.
     """
-    from baton_harness.chain.ruleset_status import (
+    from codereeve.chain.ruleset_status import (
         RulesetStatus,
         ruleset_is_provisioned,
     )
@@ -1098,7 +1098,7 @@ def test_provisioned_despite_github_server_defaults_main() -> None:
     divergences flip the result to DRIFT even though the ruleset is
     correctly provisioned.  A fixed comparator must still return MATCH.
     """
-    from baton_harness.chain.ruleset_status import (
+    from codereeve.chain.ruleset_status import (
         RulesetStatus,
         ruleset_is_provisioned,
     )
@@ -1154,7 +1154,7 @@ def test_provisioned_despite_github_server_defaults_feature() -> None:
     reflect the post-#330 ruleset shape; the original 2026-07-04 capture had
     only three rules because it predates that fix.
     """
-    from baton_harness.chain.ruleset_status import (
+    from codereeve.chain.ruleset_status import (
         RulesetStatus,
         ruleset_is_provisioned,
     )
@@ -1220,7 +1220,7 @@ def test_rules_equal_drift_when_current_missing_duplicate_rule_type() -> None:
     compare): two desired vs. one current for the same type is DRIFT,
     not MATCH, because a genuine restriction went missing.
     """
-    from baton_harness.chain.ruleset_status import _rules_equal
+    from codereeve.chain.ruleset_status import _rules_equal
 
     desired_rules: list[object] = [
         {
@@ -1268,7 +1268,7 @@ def test_rules_equal_match_duplicate_type_order_independent() -> None:
     order — the comparison must still report MATCH. The multiset
     compare must not depend on array position.
     """
-    from baton_harness.chain.ruleset_status import _rules_equal
+    from codereeve.chain.ruleset_status import _rules_equal
 
     jira_rule = {
         "type": "commit_message_pattern",
@@ -1453,7 +1453,7 @@ def test_expected_bypass_verdict_never_when_app_not_in_bypass_actors() -> None:
     Deliberately uses a ruleset name unrelated to "main" to prove the
     derivation is keyed by bypass_actors membership, not by name.
     """
-    from baton_harness.chain.ruleset_status import _expected_bypass_verdict
+    from codereeve.chain.ruleset_status import _expected_bypass_verdict
 
     admin_only_config: dict[str, Any] = {
         "name": "some-other-ruleset-name",
@@ -1476,7 +1476,7 @@ def test_expected_bypass_verdict_always_when_app_is_bypass_actor() -> None:
     Deliberately uses a ruleset name unrelated to "feature" to prove the
     derivation is keyed by bypass_actors membership, not by name.
     """
-    from baton_harness.chain.ruleset_status import _expected_bypass_verdict
+    from codereeve.chain.ruleset_status import _expected_bypass_verdict
 
     app_bypass_config: dict[str, Any] = {
         "name": "yet-another-name",
@@ -1533,7 +1533,7 @@ def test_check_ruleset_signals_degrades_to_error_when_runner_times_out(
     Args:
         tmp_path: Pytest tmp_path fixture.
     """
-    from baton_harness.chain.ruleset_status import (
+    from codereeve.chain.ruleset_status import (
         RulesetStatus,
         check_ruleset_signals,
     )
@@ -1578,7 +1578,7 @@ def test_check_ruleset_signals_match_when_all_three_signals_align(
     the pinned baseline exactly. Neither live body carries
     ``bypass_actors`` at all (the App-token-omission case).
     """
-    from baton_harness.chain.ruleset_status import (
+    from codereeve.chain.ruleset_status import (
         RulesetStatus,
         check_ruleset_signals,
     )
@@ -1615,7 +1615,7 @@ def test_check_ruleset_signals_drift_when_main_bypass_verdict_is_always(
     that must surface as DRIFT naming the ``current_user_can_bypass``
     field, the main ruleset, and both the expected and live values.
     """
-    from baton_harness.chain.ruleset_status import (
+    from codereeve.chain.ruleset_status import (
         _MAIN_NAME,
         RulesetStatus,
         check_ruleset_signals,
@@ -1653,7 +1653,7 @@ def test_check_ruleset_signals_drift_when_main_bypass_verdict_is_bypass(
     any live value other than the expected "never" on main must DRIFT,
     including a non-enum-standard corrupted value like "bypass".
     """
-    from baton_harness.chain.ruleset_status import (
+    from codereeve.chain.ruleset_status import (
         RulesetStatus,
         check_ruleset_signals,
     )
@@ -1686,7 +1686,7 @@ def test_check_ruleset_signals_drift_when_feature_bypass_verdict_is_never(
     ``current_user_can_bypass`` field, the feature ruleset, and both
     values.
     """
-    from baton_harness.chain.ruleset_status import (
+    from codereeve.chain.ruleset_status import (
         _FEATURE_NAME,
         RulesetStatus,
         check_ruleset_signals,
@@ -1730,7 +1730,7 @@ def test_check_ruleset_signals_drift_when_main_updated_at_differs(
     be sufficient to surface DRIFT naming the ``updated_at`` field, the
     main ruleset, and both timestamp values.
     """
-    from baton_harness.chain.ruleset_status import (
+    from codereeve.chain.ruleset_status import (
         _MAIN_NAME,
         RulesetStatus,
         check_ruleset_signals,
@@ -1769,7 +1769,7 @@ def test_check_ruleset_signals_drift_when_feature_updated_at_differs(
 
     Mirrors the main-side test for the feature ruleset.
     """
-    from baton_harness.chain.ruleset_status import (
+    from codereeve.chain.ruleset_status import (
         _FEATURE_NAME,
         RulesetStatus,
         check_ruleset_signals,
@@ -1810,7 +1810,7 @@ def test_check_ruleset_signals_drift_on_third_actor_added_via_updated_at(
     ruleset was mutated — this test pins that the ``updated_at``
     version-pin alone is sufficient to catch the mutation.
     """
-    from baton_harness.chain.ruleset_status import (
+    from codereeve.chain.ruleset_status import (
         RulesetStatus,
         check_ruleset_signals,
     )
@@ -1862,7 +1862,7 @@ def test_check_ruleset_signals_not_provisioned_when_baseline_missing(
     baseline there's nothing to compare against, so the function must
     short-circuit before making any GitHub call.
     """
-    from baton_harness.chain.ruleset_status import (
+    from codereeve.chain.ruleset_status import (
         RulesetStatus,
         check_ruleset_signals,
     )
@@ -1888,7 +1888,7 @@ def test_check_ruleset_signals_not_provisioned_distinct_from_drift(
     Locks the enum-level distinction the router briefing requires:
     baseline-missing must never be reported (or checked) as DRIFT.
     """
-    from baton_harness.chain.ruleset_status import RulesetStatus
+    from codereeve.chain.ruleset_status import RulesetStatus
 
     assert RulesetStatus.NOT_PROVISIONED is not RulesetStatus.DRIFT
     assert RulesetStatus.NOT_PROVISIONED != RulesetStatus.DRIFT
@@ -1904,7 +1904,7 @@ def test_check_ruleset_signals_not_provisioned_when_repo_key_missing(
     functionally equivalent to "not provisioned for this repo" and must
     fail closed the same way as a wholly missing file.
     """
-    from baton_harness.chain.ruleset_status import (
+    from codereeve.chain.ruleset_status import (
         RulesetStatus,
         check_ruleset_signals,
     )
@@ -1934,7 +1934,7 @@ def test_check_ruleset_signals_baseline_path_defaults_to_env_var(
     resolve it from the ``BH_PROJECT_ROOT`` environment variable rather
     than requiring every call site to compute the path itself.
     """
-    from baton_harness.chain.ruleset_status import (
+    from codereeve.chain.ruleset_status import (
         RulesetStatus,
         check_ruleset_signals,
     )
@@ -1988,7 +1988,7 @@ def test_check_ruleset_signals_match_when_only_bypass_actors_differs(
     the ``current_user_can_bypass`` and ``updated_at`` signals speak to
     bypass configuration under this scheme.
     """
-    from baton_harness.chain.ruleset_status import (
+    from codereeve.chain.ruleset_status import (
         RulesetStatus,
         check_ruleset_signals,
     )
@@ -2031,7 +2031,7 @@ def test_check_ruleset_signals_drift_names_structural_key_that_differs(
     the DRIFT detail names that key, the feature ruleset, and both
     values.
     """
-    from baton_harness.chain.ruleset_status import (
+    from codereeve.chain.ruleset_status import (
         _FEATURE_NAME,
         RulesetStatus,
         check_ruleset_signals,

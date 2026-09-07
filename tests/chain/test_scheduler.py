@@ -1,4 +1,4 @@
-"""Unit tests for baton_harness.chain.scheduler.
+"""Unit tests for codereeve.chain.scheduler.
 
 ``scheduler.py`` wraps ``graphlib.TopologicalSorter`` with a ``parked``
 set so failed or blocked issues and their transitive dependents are
@@ -24,7 +24,7 @@ import graphlib
 
 import pytest
 
-from baton_harness.chain.scheduler import IssueScheduler
+from codereeve.chain.scheduler import IssueScheduler
 
 # ---------------------------------------------------------------------------
 # Helpers

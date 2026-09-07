@@ -8,14 +8,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import baton_harness.chain.daemon as daemon_mod
-from baton_harness.chain.daemon.park import (
+import codereeve.chain.daemon as daemon_mod
+from codereeve.chain.daemon.park import (
     ParkClass,
     ParkContext,
     park_issue,
 )
-from baton_harness.chain.failure_tally import FailureTally
-from baton_harness.chain.merge import MergeOutcome
+from codereeve.chain.failure_tally import FailureTally
+from codereeve.chain.merge import MergeOutcome
 
 
 def _context(tmp_path: Path, *, count: int = 0) -> ParkContext:
@@ -49,14 +49,14 @@ def test_charged_park_restores_or_terminalises_at_budget(
     context = _context(tmp_path, count=prior_count)
     with (
         patch(
-            "baton_harness.chain.daemon._fetch_issue_labels",
+            "codereeve.chain.daemon._fetch_issue_labels",
             side_effect=[
                 {"agent-done", "agent-in-progress"},
                 set(expected_add),
             ],
         ),
-        patch("baton_harness.chain.daemon._label_edit") as edit,
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon._label_edit") as edit,
+        patch("codereeve.chain.daemon.alert", return_value=True),
     ):
         park_issue(
             context,
@@ -81,11 +81,11 @@ def test_uncharged_park_restores_without_charging(tmp_path: Path) -> None:
     context = _context(tmp_path, count=1)
     with (
         patch(
-            "baton_harness.chain.daemon._fetch_issue_labels",
+            "codereeve.chain.daemon._fetch_issue_labels",
             side_effect=[{"agent-in-progress"}, {"agent-ready"}],
         ),
-        patch("baton_harness.chain.daemon._label_edit") as edit,
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon._label_edit") as edit,
+        patch("codereeve.chain.daemon.alert", return_value=True),
     ):
         park_issue(
             context,
@@ -113,11 +113,11 @@ def test_non_restoring_classes_add_no_state_label(
     context = _context(tmp_path)
     with (
         patch(
-            "baton_harness.chain.daemon._fetch_issue_labels",
+            "codereeve.chain.daemon._fetch_issue_labels",
             side_effect=[{"blocked"}, {"blocked"}],
         ),
-        patch("baton_harness.chain.daemon._label_edit") as edit,
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon._label_edit") as edit,
+        patch("codereeve.chain.daemon.alert", return_value=True),
     ):
         park_issue(
             context,
@@ -137,11 +137,11 @@ def test_postcondition_violation_emits_critical_alert(tmp_path: Path) -> None:
     context = _context(tmp_path)
     with (
         patch(
-            "baton_harness.chain.daemon._fetch_issue_labels",
+            "codereeve.chain.daemon._fetch_issue_labels",
             side_effect=[{"agent-in-progress"}, set()],
         ),
-        patch("baton_harness.chain.daemon._label_edit"),
-        patch("baton_harness.chain.daemon.alert", return_value=True) as alert,
+        patch("codereeve.chain.daemon._label_edit"),
+        patch("codereeve.chain.daemon.alert", return_value=True) as alert,
     ):
         park_issue(
             context,
@@ -165,11 +165,11 @@ def test_unreadable_charged_park_converges_to_terminal_state(
     context = _context(tmp_path, count=1)
     with (
         patch(
-            "baton_harness.chain.daemon._fetch_issue_labels",
+            "codereeve.chain.daemon._fetch_issue_labels",
             side_effect=[None, {"agent-failed"}],
         ),
-        patch("baton_harness.chain.daemon._label_edit") as edit,
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon._label_edit") as edit,
+        patch("codereeve.chain.daemon.alert", return_value=True),
     ):
         park_issue(
             context,
@@ -200,13 +200,13 @@ def test_failed_terminal_label_edit_retains_exhausted_count(
     context = _context(tmp_path, count=1)
     with (
         patch(
-            "baton_harness.chain.daemon._fetch_issue_labels",
+            "codereeve.chain.daemon._fetch_issue_labels",
             side_effect=[{"agent-done"}, {"agent-done"}],
         ),
         patch(
-            "baton_harness.chain.daemon._label_edit", return_value=False
+            "codereeve.chain.daemon._label_edit", return_value=False
         ) as edit,
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
     ):
         park_issue(
             context,
@@ -228,10 +228,10 @@ def test_successful_ci_gate_resets_failure_tally(tmp_path: Path) -> None:
     context = _context(tmp_path, count=1)
     with (
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon._label_edit"),
+        patch("codereeve.chain.daemon._label_edit"),
     ):
         outcome = daemon_mod._run_ci_gate(
             owner="o",
@@ -260,8 +260,8 @@ def test_all_scheduler_park_exits_route_through_shared_helper() -> None:
     """Work-unit and CI-gate code contain no direct scheduler park calls."""
     root = Path(__file__).resolve().parents[2]
     paths = [
-        root / "src/baton_harness/chain/daemon/work_unit.py",
-        root / "src/baton_harness/chain/daemon/gh_api_helpers.py",
+        root / "src/codereeve/chain/daemon/work_unit.py",
+        root / "src/codereeve/chain/daemon/gh_api_helpers.py",
     ]
     park_calls: list[ast.Call] = []
     direct_progress_clears: list[ast.Call] = []
@@ -313,7 +313,7 @@ def test_both_ci_gate_callers_thread_park_context() -> None:
     """Normal and convergence merge paths share the failure tally."""
     path = (
         Path(__file__).resolve().parents[2]
-        / "src/baton_harness/chain/daemon/work_unit.py"
+        / "src/codereeve/chain/daemon/work_unit.py"
     )
     tree = ast.parse(path.read_text(encoding="utf-8"))
     calls = [

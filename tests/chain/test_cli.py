@@ -1,4 +1,4 @@
-"""Unit tests for baton_harness.chain.cli (``bh-daemon`` entry point).
+"""Unit tests for codereeve.chain.cli (``bh-daemon`` entry point).
 
 Coverage:
 - ``--once`` path: daemon invoked with ``once=True``.
@@ -28,9 +28,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from baton_harness.chain.cli import _workflow_path, main
-from baton_harness.provenance import Provenance, ProvenanceError
-from baton_harness.resources import read_bytes
+from codereeve.chain.cli import _workflow_path, main
+from codereeve.provenance import Provenance, ProvenanceError
+from codereeve.resources import read_bytes
 
 # ---------------------------------------------------------------------------
 # Autouse fixtures
@@ -50,7 +50,7 @@ def _auto_patch_pre_bootstrap_gate() -> Iterator[None]:
     for why this must not live in the shared ``chain/conftest.py`` autouse
     set (``test_doctor.py`` needs the real ``run_gate``).
     """
-    with patch("baton_harness.chain.doctor.run_gate", return_value=None):
+    with patch("codereeve.chain.doctor.run_gate", return_value=None):
         yield
 
 
@@ -88,15 +88,15 @@ def test_version_exits_before_runtime_startup(
     """--version never touches configuration, bootstrap, or daemon startup."""
     with (
         patch(
-            "baton_harness.chain.cli.load_workflow",
+            "codereeve.chain.cli.load_workflow",
             side_effect=AssertionError("configuration must not load"),
         ),
         patch(
-            "baton_harness.chain.cli.bootstrap_secrets",
+            "codereeve.chain.cli.bootstrap_secrets",
             side_effect=AssertionError("bootstrap must not run"),
         ),
         patch(
-            "baton_harness.chain.cli.run_daemon",
+            "codereeve.chain.cli.run_daemon",
             side_effect=AssertionError("daemon must not run"),
         ),
         pytest.raises(SystemExit) as exc_info,
@@ -106,7 +106,7 @@ def test_version_exits_before_runtime_startup(
     assert exc_info.value.code == 0
     assert (
         capsys.readouterr().out.strip()
-        == f"bh-daemon {version('baton-harness')}"
+        == f"codereeve daemon {version('codereeve')}"
     )
 
 
@@ -116,19 +116,19 @@ def test_provenance_exits_before_runtime_startup(
     """--provenance emits only validated JSON before normal startup work."""
     with (
         patch(
-            "baton_harness.chain.cli.load_provenance",
+            "codereeve.chain.cli.load_provenance",
             return_value=_provenance(),
         ),
         patch(
-            "baton_harness.chain.cli.load_workflow",
+            "codereeve.chain.cli.load_workflow",
             side_effect=AssertionError("configuration must not load"),
         ),
         patch(
-            "baton_harness.chain.cli.bootstrap_secrets",
+            "codereeve.chain.cli.bootstrap_secrets",
             side_effect=AssertionError("bootstrap must not run"),
         ),
         patch(
-            "baton_harness.chain.cli.run_daemon",
+            "codereeve.chain.cli.run_daemon",
             side_effect=AssertionError("daemon must not run"),
         ),
     ):
@@ -143,11 +143,11 @@ def test_provenance_reports_invalid_record_before_config_access(
     """Malformed packaged provenance has a clean early error path."""
     with (
         patch(
-            "baton_harness.chain.cli.load_provenance",
+            "codereeve.chain.cli.load_provenance",
             side_effect=ProvenanceError("invalid record"),
         ),
         patch(
-            "baton_harness.chain.cli.load_workflow",
+            "codereeve.chain.cli.load_workflow",
             side_effect=AssertionError("configuration must not load"),
         ),
     ):
@@ -155,8 +155,29 @@ def test_provenance_reports_invalid_record_before_config_access(
 
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert captured.err.startswith("bh-daemon: provenance error:")
+    assert captured.err.startswith("codereeve daemon: provenance error:")
     assert "Traceback" not in captured.err
+
+
+def test_injected_legacy_prog_preserves_bh_daemon_display(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The compatibility entry point can retain its legacy display name."""
+    with (
+        patch(
+            "codereeve.chain.cli.load_workflow",
+            return_value=MagicMock(),
+        ),
+        patch(
+            "codereeve.chain.cli.load_registry",
+            side_effect=ValueError("missing registry"),
+        ),
+    ):
+        assert main([], prog="bh-daemon") == 1
+
+    assert capsys.readouterr().err.startswith(
+        "bh-daemon: registry configuration error:"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -175,11 +196,11 @@ def test_main_registry_unset_exits_1() -> None:
         # avoid a file-system dependency.
         with (
             patch(
-                "baton_harness.chain.cli.load_workflow",
+                "codereeve.chain.cli.load_workflow",
                 return_value=MagicMock(),
             ),
             patch(
-                "baton_harness.chain.cli.load_registry",
+                "codereeve.chain.cli.load_registry",
                 side_effect=ValueError(
                     "Registry is not configured. "
                     "Set BH_REPO_OWNER, BH_REPO_NAME, and BH_PROJECT_ROOT"
@@ -209,24 +230,24 @@ def test_main_once_calls_run_daemon_with_once_true() -> None:
 
     with (
         patch(
-            "baton_harness.chain.cli.bootstrap_secrets",
+            "codereeve.chain.cli.bootstrap_secrets",
             return_value="ghs_TESTTOKEN_xxxxxxx",
         ),
-        patch("baton_harness.chain.cli.validate_daemon_token"),
+        patch("codereeve.chain.cli.validate_daemon_token"),
         patch(
-            "baton_harness.chain.cli.load_workflow",
+            "codereeve.chain.cli.load_workflow",
             return_value=MagicMock(),
         ),
         patch(
-            "baton_harness.chain.cli.load_registry",
+            "codereeve.chain.cli.load_registry",
             return_value=[MagicMock()],
         ),
         patch(
-            "baton_harness.chain.cli.run_daemon",
+            "codereeve.chain.cli.run_daemon",
             side_effect=fake_run_daemon,
         ),
-        patch("baton_harness.chain.cli.os.chdir"),
-        patch("baton_harness.chain.cli.os.path.isdir", return_value=True),
+        patch("codereeve.chain.cli.os.chdir"),
+        patch("codereeve.chain.cli.os.path.isdir", return_value=True),
     ):
         result = _run_main("--once")
 
@@ -243,24 +264,24 @@ def test_main_poll_interval_override() -> None:
 
     with (
         patch(
-            "baton_harness.chain.cli.bootstrap_secrets",
+            "codereeve.chain.cli.bootstrap_secrets",
             return_value="ghs_TESTTOKEN_xxxxxxx",
         ),
-        patch("baton_harness.chain.cli.validate_daemon_token"),
+        patch("codereeve.chain.cli.validate_daemon_token"),
         patch(
-            "baton_harness.chain.cli.load_workflow",
+            "codereeve.chain.cli.load_workflow",
             return_value=MagicMock(),
         ),
         patch(
-            "baton_harness.chain.cli.load_registry",
+            "codereeve.chain.cli.load_registry",
             return_value=[MagicMock()],
         ),
         patch(
-            "baton_harness.chain.cli.run_daemon",
+            "codereeve.chain.cli.run_daemon",
             side_effect=fake_run_daemon,
         ),
-        patch("baton_harness.chain.cli.os.chdir"),
-        patch("baton_harness.chain.cli.os.path.isdir", return_value=True),
+        patch("codereeve.chain.cli.os.chdir"),
+        patch("codereeve.chain.cli.os.path.isdir", return_value=True),
     ):
         result = _run_main("--once", "--poll-interval", "5")
 
@@ -294,27 +315,27 @@ def test_main_chdirs_into_project_root_before_run_daemon() -> None:
 
     with (
         patch(
-            "baton_harness.chain.cli.bootstrap_secrets",
+            "codereeve.chain.cli.bootstrap_secrets",
             return_value="ghs_TESTTOKEN_xxxxxxx",
         ),
-        patch("baton_harness.chain.cli.validate_daemon_token"),
+        patch("codereeve.chain.cli.validate_daemon_token"),
         patch(
-            "baton_harness.chain.cli.load_workflow",
+            "codereeve.chain.cli.load_workflow",
             return_value=MagicMock(),
         ),
         patch(
-            "baton_harness.chain.cli.load_registry",
+            "codereeve.chain.cli.load_registry",
             return_value=[fake_repo_cfg],
         ),
         patch(
-            "baton_harness.chain.cli.run_daemon",
+            "codereeve.chain.cli.run_daemon",
             side_effect=fake_run_daemon,
         ),
         patch(
-            "baton_harness.chain.cli.os.chdir",
+            "codereeve.chain.cli.os.chdir",
             side_effect=lambda p: chdir_calls.append(p),
         ),
-        patch("baton_harness.chain.cli.os.path.isdir", return_value=True),
+        patch("codereeve.chain.cli.os.path.isdir", return_value=True),
     ):
         result = _run_main("--once")
 
@@ -347,11 +368,11 @@ def test_main_invalid_project_root_exits_1_no_traceback(
     # main() must return 1 without raising any exception.
     with (
         patch(
-            "baton_harness.chain.cli.load_workflow",
+            "codereeve.chain.cli.load_workflow",
             return_value=MagicMock(),
         ),
         patch(
-            "baton_harness.chain.cli.load_registry",
+            "codereeve.chain.cli.load_registry",
             return_value=[fake_repo_cfg],
         ),
     ):
@@ -409,24 +430,24 @@ def test_main_workflow_path_resolved_absolute_before_chdir() -> None:
 
     with (
         patch(
-            "baton_harness.chain.cli.bootstrap_secrets",
+            "codereeve.chain.cli.bootstrap_secrets",
             return_value="ghs_TESTTOKEN_xxxxxxx",
         ),
-        patch("baton_harness.chain.cli.validate_daemon_token"),
+        patch("codereeve.chain.cli.validate_daemon_token"),
         patch(
-            "baton_harness.chain.cli.load_workflow",
+            "codereeve.chain.cli.load_workflow",
             side_effect=record_load_workflow,
         ),
         patch(
-            "baton_harness.chain.cli.load_registry",
+            "codereeve.chain.cli.load_registry",
             return_value=[fake_repo_cfg],
         ),
         patch(
-            "baton_harness.chain.cli.run_daemon",
+            "codereeve.chain.cli.run_daemon",
             side_effect=fake_run_daemon,
         ),
-        patch("baton_harness.chain.cli.os.chdir"),
-        patch("baton_harness.chain.cli.os.path.isdir", return_value=True),
+        patch("codereeve.chain.cli.os.chdir"),
+        patch("codereeve.chain.cli.os.path.isdir", return_value=True),
     ):
         # Pass a relative path to simulate operator usage.
         result = _run_main("--once", "--workflow", "config/WORKFLOW.md")
@@ -440,9 +461,9 @@ def test_main_workflow_path_resolved_absolute_before_chdir() -> None:
 #
 # Patch paths: code-writer must import bootstrap_secrets into cli.py so
 # the symbol is patchable at:
-#   baton_harness.chain.cli.bootstrap_secrets
+#   codereeve.chain.cli.bootstrap_secrets
 # Fallback: also patchable at source:
-#   baton_harness.chain.app_auth.bootstrap_secrets
+#   codereeve.chain.app_auth.bootstrap_secrets
 # Tests patch both so they survive either import style.
 # ---------------------------------------------------------------------------
 
@@ -480,28 +501,28 @@ class TestDaemonStartupAuthWiring:
         # test survives either import style the code-writer chooses.
         with (
             patch(
-                "baton_harness.chain.cli.load_workflow",
+                "codereeve.chain.cli.load_workflow",
                 return_value=MagicMock(),
             ),
             patch(
-                "baton_harness.chain.cli.load_registry",
+                "codereeve.chain.cli.load_registry",
                 return_value=[fake_repo_cfg],
             ),
             patch(
-                "baton_harness.chain.cli.run_daemon",
+                "codereeve.chain.cli.run_daemon",
                 side_effect=fake_run_daemon,
             ),
             patch(
-                "baton_harness.chain.cli.os.chdir",
+                "codereeve.chain.cli.os.chdir",
                 side_effect=lambda p: call_order.append("chdir"),
             ),
             patch(
-                "baton_harness.chain.cli.os.path.isdir",
+                "codereeve.chain.cli.os.path.isdir",
                 return_value=True,
             ),
             # Primary patch location (code-writer imports into cli.py).
             patch(
-                "baton_harness.chain.cli.bootstrap_secrets",
+                "codereeve.chain.cli.bootstrap_secrets",
                 side_effect=fake_bootstrap,
             ),
         ):
@@ -549,28 +570,28 @@ class TestDaemonStartupAuthWiring:
 
         with (
             patch(
-                "baton_harness.chain.cli.load_workflow",
+                "codereeve.chain.cli.load_workflow",
                 return_value=MagicMock(),
             ),
             patch(
-                "baton_harness.chain.cli.load_registry",
+                "codereeve.chain.cli.load_registry",
                 return_value=[fake_repo_cfg],
             ),
             patch(
-                "baton_harness.chain.cli.run_daemon",
+                "codereeve.chain.cli.run_daemon",
                 side_effect=fake_run_daemon,
             ),
-            patch("baton_harness.chain.cli.os.chdir"),
+            patch("codereeve.chain.cli.os.chdir"),
             patch(
-                "baton_harness.chain.cli.os.path.isdir",
+                "codereeve.chain.cli.os.path.isdir",
                 return_value=True,
             ),
             patch(
-                "baton_harness.chain.cli.bootstrap_secrets",
+                "codereeve.chain.cli.bootstrap_secrets",
                 side_effect=fake_bootstrap,
             ),
             patch(
-                "baton_harness.chain.cli.validate_daemon_token",
+                "codereeve.chain.cli.validate_daemon_token",
                 side_effect=fake_validate,
             ),
         ):
@@ -608,35 +629,35 @@ class TestDaemonStartupAuthWiring:
 
         with (
             patch(
-                "baton_harness.chain.cli.load_workflow",
+                "codereeve.chain.cli.load_workflow",
                 return_value=MagicMock(),
             ),
             patch(
-                "baton_harness.chain.cli.load_registry",
+                "codereeve.chain.cli.load_registry",
                 return_value=[fake_repo_cfg],
             ),
             patch(
-                "baton_harness.chain.cli.run_daemon",
+                "codereeve.chain.cli.run_daemon",
                 side_effect=sentinel_run_daemon,
             ),
-            patch("baton_harness.chain.cli.os.chdir"),
+            patch("codereeve.chain.cli.os.chdir"),
             patch(
-                "baton_harness.chain.cli.os.path.isdir",
+                "codereeve.chain.cli.os.path.isdir",
                 return_value=True,
             ),
             patch(
-                "baton_harness.chain.cli.bootstrap_secrets",
+                "codereeve.chain.cli.bootstrap_secrets",
                 side_effect=fake_bootstrap,
             ),
             # Use the REAL validate_daemon_token — it rejects github_pat_.
             # Patch only its import location in cli.py so the real logic runs.
         ):
             real_validate = __import__(
-                "baton_harness._auth", fromlist=["validate_daemon_token"]
+                "codereeve._auth", fromlist=["validate_daemon_token"]
             ).validate_daemon_token
 
             with patch(
-                "baton_harness.chain.cli.validate_daemon_token",
+                "codereeve.chain.cli.validate_daemon_token",
                 side_effect=real_validate,
             ):
                 result = _run_main("--once")
@@ -685,27 +706,27 @@ class TestDaemonStartupAuthWiring:
 
         with (
             patch(
-                "baton_harness.chain.cli.load_workflow",
+                "codereeve.chain.cli.load_workflow",
                 return_value=MagicMock(),
             ),
             patch(
-                "baton_harness.chain.cli.load_registry",
+                "codereeve.chain.cli.load_registry",
                 return_value=[fake_repo_cfg],
             ),
             patch(
-                "baton_harness.chain.cli.run_daemon",
+                "codereeve.chain.cli.run_daemon",
                 side_effect=fake_run_daemon,
             ),
-            patch("baton_harness.chain.cli.os.chdir"),
+            patch("codereeve.chain.cli.os.chdir"),
             patch(
-                "baton_harness.chain.cli.os.path.isdir",
+                "codereeve.chain.cli.os.path.isdir",
                 return_value=True,
             ),
             patch(
-                "baton_harness.chain.cli.bootstrap_secrets",
+                "codereeve.chain.cli.bootstrap_secrets",
                 side_effect=fake_bootstrap,
             ),
-            patch("baton_harness.chain.cli.validate_daemon_token"),
+            patch("codereeve.chain.cli.validate_daemon_token"),
         ):
             result = _run_main("--once")
 
@@ -746,27 +767,27 @@ class TestDaemonStartupAuthWiring:
 
         with (
             patch(
-                "baton_harness.chain.cli.load_workflow",
+                "codereeve.chain.cli.load_workflow",
                 return_value=MagicMock(),
             ),
             patch(
-                "baton_harness.chain.cli.load_registry",
+                "codereeve.chain.cli.load_registry",
                 return_value=[fake_repo_cfg],
             ),
             patch(
-                "baton_harness.chain.cli.run_daemon",
+                "codereeve.chain.cli.run_daemon",
                 side_effect=fake_run_daemon,
             ),
-            patch("baton_harness.chain.cli.os.chdir"),
+            patch("codereeve.chain.cli.os.chdir"),
             patch(
-                "baton_harness.chain.cli.os.path.isdir",
+                "codereeve.chain.cli.os.path.isdir",
                 return_value=True,
             ),
             patch(
-                "baton_harness.chain.cli.bootstrap_secrets",
+                "codereeve.chain.cli.bootstrap_secrets",
                 side_effect=fake_bootstrap,
             ),
-            patch("baton_harness.chain.cli.validate_daemon_token"),
+            patch("codereeve.chain.cli.validate_daemon_token"),
         ):
             result = _run_main("--once")
 
@@ -820,28 +841,28 @@ class TestDaemonStartupAuthWiring:
 
         with (
             patch(
-                "baton_harness.chain.cli.load_workflow",
+                "codereeve.chain.cli.load_workflow",
                 return_value=MagicMock(),
             ),
             patch(
-                "baton_harness.chain.cli.load_registry",
+                "codereeve.chain.cli.load_registry",
                 return_value=[fake_repo_cfg],
             ),
             patch(
-                "baton_harness.chain.cli.run_daemon",
+                "codereeve.chain.cli.run_daemon",
                 side_effect=fake_run_daemon,
             ),
-            patch("baton_harness.chain.cli.os.chdir"),
+            patch("codereeve.chain.cli.os.chdir"),
             patch(
-                "baton_harness.chain.cli.os.path.isdir",
+                "codereeve.chain.cli.os.path.isdir",
                 return_value=True,
             ),
             patch(
-                "baton_harness.chain.cli.bootstrap_secrets",
+                "codereeve.chain.cli.bootstrap_secrets",
                 side_effect=fake_bootstrap,
             ),
             patch(
-                "baton_harness.chain.cli.validate_daemon_token",
+                "codereeve.chain.cli.validate_daemon_token",
                 side_effect=fake_validate,
             ),
         ):
@@ -900,36 +921,36 @@ class TestCliGap1DuplicateReconcileAndTokenThreading:
 
         with (
             patch(
-                "baton_harness.chain.cli.bootstrap_secrets",
+                "codereeve.chain.cli.bootstrap_secrets",
                 return_value="ghs_TESTTOKEN_xxxxxxx",
             ),
-            patch("baton_harness.chain.cli.validate_daemon_token"),
+            patch("codereeve.chain.cli.validate_daemon_token"),
             patch(
-                "baton_harness.chain.cli.load_workflow",
+                "codereeve.chain.cli.load_workflow",
                 return_value=MagicMock(),
             ),
             patch(
-                "baton_harness.chain.cli.load_registry",
+                "codereeve.chain.cli.load_registry",
                 return_value=[MagicMock()],
             ),
             # Spy on the reconcile module symbol directly — catches any
-            # call routed through baton_harness.chain.reconcile.
+            # call routed through codereeve.chain.reconcile.
             patch(
-                "baton_harness.chain.reconcile.reconcile_startup",
+                "codereeve.chain.reconcile.reconcile_startup",
                 side_effect=_spy_reconcile,
             ),
             # Spy on the daemon module re-export — catches the prior
             # sub-agent's indirection via _daemon_mod.reconcile_startup.
             patch(
-                "baton_harness.chain.daemon.reconcile_startup",
+                "codereeve.chain.daemon.reconcile_startup",
                 side_effect=_spy_daemon_reconcile,
             ),
             patch(
-                "baton_harness.chain.cli.run_daemon",
+                "codereeve.chain.cli.run_daemon",
                 side_effect=_noop_run_daemon,
             ),
-            patch("baton_harness.chain.cli.os.chdir"),
-            patch("baton_harness.chain.cli.os.path.isdir", return_value=True),
+            patch("codereeve.chain.cli.os.chdir"),
+            patch("codereeve.chain.cli.os.path.isdir", return_value=True),
         ):
             result = _run_main("--once")
 
@@ -967,26 +988,26 @@ class TestCliGap1DuplicateReconcileAndTokenThreading:
 
         with (
             patch(
-                "baton_harness.chain.cli.bootstrap_secrets",
+                "codereeve.chain.cli.bootstrap_secrets",
                 return_value=sentinel,
             ),
-            patch("baton_harness.chain.cli.validate_daemon_token"),
+            patch("codereeve.chain.cli.validate_daemon_token"),
             patch(
-                "baton_harness.chain.cli.load_workflow",
+                "codereeve.chain.cli.load_workflow",
                 return_value=MagicMock(),
             ),
             patch(
-                "baton_harness.chain.cli.load_registry",
+                "codereeve.chain.cli.load_registry",
                 return_value=[MagicMock()],
             ),
             patch(
-                "baton_harness.chain.cli.run_daemon",
+                "codereeve.chain.cli.run_daemon",
                 side_effect=_capture_run_daemon,
             ),
-            patch("baton_harness.chain.cli.os.chdir"),
-            patch("baton_harness.chain.cli.os.path.isdir", return_value=True),
+            patch("codereeve.chain.cli.os.chdir"),
+            patch("codereeve.chain.cli.os.path.isdir", return_value=True),
             patch(
-                "baton_harness.chain.reconcile.reconcile_startup",
+                "codereeve.chain.reconcile.reconcile_startup",
                 new_callable=AsyncMock,
             ),
         ):
@@ -1026,32 +1047,32 @@ class TestForcePrNotMergeStartupSelfTest:
 
         with (
             patch(
-                "baton_harness.chain.cli.load_workflow",
+                "codereeve.chain.cli.load_workflow",
                 return_value=MagicMock(),
             ),
             patch(
-                "baton_harness.chain.cli.load_registry",
+                "codereeve.chain.cli.load_registry",
                 return_value=[fake_repo_cfg],
             ),
             patch(
-                "baton_harness.chain.cli.os.chdir",
+                "codereeve.chain.cli.os.chdir",
                 side_effect=lambda p: call_order.append("chdir"),
             ),
             patch(
-                "baton_harness.chain.cli.os.path.isdir",
+                "codereeve.chain.cli.os.path.isdir",
                 return_value=True,
             ),
             patch(
-                "baton_harness.chain.cli._assert_force_pr_not_merge_tripwire",
+                "codereeve.chain.cli._assert_force_pr_not_merge_tripwire",
                 side_effect=fake_self_test,
             ),
             patch(
-                "baton_harness.chain.cli.bootstrap_secrets",
+                "codereeve.chain.cli.bootstrap_secrets",
                 side_effect=fake_bootstrap,
             ),
-            patch("baton_harness.chain.cli.validate_daemon_token"),
+            patch("codereeve.chain.cli.validate_daemon_token"),
             patch(
-                "baton_harness.chain.cli.run_daemon",
+                "codereeve.chain.cli.run_daemon",
                 side_effect=fake_run_daemon,
             ),
         ):
@@ -1086,29 +1107,29 @@ class TestForcePrNotMergeStartupSelfTest:
 
         with (
             patch(
-                "baton_harness.chain.cli.load_workflow",
+                "codereeve.chain.cli.load_workflow",
                 return_value=MagicMock(),
             ),
             patch(
-                "baton_harness.chain.cli.load_registry",
+                "codereeve.chain.cli.load_registry",
                 return_value=[fake_repo_cfg],
             ),
-            patch("baton_harness.chain.cli.os.chdir"),
+            patch("codereeve.chain.cli.os.chdir"),
             patch(
-                "baton_harness.chain.cli.os.path.isdir",
+                "codereeve.chain.cli.os.path.isdir",
                 return_value=True,
             ),
             patch(
-                "baton_harness.chain.cli._assert_force_pr_not_merge_tripwire",
+                "codereeve.chain.cli._assert_force_pr_not_merge_tripwire",
                 side_effect=RuntimeError("hook parser drifted"),
             ),
             patch(
-                "baton_harness.chain.cli.bootstrap_secrets",
+                "codereeve.chain.cli.bootstrap_secrets",
                 side_effect=fake_bootstrap,
             ),
-            patch("baton_harness.chain.cli.validate_daemon_token"),
+            patch("codereeve.chain.cli.validate_daemon_token"),
             patch(
-                "baton_harness.chain.cli.run_daemon",
+                "codereeve.chain.cli.run_daemon",
                 side_effect=fake_run_daemon,
             ),
         ):

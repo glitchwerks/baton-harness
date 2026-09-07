@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from baton_harness.vendor.symphony.config import WorkflowConfig
-from baton_harness.vendor.symphony.hooks import run_hook
-from baton_harness.vendor.symphony.worker import Worker
+from codereeve.vendor.symphony.config import WorkflowConfig
+from codereeve.vendor.symphony.hooks import run_hook
+from codereeve.vendor.symphony.worker import Worker
 
 _DAEMON_ENV = {
     "GH_TOKEN": "ambient-github-token",

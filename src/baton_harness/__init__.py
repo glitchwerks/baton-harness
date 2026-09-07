@@ -1,18 +1,13 @@
-"""Baton harness — policy and tooling layer for autonomous agent runs.
+"""Temporary import compatibility for :mod:`codereeve`."""
 
-This package provides the lifecycle hook entry points invoked by Baton
-during each agent run cycle:
+import warnings
 
-- ``after_create`` — per-worktree dependency setup after worktree creation.
-- ``before_run`` — branch sync onto ``main`` before the agent executes.
-- ``after_run`` — outcome classification and GitHub label reconciliation.
+from codereeve import __version__
 
-The shared CLI helpers (logging, issue-number resolution) live in
-``_cli.py`` and are imported by every hook module.
+warnings.warn(
+    "baton_harness is deprecated; use codereeve; removed in 0.4.0",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
-See ``docs/harness-design.md`` for the architecture and integration model.
-"""
-
-from importlib.metadata import version
-
-__version__ = version("baton-harness")
+__all__ = ["__version__"]

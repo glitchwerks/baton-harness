@@ -173,7 +173,7 @@ from unittest.mock import patch
 
 import pytest
 
-from baton_harness.chain.obs_config import ObsConfig
+from codereeve.chain.obs_config import ObsConfig
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -235,7 +235,7 @@ def _get_probe_fn(daemon_mod: Any) -> Any:  # noqa: ANN401
     """Fetch the #223 probe seam, failing with a clear reason if absent.
 
     Args:
-        daemon_mod: The imported ``baton_harness.chain.daemon`` module.
+        daemon_mod: The imported ``codereeve.chain.daemon`` module.
 
     Returns:
         The ``_probe_worker_push_denied`` callable.
@@ -254,7 +254,7 @@ def _get_probe_result_types(daemon_mod: Any) -> tuple[Any, Any]:  # noqa: ANN401
     """Fetch the corrected result-type contract (CodeRabbit finding #2).
 
     Args:
-        daemon_mod: The imported ``baton_harness.chain.daemon`` module.
+        daemon_mod: The imported ``codereeve.chain.daemon`` module.
 
     Returns:
         A ``(ProbeResult, ProbeDenialReason)`` tuple.
@@ -323,7 +323,7 @@ def test_probe_pushes_using_worker_identity_via_run_seam(
     Args:
         tmp_path: Pytest tmp_path fixture; used as a stand-in repo_root.
     """
-    import baton_harness.chain.daemon as daemon_mod
+    import codereeve.chain.daemon as daemon_mod
 
     probe_fn = _get_probe_fn(daemon_mod)
 
@@ -414,7 +414,7 @@ def test_probe_returns_denied_on_recognizable_rejection(
     Args:
         tmp_path: Pytest tmp_path fixture; used as a stand-in repo_root.
     """
-    import baton_harness.chain.daemon as daemon_mod
+    import codereeve.chain.daemon as daemon_mod
 
     probe_fn = _get_probe_fn(daemon_mod)
     _get_probe_result_types(daemon_mod)  # fail fast if the type is missing
@@ -455,7 +455,7 @@ def test_probe_returns_not_denied_on_accepted_push_and_cleans_up(
     Args:
         tmp_path: Pytest tmp_path fixture; used as a stand-in repo_root.
     """
-    import baton_harness.chain.daemon as daemon_mod
+    import codereeve.chain.daemon as daemon_mod
 
     probe_fn = _get_probe_fn(daemon_mod)
     _, ProbeDenialReason = _get_probe_result_types(daemon_mod)  # noqa: N806
@@ -513,7 +513,7 @@ def test_probe_fails_closed_on_unrecognized_nonzero_exit(
     Args:
         tmp_path: Pytest tmp_path fixture; used as a stand-in repo_root.
     """
-    import baton_harness.chain.daemon as daemon_mod
+    import codereeve.chain.daemon as daemon_mod
 
     probe_fn = _get_probe_fn(daemon_mod)
     _, ProbeDenialReason = _get_probe_result_types(daemon_mod)  # noqa: N806
@@ -556,7 +556,7 @@ def test_probe_fails_closed_when_subprocess_seam_raises(
     Args:
         tmp_path: Pytest tmp_path fixture; used as a stand-in repo_root.
     """
-    import baton_harness.chain.daemon as daemon_mod
+    import codereeve.chain.daemon as daemon_mod
 
     probe_fn = _get_probe_fn(daemon_mod)
     _, ProbeDenialReason = _get_probe_result_types(daemon_mod)  # noqa: N806
@@ -598,7 +598,7 @@ def test_probe_uses_distinct_refs_across_invocations(
     Args:
         tmp_path: Pytest tmp_path fixture; used as a stand-in repo_root.
     """
-    import baton_harness.chain.daemon as daemon_mod
+    import codereeve.chain.daemon as daemon_mod
 
     probe_fn = _get_probe_fn(daemon_mod)
 
@@ -658,8 +658,8 @@ def test_launch_proceeds_when_probe_denies_despite_comparator_drift(
     """
     from unittest.mock import AsyncMock, MagicMock
 
-    import baton_harness.chain.daemon as daemon_mod
-    from baton_harness.chain.ruleset_status import (
+    import codereeve.chain.daemon as daemon_mod
+    from codereeve.chain.ruleset_status import (
         RulesetCheckResult,
         RulesetStatus,
     )
@@ -757,8 +757,8 @@ def test_launch_refuses_when_probe_accepts_despite_comparator_match(
     """
     from unittest.mock import AsyncMock, MagicMock
 
-    import baton_harness.chain.daemon as daemon_mod
-    from baton_harness.chain.ruleset_status import (
+    import codereeve.chain.daemon as daemon_mod
+    from codereeve.chain.ruleset_status import (
         RulesetCheckResult,
         RulesetStatus,
     )
@@ -907,8 +907,8 @@ def test_comparator_called_exactly_once_regardless_of_probe_outcome(
     """
     from unittest.mock import AsyncMock, MagicMock
 
-    import baton_harness.chain.daemon as daemon_mod
-    from baton_harness.chain.ruleset_status import (
+    import codereeve.chain.daemon as daemon_mod
+    from codereeve.chain.ruleset_status import (
         RulesetCheckResult,
         RulesetStatus,
     )
@@ -995,8 +995,8 @@ def test_launch_refuses_and_parks_when_probe_itself_raises_unexpectedly(
     """
     from unittest.mock import AsyncMock, MagicMock
 
-    import baton_harness.chain.daemon as daemon_mod
-    from baton_harness.chain.ruleset_status import (
+    import codereeve.chain.daemon as daemon_mod
+    from codereeve.chain.ruleset_status import (
         RulesetCheckResult,
         RulesetStatus,
     )
@@ -1094,8 +1094,8 @@ def test_launch_refuses_when_repo_root_has_no_git_dir_despite_comparator_match(
     """
     from unittest.mock import AsyncMock, MagicMock
 
-    import baton_harness.chain.daemon as daemon_mod
-    from baton_harness.chain.ruleset_status import (
+    import codereeve.chain.daemon as daemon_mod
+    from codereeve.chain.ruleset_status import (
         RulesetCheckResult,
         RulesetStatus,
     )
@@ -1196,7 +1196,7 @@ def test_probe_reports_cleanup_failed_when_delete_returns_nonzero(
         tmp_path: Pytest tmp_path fixture; used as a stand-in repo_root.
         caplog: Pytest log-capture fixture.
     """
-    import baton_harness.chain.daemon as daemon_mod
+    import codereeve.chain.daemon as daemon_mod
 
     probe_fn = _get_probe_fn(daemon_mod)
     _, ProbeDenialReason = _get_probe_result_types(daemon_mod)  # noqa: N806
@@ -1277,7 +1277,7 @@ def test_probe_fails_closed_with_timeout_reason_when_push_times_out(
     Args:
         tmp_path: Pytest tmp_path fixture; used as a stand-in repo_root.
     """
-    import baton_harness.chain.daemon as daemon_mod
+    import codereeve.chain.daemon as daemon_mod
 
     probe_fn = _get_probe_fn(daemon_mod)
     _, ProbeDenialReason = _get_probe_result_types(daemon_mod)  # noqa: N806
@@ -1319,7 +1319,7 @@ def test_probe_push_and_cleanup_are_each_given_a_positive_timeout(
     Args:
         tmp_path: Pytest tmp_path fixture; used as a stand-in repo_root.
     """
-    import baton_harness.chain.daemon as daemon_mod
+    import codereeve.chain.daemon as daemon_mod
 
     probe_fn = _get_probe_fn(daemon_mod)
 
@@ -1428,7 +1428,7 @@ def test_probe_attempts_cleanup_on_timeout_and_preserves_timeout_reason(
     Args:
         tmp_path: Pytest tmp_path fixture; used as a stand-in repo_root.
     """
-    import baton_harness.chain.daemon as daemon_mod
+    import codereeve.chain.daemon as daemon_mod
 
     probe_fn = _get_probe_fn(daemon_mod)
     _, ProbeDenialReason = _get_probe_result_types(daemon_mod)  # noqa: N806
@@ -1472,7 +1472,7 @@ def test_probe_attempts_cleanup_on_transport_error_and_preserves_reason(
     Args:
         tmp_path: Pytest tmp_path fixture; used as a stand-in repo_root.
     """
-    import baton_harness.chain.daemon as daemon_mod
+    import codereeve.chain.daemon as daemon_mod
 
     probe_fn = _get_probe_fn(daemon_mod)
     _, ProbeDenialReason = _get_probe_result_types(daemon_mod)  # noqa: N806
@@ -1515,7 +1515,7 @@ def test_probe_attempts_cleanup_on_unrecognized_rejection_and_preserves_reason(
     Args:
         tmp_path: Pytest tmp_path fixture; used as a stand-in repo_root.
     """
-    import baton_harness.chain.daemon as daemon_mod
+    import codereeve.chain.daemon as daemon_mod
 
     probe_fn = _get_probe_fn(daemon_mod)
     _, ProbeDenialReason = _get_probe_result_types(daemon_mod)  # noqa: N806
@@ -1569,7 +1569,7 @@ def test_probe_does_not_attempt_cleanup_on_confirmed_denial(
     Args:
         tmp_path: Pytest tmp_path fixture; used as a stand-in repo_root.
     """
-    import baton_harness.chain.daemon as daemon_mod
+    import codereeve.chain.daemon as daemon_mod
 
     probe_fn = _get_probe_fn(daemon_mod)
 
@@ -1614,7 +1614,7 @@ def test_probe_escalates_cleanup_failure_on_timeout_but_keeps_reason(
         tmp_path: Pytest tmp_path fixture; used as a stand-in repo_root.
         caplog: Pytest log-capture fixture.
     """
-    import baton_harness.chain.daemon as daemon_mod
+    import codereeve.chain.daemon as daemon_mod
 
     probe_fn = _get_probe_fn(daemon_mod)
     _, ProbeDenialReason = _get_probe_result_types(daemon_mod)  # noqa: N806

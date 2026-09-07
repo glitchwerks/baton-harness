@@ -1,4 +1,4 @@
-"""Unit tests for baton_harness.chain.session_report (issue #243, Phase 1).
+"""Unit tests for codereeve.chain.session_report (issue #243, Phase 1).
 
 ``session_report.py`` does not exist yet — this file is the frozen
 contract for the greenfield ``SessionReport`` model described in
@@ -61,8 +61,8 @@ from unittest.mock import patch
 
 import pytest
 
-import baton_harness.chain.session_report as session_report_mod
-from baton_harness.chain.session_report import SessionReport
+import codereeve.chain.session_report as session_report_mod
+from codereeve.chain.session_report import SessionReport
 
 # ---------------------------------------------------------------------------
 # Helpers

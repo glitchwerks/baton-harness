@@ -29,7 +29,7 @@ Test conventions mirror ``test_reconcile_oauth_cred.py``:
 - ``asyncio.run(reconcile.reconcile_startup(...))`` (no pytest-asyncio).
 - Fatal signal: ``pytest.raises(SystemExit)`` with a non-zero code.
 - Alert assertions via ``MagicMock`` on
-  ``baton_harness.chain.reconcile.alert``.
+  ``codereeve.chain.reconcile.alert``.
 """
 
 from __future__ import annotations
@@ -50,12 +50,12 @@ def _import_reconcile() -> Any:  # noqa: ANN401
     """Return the reconcile module, raising ImportError if absent."""
     import importlib
 
-    return importlib.import_module("baton_harness.chain.reconcile")
+    return importlib.import_module("codereeve.chain.reconcile")
 
 
 def _make_obs(tmp_path: Path) -> Any:  # noqa: ANN401
     """Return an ObsConfig-like object rooted at tmp_path."""
-    from baton_harness.chain.obs_config import ObsConfig
+    from codereeve.chain.obs_config import ObsConfig
 
     harness_dir = tmp_path / ".baton-harness"
     harness_dir.mkdir(parents=True, exist_ok=True)
@@ -72,7 +72,7 @@ def _make_obs(tmp_path: Path) -> Any:  # noqa: ANN401
 
 def _make_repo_cfg(tmp_path: Path) -> Any:  # noqa: ANN401
     """Return a minimal RepoConfig pointing at tmp_path."""
-    from baton_harness.chain.registry import RepoConfig
+    from codereeve.chain.registry import RepoConfig
 
     return RepoConfig(
         owner=_OWNER,
@@ -99,7 +99,7 @@ def _patch_oauth_cred_path(
     cred_file = tmp_path / "fake_credentials.json"
     cred_file.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(
-        "baton_harness.chain.reconcile._OAUTH_CRED_PATH",
+        "codereeve.chain.reconcile._OAUTH_CRED_PATH",
         cred_file,
     )
 
@@ -146,16 +146,16 @@ class TestG3dCredentialHelperConfigured:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
-            patch("baton_harness.chain.reconcile.alert", mock_alert),
+            patch("codereeve.chain.reconcile.alert", mock_alert),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 return_value=[],
             ),
             patch(
-                "baton_harness.chain.reconcile._get_git_credential_helpers",
+                "codereeve.chain.reconcile._get_git_credential_helpers",
                 return_value=["!'/usr/bin/gh' auth git-credential"],
             ),
         ):
@@ -188,16 +188,16 @@ class TestG3dCredentialHelperConfigured:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
-            patch("baton_harness.chain.reconcile.alert", return_value=True),
+            patch("codereeve.chain.reconcile.alert", return_value=True),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 return_value=[],
             ),
             patch(
-                "baton_harness.chain.reconcile._get_git_credential_helpers",
+                "codereeve.chain.reconcile._get_git_credential_helpers",
                 return_value=["manager"],
             ),
         ):
@@ -236,16 +236,16 @@ class TestG3dCredentialHelperAbsent:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
-            patch("baton_harness.chain.reconcile.alert", mock_alert),
+            patch("codereeve.chain.reconcile.alert", mock_alert),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 return_value=[],
             ),
             patch(
-                "baton_harness.chain.reconcile._get_git_credential_helpers",
+                "codereeve.chain.reconcile._get_git_credential_helpers",
                 return_value=[],
             ),
         ):
@@ -282,16 +282,16 @@ class TestG3dCredentialHelperAbsent:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
-            patch("baton_harness.chain.reconcile.alert", mock_alert),
+            patch("codereeve.chain.reconcile.alert", mock_alert),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 return_value=[],
             ),
             patch(
-                "baton_harness.chain.reconcile._get_git_credential_helpers",
+                "codereeve.chain.reconcile._get_git_credential_helpers",
                 return_value=[],
             ),
         ):
@@ -322,16 +322,16 @@ class TestG3dCredentialHelperAbsent:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
-            patch("baton_harness.chain.reconcile.alert", mock_alert),
+            patch("codereeve.chain.reconcile.alert", mock_alert),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 return_value=[],
             ),
             patch(
-                "baton_harness.chain.reconcile._get_git_credential_helpers",
+                "codereeve.chain.reconcile._get_git_credential_helpers",
                 return_value=[],
             ),
         ):
@@ -366,16 +366,16 @@ class TestG3dCredentialHelperAbsent:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
-            patch("baton_harness.chain.reconcile.alert", return_value=True),
+            patch("codereeve.chain.reconcile.alert", return_value=True),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 mock_lister,
             ),
             patch(
-                "baton_harness.chain.reconcile._get_git_credential_helpers",
+                "codereeve.chain.reconcile._get_git_credential_helpers",
                 return_value=[],
             ),
         ):
@@ -410,19 +410,19 @@ class TestG3dCredentialHelperAbsent:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
             patch(
-                "baton_harness.chain.reconcile.alert",
+                "codereeve.chain.reconcile.alert",
                 side_effect=_capture_alert,
             ),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 return_value=[],
             ),
             patch(
-                "baton_harness.chain.reconcile._get_git_credential_helpers",
+                "codereeve.chain.reconcile._get_git_credential_helpers",
                 return_value=[],
             ),
         ):
@@ -487,7 +487,7 @@ class TestGetGitCredentialHelpersProbe:
             stdout="!'/usr/bin/gh' auth git-credential\n",
         )
         monkeypatch.setattr(
-            "baton_harness.chain.reconcile.subprocess.run", mock_run
+            "codereeve.chain.reconcile.subprocess.run", mock_run
         )
 
         result = reconcile._get_git_credential_helpers()
@@ -511,7 +511,7 @@ class TestGetGitCredentialHelpersProbe:
             return MagicMock(returncode=0, stdout="manager\n")
 
         monkeypatch.setattr(
-            "baton_harness.chain.reconcile.subprocess.run", _fake_run
+            "codereeve.chain.reconcile.subprocess.run", _fake_run
         )
 
         result = reconcile._get_git_credential_helpers()
@@ -527,7 +527,7 @@ class TestGetGitCredentialHelpersProbe:
 
         mock_run = MagicMock(return_value=MagicMock(returncode=1, stdout=""))
         monkeypatch.setattr(
-            "baton_harness.chain.reconcile.subprocess.run", mock_run
+            "codereeve.chain.reconcile.subprocess.run", mock_run
         )
 
         result = reconcile._get_git_credential_helpers()
@@ -545,7 +545,7 @@ class TestGetGitCredentialHelpersProbe:
             raise FileNotFoundError("git not found")
 
         monkeypatch.setattr(
-            "baton_harness.chain.reconcile.subprocess.run", _raise_oserror
+            "codereeve.chain.reconcile.subprocess.run", _raise_oserror
         )
 
         result = reconcile._get_git_credential_helpers()
@@ -571,7 +571,7 @@ class TestGetGitCredentialHelpersProbe:
             )
         )
         monkeypatch.setattr(
-            "baton_harness.chain.reconcile.subprocess.run", mock_run
+            "codereeve.chain.reconcile.subprocess.run", mock_run
         )
 
         result = reconcile._get_git_credential_helpers()

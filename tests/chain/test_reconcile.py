@@ -1,4 +1,4 @@
-"""Unit tests for baton_harness.chain.reconcile.
+"""Unit tests for codereeve.chain.reconcile.
 
 Tests the startup reconciliation sweep module (issue #40).  All I/O is
 mocked: ``validate_daemon_token`` is patched to avoid real GitHub API
@@ -40,7 +40,7 @@ def _import_reconcile() -> Any:  # noqa: ANN401
     """Return the reconcile module, raising ImportError if absent."""
     import importlib
 
-    return importlib.import_module("baton_harness.chain.reconcile")
+    return importlib.import_module("codereeve.chain.reconcile")
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +58,7 @@ _INSTALLATION_TOKEN = "ghs_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
 def _make_obs(tmp_path: Path) -> Any:  # noqa: ANN401
     """Return an ObsConfig-like object with a real tmp_path project root."""
-    from baton_harness.chain.obs_config import ObsConfig
+    from codereeve.chain.obs_config import ObsConfig
 
     harness_dir = tmp_path / ".baton-harness"
     harness_dir.mkdir(parents=True, exist_ok=True)
@@ -75,7 +75,7 @@ def _make_obs(tmp_path: Path) -> Any:  # noqa: ANN401
 
 def _make_repo_cfg(tmp_path: Path) -> Any:  # noqa: ANN401
     """Return a minimal RepoConfig pointing at tmp_path."""
-    from baton_harness.chain.registry import RepoConfig
+    from codereeve.chain.registry import RepoConfig
 
     return RepoConfig(
         owner=_OWNER,
@@ -118,7 +118,7 @@ def _patch_oauth_cred_path(
     cred_file = tmp_path / "fake_credentials.json"
     cred_file.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(
-        "baton_harness.chain.reconcile._OAUTH_CRED_PATH",
+        "codereeve.chain.reconcile._OAUTH_CRED_PATH",
         cred_file,
     )
 
@@ -142,7 +142,7 @@ def _patch_git_credential_helper(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch: Pytest monkeypatch fixture for attribute patching.
     """
     monkeypatch.setattr(
-        "baton_harness.chain.reconcile._get_git_credential_helpers",
+        "codereeve.chain.reconcile._get_git_credential_helpers",
         lambda: ["!fake credential helper for tests"],
     )
 
@@ -176,15 +176,15 @@ class TestG3CredentialValidation:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
             patch(
-                "baton_harness.chain.reconcile.alert",
+                "codereeve.chain.reconcile.alert",
                 mock_alert,
             ),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 return_value=[],
             ),
         ):
@@ -208,7 +208,7 @@ class TestG3CredentialValidation:
         # ANTHROPIC_API_KEY must be absent (OAuth path); this is correct state.
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
-        from baton_harness._auth import TokenValidationError
+        from codereeve._auth import TokenValidationError
 
         mock_alert = MagicMock(return_value=True)
         obs = _make_obs(tmp_path)
@@ -216,15 +216,15 @@ class TestG3CredentialValidation:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 side_effect=TokenValidationError("no token found"),
             ),
             patch(
-                "baton_harness.chain.reconcile.alert",
+                "codereeve.chain.reconcile.alert",
                 mock_alert,
             ),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 return_value=[],
             ),
         ):
@@ -269,15 +269,15 @@ class TestG3CredentialValidation:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
             patch(
-                "baton_harness.chain.reconcile.alert",
+                "codereeve.chain.reconcile.alert",
                 mock_alert,
             ),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 return_value=[],
             ),
         ):
@@ -319,15 +319,15 @@ class TestG3CredentialValidation:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
             patch(
-                "baton_harness.chain.reconcile.alert",
+                "codereeve.chain.reconcile.alert",
                 mock_alert,
             ),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 return_value=[],
             ),
         ):
@@ -370,15 +370,15 @@ class TestG3CredentialValidation:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
             patch(
-                "baton_harness.chain.reconcile.alert",
+                "codereeve.chain.reconcile.alert",
                 mock_alert,
             ),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 return_value=[],
             ),
         ):
@@ -420,7 +420,7 @@ class TestG3FatalOrdering:
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
-        from baton_harness._auth import TokenValidationError
+        from codereeve._auth import TokenValidationError
 
         mock_lister = MagicMock(return_value=[])
         obs = _make_obs(tmp_path)
@@ -431,12 +431,12 @@ class TestG3FatalOrdering:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 side_effect=TokenValidationError("no token"),
             ),
-            patch("baton_harness.chain.reconcile.alert", return_value=True),
+            patch("codereeve.chain.reconcile.alert", return_value=True),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 mock_lister,
             ),
         ):
@@ -477,12 +477,12 @@ class TestG3FatalOrdering:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
-            patch("baton_harness.chain.reconcile.alert", return_value=True),
+            patch("codereeve.chain.reconcile.alert", return_value=True),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 mock_lister,
             ),
         ):
@@ -527,12 +527,12 @@ class TestG2UngracefulExitDetection:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
-            patch("baton_harness.chain.reconcile.alert", mock_alert),
+            patch("codereeve.chain.reconcile.alert", mock_alert),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 return_value=[],
             ),
         ):
@@ -578,12 +578,12 @@ class TestG2UngracefulExitDetection:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
-            patch("baton_harness.chain.reconcile.alert", mock_alert),
+            patch("codereeve.chain.reconcile.alert", mock_alert),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 return_value=[],
             ),
         ):
@@ -635,12 +635,12 @@ class TestG2UngracefulExitDetection:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
-            patch("baton_harness.chain.reconcile.alert", mock_alert),
+            patch("codereeve.chain.reconcile.alert", mock_alert),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 return_value=[],
             ),
         ):
@@ -660,7 +660,7 @@ class TestG2UngracefulExitDetection:
             f"Prior-crash alert must pass issue=None; got {alert_args[2]!r}"
         )
 
-    def test_marker_path_uses_baton_harness_dir_not_symphony(
+    def test_marker_path_uses_codereeve_dir_not_symphony(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -676,12 +676,12 @@ class TestG2UngracefulExitDetection:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
-            patch("baton_harness.chain.reconcile.alert", return_value=True),
+            patch("codereeve.chain.reconcile.alert", return_value=True),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 return_value=[],
             ),
         ):
@@ -726,12 +726,12 @@ class TestG1OrphanProcessSweep:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
-            patch("baton_harness.chain.reconcile.alert", mock_alert),
+            patch("codereeve.chain.reconcile.alert", mock_alert),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 return_value=[],
             ),
         ):
@@ -768,12 +768,12 @@ class TestG1OrphanProcessSweep:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
-            patch("baton_harness.chain.reconcile.alert", mock_alert),
+            patch("codereeve.chain.reconcile.alert", mock_alert),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 return_value=stray_pids,
             ),
         ):
@@ -815,12 +815,12 @@ class TestG1OrphanProcessSweep:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
-            patch("baton_harness.chain.reconcile.alert", mock_alert),
+            patch("codereeve.chain.reconcile.alert", mock_alert),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 return_value=[9999],
             ),
         ):
@@ -856,12 +856,12 @@ class TestG1OrphanProcessSweep:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
-            patch("baton_harness.chain.reconcile.alert", return_value=True),
+            patch("codereeve.chain.reconcile.alert", return_value=True),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 side_effect=RuntimeError("pgrep unavailable"),
             ),
         ):
@@ -919,12 +919,12 @@ class TestPerCheckIsolation:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
-            patch("baton_harness.chain.reconcile.alert", mock_alert),
+            patch("codereeve.chain.reconcile.alert", mock_alert),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 mock_lister,
             ),
             patch.object(Path, "write_text", failing_write_text),
@@ -953,12 +953,12 @@ class TestPerCheckIsolation:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
-            patch("baton_harness.chain.reconcile.alert", return_value=True),
+            patch("codereeve.chain.reconcile.alert", return_value=True),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 side_effect=PermissionError("no pgrep access"),
             ),
         ):
@@ -1102,12 +1102,12 @@ class TestReconcileStartupAcceptsInstallationToken:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ) as mock_validator,
-            patch("baton_harness.chain.reconcile.alert", return_value=True),
+            patch("codereeve.chain.reconcile.alert", return_value=True),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 return_value=[],
             ),
         ):
@@ -1168,12 +1168,12 @@ class TestReconcileStartupAcceptsInstallationToken:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 side_effect=_capture_validate,
             ),
-            patch("baton_harness.chain.reconcile.alert", return_value=True),
+            patch("codereeve.chain.reconcile.alert", return_value=True),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 return_value=[],
             ),
         ):
@@ -1221,12 +1221,12 @@ class TestReconcileStartupAcceptsInstallationToken:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 side_effect=_capture_validate,
             ),
-            patch("baton_harness.chain.reconcile.alert", return_value=True),
+            patch("codereeve.chain.reconcile.alert", return_value=True),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 return_value=[],
             ),
         ):
@@ -1300,15 +1300,15 @@ class TestReconcileStartupAlertsThreadToken:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
             patch(
-                "baton_harness.chain.reconcile.alert",
+                "codereeve.chain.reconcile.alert",
                 side_effect=_capture_alert,
             ),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 return_value=[],
             ),
         ):
@@ -1358,7 +1358,7 @@ class TestReconcileStartupAlertsThreadToken:
 
         # Override the autouse fixture: point at an absent path to trigger G3c.
         monkeypatch.setattr(
-            "baton_harness.chain.reconcile._OAUTH_CRED_PATH",
+            "codereeve.chain.reconcile._OAUTH_CRED_PATH",
             tmp_path / "absent_credentials.json",
         )
 
@@ -1373,15 +1373,15 @@ class TestReconcileStartupAlertsThreadToken:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
             patch(
-                "baton_harness.chain.reconcile.alert",
+                "codereeve.chain.reconcile.alert",
                 side_effect=_capture_alert,
             ),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 return_value=[],
             ),
         ):
@@ -1425,7 +1425,7 @@ class TestReconcileStartupAlertsThreadToken:
             tmp_path: Pytest per-test temporary directory.
             monkeypatch: Pytest monkeypatch fixture.
         """
-        from baton_harness._auth import TokenValidationError  # noqa: PLC0415
+        from codereeve._auth import TokenValidationError  # noqa: PLC0415
 
         reconcile = _import_reconcile()
 
@@ -1443,15 +1443,15 @@ class TestReconcileStartupAlertsThreadToken:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 side_effect=TokenValidationError("bad token format"),
             ),
             patch(
-                "baton_harness.chain.reconcile.alert",
+                "codereeve.chain.reconcile.alert",
                 side_effect=_capture_alert,
             ),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 return_value=[],
             ),
         ):
@@ -1519,15 +1519,15 @@ class TestReconcileStartupAlertsThreadToken:
 
         with (
             patch(
-                "baton_harness.chain.reconcile.validate_daemon_token",
+                "codereeve.chain.reconcile.validate_daemon_token",
                 return_value=None,
             ),
             patch(
-                "baton_harness.chain.reconcile.alert",
+                "codereeve.chain.reconcile.alert",
                 side_effect=_capture_alert,
             ),
             patch(
-                "baton_harness.chain.reconcile._list_claude_procs",
+                "codereeve.chain.reconcile._list_claude_procs",
                 return_value=[],
             ),
         ):
@@ -1590,20 +1590,20 @@ def test_reconcile_preserves_native_order_without_repeating_live_gate(
 
     with (
         patch(
-            "baton_harness.chain.reconcile.validate_daemon_token",
+            "codereeve.chain.reconcile.validate_daemon_token",
             side_effect=validate,
         ),
         patch(
-            "baton_harness.chain.reconcile._get_git_credential_helpers",
+            "codereeve.chain.reconcile._get_git_credential_helpers",
             side_effect=helpers,
         ),
-        patch("baton_harness.chain.reconcile.alert", return_value=True),
+        patch("codereeve.chain.reconcile.alert", return_value=True),
         patch(
-            "baton_harness.chain.reconcile._list_claude_procs",
+            "codereeve.chain.reconcile._list_claude_procs",
             side_effect=processes,
         ),
         patch(
-            "baton_harness.chain.doctor.run_gate",
+            "codereeve.chain.doctor.run_gate",
             side_effect=AssertionError("CLI already ran live preflight"),
         ),
     ):

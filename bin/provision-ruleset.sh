@@ -164,7 +164,7 @@ if [[ -n "${BH_APP_AUTH_JWT_CMD:-}" ]]; then
         exit 2
     fi
 else
-    if ! _APP_JWT="$("${_PYTHON}" -m baton_harness.chain.app_auth jwt)"; then
+    if ! _APP_JWT="$("${_PYTHON}" -m codereeve.chain.app_auth jwt)"; then
         echo "provision-ruleset: could not obtain the App JWT." >&2
         exit 2
     fi
@@ -240,7 +240,7 @@ if [[ -n "${BH_APP_AUTH_TOKEN_CMD:-}" ]]; then
         exit 2
     fi
 else
-    if ! _INSTALL_TOKEN="$("${_PYTHON}" -m baton_harness.chain.app_auth token)"; then
+    if ! _INSTALL_TOKEN="$("${_PYTHON}" -m codereeve.chain.app_auth token)"; then
         echo "provision-ruleset: could not obtain the installation token." >&2
         exit 2
     fi

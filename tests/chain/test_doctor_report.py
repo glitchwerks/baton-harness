@@ -11,14 +11,14 @@ from typing import Literal, NoReturn, TypedDict
 
 import pytest
 
-from baton_harness.chain.doctor import (
+from codereeve.chain.doctor import (
     CheckResult,
     CheckStatus,
     DoctorContext,
     Phase,
     Severity,
 )
-from baton_harness.provenance import Provenance
+from codereeve.provenance import Provenance
 
 
 class _HumanFields(TypedDict, total=False):
@@ -33,7 +33,7 @@ class _HumanFields(TypedDict, total=False):
 def report() -> ModuleType:
     """Load the feature lazily so missing implementation fails a test."""
     try:
-        return importlib.import_module("baton_harness.chain.doctor_report")
+        return importlib.import_module("codereeve.chain.doctor_report")
     except ModuleNotFoundError:
         pytest.fail("doctor report implementation is missing")
 
@@ -316,7 +316,7 @@ def test_render_failure_is_fixed_and_never_partial(
     if kind == "redaction":
         monkeypatch.setattr(report, "redact_secrets", broken)
     elif kind == "pattern":
-        from baton_harness import redact
+        from codereeve import redact
 
         class BrokenPattern:
             """Simulate substitution failing inside the redaction helper."""

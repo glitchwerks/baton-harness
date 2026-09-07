@@ -42,7 +42,7 @@ class TestClaudeSettingsJsonShape:
 
     def test_top_level_hooks_key_present(self, tmp_path: Path) -> None:
         """Returned dict contains a top-level 'hooks' key."""
-        from baton_harness._cli import claude_settings_json_for_worktree
+        from codereeve._cli import claude_settings_json_for_worktree
 
         venv = tmp_path / "venv"
         (venv / "Scripts").mkdir(parents=True)
@@ -54,7 +54,7 @@ class TestClaudeSettingsJsonShape:
 
     def test_pre_tool_use_key_present(self, tmp_path: Path) -> None:
         """hooks['PreToolUse'] is present and is a list."""
-        from baton_harness._cli import claude_settings_json_for_worktree
+        from codereeve._cli import claude_settings_json_for_worktree
 
         venv = tmp_path / "venv"
         (venv / "Scripts").mkdir(parents=True)
@@ -67,7 +67,7 @@ class TestClaudeSettingsJsonShape:
 
     def test_pre_tool_use_has_exactly_one_entry(self, tmp_path: Path) -> None:
         """PreToolUse list contains exactly one hook registration."""
-        from baton_harness._cli import claude_settings_json_for_worktree
+        from codereeve._cli import claude_settings_json_for_worktree
 
         venv = tmp_path / "venv"
         (venv / "Scripts").mkdir(parents=True)
@@ -80,7 +80,7 @@ class TestClaudeSettingsJsonShape:
 
     def test_matcher_is_bash(self, tmp_path: Path) -> None:
         """The single PreToolUse entry matches the 'Bash' tool."""
-        from baton_harness._cli import claude_settings_json_for_worktree
+        from codereeve._cli import claude_settings_json_for_worktree
 
         venv = tmp_path / "venv"
         (venv / "Scripts").mkdir(parents=True)
@@ -93,7 +93,7 @@ class TestClaudeSettingsJsonShape:
 
     def test_hooks_sublist_has_type_command(self, tmp_path: Path) -> None:
         """The nested hooks list has an entry with type='command'."""
-        from baton_harness._cli import claude_settings_json_for_worktree
+        from codereeve._cli import claude_settings_json_for_worktree
 
         venv = tmp_path / "venv"
         (venv / "Scripts").mkdir(parents=True)
@@ -110,7 +110,7 @@ class TestClaudeSettingsJsonShape:
         self, tmp_path: Path
     ) -> None:
         """The command path ends with the bh-force-pr-not-merge script."""
-        from baton_harness._cli import claude_settings_json_for_worktree
+        from codereeve._cli import claude_settings_json_for_worktree
 
         venv = tmp_path / "venv"
         (venv / "Scripts").mkdir(parents=True)
@@ -128,7 +128,7 @@ class TestClaudeSettingsJsonShape:
         self, tmp_path: Path
     ) -> None:
         """The command path passes through venv's Scripts/ or bin/."""
-        from baton_harness._cli import claude_settings_json_for_worktree
+        from codereeve._cli import claude_settings_json_for_worktree
 
         venv = tmp_path / "venv"
         (venv / "Scripts").mkdir(parents=True)
@@ -142,7 +142,7 @@ class TestClaudeSettingsJsonShape:
 
     def test_command_contains_venv_root_path(self, tmp_path: Path) -> None:
         """The command is absolute and contains the venv_root path."""
-        from baton_harness._cli import claude_settings_json_for_worktree
+        from codereeve._cli import claude_settings_json_for_worktree
 
         venv = tmp_path / "venv"
         (venv / "Scripts").mkdir(parents=True)
@@ -158,7 +158,7 @@ class TestClaudeSettingsJsonShape:
         self, tmp_path: Path
     ) -> None:
         """When bin/ layout exists it is preferred (POSIX consistency)."""
-        from baton_harness._cli import claude_settings_json_for_worktree
+        from codereeve._cli import claude_settings_json_for_worktree
 
         venv = tmp_path / "venv"
         (venv / "bin").mkdir(parents=True)
@@ -176,7 +176,7 @@ class TestClaudeSettingsJsonShape:
         The helper must not hard-fail if Scripts/bh-force-pr-not-merge.exe
         is the only script present.
         """
-        from baton_harness._cli import claude_settings_json_for_worktree
+        from codereeve._cli import claude_settings_json_for_worktree
 
         venv = tmp_path / "venv"
         (venv / "Scripts").mkdir(parents=True)
@@ -198,7 +198,7 @@ class TestWriteClaudeSettingsHappyPath:
 
     def test_returns_zero_on_success(self, tmp_path: Path) -> None:
         """_write_claude_settings returns 0 when the write succeeds."""
-        from baton_harness.after_create import _write_claude_settings
+        from codereeve.after_create import _write_claude_settings
 
         worktree = tmp_path / "wt"
         worktree.mkdir()
@@ -212,7 +212,7 @@ class TestWriteClaudeSettingsHappyPath:
 
     def test_creates_dot_claude_directory(self, tmp_path: Path) -> None:
         """_write_claude_settings creates the .claude/ directory."""
-        from baton_harness.after_create import _write_claude_settings
+        from codereeve.after_create import _write_claude_settings
 
         worktree = tmp_path / "wt"
         worktree.mkdir()
@@ -226,7 +226,7 @@ class TestWriteClaudeSettingsHappyPath:
 
     def test_creates_settings_json_file(self, tmp_path: Path) -> None:
         """_write_claude_settings writes $cwd/.claude/settings.json."""
-        from baton_harness.after_create import _write_claude_settings
+        from codereeve.after_create import _write_claude_settings
 
         worktree = tmp_path / "wt"
         worktree.mkdir()
@@ -240,7 +240,7 @@ class TestWriteClaudeSettingsHappyPath:
 
     def test_settings_json_is_valid_json(self, tmp_path: Path) -> None:
         """The written settings.json can be parsed as JSON."""
-        from baton_harness.after_create import _write_claude_settings
+        from codereeve.after_create import _write_claude_settings
 
         worktree = tmp_path / "wt"
         worktree.mkdir()
@@ -260,7 +260,7 @@ class TestWriteClaudeSettingsHappyPath:
         self, tmp_path: Path
     ) -> None:
         """Written JSON contains a Bash PreToolUse registration."""
-        from baton_harness.after_create import _write_claude_settings
+        from codereeve.after_create import _write_claude_settings
 
         worktree = tmp_path / "wt"
         worktree.mkdir()
@@ -284,8 +284,8 @@ class TestWriteClaudeSettingsHappyPath:
         This is the key source-of-truth assertion: after_create must use
         the helper, not duplicate the JSON structure.
         """
-        from baton_harness._cli import claude_settings_json_for_worktree
-        from baton_harness.after_create import _write_claude_settings
+        from codereeve._cli import claude_settings_json_for_worktree
+        from codereeve.after_create import _write_claude_settings
 
         worktree = tmp_path / "wt"
         worktree.mkdir()
@@ -322,7 +322,7 @@ class TestBhVenvAbsentIsFatal:
         defense-in-depth — the operator must notice at worktree creation
         time, not at the first merge attempt.
         """
-        from baton_harness.after_create import (
+        from codereeve.after_create import (
             _write_claude_settings_if_configured,
         )
 
@@ -338,7 +338,7 @@ class TestBhVenvAbsentIsFatal:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """No .claude/settings.json is written when BH_VENV is absent."""
-        from baton_harness.after_create import (
+        from codereeve.after_create import (
             _write_claude_settings_if_configured,
         )
 
@@ -363,7 +363,7 @@ class TestBhVenvAbsentIsFatal:
         Using err() also causes non-zero-exit shell pipelines to propagate
         the failure correctly.
         """
-        from baton_harness.after_create import (
+        from codereeve.after_create import (
             _write_claude_settings_if_configured,
         )
 
@@ -389,7 +389,7 @@ class TestBhVenvAbsentIsFatal:
         If log() were called instead of err(), a monitoring pipeline that
         treats any stdout output as success would miss the failure.
         """
-        from baton_harness.after_create import (
+        from codereeve.after_create import (
             _write_claude_settings_if_configured,
         )
 
@@ -410,7 +410,7 @@ class TestBhVenvAbsentIsFatal:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """An empty-string BH_VENV is treated as absent (also fatal)."""
-        from baton_harness.after_create import (
+        from codereeve.after_create import (
             _write_claude_settings_if_configured,
         )
 
@@ -433,7 +433,7 @@ class TestWriteClaudeSettingsIdempotency:
 
     def test_second_call_returns_zero(self, tmp_path: Path) -> None:
         """Calling _write_claude_settings twice both return 0."""
-        from baton_harness.after_create import _write_claude_settings
+        from codereeve.after_create import _write_claude_settings
 
         worktree = tmp_path / "wt"
         worktree.mkdir()
@@ -451,7 +451,7 @@ class TestWriteClaudeSettingsIdempotency:
         self, tmp_path: Path
     ) -> None:
         """A second write produces the same settings.json as the first."""
-        from baton_harness.after_create import _write_claude_settings
+        from codereeve.after_create import _write_claude_settings
 
         worktree = tmp_path / "wt"
         worktree.mkdir()
@@ -478,7 +478,7 @@ class TestWriteClaudeSettingsIdempotency:
 
         Re-running with the same BH_VENV must succeed (rc 0) and not raise.
         """
-        from baton_harness.after_create import (
+        from codereeve.after_create import (
             _write_claude_settings_if_configured,
         )
 

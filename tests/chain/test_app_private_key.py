@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from baton_harness.chain.app_private_key import (
+from codereeve.chain.app_private_key import (
     AppPrivateKeyConfig,
     AppPrivateKeyConfigError,
     AppPrivateKeyLoadError,
@@ -248,7 +248,7 @@ def test_file_loader_reads_owner_only_regular_file_once(
     key.chmod(0o600)
     fetch = Mock()
     with patch(
-        "baton_harness.chain.app_private_key.os.fstat",
+        "codereeve.chain.app_private_key.os.fstat",
         return_value=_file_stat(key, 0o600),
     ):
         assert (
@@ -267,7 +267,7 @@ def test_file_loader_never_calls_bws(tmp_path: Path) -> None:
     key.chmod(0o600)
     fetch = Mock()
     with patch(
-        "baton_harness.chain.app_private_key.os.fstat",
+        "codereeve.chain.app_private_key.os.fstat",
         return_value=_file_stat(key, 0o600),
     ):
         assert (
@@ -331,7 +331,7 @@ def test_file_loader_rejects_group_or_world_bits(
     key.chmod(0o600 | mode)
     with (
         patch(
-            "baton_harness.chain.app_private_key.os.fstat",
+            "codereeve.chain.app_private_key.os.fstat",
             return_value=_file_stat(key, 0o600 | mode),
         ),
         pytest.raises(AppPrivateKeyLoadError, match="permissions"),
@@ -348,7 +348,7 @@ def test_file_loader_accepts_0400_and_0600(tmp_path: Path, mode: int) -> None:
     key.write_text("private-key", encoding="utf-8")
     key.chmod(mode)
     with patch(
-        "baton_harness.chain.app_private_key.os.fstat",
+        "codereeve.chain.app_private_key.os.fstat",
         return_value=_file_stat(key, mode),
     ):
         assert (
@@ -366,7 +366,7 @@ def test_file_loader_rejects_permission_error(tmp_path: Path) -> None:
     key.chmod(0o600)
     sentinel = "operating-system-secret-detail"
     with (
-        patch("baton_harness.chain.app_private_key.os.open") as open_file,
+        patch("codereeve.chain.app_private_key.os.open") as open_file,
         pytest.raises(AppPrivateKeyLoadError) as exc_info,
     ):
         open_file.side_effect = PermissionError(sentinel)
@@ -396,11 +396,11 @@ def test_file_loader_rejects_close_error(tmp_path: Path) -> None:
 
     with (
         patch(
-            "baton_harness.chain.app_private_key.os.fstat",
+            "codereeve.chain.app_private_key.os.fstat",
             return_value=_file_stat(key, 0o600),
         ),
         patch(
-            "baton_harness.chain.app_private_key.os.close",
+            "codereeve.chain.app_private_key.os.close",
             side_effect=close_then_fail,
         ),
         pytest.raises(AppPrivateKeyLoadError) as exc_info,
@@ -429,9 +429,9 @@ def test_file_loader_uses_supported_nonblocking_open(
         return real_open(path, flags & ~nonblock_flag)
 
     with (
-        patch("baton_harness.chain.app_private_key.os.open", checked_open),
+        patch("codereeve.chain.app_private_key.os.open", checked_open),
         patch(
-            "baton_harness.chain.app_private_key.os.fstat",
+            "codereeve.chain.app_private_key.os.fstat",
             return_value=_file_stat(key, 0o600),
         ),
     ):
@@ -473,7 +473,7 @@ def test_file_loader_rejects_fifo_replacement_promptly(tmp_path: Path) -> None:
         signal.alarm(2)
         with (
             patch(
-                "baton_harness.chain.app_private_key.os.open",
+                "codereeve.chain.app_private_key.os.open",
                 replace_then_open,
             ),
             pytest.raises(AppPrivateKeyLoadError, match="regular file"),
@@ -504,10 +504,10 @@ def test_file_loader_rejects_replacement_race(tmp_path: Path) -> None:
     close = Mock(wraps=real_close)
     with (
         patch(
-            "baton_harness.chain.app_private_key.os.fstat",
+            "codereeve.chain.app_private_key.os.fstat",
             return_value=replaced,
         ),
-        patch("baton_harness.chain.app_private_key.os.close", close),
+        patch("codereeve.chain.app_private_key.os.close", close),
         pytest.raises(AppPrivateKeyLoadError, match="changed"),
     ):
         load_app_private_key(
@@ -524,7 +524,7 @@ def test_file_loader_rejects_more_than_one_mib(tmp_path: Path) -> None:
     key.chmod(0o600)
     with (
         patch(
-            "baton_harness.chain.app_private_key.os.fstat",
+            "codereeve.chain.app_private_key.os.fstat",
             return_value=_file_stat(key, 0o600),
         ),
         pytest.raises(AppPrivateKeyLoadError, match="maximum size"),
@@ -541,7 +541,7 @@ def test_file_loader_rejects_empty_file(tmp_path: Path) -> None:
     key.chmod(0o600)
     with (
         patch(
-            "baton_harness.chain.app_private_key.os.fstat",
+            "codereeve.chain.app_private_key.os.fstat",
             return_value=_file_stat(key, 0o600),
         ),
         pytest.raises(AppPrivateKeyLoadError, match="empty"),
@@ -558,7 +558,7 @@ def test_file_loader_rejects_non_utf8(tmp_path: Path) -> None:
     key.chmod(0o600)
     with (
         patch(
-            "baton_harness.chain.app_private_key.os.fstat",
+            "codereeve.chain.app_private_key.os.fstat",
             return_value=_file_stat(key, 0o600),
         ),
         pytest.raises(AppPrivateKeyLoadError, match="UTF-8"),
