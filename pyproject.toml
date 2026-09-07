@@ -45,6 +45,7 @@ dev = [
 # PATH inside the venv. The launcher (bin/run.sh) activates the venv or
 # ensures they are resolvable before starting Baton.
 [project.scripts]
+codereeve = "codereeve.cli:main"
 bh-after-create = "codereeve.after_create:main"
 bh-before-run = "codereeve.before_run:main"
 bh-after-run = "codereeve.after_run:main"

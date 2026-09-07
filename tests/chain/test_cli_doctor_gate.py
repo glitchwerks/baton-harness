@@ -52,8 +52,14 @@ def test_explicit_config_root_reaches_registry_after_gate(
     )
     expected_root = explicit_root if ambient_root else selected_root
 
-    def gate(ctx: doctor.DoctorContext, phases: tuple[Phase, ...]) -> bool:
+    def gate(
+        ctx: doctor.DoctorContext,
+        phases: tuple[Phase, ...],
+        *,
+        prog: str,
+    ) -> bool:
         """Observe real factory resolution before environment mutation."""
+        assert prog == "codereeve daemon"
         assert Path(ctx.project_root) == expected_root
         assert ctx.config is not None
         if Phase.INSTALLATION in phases:
@@ -292,7 +298,7 @@ def test_report_render_failure_is_fixed_and_atomic(
     assert captured.out == ""
     assert (
         captured.err
-        == "bh-daemon: doctor report could not be safely rendered\n"
+        == "codereeve daemon: doctor report could not be safely rendered\n"
     )
 
 

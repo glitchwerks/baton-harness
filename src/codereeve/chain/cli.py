@@ -98,13 +98,17 @@ def _doctor_context(config_path: Path | None) -> doctor.DoctorContext:
 
 
 def _doctor_gate(
-    ctx: doctor.DoctorContext, phases: tuple[doctor.Phase, ...]
+    ctx: doctor.DoctorContext,
+    phases: tuple[doctor.Phase, ...],
+    *,
+    prog: str,
 ) -> bool:
     """Run a fail-closed gate and render failures without leaking secrets.
 
     Args:
         ctx: Resolved configuration and captured startup authority.
         phases: Ordered phases to execute.
+        prog: Display name for user-facing messages.
 
     Returns:
         Whether the selected critical checks passed.
@@ -119,10 +123,10 @@ def _doctor_gate(
                 secret_values=doctor_report.secret_values_from_context(ctx),
             )
         except Exception:
-            output = "bh-daemon: doctor report could not be safely rendered\n"
+            output = f"{prog}: doctor report could not be safely rendered\n"
         print(output, end="", file=sys.stderr)
     except Exception:
-        print("bh-daemon: doctor preflight failed", file=sys.stderr)
+        print(f"{prog}: doctor preflight failed", file=sys.stderr)
     return False
 
 
@@ -260,11 +264,16 @@ def _assert_force_pr_not_merge_tripwire() -> None:
         )
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Entry point for ``bh-daemon``.
+def main(
+    argv: list[str] | None = None,
+    *,
+    prog: str = "codereeve daemon",
+) -> int:
+    """Run the daemon command-line interface.
 
     Args:
-        argv: Command-line arguments.  Defaults to ``sys.argv[1:]``.
+        argv: Command-line arguments. Defaults to ``sys.argv[1:]``.
+        prog: Display name used in help, version, errors, and logs.
 
     Returns:
         An integer exit code: ``0`` for success, ``1`` for configuration
@@ -276,7 +285,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     parser = argparse.ArgumentParser(
-        prog="bh-daemon",
+        prog=prog,
         description=(
             "Always-on daemon: polls for agent-ready issues and runs them"
             " as dependency-ordered work units."
@@ -355,7 +364,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             provenance = load_provenance()
         except ProvenanceError as exc:
-            print(f"bh-daemon: provenance error: {exc}", file=sys.stderr)
+            print(f"{prog}: provenance error: {exc}", file=sys.stderr)
             return 1
         print(json.dumps(provenance.as_dict(), sort_keys=True))
         return 0
@@ -392,7 +401,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         except Exception:
             print(
-                "bh-daemon: doctor report could not be safely rendered",
+                f"{prog}: doctor report could not be safely rendered",
                 file=sys.stderr,
             )
             return 1
@@ -419,7 +428,7 @@ def main(argv: list[str] | None = None) -> int:
             config = load_workflow(str(workflow_path))
     except Exception as exc:
         print(
-            f"bh-daemon: error loading workflow config"
+            f"{prog}: error loading workflow config"
             f" {workflow_description!r}: {exc}",
             file=sys.stderr,
         )
@@ -430,7 +439,9 @@ def main(argv: list[str] | None = None) -> int:
     # One snapshot owns config and pre-bootstrap BWS authority for both gates.
     gate_ctx = _doctor_context(args.config)
     if not _doctor_gate(
-        gate_ctx, (doctor.Phase.INSTALLATION, doctor.Phase.CONFIGURATION)
+        gate_ctx,
+        (doctor.Phase.INSTALLATION, doctor.Phase.CONFIGURATION),
+        prog=prog,
     ):
         return 1
     if gate_ctx.config is not None:
@@ -443,7 +454,7 @@ def main(argv: list[str] | None = None) -> int:
         registry = load_registry()
     except ValueError as exc:
         print(
-            f"bh-daemon: registry configuration error: {exc}",
+            f"{prog}: registry configuration error: {exc}",
             file=sys.stderr,
         )
         print(
@@ -473,7 +484,7 @@ def main(argv: list[str] | None = None) -> int:
     # Validate BH_PROJECT_ROOT before attempting to chdir.
     if not os.path.isdir(project_root):
         print(
-            f"bh-daemon: error: BH_PROJECT_ROOT does not exist or is not a"
+            f"{prog}: error: BH_PROJECT_ROOT does not exist or is not a"
             f" directory: {project_root}",
             file=sys.stderr,
         )
@@ -484,12 +495,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    _log.info("bh-daemon: chdir to managed repo root: %s", project_root)
+    _log.info("%s: chdir to managed repo root: %s", prog, project_root)
     try:
         os.chdir(project_root)
     except (FileNotFoundError, NotADirectoryError, OSError) as exc:
         print(
-            f"bh-daemon: error: BH_PROJECT_ROOT does not exist or is not a"
+            f"{prog}: error: BH_PROJECT_ROOT does not exist or is not a"
             f" directory: {project_root}: {exc}",
             file=sys.stderr,
         )
@@ -499,7 +510,7 @@ def main(argv: list[str] | None = None) -> int:
         _assert_force_pr_not_merge_tripwire()
     except Exception as exc:
         print(
-            "bh-daemon: error: force-pr-not-merge startup self-test failed:"
+            f"{prog}: error: force-pr-not-merge startup self-test failed:"
             f" {exc}",
             file=sys.stderr,
         )
@@ -517,7 +528,7 @@ def main(argv: list[str] | None = None) -> int:
         installation_token = bootstrap_secrets()
     except (AppAuthError, Exception) as exc:
         print(
-            f"bh-daemon: error: failed to bootstrap GitHub App token: {exc}",
+            f"{prog}: error: failed to bootstrap GitHub App token: {exc}",
             file=sys.stderr,
         )
         return 1
@@ -533,7 +544,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     except TokenValidationError as exc:
         print(
-            f"bh-daemon: error: GH_TOKEN failed boot-time validation: {exc}",
+            f"{prog}: error: GH_TOKEN failed boot-time validation: {exc}",
             file=sys.stderr,
         )
         return 1
@@ -544,15 +555,14 @@ def main(argv: list[str] | None = None) -> int:
         validate_daemon_token(resolved_token)
     except TokenValidationError as exc:
         print(
-            f"bh-daemon: error: invalid installation token from bootstrap:"
-            f" {exc}",
+            f"{prog}: error: invalid installation token from bootstrap: {exc}",
             file=sys.stderr,
         )
         return 1
 
     gate_ctx.installation_token = resolved_token
     gate_ctx.env["GH_TOKEN"] = worker_gh_pat
-    if not _doctor_gate(gate_ctx, (doctor.Phase.LIVE,)):
+    if not _doctor_gate(gate_ctx, (doctor.Phase.LIVE,), prog=prog):
         return 1
 
     # Run the daemon.  run_daemon calls reconcile_startup internally as
@@ -571,6 +581,6 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
     except KeyboardInterrupt:
-        _log.info("bh-daemon: interrupted by user")
+        _log.info("%s: interrupted by user", prog)
 
     return 0

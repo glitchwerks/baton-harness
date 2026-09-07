@@ -106,7 +106,7 @@ def test_version_exits_before_runtime_startup(
     assert exc_info.value.code == 0
     assert (
         capsys.readouterr().out.strip()
-        == f"bh-daemon {version('codereeve')}"
+        == f"codereeve daemon {version('codereeve')}"
     )
 
 
@@ -155,8 +155,29 @@ def test_provenance_reports_invalid_record_before_config_access(
 
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert captured.err.startswith("bh-daemon: provenance error:")
+    assert captured.err.startswith("codereeve daemon: provenance error:")
     assert "Traceback" not in captured.err
+
+
+def test_injected_legacy_prog_preserves_bh_daemon_display(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The compatibility entry point can retain its legacy display name."""
+    with (
+        patch(
+            "codereeve.chain.cli.load_workflow",
+            return_value=MagicMock(),
+        ),
+        patch(
+            "codereeve.chain.cli.load_registry",
+            side_effect=ValueError("missing registry"),
+        ),
+    ):
+        assert main([], prog="bh-daemon") == 1
+
+    assert capsys.readouterr().err.startswith(
+        "bh-daemon: registry configuration error:"
+    )
 
 
 # ---------------------------------------------------------------------------
