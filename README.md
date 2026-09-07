@@ -233,7 +233,8 @@ uv pip check --python "$RUNTIME_PYTHON"
 
 This staging environment contains the locked runtime closure and the built wheel;
 it does not select the `dev` extra. Run `bh-verify-foundation` before promoting the
-wheel to a deployment environment.
+wheel to a deployment environment. Its installed smoke processes run with empty
+temporary home/config directories and only execution-essential environment values.
 
 ### Provenance and preflight
 
@@ -252,6 +253,8 @@ local-only; live checks may use credentials and network access. Repeat `--phase`
 to select multiple phases; omission runs all three. Text is the default format.
 `--config` selects an explicit file; otherwise selection uses
 `$BH_PROJECT_ROOT/.bh/config.env`, with non-empty environment overrides.
+An explicit `<root>/.bh/config.env` infers the project root when `BH_PROJECT_ROOT`
+is unset or empty; daemon startup applies that root after the readiness gate.
 
 Doctor is advisory (exit 0) unless `--strict` finds a critical failure (exit 1).
 Unsafe report rendering exits 1 even without strict; usage errors exit 2. Daemon

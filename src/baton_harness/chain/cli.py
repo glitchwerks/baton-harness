@@ -435,6 +435,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if gate_ctx.config is not None:
         _sandbox_cfg.apply_config(gate_ctx.config, os.environ)
+        if gate_ctx.project_root:
+            os.environ["BH_PROJECT_ROOT"] = gate_ctx.project_root
 
     # Load registry.
     try:

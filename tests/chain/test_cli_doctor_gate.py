@@ -22,6 +22,68 @@ from baton_harness.chain.doctor import (
 _REAL_RUN_GATE = doctor.run_gate
 
 
+@pytest.mark.parametrize("ambient_root", [None, "", "explicit"])
+@pytest.mark.parametrize("gate_passes", [False, True])
+def test_explicit_config_root_reaches_registry_after_gate(
+    tmp_path: Path, ambient_root: str | None, gate_passes: bool
+) -> None:
+    """Inferred roots reach real registry loading only after readiness."""
+    import os
+
+    from baton_harness.chain import cli
+
+    selected_root = tmp_path / "selected"
+    config_dir = selected_root / ".bh"
+    config_dir.mkdir(parents=True)
+    path = config_dir / "config.env"
+    path.write_text(
+        "BH_REPO_OWNER=my-org\nBH_REPO_NAME=my-sandbox\n"
+        "BH_GITHUB_APP_ID=12345\nBH_GITHUB_APP_INSTALLATION_ID=67890\n"
+        "BH_GITHUB_APP_KEY_PROVIDER=bws\n"
+        "BWS_PEM_SECRET_ID=11111111-2222-3333-4444-555555555555\n",
+        encoding="utf-8",
+    )
+    explicit_root = tmp_path / "explicit"
+    explicit_root.mkdir()
+    initial_env = (
+        {}
+        if ambient_root is None
+        else {"BH_PROJECT_ROOT": str(explicit_root) if ambient_root else ""}
+    )
+    expected_root = explicit_root if ambient_root else selected_root
+
+    def gate(ctx: doctor.DoctorContext, phases: tuple[Phase, ...]) -> bool:
+        """Observe real factory resolution before environment mutation."""
+        assert Path(ctx.project_root) == expected_root
+        assert ctx.config is not None
+        if Phase.INSTALLATION in phases:
+            assert dict(os.environ) == initial_env
+        return gate_passes
+
+    with (
+        patch.dict(os.environ, initial_env, clear=True),
+        patch.object(cli, "_doctor_gate", side_effect=gate),
+        patch.object(cli, "load_workflow", return_value=MagicMock()),
+        patch("baton_harness.chain.cli.os.chdir"),
+        patch.object(cli, "_assert_force_pr_not_merge_tripwire"),
+        patch.object(
+            cli, "bootstrap_secrets", return_value="ghs_TESTTOKEN_sentinel"
+        ),
+        patch.object(cli, "validate_daemon_token"),
+        patch.object(cli, "run_daemon", new_callable=AsyncMock) as daemon,
+    ):
+        assert main(["--once", "--config", str(path)]) == int(not gate_passes)
+        if gate_passes:
+            registry = daemon.call_args.args[1]
+            assert registry[0].project_root == expected_root
+            assert registry[0].owner == "my-org"
+            assert registry[0].repo == "my-sandbox"
+            assert Path(os.environ["BH_PROJECT_ROOT"]) == expected_root
+        else:
+            assert dict(os.environ) == initial_env
+            daemon.assert_not_called()
+
+
 def test_doctor_probe_filters_retained_bootstrap_authority() -> None:
     """Live worker probes retain the established credential isolation."""
     from baton_harness.chain import cli

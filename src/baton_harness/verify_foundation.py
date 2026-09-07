@@ -295,6 +295,58 @@ def _validate_installed_state(
         )
 
 
+def _smoke_environment(root: Path) -> dict[str, str]:
+    """Isolate installed smokes from caller credentials and configuration.
+
+    Args:
+        root: Fresh temporary directory under which empty homes are created.
+
+    Returns:
+        Execution essentials and isolated platform home/config locations.
+    """
+    essentials = {
+        "PATH",
+        "SYSTEMROOT",
+        "SYSTEMDRIVE",
+        "WINDIR",
+        "COMSPEC",
+        "PATHEXT",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "TZ",
+    }
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key.upper() in essentials
+    }
+    homes = {
+        "HOME": "home",
+        "USERPROFILE": "home",
+        "XDG_CONFIG_HOME": "config",
+        "XDG_CACHE_HOME": "cache",
+        "XDG_DATA_HOME": "data",
+        "XDG_STATE_HOME": "state",
+        "XDG_RUNTIME_DIR": "runtime",
+        "APPDATA": "appdata",
+        "LOCALAPPDATA": "localappdata",
+        "GH_CONFIG_DIR": "gh",
+        "CLAUDE_CONFIG_DIR": "claude",
+    }
+    for name in set(homes.values()):
+        (root / name).mkdir(parents=True)
+    environment.update({key: str(root / name) for key, name in homes.items()})
+    if os.name == "nt":
+        home = root / "home"
+        environment["HOMEDRIVE"] = home.drive
+        environment["HOMEPATH"] = str(home)[len(home.drive) :]
+    return environment
+
+
 def _smoke_entry_points(
     executable_dir: Path,
     *,
@@ -333,9 +385,7 @@ def _smoke_entry_points(
     )
     with tempfile.TemporaryDirectory(prefix="bh-entrypoint-smoke-") as raw:
         cwd = Path(raw)
-        child_env = dict(os.environ)
-        child_env.pop("PYTHONPATH", None)
-        child_env.pop("PYTHONHOME", None)
+        child_env = _smoke_environment(cwd / "isolated")
         smoke_version = ""
         smoke_provenance: dict[str, object] | None = None
         for name, arguments, input_text, expected_status in smoke_cases:
@@ -882,7 +932,7 @@ def verify_repository(
                 runner,
                 smoke_command,
                 cwd=smoke_cwd,
-                env=child_env,
+                env=_smoke_environment(workspace / f"smoke-home-{version}"),
             )
 
 

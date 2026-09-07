@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import sys
 import sysconfig
 import tarfile
@@ -754,6 +755,89 @@ def test_installed_resource_read_failure_is_normalized() -> None:
 
     with pytest.raises(FoundationError, match="installed resource"):
         _read_installed_resources(unreadable_resource)
+
+
+@pytest.mark.parametrize("outer", [False, True])
+def test_installation_smokes_have_no_ambient_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outer: bool
+) -> None:
+    """Both installed process hops get fresh homes and no caller secrets."""
+    secret_keys = (
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "GH_ENTERPRISE_TOKEN",
+        "GITHUB_ENTERPRISE_TOKEN",
+        "BWS_ACCESS_TOKEN",
+        "ANTHROPIC_API_KEY",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "BH_PROJECT_ROOT",
+        "BH_REPO_OWNER",
+        "BH_GITHUB_APP_PRIVATE_KEY_FILE",
+        "BWS_PEM_SECRET_ID",
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "UNRECOGNIZED_AUTH_TOKEN",
+    )
+    home_keys = (
+        "HOME",
+        "USERPROFILE",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "XDG_RUNTIME_DIR",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "GH_CONFIG_DIR",
+        "CLAUDE_CONFIG_DIR",
+    )
+    for key in secret_keys:
+        monkeypatch.setenv(key, "dummy-ambient-authority")
+    for key in home_keys:
+        monkeypatch.setenv(key, str(tmp_path / "real-home"))
+    monkeypatch.setenv("PATH", "execution-path")
+    monkeypatch.setenv("SYSTEMROOT", "execution-system-root")
+    monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
+    normal = _RecordingRunner() if outer else _SmokeRunner()
+    smoke_calls: list[tuple[str, ...]] = []
+
+    def runner(
+        command: Sequence[str],
+        *,
+        cwd: Path,
+        env: Mapping[str, str] | None = None,
+        input_text: str | None = None,
+        timeout_seconds: float = 300,
+    ) -> CompletedProcess[str]:
+        """Inspect the real launch environment while temporary homes exist."""
+        if "--installed-smoke" in command or "--doctor" in command:
+            smoke_calls.append(tuple(command))
+            assert env is not None
+            assert not set(secret_keys) & set(env)
+            assert env["PATH"] == "execution-path"
+            assert env["SYSTEMROOT"] == "execution-system-root"
+            for key in home_keys:
+                home = Path(env[key])
+                assert home.is_relative_to(tmp_path)
+                assert home != tmp_path / "real-home"
+                assert home.is_dir()
+                assert not list(home.iterdir())
+        return normal(
+            command,
+            cwd=cwd,
+            env=env,
+            input_text=input_text,
+            timeout_seconds=timeout_seconds,
+        )
+
+    if outer:
+        verify_foundation.verify_repository(
+            _REPO_ROOT, ("3.10",), runner=runner
+        )
+    else:
+        _smoke_entry_points(tmp_path / "bin", runner=runner)
+    assert len(smoke_calls) == 1
+    assert os.environ["GH_TOKEN"] == "dummy-ambient-authority"
 
 
 def test_installed_entry_points_use_only_safe_smokes(tmp_path: Path) -> None:
