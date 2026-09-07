@@ -60,7 +60,7 @@ baton-harness/
 ├── README.md
 ├── pyproject.toml               # package metadata, dev dependencies, ruff/mypy config
 ├── bin/
-│   ├── run-daemon.sh            # launcher: validates env vars + labels, starts bh-daemon
+│   ├── run-daemon.sh            # launcher: validates env vars + labels, starts codereeve daemon
 │   ├── setup-env.sh             # idempotent dev-env bootstrap: uv venv + editable install + optional bws check
 │   ├── init-sandbox.sh          # provision a throwaway sandbox repo for a first smoke test
 │   ├── provision-ruleset.sh     # create/repair the two branch-protection rulesets (required before first run)
@@ -73,14 +73,14 @@ baton-harness/
 ├── scripts/
 │   └── pilot-dry-run.sh         # manual dry-run helper (development use)
 ├── src/
-│   └── baton_harness/           # installable Python package
+│   └── codereeve/               # canonical installable Python package
 │       ├── __init__.py          # __version__
 │       ├── _cli.py              # shared log/err helpers and issue-number resolver
-│       ├── after_create.py      # bh-after-create hook entry point
-│       ├── before_run.py        # bh-before-run hook entry point
-│       ├── after_run.py         # bh-after-run hook entry point
+│       ├── after_create.py      # codereeve hook after-create implementation
+│       ├── before_run.py        # codereeve hook before-run implementation
+│       ├── after_run.py         # codereeve hook after-run implementation
 │       ├── chain/               # always-on daemon (issue #27, P0–P3)
-│       │   ├── cli.py           # bh-daemon entry point
+│       │   ├── cli.py           # codereeve daemon implementation
 │       │   ├── daemon.py        # poll loop, work-unit selection, top-level orchestration
 │       │   ├── dag.py           # DAG construction (graphlib.TopologicalSorter)
 │       │   ├── scheduler.py     # ready-frontier tracking (done/parked/dispatched)
@@ -224,6 +224,7 @@ release identity; unset any ambient development-build flags first:
 
 ```bash
 unset CODEREEVE_BUILD_DEVELOPMENT BH_BUILD_DEVELOPMENT
+SOURCE_REVISION="$(git rev-parse HEAD)"
 mkdir -p .tmp
 uv lock --check
 uv export --locked --no-emit-project --format requirements.txt \
@@ -231,7 +232,7 @@ uv export --locked --no-emit-project --format requirements.txt \
 uv export --locked --extra dev --no-emit-project --format requirements.txt \
   --output-file .tmp/build-requirements.txt
 CODEREEVE_BUILD_VERSION=1.0.0 \
-CODEREEVE_BUILD_SOURCE_REVISION=0123456789abcdef0123456789abcdef01234567 \
+CODEREEVE_BUILD_SOURCE_REVISION="$SOURCE_REVISION" \
 uv build --build-constraints .tmp/build-requirements.txt --require-hashes \
   --sdist --wheel --out-dir .tmp/dist
 uv venv .tmp/runtime-venv --python 3.13
@@ -261,18 +262,19 @@ configuration to the new executable:
 ```bash
 # Build with the release's exact tag-derived version and 40-hex revision, or
 # place an independently obtained codereeve-0.2.0-py3-none-any.whl in dist/.
+SOURCE_REVISION="$(git rev-parse HEAD)"
 CODEREEVE_BUILD_VERSION=0.2.0 \
-CODEREEVE_BUILD_SOURCE_REVISION=0123456789abcdef0123456789abcdef01234567 \
+CODEREEVE_BUILD_SOURCE_REVISION="$SOURCE_REVISION" \
 uv build --wheel --out-dir dist
 
 uv venv .venv-codereeve
 uv pip install --python .venv-codereeve/bin/python \
   dist/codereeve-0.2.0-py3-none-any.whl
-.venv-codereeve/bin/codereeve verify
+.venv-codereeve/bin/codereeve verify --installed
 ```
 
 On Windows, use `.venv-codereeve/Scripts/python.exe` and
-`.venv-codereeve/Scripts/codereeve.exe verify`. Change the existing service
+`.venv-codereeve/Scripts/codereeve.exe verify --installed`. Change the existing service
 configuration only after verification succeeds. Keep the original `.venv` completely
 unchanged until the rollback window closes; rollback consists of pointing the service
 configuration back to that original environment. Service and path renaming is outside
@@ -490,7 +492,7 @@ provider required in `${BH_PROJECT_ROOT}/.bh/config.env`.
 
 ## Safety and guardrails
 
-`bh-daemon` spawns real `claude -p --dangerously-skip-permissions` processes that write
+`codereeve daemon` spawns real `claude -p --dangerously-skip-permissions` processes that write
 code, commit, push branches, and open GitHub PRs autonomously. Before running:
 
 - **Use a throwaway sandbox repo** — never a real project. See [Prerequisites (runtime)](#prerequisites-runtime).
@@ -506,7 +508,7 @@ code, commit, push branches, and open GitHub PRs autonomously. Before running:
 
 ### Running the daemon
 
-`bh-daemon` is the always-on poll loop that watches a GitHub repo for `agent-ready`
+`codereeve daemon` is the always-on poll loop that watches a GitHub repo for `agent-ready`
 issues, runs Claude Code agents against them in dependency order, CI-gates each agent's
 PR, and opens a ready-for-review `feature/<slug> → main` PR when a work unit completes.
 It never merges to `main`.
@@ -556,7 +558,7 @@ codereeve daemon           # continuous
 | Variable | How it is set | Purpose |
 |---|---|---|
 | `BATON_HARNESS_DIR` | Derived from the script's own location | Harness repo root; available to hook scripts |
-| `BH_VENV` | Derived from the `bh-daemon` binary location | Hooks self-activate the venv |
+| `BH_VENV` | Derived from the `codereeve` binary location | Hooks self-activate the venv |
 
 **Optional:**
 
@@ -585,11 +587,11 @@ wiring, CI-gate behaviour, and expected log output — see
 
 ### First run — quick start
 
-**Bringing up `bh-daemon` on a machine that has never run it before?** See
+**Bringing up `codereeve daemon` on a machine that has never run it before?** See
 [docs/system-setup.md](docs/system-setup.md) for machine-level setup (CLIs, the Python
 venv), then [docs/repository-onboarding.md](docs/repository-onboarding.md) for the
 repo/sandbox-level walkthrough — prerequisites, each `bin/*.sh` step with its verification
-command, the `bh-daemon --doctor --strict` preflight, the provider-aware
+command, the `codereeve doctor --strict` preflight, the provider-aware
 `--check-vault` App-key dry-run, and troubleshooting. The summary below assumes the CLIs
 are already installed and is a quick reference, not a walkthrough.
 
@@ -626,7 +628,8 @@ bin/run-daemon.sh --once
 ```
 
 Step 4 above is the bounded, single-tick smoke test. For continuous operation, install the
-`bh-daemon` systemd unit with `bin/install-daemon-service.sh`; it creates a secrets file
+compatibility-named `bh-daemon` systemd unit with `bin/install-daemon-service.sh`; it
+creates a secrets file
 only when BWS is needed — see
 [docs/smoke-test-daemon.md §"systemd unit (recommended)"](docs/smoke-test-daemon.md) for the
 one-command invocation, flags, and the manual/reference unit it generates.

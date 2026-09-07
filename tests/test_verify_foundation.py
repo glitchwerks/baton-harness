@@ -1314,3 +1314,84 @@ def test_installed_smoke_mode_skips_repository_build(
         == 0
     )
     assert calls == [frozenset({"pytest", "ruff"})]
+
+
+def test_public_installed_mode_verifies_active_install(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Public installed verification cannot enter the repository build path."""
+    calls: list[frozenset[str]] = []
+
+    monkeypatch.setattr(
+        verify_foundation,
+        "verify_installed",
+        calls.append,
+    )
+    monkeypatch.setattr(
+        verify_foundation,
+        "verify_repository",
+        lambda *_args, **_kwargs: pytest.fail(
+            "public installed mode entered repository verification"
+        ),
+    )
+
+    assert verify_foundation.main(["--installed"]) == 0
+    assert calls == [frozenset()]
+
+
+def test_verifier_rejects_abbreviated_installed_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reject abbreviated selection of installed verification."""
+    monkeypatch.setattr(
+        verify_foundation,
+        "verify_installed",
+        lambda _forbidden: None,
+    )
+
+    with pytest.raises(SystemExit, match="2"):
+        verify_foundation.main(["--inst"])
+
+
+def test_verifier_help_exposes_only_public_installed_mode(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Name the canonical command and hide recursion internals in help."""
+    with pytest.raises(SystemExit, match="0"):
+        verify_foundation.main(["--help"])
+
+    output = capsys.readouterr().out
+    assert output.startswith("usage: codereeve verify")
+    assert "--installed" in output
+    assert "--installed-smoke" not in output
+
+
+def test_verifier_output_uses_canonical_command_name(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Verifier success and failure messages use the canonical command name."""
+    monkeypatch.setattr(
+        verify_foundation,
+        "verify_installed",
+        lambda _forbidden: None,
+    )
+    assert verify_foundation.main(["--installed"]) == 0
+    assert (
+        capsys.readouterr().out
+        == "codereeve verify: all invariants passed\n"
+    )
+
+    def fail_installed(_forbidden: frozenset[str]) -> None:
+        raise FoundationError("staged install rejected")
+
+    monkeypatch.setattr(
+        verify_foundation,
+        "verify_installed",
+        fail_installed,
+    )
+    assert verify_foundation.main(["--installed"]) == 1
+    assert (
+        capsys.readouterr().err
+        == "codereeve verify: staged install rejected\n"
+    )

@@ -170,12 +170,54 @@ def test_agent_policy_files_are_byte_identical() -> None:
 def test_readme_presents_codereeve_as_canonical_cli() -> None:
     """The README presents the unified CodeReeve command as canonical."""
     text = Path("README.md").read_text(encoding="utf-8")
-    assert "codereeve daemon" in text
-    assert "codereeve doctor" in text
-    assert "codereeve provenance" in text
-    assert "codereeve hook after-create" in text
-    assert "codereeve verify" in text
-    assert "removed in 0.4.0" in text
+    for command in (
+        "codereeve daemon",
+        "codereeve doctor",
+        "codereeve provenance",
+        "codereeve hook after-create",
+        "codereeve hook before-run",
+        "codereeve hook after-run",
+        "codereeve hook force-pr-not-merge",
+        "codereeve verify",
+    ):
+        assert command in text
+    for variable in (
+        "CODEREEVE_BUILD_VERSION",
+        "CODEREEVE_BUILD_SOURCE_REVISION",
+        "CODEREEVE_BUILD_DEVELOPMENT",
+    ):
+        assert variable in text
+
+    compatibility = text.split(
+        "The six legacy scripts remain temporary compatibility shims", 1
+    )[1].split("The hooks derive the issue number", 1)[0]
+    replacements = {
+        "bh-daemon": "codereeve daemon",
+        "bh-after-create": "codereeve hook after-create",
+        "bh-before-run": "codereeve hook before-run",
+        "bh-after-run": "codereeve hook after-run",
+        "bh-force-pr-not-merge": "codereeve hook force-pr-not-merge",
+        "bh-verify-foundation": "codereeve verify",
+    }
+    assert compatibility.count("| `bh-") == len(replacements)
+    for legacy, canonical in replacements.items():
+        assert f"| `{legacy}` | `{canonical}` |" in compatibility
+    assert "removed in 0.4.0" in compatibility
+
+    upgrade = text.split("### Supported 0.2 upgrade and rollback", 1)[1].split(
+        "### Provenance and preflight", 1
+    )[0]
+    normalized_upgrade = " ".join(upgrade.split())
+    assert "codereeve verify --installed" in upgrade
+    assert ".venv-codereeve" in upgrade
+    assert (
+        "Keep the original `.venv` completely unchanged"
+        in normalized_upgrade
+    )
+    assert 'SOURCE_REVISION="$(git rev-parse HEAD)"' in upgrade
+    assert (
+        'CODEREEVE_BUILD_SOURCE_REVISION="$SOURCE_REVISION"' in upgrade
+    )
 
 
 def test_coderabbit_is_label_opt_in_only() -> None:

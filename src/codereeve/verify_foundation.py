@@ -208,7 +208,7 @@ def _temporary_workspace(keep: bool) -> Iterator[Path]:
     """
     if keep:
         retained = Path(tempfile.mkdtemp(prefix="bh-foundation-"))
-        print(f"bh-verify-foundation: retaining temporary files at {retained}")
+        print(f"codereeve verify: retaining temporary files at {retained}")
         yield retained
         return
     with tempfile.TemporaryDirectory(prefix="bh-foundation-") as raw:
@@ -1078,12 +1078,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         Zero on success and one when an invariant fails.
     """
     parser = argparse.ArgumentParser(
-        prog="bh-verify-foundation",
+        prog="codereeve verify",
         description="Validate the locked, packaged wheel foundation.",
+        allow_abbrev=False,
     )
     parser.add_argument("--python", action="append", dest="python_versions")
     parser.add_argument("--keep-temp", action="store_true")
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--installed",
+        action="store_true",
+        help="validate the active installed wheel without a repository build",
+    )
+    mode.add_argument(
         "--installed-smoke", action="store_true", help=argparse.SUPPRESS
     )
     parser.add_argument(
@@ -1095,14 +1102,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     python_versions = tuple(args.python_versions or ("3.10", "3.13"))
     try:
-        if args.installed_smoke:
+        if args.installed:
+            verify_installed(frozenset())
+        elif args.installed_smoke:
             verify_installed(frozenset(args.forbid_distribution))
         else:
             verify_repository(
                 Path.cwd(), python_versions, keep_temp=args.keep_temp
             )
     except FoundationError as exc:
-        print(f"bh-verify-foundation: {exc}", file=sys.stderr)
+        print(f"codereeve verify: {exc}", file=sys.stderr)
         return 1
-    print("bh-verify-foundation: all invariants passed")
+    print("codereeve verify: all invariants passed")
     return 0
