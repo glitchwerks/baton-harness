@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 _NAME_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _UNSAFE_VALUE_CHARACTERS = frozenset("$`;&|<>")
+_UNSUPPORTED_LINE_SEPARATORS = frozenset("\v\f\x1c\x1d\x1e\x85\u2028\u2029")
 
 
 class ConfigSyntaxError(ValueError):
@@ -40,6 +41,10 @@ class Assignment:
         raw: Original physical input line, excluding its newline.
         line: One-based physical line number.
         comment: Preserved suffix beginning with whitespace or ``#``.
+        leading_trivia: Blank or comment lines immediately before the
+            assignment.
+        trailing_trivia: Blank or comment lines immediately after the final
+            assignment in a parsed file.
     """
 
     key: str
@@ -47,6 +52,8 @@ class Assignment:
     raw: str
     line: int
     comment: str = ""
+    leading_trivia: tuple[str, ...] = ()
+    trailing_trivia: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -187,10 +194,20 @@ def parse_env_text(text: str, *, source: str) -> tuple[Assignment, ...]:
         raise ConfigSyntaxError(source, text[:null_offset].count("\n") + 1)
 
     assignments: list[Assignment] = []
-    for line_number, raw in enumerate(text.splitlines(), start=1):
+    pending_trivia: list[str] = []
+    for line_number, raw in enumerate(_physical_lines(text, source), start=1):
         parsed = _parse_line(raw, source, line_number)
-        if parsed is not None:
-            assignments.append(parsed)
+        if parsed is None:
+            pending_trivia.append(raw)
+            continue
+        assignments.append(
+            replace(parsed, leading_trivia=tuple(pending_trivia))
+        )
+        pending_trivia.clear()
+    if assignments and pending_trivia:
+        assignments[-1] = replace(
+            assignments[-1], trailing_trivia=tuple(pending_trivia)
+        )
     return tuple(assignments)
 
 
@@ -308,20 +325,28 @@ def rewrite_assignments(
     for assignment in assignments:
         alias = aliases_by_key.get(assignment.key)
         if alias is None:
+            lines.extend(assignment.leading_trivia)
             lines.append(assignment.raw)
             continue
         if alias.canonical in emitted:
+            lines.extend(assignment.leading_trivia)
+            comment = _comment_as_trivia(assignment.comment)
+            if comment is not None:
+                lines.append(comment)
             continue
         emitted.add(alias.canonical)
         chosen = selected.get(alias.canonical)
         if chosen is None:
             continue
+        lines.extend(assignment.leading_trivia)
         value = _rewrite_path_value(
             alias.canonical, chosen.value, path_values
         )
         lines.append(
-            f"{alias.canonical}={_format_value(value)}{chosen.comment}"
+            f"{alias.canonical}={_format_value(value)}{assignment.comment}"
         )
+    if assignments:
+        lines.extend(assignments[-1].trailing_trivia)
     return "" if not lines else "\n".join(lines) + "\n"
 
 
@@ -351,7 +376,7 @@ def _parse_line(
     index = _skip_space(raw, value_start)
     if index == len(raw):
         return Assignment(key, "", raw, line_number)
-    if raw[index] == "#":
+    if index > value_start and raw[index] == "#":
         return Assignment(key, "", raw, line_number, raw[value_start:])
     if raw[index] in "\"'":
         return _parse_quoted_assignment(raw, source, line_number, key, index)
@@ -406,6 +431,8 @@ def _parse_unquoted_assignment(
     comment = raw[index + len(value) :]
     if "\\" in value:
         raise ConfigSyntaxError(source, line_number)
+    if "'" in value or '"' in value:
+        raise ConfigSyntaxError(source, line_number)
     _reject_unsafe(value, source, line_number)
     if _contains_following_assignment(value):
         raise ConfigSyntaxError(source, line_number)
@@ -417,6 +444,33 @@ def _skip_space(text: str, index: int) -> int:
     while index < len(text) and text[index] in " \t":
         index += 1
     return index
+
+
+def _physical_lines(text: str, source: str) -> list[str]:
+    """Split only supported LF and CRLF physical lines.
+
+    Args:
+        text: Complete environment configuration text.
+        source: Safe source label for syntax diagnostics.
+
+    Returns:
+        Input physical lines without their supported line endings.
+
+    Raises:
+        ConfigSyntaxError: If input contains a control line separator.
+    """
+    for index, character in enumerate(text):
+        if character in _UNSUPPORTED_LINE_SEPARATORS:
+            raise ConfigSyntaxError(source, text[:index].count("\n") + 1)
+        if character == "\r" and (
+            index + 1 == len(text) or text[index + 1] != "\n"
+        ):
+            raise ConfigSyntaxError(source, text[:index].count("\n") + 1)
+    normalized = text.replace("\r\n", "\n")
+    lines = normalized.split("\n")
+    if normalized.endswith("\n"):
+        lines.pop()
+    return lines
 
 
 def _reject_unsafe(value: str, source: str, line_number: int) -> None:
@@ -524,3 +578,9 @@ def _format_value(value: str) -> str:
         return value
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
+
+
+def _comment_as_trivia(comment: str) -> str | None:
+    """Convert a skipped inline comment into a retained standalone comment."""
+    normalized = comment.lstrip()
+    return normalized if normalized.startswith("#") else None

@@ -55,6 +55,18 @@ def test_parse_env_text_handles_whitespace_empty_values_and_crlf() -> None:
     ]
 
 
+def test_parse_env_text_preserves_adjacent_hashes_as_unquoted_values() -> None:
+    """Only whitespace before a hash starts an unquoted inline comment."""
+    parsed = parse_env_text(
+        "LITERAL=#literal\nEMPTY= # comment\n",
+        source="config.env",
+    )
+    assert [(item.key, item.value) for item in parsed] == [
+        ("LITERAL", "#literal"),
+        ("EMPTY", ""),
+    ]
+
+
 def test_parse_env_text_unescapes_only_matching_quote_mode() -> None:
     """Matching quote and backslash escapes remain literal otherwise."""
     parsed = parse_env_text(
@@ -96,6 +108,8 @@ def test_parse_env_text_preserves_duplicate_assignments_for_last_precedence(
         "1INVALID=value\n",
         "export\n",
         "VALUE=bad\x00value\n",
+        'VALUE=prefix"unterminated\n',
+        "VALUE=first\vSECOND=other\n",
     ],
 )
 def test_parse_env_text_rejects_syntax_without_exposing_value(
@@ -259,6 +273,27 @@ def test_rewrite_assignments_canonicalizes_product_keys_and_preserves_others(
         "BWS_PEM_SECRET_ID=uuid # keep\n"
         "CODEREEVE_REPO_NAME=sandbox # legacy\n"
         "UNRELATED=value\n"
+    )
+
+
+def test_rewrite_assignments_retains_trivia_and_collapsed_comments() -> None:
+    """Migration retains comment and blank-line context around a pair."""
+    assignments = parse_env_text(
+        "# heading\n"
+        "BH_REPO_NAME=sandbox # legacy\n"
+        "\n"
+        "# bridge\n"
+        "CODEREEVE_REPO_NAME=sandbox # canonical\n"
+        "# footer\n",
+        source="config.env",
+    )
+    assert rewrite_assignments(assignments, path_values={}) == (
+        "# heading\n"
+        "CODEREEVE_REPO_NAME=sandbox # legacy\n"
+        "\n"
+        "# bridge\n"
+        "# canonical\n"
+        "# footer\n"
     )
 
 

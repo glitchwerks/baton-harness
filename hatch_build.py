@@ -1,21 +1,47 @@
 """Hatch hooks that create and validate build provenance records."""
 
+import importlib.util
 import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from hashlib import sha256
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 from hatchling.metadata.plugin.interface import MetadataHookInterface
 from packaging.version import InvalidVersion, Version
 
-from codereeve.config_env import AliasConflictError, resolve_alias_pair
+
+def _load_config_env_module() -> ModuleType:
+    """Load the source helper without importing the package initializer."""
+    module_name = "_codereeve_hatch_config_env"
+    source_path = Path(__file__).parent / "src" / "codereeve" / "config_env.py"
+    existing = sys.modules.get(module_name)
+    if existing is not None and getattr(existing, "__file__", None) == str(
+        source_path
+    ):
+        return existing
+    spec = importlib.util.spec_from_file_location(module_name, source_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(
+            "cannot load build environment compatibility helper"
+        )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_CONFIG_ENV_MODULE = _load_config_env_module()
+AliasConflictError = _CONFIG_ENV_MODULE.AliasConflictError
+resolve_alias_pair = _CONFIG_ENV_MODULE.resolve_alias_pair
 
 DEVELOPMENT_VERSION = "0.2.0.dev0"
 REVISION_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
