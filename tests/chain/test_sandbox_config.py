@@ -1739,6 +1739,15 @@ class TestPureConfigResolution:
 
         assert select_config_path(str(explicit), {}) == explicit.resolve()
 
+    def test_implicit_config_path_uses_project_root(
+        self, tmp_path: Path
+    ) -> None:
+        """Implicit selection locates the project's default config file."""
+        assert (
+            select_config_path(None, {"BH_PROJECT_ROOT": str(tmp_path)})
+            == (tmp_path / ".bh" / "config.env").resolve()
+        )
+
     def test_implicit_config_path_requires_project_root(self) -> None:
         """Implicit selection gives the stable missing-root error."""
         with pytest.raises(

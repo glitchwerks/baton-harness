@@ -7,7 +7,7 @@ import json
 from collections.abc import Iterator
 from dataclasses import FrozenInstanceError, replace
 from types import ModuleType
-from typing import NoReturn
+from typing import Literal, NoReturn, TypedDict
 
 import pytest
 
@@ -19,6 +19,14 @@ from baton_harness.chain.doctor import (
     Severity,
 )
 from baton_harness.provenance import Provenance
+
+
+class _HumanFields(TypedDict, total=False):
+    """Typed display-field overrides for immutable check fixtures."""
+
+    title: str
+    detail: str
+    remediation: str
 
 
 @pytest.fixture
@@ -155,11 +163,13 @@ def test_null_provenance_and_summary(
 def test_both_formats_redact_every_human_field(
     report: ModuleType,
     results: tuple[CheckResult, ...],
-    field: str,
+    field: Literal["title", "detail", "remediation"],
     secret: str,
 ) -> None:
     """Neither serializer can leak credentials through any display field."""
-    original = replace(results[0], **{field: f"before {secret} after"})
+    overrides: _HumanFields = {}
+    overrides[field] = f"before {secret} after"
+    original = replace(results[0], **overrides)
     selected = (original, original)
     # A one-shot iterable must work across fields and multiple results.
     text = report.render_text(
@@ -197,12 +207,14 @@ def test_both_formats_redact_every_human_field(
 def test_report_redacts_overlapping_values_completely(
     report: ModuleType,
     results: tuple[CheckResult, ...],
-    field: str,
+    field: Literal["title", "detail", "remediation"],
     secret: str,
     values: tuple[str, ...],
 ) -> None:
     """All fields and repeated checks hide complete overlapping spans."""
-    original = replace(results[0], **{field: f"before {secret} after"})
+    overrides: _HumanFields = {}
+    overrides[field] = f"before {secret} after"
+    original = replace(results[0], **overrides)
     selected = (original, original)
     text = report.render_text(selected, secret_values=iter(values))
     document = json.loads(

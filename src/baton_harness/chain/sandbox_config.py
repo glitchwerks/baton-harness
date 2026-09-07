@@ -332,9 +332,7 @@ def resolve_config(
     # Resolve each overridable key: a non-empty environment value wins
     # over the file's value (empty env is treated as absent). The
     # completely resolved base and optional values are validated below.
-    resolved = resolve_overridable_keys(
-        parsed, env, _ENV_OVERRIDABLE_KEYS
-    )
+    resolved = resolve_overridable_keys(parsed, env, _ENV_OVERRIDABLE_KEYS)
 
     for required_key in _REQUIRED_KEYS:
         if not resolved.get(required_key):
@@ -367,9 +365,7 @@ def resolve_config(
         repo_owner=resolved["BH_REPO_OWNER"],
         repo_name=resolved["BH_REPO_NAME"],
         github_app_id=resolved["BH_GITHUB_APP_ID"],
-        github_app_installation_id=resolved[
-            "BH_GITHUB_APP_INSTALLATION_ID"
-        ],
+        github_app_installation_id=resolved["BH_GITHUB_APP_INSTALLATION_ID"],
         github_app_key_provider=app_key_config.provider,
         bws_pem_secret_id=app_key_config.bws_secret_id,
         github_app_private_key_file=app_key_config.file_path,
@@ -419,9 +415,7 @@ def apply_config(
     env["BH_REPO_OWNER"] = config.repo_owner
     env["BH_REPO_NAME"] = config.repo_name
     env["BH_GITHUB_APP_ID"] = config.github_app_id
-    env["BH_GITHUB_APP_INSTALLATION_ID"] = (
-        config.github_app_installation_id
-    )
+    env["BH_GITHUB_APP_INSTALLATION_ID"] = config.github_app_installation_id
     env["BH_GITHUB_APP_KEY_PROVIDER"] = config.github_app_key_provider.value
     if config.github_app_key_provider is AppPrivateKeyProvider.BWS:
         assert config.bws_pem_secret_id is not None

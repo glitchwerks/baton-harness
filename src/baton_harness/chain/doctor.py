@@ -30,6 +30,7 @@ RunnerFn = Callable[[list[str]], subprocess.CompletedProcess[str]]
 WhichFn = Callable[[str], str | None]
 CheckFn = Callable[["DoctorContext"], "CheckResult"]
 
+
 class Severity(str, Enum):
     """Severity assigned to a preflight check."""
 
@@ -424,9 +425,7 @@ def _check_package_entry_points(ctx: DoctorContext) -> CheckResult:
     del ctx
     installed = {
         entry_point.name
-        for entry_point in metadata.distribution(
-            "baton-harness"
-        ).entry_points
+        for entry_point in metadata.distribution("baton-harness").entry_points
         if entry_point.group == "console_scripts"
     }
     missing = sorted(_REQUIRED_ENTRY_POINTS - installed)
@@ -1552,7 +1551,7 @@ def run_report(
     phases: Sequence[Phase] | None = None,
     checks: Sequence[Check] | None = None,
 ) -> list[CheckResult]:
-    """Run selected checks in catalog order without aborting early.
+    """Run checks in selected phase and catalog order without aborting early.
 
     Args:
         ctx: Injected doctor context.
@@ -1562,12 +1561,13 @@ def run_report(
     Returns:
         One result for every selected catalog check.
     """
-    selected_phases = set(Phase if phases is None else phases)
+    selected_phases = dict.fromkeys(Phase if phases is None else phases)
     catalog = CATALOG if checks is None else checks
     return [
         _run_check(check, ctx)
+        for phase in selected_phases
         for check in catalog
-        if check.phase in selected_phases
+        if check.phase is phase
     ]
 
 

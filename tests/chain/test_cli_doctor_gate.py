@@ -33,7 +33,7 @@ def test_doctor_probe_filters_retained_bootstrap_authority() -> None:
         "GH_INSTALLATION_TOKEN": "app-token",
     }
     ctx.installation_token = "app-token"
-    with patch.object(cli.subprocess, "run") as run:
+    with patch("baton_harness.chain.cli.subprocess.run") as run:
         ctx.runner(["gh", "auth", "status"])
     probe_env = run.call_args.kwargs["env"]
     assert "GH_TOKEN" not in probe_env
@@ -158,7 +158,7 @@ def test_daemon_config_and_gate_order(
             "load_registry",
             return_value=[MagicMock(project_root=str(tmp_path))],
         ),
-        patch.object(cli.os, "chdir"),
+        patch("baton_harness.chain.cli.os.chdir"),
         patch.object(cli, "_assert_force_pr_not_merge_tripwire"),
         patch.object(cli, "bootstrap_secrets", side_effect=bootstrap),
         patch.object(cli, "validate_daemon_token"),
@@ -286,7 +286,7 @@ def test_live_vault_retains_prebootstrap_authority(
             "load_registry",
             return_value=[MagicMock(project_root=str(tmp_path))],
         ),
-        patch.object(cli.os, "chdir"),
+        patch("baton_harness.chain.cli.os.chdir"),
         patch.object(cli, "_assert_force_pr_not_merge_tripwire"),
         patch.object(cli, "bootstrap_secrets", side_effect=bootstrap),
         patch.object(cli, "validate_daemon_token"),

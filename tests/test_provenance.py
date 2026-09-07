@@ -76,7 +76,9 @@ def _distribution(*, files: object, version: str = "1.2.3") -> MagicMock:
 def _provenance_file(text: str = "") -> MagicMock:
     """Return one inventory path for the generated provenance resource."""
     resource = MagicMock()
-    resource.__str__.return_value = "baton_harness/build_provenance.json"
+    resource.configure_mock(
+        **{"__str__.return_value": "baton_harness/build_provenance.json"}
+    )
     resource.read_text.return_value = text
     return resource
 

@@ -15,7 +15,7 @@ import stat
 import subprocess
 import textwrap
 from collections.abc import Callable
-from contextlib import nullcontext
+from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock, patch
@@ -24,6 +24,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
+from baton_harness import resources
 from baton_harness.chain import app_auth, doctor
 from baton_harness.chain.cli import main
 from baton_harness.chain.doctor import (
@@ -531,8 +532,9 @@ def _phase_result(check_id: str, phase: Phase) -> CheckResult:
     )
 
 
-def test_run_report_selects_one_phase_without_calling_unselected_checks(
-) -> None:
+def test_run_report_selects_one_phase_without_calling_unselected_checks() -> (
+    None
+):
     """Selecting one phase executes only checks owned by that phase."""
     calls: list[str] = []
 
@@ -546,15 +548,11 @@ def test_run_report_selects_one_phase_without_calling_unselected_checks(
         raise AssertionError("unselected check was called")
 
     checks = (
-        _make_check(
-            "selected", phase=Phase.CONFIGURATION, fn=selected
-        ),
+        _make_check("selected", phase=Phase.CONFIGURATION, fn=selected),
         _make_check("unselected", phase=Phase.LIVE, fn=unselected),
     )
 
-    results = run_report(
-        _make_ctx(), (Phase.CONFIGURATION,), checks=checks
-    )
+    results = run_report(_make_ctx(), (Phase.CONFIGURATION,), checks=checks)
 
     assert calls == ["selected"]
     assert [result.check_id for result in results] == ["selected"]
@@ -569,11 +567,7 @@ def test_run_report_repeated_phase_is_executed_once() -> None:
         calls.append("selected")
         return _phase_result("selected", Phase.INSTALLATION)
 
-    checks = (
-        _make_check(
-            "selected", phase=Phase.INSTALLATION, fn=selected
-        ),
-    )
+    checks = (_make_check("selected", phase=Phase.INSTALLATION, fn=selected),)
 
     results = run_report(
         _make_ctx(),
@@ -585,8 +579,20 @@ def test_run_report_repeated_phase_is_executed_once() -> None:
     assert [result.check_id for result in results] == ["selected"]
 
 
-def test_run_report_defaults_to_all_phases_in_catalog_order() -> None:
-    """Omitted phases execute every phase while preserving catalog order."""
+@pytest.mark.parametrize(
+    ("phases", "expected"),
+    [
+        (None, ["installation", "configuration", "live", "live-second"]),
+        (
+            (Phase.LIVE, Phase.CONFIGURATION, Phase.LIVE, Phase.INSTALLATION),
+            ["live", "live-second", "configuration", "installation"],
+        ),
+    ],
+)
+def test_run_report_orders_by_selected_phase_then_catalog(
+    phases: tuple[Phase, ...] | None, expected: list[str]
+) -> None:
+    """Phase selection controls execution, with each check executed once."""
     calls: list[str] = []
 
     def result_for(check_id: str, phase: Phase) -> CheckFn:
@@ -613,12 +619,17 @@ def test_run_report_defaults_to_all_phases_in_catalog_order() -> None:
             phase=Phase.CONFIGURATION,
             fn=result_for("configuration", Phase.CONFIGURATION),
         ),
+        _make_check(
+            "live-second",
+            phase=Phase.LIVE,
+            fn=result_for("live-second", Phase.LIVE),
+        ),
     )
 
-    results = run_report(_make_ctx(), checks=checks)
+    results = run_report(_make_ctx(), phases, checks=checks)
 
-    assert calls == ["live", "installation", "configuration"]
-    assert [result.check_id for result in results] == calls
+    assert calls == expected
+    assert [result.check_id for result in results] == expected
 
 
 def test_run_report_uses_catalog_metadata_for_emitted_results() -> None:
@@ -645,9 +656,7 @@ def test_run_report_uses_catalog_metadata_for_emitted_results() -> None:
         fn=inconsistent,
     )
 
-    result = run_report(
-        _make_ctx(), (Phase.LIVE,), checks=(check,)
-    )[0]
+    result = run_report(_make_ctx(), (Phase.LIVE,), checks=(check,))[0]
 
     assert result == CheckResult(
         check_id="CATALOG_OWNER",
@@ -679,12 +688,8 @@ def test_run_gate_collects_every_critical_failure() -> None:
         return run
 
     checks = (
-        _make_check(
-            "A", phase=Phase.INSTALLATION, fn=critical_failure("A")
-        ),
-        _make_check(
-            "B", phase=Phase.INSTALLATION, fn=critical_failure("B")
-        ),
+        _make_check("A", phase=Phase.INSTALLATION, fn=critical_failure("A")),
+        _make_check("B", phase=Phase.INSTALLATION, fn=critical_failure("B")),
     )
     with pytest.raises(doctor.DoctorGateError) as captured:
         run_gate(_make_ctx(), (Phase.INSTALLATION,), checks=checks)
@@ -1121,12 +1126,11 @@ def test_expected_config_read_errors_do_not_block_installation(
 ) -> None:
     """Expected local read failures remain configuration result state."""
     config_path = tmp_path / "config.env"
-    resolver_patch = nullcontext()
+    resolver_patch: AbstractContextManager[object] = nullcontext()
     if failure_kind == "permission":
         config_path.write_text(_VALID_CONFIG_ENV, encoding="utf-8")
-        resolver_patch = patch.object(
-            doctor.sandbox_config,
-            "resolve_config",
+        resolver_patch = patch(
+            "baton_harness.chain.doctor.sandbox_config.resolve_config",
             side_effect=PermissionError("config access denied"),
         )
     elif failure_kind == "directory":
@@ -1191,9 +1195,7 @@ def test_live_repository_checks_use_explicit_resolved_config_only(
         if args[:3] == ["gh", "label", "list"]:
             stdout = "\n".join(sorted(_REQUIRED_LABELS)) + "\n"
         else:
-            stdout = json.dumps(
-                [{"login": "operator", "role_name": "admin"}]
-            )
+            stdout = json.dumps([{"login": "operator", "role_name": "admin"}])
         return subprocess.CompletedProcess(args, 0, stdout, "")
 
     ctx = doctor.create_context(
@@ -1214,9 +1216,8 @@ def test_live_repository_checks_use_explicit_resolved_config_only(
         )
     )
 
-    with patch.object(
-        doctor.ruleset_status,
-        "ruleset_is_provisioned",
+    with patch(
+        "baton_harness.chain.doctor.ruleset_status.ruleset_is_provisioned",
         side_effect=ruleset_probe,
     ):
         results = run_report(ctx, (Phase.LIVE,), checks=checks)
@@ -1250,7 +1251,9 @@ def test_pkg_provenance_check_validates_the_packaged_record() -> None:
 def test_pkg_imports_check_imports_every_required_module() -> None:
     """PKG_IMPORTS imports each supported runtime package boundary."""
     check = _get_check("PKG_IMPORTS")
-    with patch.object(doctor.importlib, "import_module") as import_module:
+    with patch(
+        "baton_harness.chain.doctor.importlib.import_module"
+    ) as import_module:
         result = check(_make_ctx())
     assert result.status is CheckStatus.PASS
     assert [call.args[0] for call in import_module.call_args_list] == [
@@ -1265,8 +1268,9 @@ def test_pkg_entry_points_check_requires_all_console_scripts() -> None:
     check = _get_check("PKG_ENTRY_POINTS")
     distribution = Mock()
     distribution.entry_points = ()
-    with patch.object(
-        doctor.metadata, "distribution", return_value=distribution
+    with patch(
+        "baton_harness.chain.doctor.metadata.distribution",
+        return_value=distribution,
     ):
         result = check(_make_ctx())
     assert result.status is CheckStatus.FAIL
@@ -1276,13 +1280,13 @@ def test_pkg_entry_points_check_requires_all_console_scripts() -> None:
 def test_pkg_resources_check_reads_every_packaged_resource() -> None:
     """PKG_RESOURCES reads every member of the canonical resource manifest."""
     check = _get_check("PKG_RESOURCES")
-    with patch.object(
-        doctor.resources, "read_bytes", return_value=b""
+    with patch(
+        "baton_harness.chain.doctor.resources.read_bytes", return_value=b""
     ) as read:
         result = check(_make_ctx())
     assert result.status is CheckStatus.PASS
     assert [call.args[0] for call in read.call_args_list] == list(
-        doctor.resources.RESOURCE_NAMES
+        resources.RESOURCE_NAMES
     )
 
 
@@ -2323,24 +2327,18 @@ class TestLabelsPresent:
     ``gh label list -R <slug> --json name --jq '.[].name'`` preflight.
     """
 
-    def test_passes_when_all_six_labels_present(
-        self, tmp_path: Path
-    ) -> None:
+    def test_passes_when_all_six_labels_present(self, tmp_path: Path) -> None:
         """All six required labels present in the target repo PASSes."""
         check = _get_check("LABELS_PRESENT")
         runner = _fake_gh_label_runner(_REQUIRED_LABELS)
         _write_config_env(tmp_path, _VALID_CONFIG_ENV)
 
-        result = check(
-            _make_ctx(project_root=str(tmp_path), runner=runner)
-        )
+        result = check(_make_ctx(project_root=str(tmp_path), runner=runner))
 
         assert result.status == CheckStatus.PASS
         assert result.severity == Severity.CRITICAL
 
-    def test_fails_and_names_each_missing_label(
-        self, tmp_path: Path
-    ) -> None:
+    def test_fails_and_names_each_missing_label(self, tmp_path: Path) -> None:
         """Missing labels FAIL and are named individually in the detail."""
         check = _get_check("LABELS_PRESENT")
         present = _REQUIRED_LABELS - {
@@ -2351,9 +2349,7 @@ class TestLabelsPresent:
         runner = _fake_gh_label_runner(present)
         _write_config_env(tmp_path, _VALID_CONFIG_ENV)
 
-        result = check(
-            _make_ctx(project_root=str(tmp_path), runner=runner)
-        )
+        result = check(_make_ctx(project_root=str(tmp_path), runner=runner))
 
         assert result.status == CheckStatus.FAIL
         assert result.severity == Severity.CRITICAL
@@ -2381,9 +2377,7 @@ class TestLabelsPresent:
 
         _write_config_env(tmp_path, _VALID_CONFIG_ENV)
         result = check(
-            _make_ctx(
-                project_root=str(tmp_path), runner=_erroring_runner
-            )
+            _make_ctx(project_root=str(tmp_path), runner=_erroring_runner)
         )
 
         assert result.status == CheckStatus.FAIL
@@ -2415,9 +2409,7 @@ class TestGhRepoAdmin:
             )
 
         _write_config_env(tmp_path, _VALID_CONFIG_ENV)
-        result = check(
-            _make_ctx(project_root=str(tmp_path), runner=_runner)
-        )
+        result = check(_make_ctx(project_root=str(tmp_path), runner=_runner))
 
         assert result.status == CheckStatus.PASS
         assert result.severity == Severity.WARNING
@@ -2434,16 +2426,12 @@ class TestGhRepoAdmin:
             )
 
         _write_config_env(tmp_path, _VALID_CONFIG_ENV)
-        result = check(
-            _make_ctx(project_root=str(tmp_path), runner=_runner)
-        )
+        result = check(_make_ctx(project_root=str(tmp_path), runner=_runner))
 
         assert result.status == CheckStatus.WARN
         assert result.severity == Severity.WARNING
 
-    def test_never_fails_when_gh_api_call_errors(
-        self, tmp_path: Path
-    ) -> None:
+    def test_never_fails_when_gh_api_call_errors(self, tmp_path: Path) -> None:
         """A ``gh api`` failure degrades to WARN, never CRITICAL FAIL.
 
         GH_REPO_ADMIN is WARNING-severity and purely informational (D6)
@@ -2460,9 +2448,7 @@ class TestGhRepoAdmin:
 
         _write_config_env(tmp_path, _VALID_CONFIG_ENV)
         result = check(
-            _make_ctx(
-                project_root=str(tmp_path), runner=_erroring_runner
-            )
+            _make_ctx(project_root=str(tmp_path), runner=_erroring_runner)
         )
 
         assert result.status != CheckStatus.FAIL
