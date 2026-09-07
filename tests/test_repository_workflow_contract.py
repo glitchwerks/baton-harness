@@ -214,14 +214,13 @@ def _assert_no_legacy_cli_invocations(text: str) -> None:
             allowed_context.replace("`bh-daemon`", "bh-daemon"),
         )
     inline_invocation = re.compile(
-        rf"(?:{legacy_pattern})(?:\.exe)?(?:\s+.*)?"
+        rf"(?:^|[\s/\\\"'])(?:{legacy_pattern})(?:\.exe)?"
+        r"(?=$|[\s\"';&|<>])"
     )
     assert not [
         span
-        for span in re.findall(
-            r"(?<!`)`([^`\n]+)`(?!`)", prose_without_fences
-        )
-        if inline_invocation.fullmatch(span)
+        for span in re.findall(r"(?<!`)`([^`\n]+)`(?!`)", prose_without_fences)
+        if inline_invocation.search(span)
     ], "legacy CLI invocation outside compatibility table"
     standalone = re.compile(
         rf"^\s*`?(?:\S+/)?(?:{legacy_pattern})(?:\.exe)?(?=\s|`|$)"
@@ -259,18 +258,14 @@ def test_readme_presents_codereeve_as_canonical_cli() -> None:
     )[1].split("Do not set both names for one value", 1)[0]
     variable_replacements = {
         "BH_BUILD_VERSION": "CODEREEVE_BUILD_VERSION",
-        "BH_BUILD_SOURCE_REVISION": (
-            "CODEREEVE_BUILD_SOURCE_REVISION"
-        ),
+        "BH_BUILD_SOURCE_REVISION": ("CODEREEVE_BUILD_SOURCE_REVISION"),
         "BH_BUILD_DEVELOPMENT": "CODEREEVE_BUILD_DEVELOPMENT",
     }
     assert variable_compatibility.count("| `BH_BUILD_") == len(
         variable_replacements
     )
     for legacy, canonical in variable_replacements.items():
-        assert (
-            f"| `{canonical}` | `{legacy}` |" in variable_compatibility
-        )
+        assert f"| `{canonical}` | `{legacy}` |" in variable_compatibility
 
     _, compatibility_and_after = text.split(
         "The six legacy scripts remain temporary compatibility shims", 1
@@ -310,21 +305,30 @@ def test_readme_presents_codereeve_as_canonical_cli() -> None:
     assert "codereeve verify --installed" in upgrade
     assert ".venv-codereeve" in upgrade
     assert (
-        "Keep the original `.venv` completely unchanged"
-        in normalized_upgrade
+        "Keep the original `.venv` completely unchanged" in normalized_upgrade
     )
     assert 'SOURCE_REVISION="$(git rev-parse HEAD)"' in upgrade
-    assert (
-        'CODEREEVE_BUILD_SOURCE_REVISION="$SOURCE_REVISION"' in upgrade
-    )
+    assert 'CODEREEVE_BUILD_SOURCE_REVISION="$SOURCE_REVISION"' in upgrade
 
 
-def test_readme_contract_rejects_inline_legacy_cli_invocation() -> None:
+@pytest.mark.parametrize(
+    "command",
+    [
+        "bh-daemon --doctor --strict",
+        ".venv/bin/bh-daemon --once",
+        r".venv\Scripts\bh-daemon.exe --once",
+        "sudo bh-daemon --once",
+    ],
+    ids=["bare", "posix-path", "windows-path", "sudo"],
+)
+def test_readme_contract_rejects_inline_legacy_cli_invocation(
+    command: str,
+) -> None:
     """Inline legacy commands cannot evade the README CLI contract."""
     text = Path("README.md").read_text(encoding="utf-8")
     mutated = text.replace(
         "`codereeve doctor --strict`",
-        "`bh-daemon --doctor --strict`",
+        f"`{command}`",
         1,
     )
     assert mutated != text
@@ -333,6 +337,35 @@ def test_readme_contract_rejects_inline_legacy_cli_invocation() -> None:
         match="legacy CLI invocation outside compatibility table",
     ):
         _assert_no_legacy_cli_invocations(mutated)
+
+
+@pytest.mark.parametrize(
+    "context",
+    [
+        "`sudo systemctl restart bh-daemon.service`",
+        "`docs/operator.md#bh-daemon`",
+        "`BH_DAEMON_LOG_LEVEL=debug`",
+        "`echo $bh-daemon`",
+        "`/etc/bh-daemon/secrets.env`",
+        "temporary compatibility `bh-daemon` binary location",
+        "compatibility-named `bh-daemon` systemd unit",
+    ],
+    ids=[
+        "service",
+        "anchor",
+        "env-name",
+        "env-ref",
+        "config-path",
+        "binary-prose",
+        "service-prose",
+    ],
+)
+def test_readme_contract_allows_legacy_non_invocation_contexts(
+    context: str,
+) -> None:
+    """Retained identifiers and exact compatibility prose are permitted."""
+    text = Path("README.md").read_text(encoding="utf-8")
+    _assert_no_legacy_cli_invocations(f"{text}\nDetails: {context}.\n")
 
 
 def test_coderabbit_is_label_opt_in_only() -> None:
