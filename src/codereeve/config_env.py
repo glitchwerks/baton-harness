@@ -495,6 +495,8 @@ def _physical_lines(text: str, source: str) -> list[str]:
         ):
             raise ConfigSyntaxError(source, text[:index].count("\n") + 1)
     normalized = text.replace("\r\n", "\n")
+    if not normalized:
+        return []
     lines = normalized.split("\n")
     if normalized.endswith("\n"):
         lines.pop()

@@ -308,6 +308,12 @@ def test_rewrite_assignments_retains_trivia_only_file() -> None:
     )
 
 
+def test_rewrite_assignments_preserves_empty_file() -> None:
+    """Migration keeps an empty configuration file empty."""
+    assignments = parse_env_text("", source="config.env")
+    assert rewrite_assignments(assignments, path_values={}) == ""
+
+
 def test_rewrite_assignments_rewrites_equal_pair_and_default_path(
 ) -> None:
     """Equal aliases collapse while custom path values remain exact."""
