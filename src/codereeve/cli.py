@@ -75,6 +75,13 @@ HANDLERS: dict[str, Handler] = {
     "hook_force_pr_not_merge": _guard,
 }
 
+HOOK_HANDLERS = {
+    "after-create": "hook_after_create",
+    "before-run": "hook_before_run",
+    "after-run": "hook_after_run",
+    "force-pr-not-merge": "hook_force_pr_not_merge",
+}
+
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Route one canonical CodeReeve command.
@@ -99,9 +106,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if command == "hook":
         if not args:
             return _usage_error("a hook command is required")
-        hook = args.pop(0).replace("-", "_")
-        key = f"hook_{hook}"
-        if key not in HANDLERS:
+        hook = args.pop(0)
+        key = HOOK_HANDLERS.get(hook)
+        if key is None:
             return _usage_error(f"unknown hook command: {hook}")
         return HANDLERS[key](args)
     if command not in {"daemon", "doctor", "provenance", "verify"}:
