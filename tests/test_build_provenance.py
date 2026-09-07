@@ -406,3 +406,38 @@ def test_legacy_build_variables_remain_compatible(tmp_path: Path) -> None:
         read_head=lambda _root: REVISION,
     )
     assert identity.package_version == "0.2.0"
+
+
+@pytest.mark.parametrize(
+    ("canonical", "legacy", "value", "other"),
+    [
+        (
+            "CODEREEVE_BUILD_VERSION",
+            "BH_BUILD_VERSION",
+            "0.2.0",
+            {"CODEREEVE_BUILD_SOURCE_REVISION": REVISION},
+        ),
+        (
+            "CODEREEVE_BUILD_SOURCE_REVISION",
+            "BH_BUILD_SOURCE_REVISION",
+            REVISION,
+            {"CODEREEVE_BUILD_VERSION": "0.2.0"},
+        ),
+        ("CODEREEVE_BUILD_DEVELOPMENT", "BH_BUILD_DEVELOPMENT", "1", {}),
+    ],
+)
+def test_shared_build_alias_helper_accepts_exact_equal_values(
+    tmp_path: Path,
+    canonical: str,
+    legacy: str,
+    value: str,
+    other: dict[str, str],
+) -> None:
+    """Build aliases share exact, value-safe canonical resolution."""
+    (tmp_path / "uv.lock").write_bytes(LOCK_CONTENT)
+    identity = resolve_build_provenance(
+        tmp_path,
+        {canonical: value, legacy: value, **other},
+        read_head=lambda _root: REVISION,
+    )
+    assert identity.development is (canonical == "CODEREEVE_BUILD_DEVELOPMENT")

@@ -15,6 +15,8 @@ from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 from hatchling.metadata.plugin.interface import MetadataHookInterface
 from packaging.version import InvalidVersion, Version
 
+from codereeve.config_env import AliasConflictError, resolve_alias_pair
+
 DEVELOPMENT_VERSION = "0.2.0.dev0"
 REVISION_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
 RECORD_PATH = Path("src/codereeve/build_provenance.json")
@@ -75,17 +77,12 @@ def _compat_value(
     Raises:
         BuildProvenanceError: If both names provide different values.
     """
-    canonical_value = env.get(canonical)
-    legacy_value = env.get(legacy)
-    if (
-        canonical_value is not None
-        and legacy_value is not None
-        and canonical_value != legacy_value
-    ):
+    try:
+        return resolve_alias_pair(env, canonical, legacy)
+    except AliasConflictError as exc:
         raise BuildProvenanceError(
             f"conflicting build identity variables: {canonical} and {legacy}"
-        )
-    return canonical_value if canonical_value is not None else legacy_value
+        ) from exc
 
 
 def resolve_build_provenance(
