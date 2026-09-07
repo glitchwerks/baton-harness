@@ -621,6 +621,45 @@ def test_run_report_defaults_to_all_phases_in_catalog_order() -> None:
     assert [result.check_id for result in results] == calls
 
 
+def test_run_report_uses_catalog_metadata_for_emitted_results() -> None:
+    """Catalog ownership overrides inconsistent function metadata."""
+
+    def inconsistent(ctx: DoctorContext) -> CheckResult:
+        del ctx
+        return CheckResult(
+            check_id="wrong-id",
+            phase=Phase.INSTALLATION,
+            title="wrong title",
+            severity=Severity.WARNING,
+            status=CheckStatus.PASS,
+            detail="the check-specific outcome",
+            remediation="wrong remediation",
+        )
+
+    check = _make_check(
+        "CATALOG_OWNER",
+        title="Catalog title",
+        severity=Severity.CRITICAL,
+        phase=Phase.LIVE,
+        fix="Catalog remediation",
+        fn=inconsistent,
+    )
+
+    result = run_report(
+        _make_ctx(), (Phase.LIVE,), checks=(check,)
+    )[0]
+
+    assert result == CheckResult(
+        check_id="CATALOG_OWNER",
+        phase=Phase.LIVE,
+        title="Catalog title",
+        severity=Severity.CRITICAL,
+        status=CheckStatus.PASS,
+        detail="the check-specific outcome",
+        remediation="Catalog remediation",
+    )
+
+
 def test_run_gate_collects_every_critical_failure() -> None:
     """The gate reports every selected critical failure together."""
 
@@ -1018,6 +1057,183 @@ def test_configuration_checks_use_an_arbitrary_explicit_config_path(
         CheckStatus.PASS,
         CheckStatus.PASS,
     ]
+
+
+def test_malformed_config_is_the_authoritative_configuration_failure(
+    tmp_path: Path,
+) -> None:
+    """Strict resolver errors prevent contradictory required-key PASSes."""
+    config_path = tmp_path / "config.env"
+    config_path.write_text(
+        _VALID_CONFIG_ENV + "not a config assignment\n",
+        encoding="utf-8",
+    )
+    ctx = doctor.create_context(
+        env={},
+        config_path=config_path,
+        which=_unused_which,
+        runner=_unused_runner,
+        run=_unused_run,
+        fetch_secret=_unused_fetch_secret,
+    )
+
+    result = _get_check("CFG_REQUIRED_KEYS")(ctx)
+
+    assert ctx.config is None
+    assert "invalid sandbox config line" in ctx.config_error
+    assert result.status is CheckStatus.FAIL
+    assert result.severity is Severity.CRITICAL
+    assert "invalid sandbox config line" in result.detail
+
+
+def test_export_prefixed_config_uses_the_shared_resolver(
+    tmp_path: Path,
+) -> None:
+    """Supported export assignments produce a valid configuration result."""
+    config_path = tmp_path / "config.env"
+    exported = "\n".join(
+        f"export {line}" for line in _VALID_CONFIG_ENV.splitlines()
+    )
+    config_path.write_text(exported + "\n", encoding="utf-8")
+    ctx = doctor.create_context(
+        env={},
+        config_path=config_path,
+        which=_unused_which,
+        runner=_unused_runner,
+        run=_unused_run,
+        fetch_secret=_unused_fetch_secret,
+    )
+
+    result = _get_check("CFG_REQUIRED_KEYS")(ctx)
+
+    assert ctx.config is not None
+    assert ctx.config_error == ""
+    assert result.status is CheckStatus.PASS
+
+
+@pytest.mark.parametrize(
+    "failure_kind",
+    ["permission", "directory", "invalid-utf8"],
+)
+def test_expected_config_read_errors_do_not_block_installation(
+    tmp_path: Path,
+    failure_kind: str,
+) -> None:
+    """Expected local read failures remain configuration result state."""
+    config_path = tmp_path / "config.env"
+    resolver_patch = nullcontext()
+    if failure_kind == "permission":
+        config_path.write_text(_VALID_CONFIG_ENV, encoding="utf-8")
+        resolver_patch = patch.object(
+            doctor.sandbox_config,
+            "resolve_config",
+            side_effect=PermissionError("config access denied"),
+        )
+    elif failure_kind == "directory":
+        config_path.mkdir()
+    else:
+        config_path.write_bytes(b"\xff\xfe\xfa")
+
+    with resolver_patch:
+        ctx = doctor.create_context(
+            env={},
+            config_path=config_path,
+            which=lambda name: None,
+            runner=_unused_runner,
+            run=_unused_run,
+            fetch_secret=_unused_fetch_secret,
+        )
+
+    installation = run_report(ctx, (Phase.INSTALLATION,))
+    required = _get_check("CFG_REQUIRED_KEYS")(ctx)
+
+    assert ctx.config is None
+    assert ctx.config_error
+    assert all(result.status is CheckStatus.PASS for result in installation)
+    assert required.status is CheckStatus.FAIL
+    assert required.severity is Severity.CRITICAL
+
+
+def test_live_repository_checks_use_explicit_resolved_config_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Use explicit config for live probes without environment writes."""
+    config_path = tmp_path / "selected.env"
+    config_path.write_text(_VALID_CONFIG_ENV, encoding="utf-8")
+    config_keys = (
+        "BH_REPO_OWNER",
+        "BH_REPO_NAME",
+        "BH_GITHUB_APP_ID",
+        "BH_GITHUB_APP_INSTALLATION_ID",
+        "BH_GITHUB_APP_KEY_PROVIDER",
+        "BWS_PEM_SECRET_ID",
+    )
+    for key in config_keys:
+        monkeypatch.delenv(key, raising=False)
+    caller_env: dict[str, str] = {}
+    ruleset_args: list[tuple[str, str, str]] = []
+    runner_commands: list[list[str]] = []
+
+    def ruleset_probe(
+        owner: str,
+        repo: str,
+        *,
+        app_id: str,
+        runner: Callable[[list[str]], subprocess.CompletedProcess[str]],
+    ) -> RulesetStatus:
+        del runner
+        ruleset_args.append((owner, repo, app_id))
+        return RulesetStatus.MATCH
+
+    def live_runner(args: list[str]) -> subprocess.CompletedProcess[str]:
+        runner_commands.append(args)
+        if args[:3] == ["gh", "label", "list"]:
+            stdout = "\n".join(sorted(_REQUIRED_LABELS)) + "\n"
+        else:
+            stdout = json.dumps(
+                [{"login": "operator", "role_name": "admin"}]
+            )
+        return subprocess.CompletedProcess(args, 0, stdout, "")
+
+    ctx = doctor.create_context(
+        env=caller_env,
+        config_path=config_path,
+        which=_unused_which,
+        runner=live_runner,
+        run=_unused_run,
+        fetch_secret=_unused_fetch_secret,
+    )
+    checks = tuple(
+        _get_check(check_id)
+        for check_id in (
+            "RULESET_MAIN",
+            "RULESET_FEATURE",
+            "LABELS_PRESENT",
+            "GH_REPO_ADMIN",
+        )
+    )
+
+    with patch.object(
+        doctor.ruleset_status,
+        "ruleset_is_provisioned",
+        side_effect=ruleset_probe,
+    ):
+        results = run_report(ctx, (Phase.LIVE,), checks=checks)
+
+    assert all(result.status is CheckStatus.PASS for result in results)
+    assert ruleset_args == [
+        ("my-org", "my-sandbox", "12345"),
+        ("my-org", "my-sandbox", "12345"),
+    ]
+    assert any("my-org/my-sandbox" in command for command in runner_commands)
+    assert any(
+        "repos/my-org/my-sandbox/collaborators?permission=admin" in command
+        for command in runner_commands
+    )
+    assert caller_env == {}
+    assert ctx.env == {}
+    assert all(key not in os.environ for key in config_keys)
 
 
 def test_pkg_provenance_check_validates_the_packaged_record() -> None:
@@ -2107,17 +2323,24 @@ class TestLabelsPresent:
     ``gh label list -R <slug> --json name --jq '.[].name'`` preflight.
     """
 
-    def test_passes_when_all_six_labels_present(self) -> None:
+    def test_passes_when_all_six_labels_present(
+        self, tmp_path: Path
+    ) -> None:
         """All six required labels present in the target repo PASSes."""
         check = _get_check("LABELS_PRESENT")
         runner = _fake_gh_label_runner(_REQUIRED_LABELS)
+        _write_config_env(tmp_path, _VALID_CONFIG_ENV)
 
-        result = check(_make_ctx(env=_PHASE_4_ENV, runner=runner))
+        result = check(
+            _make_ctx(project_root=str(tmp_path), runner=runner)
+        )
 
         assert result.status == CheckStatus.PASS
         assert result.severity == Severity.CRITICAL
 
-    def test_fails_and_names_each_missing_label(self) -> None:
+    def test_fails_and_names_each_missing_label(
+        self, tmp_path: Path
+    ) -> None:
         """Missing labels FAIL and are named individually in the detail."""
         check = _get_check("LABELS_PRESENT")
         present = _REQUIRED_LABELS - {
@@ -2126,8 +2349,11 @@ class TestLabelsPresent:
             "agent-merged",
         }
         runner = _fake_gh_label_runner(present)
+        _write_config_env(tmp_path, _VALID_CONFIG_ENV)
 
-        result = check(_make_ctx(env=_PHASE_4_ENV, runner=runner))
+        result = check(
+            _make_ctx(project_root=str(tmp_path), runner=runner)
+        )
 
         assert result.status == CheckStatus.FAIL
         assert result.severity == Severity.CRITICAL
@@ -2142,7 +2368,7 @@ class TestLabelsPresent:
         ).read_text(encoding="utf-8")
         assert '_create_label "agent-failed"      "b60205"' in script
 
-    def test_fails_when_gh_cli_call_errors(self) -> None:
+    def test_fails_when_gh_cli_call_errors(self, tmp_path: Path) -> None:
         """A ``gh`` CLI failure (non-zero exit) FAILs, never crashes."""
         check = _get_check("LABELS_PRESENT")
 
@@ -2153,7 +2379,12 @@ class TestLabelsPresent:
                 args=args, returncode=1, stdout="", stderr="not found"
             )
 
-        result = check(_make_ctx(env=_PHASE_4_ENV, runner=_erroring_runner))
+        _write_config_env(tmp_path, _VALID_CONFIG_ENV)
+        result = check(
+            _make_ctx(
+                project_root=str(tmp_path), runner=_erroring_runner
+            )
+        )
 
         assert result.status == CheckStatus.FAIL
 
@@ -2171,7 +2402,9 @@ class TestGhRepoAdmin:
     (counts entries with ``role_name=="admin"`` or ``permissions.admin``).
     """
 
-    def test_passes_when_an_admin_collaborator_exists(self) -> None:
+    def test_passes_when_an_admin_collaborator_exists(
+        self, tmp_path: Path
+    ) -> None:
         """At least one admin collaborator PASSes."""
         check = _get_check("GH_REPO_ADMIN")
 
@@ -2181,12 +2414,17 @@ class TestGhRepoAdmin:
                 args=args, returncode=0, stdout=body, stderr=""
             )
 
-        result = check(_make_ctx(env=_PHASE_4_ENV, runner=_runner))
+        _write_config_env(tmp_path, _VALID_CONFIG_ENV)
+        result = check(
+            _make_ctx(project_root=str(tmp_path), runner=_runner)
+        )
 
         assert result.status == CheckStatus.PASS
         assert result.severity == Severity.WARNING
 
-    def test_warns_when_no_admin_collaborator_found(self) -> None:
+    def test_warns_when_no_admin_collaborator_found(
+        self, tmp_path: Path
+    ) -> None:
         """No admin collaborator found WARNs (informational, non-fatal)."""
         check = _get_check("GH_REPO_ADMIN")
 
@@ -2195,12 +2433,17 @@ class TestGhRepoAdmin:
                 args=args, returncode=0, stdout="[]", stderr=""
             )
 
-        result = check(_make_ctx(env=_PHASE_4_ENV, runner=_runner))
+        _write_config_env(tmp_path, _VALID_CONFIG_ENV)
+        result = check(
+            _make_ctx(project_root=str(tmp_path), runner=_runner)
+        )
 
         assert result.status == CheckStatus.WARN
         assert result.severity == Severity.WARNING
 
-    def test_never_fails_when_gh_api_call_errors(self) -> None:
+    def test_never_fails_when_gh_api_call_errors(
+        self, tmp_path: Path
+    ) -> None:
         """A ``gh api`` failure degrades to WARN, never CRITICAL FAIL.
 
         GH_REPO_ADMIN is WARNING-severity and purely informational (D6)
@@ -2215,7 +2458,12 @@ class TestGhRepoAdmin:
                 args=args, returncode=1, stdout="", stderr="error"
             )
 
-        result = check(_make_ctx(env=_PHASE_4_ENV, runner=_erroring_runner))
+        _write_config_env(tmp_path, _VALID_CONFIG_ENV)
+        result = check(
+            _make_ctx(
+                project_root=str(tmp_path), runner=_erroring_runner
+            )
+        )
 
         assert result.status != CheckStatus.FAIL
 

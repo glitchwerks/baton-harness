@@ -5,7 +5,6 @@ from __future__ import annotations
 import importlib
 import json
 import os
-import re
 import subprocess
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -21,7 +20,6 @@ from baton_harness.chain.app_private_key import (
     AppPrivateKeyConfigError,
     load_app_private_key,
     requires_bws,
-    resolve_app_private_key_config,
 )
 from baton_harness.provenance import load_provenance
 from baton_harness.vendor.symphony.config import load_workflow
@@ -31,32 +29,6 @@ FetchSecretFn = Callable[..., str]
 RunnerFn = Callable[[list[str]], subprocess.CompletedProcess[str]]
 WhichFn = Callable[[str], str | None]
 CheckFn = Callable[["DoctorContext"], "CheckResult"]
-
-_LINE_RE = re.compile(r"^([A-Z_][A-Z0-9_]*)=(.*)$")
-_REPO_PART_RE = re.compile(r"^[A-Za-z0-9._-]+$")
-_UUID_RE = re.compile(
-    r"^[0-9A-Fa-f]{8}-"
-    r"[0-9A-Fa-f]{4}-"
-    r"[0-9A-Fa-f]{4}-"
-    r"[0-9A-Fa-f]{4}-"
-    r"[0-9A-Fa-f]{12}$"
-)
-_REQUIRED_KEYS = (
-    "BH_REPO_OWNER",
-    "BH_REPO_NAME",
-    "BH_GITHUB_APP_ID",
-    "BH_GITHUB_APP_INSTALLATION_ID",
-)
-_PROVIDER_KEYS = (
-    "BH_GITHUB_APP_KEY_PROVIDER",
-    "BWS_PEM_SECRET_ID",
-    "BH_GITHUB_APP_PRIVATE_KEY_FILE",
-)
-_OPTIONAL_SECRET_IDS = (
-    "BWS_GH_TOKEN_SECRET_ID",
-    "BWS_HEARTBEAT_PING_URL_SECRET_ID",
-)
-
 
 class Severity(str, Enum):
     """Severity assigned to a preflight check."""
@@ -183,48 +155,8 @@ class Check:
         return self.fn(ctx)
 
 
-_INSTALLATION_CHECK_IDS = frozenset(
-    {
-        "PKG_PROVENANCE",
-        "PKG_IMPORTS",
-        "PKG_ENTRY_POINTS",
-        "PKG_RESOURCES",
-        "PKG_WORKFLOW",
-        "FORCE_PR_TRIPWIRE",
-    }
-)
-_CONFIGURATION_CHECK_IDS = frozenset(
-    {
-        "CLI_GH",
-        "CLI_BWS",
-        "CLI_CLAUDE",
-        "CLI_UV",
-        "ENV_PROJECT_ROOT",
-        "ENV_HOST_ENV",
-        "CFG_CONFIG_ENV",
-        "CFG_REQUIRED_KEYS",
-        "CFG_OPTIONAL_SECRET_IDS",
-        "ENV_BWS_ACCESS_TOKEN",
-        "GITIGNORE_SYMPHONY",
-        "CRED_ANTHROPIC_UNSET",
-    }
-)
-_LIVE_CHECK_IDS = frozenset(
-    {
-        "GIT_CRED_HELPER",
-        "RULESET_MAIN",
-        "RULESET_FEATURE",
-        "LABELS_PRESENT",
-        "GH_REPO_ADMIN",
-        "GH_AUTH",
-        "CRED_OAUTH_VOLUME",
-        "VAULT_PEM_DRYRUN",
-    }
-)
-
-
 def _phase_for(check_id: str) -> Phase:
-    """Return the phase assigned to a stable catalog check ID.
+    """Return the phase assigned by the authoritative catalog.
 
     Args:
         check_id: Stable preflight check identifier.
@@ -235,13 +167,22 @@ def _phase_for(check_id: str) -> Phase:
     Raises:
         ValueError: If the check ID is not part of the public catalog.
     """
-    if check_id in _INSTALLATION_CHECK_IDS:
-        return Phase.INSTALLATION
-    if check_id in _CONFIGURATION_CHECK_IDS:
-        return Phase.CONFIGURATION
-    if check_id in _LIVE_CHECK_IDS:
-        return Phase.LIVE
+    for check in CATALOG:
+        if check.check_id == check_id:
+            return check.phase
     raise ValueError(f"unknown preflight check id: {check_id}")
+
+
+def _config_error_detail(exc: BaseException) -> str:
+    """Return a non-empty diagnostic for an expected config failure.
+
+    Args:
+        exc: Expected resolver, filesystem, or decoding failure.
+
+    Returns:
+        The exception message, or its type when the message is empty.
+    """
+    return str(exc) or type(exc).__name__
 
 
 def create_context(
@@ -286,10 +227,10 @@ def create_context(
         resolved_config = sandbox_config.resolve_config(
             selected_path, environment
         )
-    except sandbox_config.SandboxConfigError as exc:
-        config_error = str(exc)
+    except (sandbox_config.SandboxConfigError, OSError, UnicodeError) as exc:
+        config_error = _config_error_detail(exc)
         if config_path is not None:
-            selected_path = config_path.resolve()
+            selected_path = config_path
 
     project_root = environment.get("BH_PROJECT_ROOT", "")
     if not project_root and selected_path is not None:
@@ -343,34 +284,6 @@ def _result(
     )
 
 
-def _parse_config(path: Path) -> dict[str, str]:
-    """Parse simple ``KEY=VALUE`` config lines without external I/O.
-
-    Args:
-        path: Config file to parse.
-
-    Returns:
-        Parsed key-value pairs. Malformed non-comment lines are ignored.
-    """
-    parsed: dict[str, str] = {}
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        match = _LINE_RE.match(line)
-        if match is None:
-            continue
-        key, value = match.groups()
-        if (
-            len(value) >= 2
-            and value[0] in {"'", '"'}
-            and value[-1] == value[0]
-        ):
-            value = value[1:-1]
-        parsed[key] = value
-    return parsed
-
-
 def _config_path(ctx: DoctorContext) -> Path:
     """Return the selected config path for local configuration checks.
 
@@ -385,23 +298,29 @@ def _config_path(ctx: DoctorContext) -> Path:
     return Path(ctx.project_root) / ".bh" / "config.env"
 
 
-def _is_valid(key: str, value: str) -> bool:
-    """Apply the sandbox config shape rule for a known key.
+def _resolved_config(ctx: DoctorContext) -> sandbox_config.SandboxConfig:
+    """Return one strict config snapshot and cache its result on the context.
 
     Args:
-        key: Config key name.
-        value: Candidate config value.
+        ctx: Context carrying a resolved config or its selected path.
 
     Returns:
-        True when the value has the required shape.
+        The validated sandbox configuration.
+
+    Raises:
+        SandboxConfigError: If config selection, reading, or validation fails.
     """
-    if key in {"BH_REPO_OWNER", "BH_REPO_NAME"}:
-        return bool(value) and _REPO_PART_RE.fullmatch(value) is not None
-    if key in {"BH_GITHUB_APP_ID", "BH_GITHUB_APP_INSTALLATION_ID"}:
-        return value.isdigit() and int(value) > 0
-    if key in _OPTIONAL_SECRET_IDS:
-        return not value or _UUID_RE.fullmatch(value) is not None
-    return True
+    if ctx.config is not None:
+        return ctx.config
+    if ctx.config_error:
+        raise sandbox_config.SandboxConfigError(ctx.config_error)
+
+    try:
+        ctx.config = sandbox_config.resolve_config(_config_path(ctx), ctx.env)
+    except (sandbox_config.SandboxConfigError, OSError, UnicodeError) as exc:
+        ctx.config_error = _config_error_detail(exc)
+        raise sandbox_config.SandboxConfigError(ctx.config_error) from exc
+    return ctx.config
 
 
 def _resolved_private_key_context(
@@ -419,15 +338,18 @@ def _resolved_private_key_context(
         AppPrivateKeyConfigError: If config is unreadable or invalid.
     """
     try:
-        parsed = _parse_config(_config_path(ctx))
-    except (OSError, UnicodeError):
-        raise AppPrivateKeyConfigError(
-            ".bh/config.env is missing or unreadable."
-        ) from None
-    values = sandbox_config.resolve_overridable_keys(
-        parsed, ctx.env, _REQUIRED_KEYS + _PROVIDER_KEYS + _OPTIONAL_SECRET_IDS
+        resolved = _resolved_config(ctx)
+    except sandbox_config.SandboxConfigError as exc:
+        raise AppPrivateKeyConfigError(str(exc)) from exc
+
+    values: dict[str, str] = {}
+    sandbox_config.apply_config(resolved, values)
+    config = AppPrivateKeyConfig(
+        provider=resolved.github_app_key_provider,
+        bws_secret_id=resolved.bws_pem_secret_id,
+        file_path=resolved.github_app_private_key_file,
     )
-    return resolve_app_private_key_config(values), values
+    return config, values
 
 
 def _check_package_provenance(ctx: DoctorContext) -> CheckResult:
@@ -783,7 +705,7 @@ def _check_config_env(ctx: DoctorContext) -> CheckResult:
     title = "Sandbox config file present"
     fix = "Create .bh/config.env in BH_PROJECT_ROOT."
     path = _config_path(ctx)
-    if path.exists():
+    if path.is_file():
         status = CheckStatus.PASS
         detail = ".bh/config.env is present."
     else:
@@ -805,19 +727,9 @@ def _check_required_keys(ctx: DoctorContext) -> CheckResult:
     """
     title = "Required sandbox config keys valid"
     fix = "Set all required .bh/config.env keys to valid values."
-    path = _config_path(ctx)
-    if not path.exists():
-        return _result(
-            "CFG_REQUIRED_KEYS",
-            title,
-            Severity.CRITICAL,
-            CheckStatus.FAIL,
-            ".bh/config.env is missing, so required keys cannot be checked.",
-            fix,
-        )
     try:
-        _, resolved = _resolved_private_key_context(ctx)
-    except AppPrivateKeyConfigError as exc:
+        _resolved_config(ctx)
+    except sandbox_config.SandboxConfigError as exc:
         return _result(
             "CFG_REQUIRED_KEYS",
             title,
@@ -826,25 +738,6 @@ def _check_required_keys(ctx: DoctorContext) -> CheckResult:
             str(exc),
             fix,
         )
-    for key in _REQUIRED_KEYS:
-        if not resolved.get(key):
-            return _result(
-                "CFG_REQUIRED_KEYS",
-                title,
-                Severity.CRITICAL,
-                CheckStatus.FAIL,
-                f"Required config key {key} is missing.",
-                fix,
-            )
-        if not _is_valid(key, resolved[key]):
-            return _result(
-                "CFG_REQUIRED_KEYS",
-                title,
-                Severity.CRITICAL,
-                CheckStatus.FAIL,
-                f"Required config key {key} is malformed.",
-                fix,
-            )
     return _result(
         "CFG_REQUIRED_KEYS",
         title,
@@ -876,20 +769,17 @@ def _check_optional_secret_ids(ctx: DoctorContext) -> CheckResult:
             ".bh/config.env is missing; optional IDs are not applicable.",
             fix,
         )
-    parsed = _parse_config(path)
-    resolved = sandbox_config.resolve_overridable_keys(
-        parsed, ctx.env, _OPTIONAL_SECRET_IDS
-    )
-    for key in _OPTIONAL_SECRET_IDS:
-        if resolved.get(key) and not _is_valid(key, resolved[key]):
-            return _result(
-                "CFG_OPTIONAL_SECRET_IDS",
-                title,
-                Severity.WARNING,
-                CheckStatus.WARN,
-                f"Optional config key {key} is malformed.",
-                fix,
-            )
+    try:
+        _resolved_config(ctx)
+    except sandbox_config.SandboxConfigError as exc:
+        return _result(
+            "CFG_OPTIONAL_SECRET_IDS",
+            title,
+            Severity.WARNING,
+            CheckStatus.WARN,
+            str(exc),
+            fix,
+        )
     return _result(
         "CFG_OPTIONAL_SECRET_IDS",
         title,
@@ -1111,17 +1001,25 @@ def _check_ruleset(
         PASS when both rulesets match, otherwise FAIL.
     """
     fix = "Run bin/provision-ruleset.sh to provision the required rulesets."
-    owner = ctx.env["BH_REPO_OWNER"]
-    repo = ctx.env["BH_REPO_NAME"]
-    app_id = ctx.env["BH_GITHUB_APP_ID"]
+    try:
+        config = _resolved_config(ctx)
+    except sandbox_config.SandboxConfigError as exc:
+        return _result(
+            check_id,
+            title,
+            Severity.CRITICAL,
+            CheckStatus.FAIL,
+            str(exc),
+            fix,
+        )
 
     def _run_gh(args: list[str]) -> subprocess.CompletedProcess[str]:
         return ctx.runner(["gh", *args])
 
     status = ruleset_status.ruleset_is_provisioned(
-        owner,
-        repo,
-        app_id=app_id,
+        config.repo_owner,
+        config.repo_name,
+        app_id=config.github_app_id,
         runner=_run_gh,
     )
     if status is ruleset_status.RulesetStatus.MATCH:
@@ -1171,15 +1069,24 @@ def _check_labels_present(ctx: DoctorContext) -> CheckResult:
         "agent-in-progress",
         "agent-merged",
     }
-    owner = ctx.env["BH_REPO_OWNER"]
-    repo = ctx.env["BH_REPO_NAME"]
+    try:
+        config = _resolved_config(ctx)
+    except sandbox_config.SandboxConfigError as exc:
+        return _result(
+            "LABELS_PRESENT",
+            title,
+            Severity.CRITICAL,
+            CheckStatus.FAIL,
+            str(exc),
+            fix,
+        )
     result = ctx.runner(
         [
             "gh",
             "label",
             "list",
             "-R",
-            f"{owner}/{repo}",
+            f"{config.repo_owner}/{config.repo_name}",
             "--json",
             "name",
             "--jq",
@@ -1223,14 +1130,25 @@ def _check_gh_repo_admin(ctx: DoctorContext) -> CheckResult:
     """Report whether the repository has an admin collaborator."""
     title = "Repository admin collaborator present"
     fix = "Ensure the repository has at least one admin collaborator."
-    owner = ctx.env["BH_REPO_OWNER"]
-    repo = ctx.env["BH_REPO_NAME"]
+    try:
+        config = _resolved_config(ctx)
+    except sandbox_config.SandboxConfigError as exc:
+        return _result(
+            "GH_REPO_ADMIN",
+            title,
+            Severity.WARNING,
+            CheckStatus.WARN,
+            str(exc),
+            fix,
+        )
     try:
         result = ctx.runner(
             [
                 "gh",
                 "api",
-                f"repos/{owner}/{repo}/collaborators?permission=admin",
+                "repos/"
+                f"{config.repo_owner}/{config.repo_name}"
+                "/collaborators?permission=admin",
             ]
         )
         if result.returncode != 0:
@@ -1329,16 +1247,7 @@ def _check_vault_dryrun(ctx: DoctorContext) -> CheckResult:
             str(exc),
             fix,
         )
-    app_id = values.get("BH_GITHUB_APP_ID", "")
-    if not _is_valid("BH_GITHUB_APP_ID", app_id):
-        return _result(
-            "VAULT_PEM_DRYRUN",
-            title,
-            Severity.CRITICAL,
-            CheckStatus.FAIL,
-            "BH_GITHUB_APP_ID is missing or malformed.",
-            fix,
-        )
+    app_id = values["BH_GITHUB_APP_ID"]
     try:
         private_key = load_app_private_key(
             config,
@@ -1616,7 +1525,7 @@ def _run_check(check: Check, ctx: DoctorContext) -> CheckResult:
         The check result or a synthesized FAIL result.
     """
     try:
-        return check(ctx)
+        outcome = check(ctx)
     except Exception as exc:  # noqa: BLE001
         return CheckResult(
             check_id=check.check_id,
@@ -1627,6 +1536,15 @@ def _run_check(check: Check, ctx: DoctorContext) -> CheckResult:
             detail=repr(exc),
             remediation=check.fix,
         )
+    return CheckResult(
+        check_id=check.check_id,
+        phase=check.phase,
+        title=check.title,
+        severity=check.severity,
+        status=outcome.status,
+        detail=outcome.detail,
+        remediation=check.fix,
+    )
 
 
 def run_report(
