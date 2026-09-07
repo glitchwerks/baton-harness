@@ -1,7 +1,7 @@
 """Unit tests for the fire-and-forget Slack-alert POST helper.
 
 The implementation is expected to live at
-``baton_harness.chain.alert_post`` and expose:
+``codereeve.chain.alert_post`` and expose:
 
     post_slack_alert(url: str, message: str, *, timeout: float = 5.0) -> bool
 
@@ -84,7 +84,7 @@ def test_post_slack_alert_posts_to_correct_url_with_slack_body() -> None:
     whose url matches the webhook and whose body is a JSON object with
     a ``"text"`` key equal to the supplied message.
     """
-    from baton_harness.chain.alert_post import post_slack_alert
+    from codereeve.chain.alert_post import post_slack_alert
 
     captured_requests: list[urllib.request.Request] = []
 
@@ -121,7 +121,7 @@ def test_post_slack_alert_uses_post_method_and_json_content_type() -> None:
     Asserts that the ``Request`` passed to urlopen uses the ``POST``
     method and includes ``Content-Type: application/json``.
     """
-    from baton_harness.chain.alert_post import post_slack_alert
+    from codereeve.chain.alert_post import post_slack_alert
 
     captured: list[urllib.request.Request] = []
 
@@ -157,7 +157,7 @@ def test_post_slack_alert_returns_false_on_url_error_without_raising() -> None:
     Raising any exception from ``post_slack_alert`` is a contract
     violation.
     """
-    from baton_harness.chain.alert_post import post_slack_alert
+    from codereeve.chain.alert_post import post_slack_alert
 
     with patch(
         "urllib.request.urlopen",
@@ -176,7 +176,7 @@ def test_post_slack_alert_swallows_socket_timeout() -> None:
     Ensures a slow/hung Slack endpoint cannot hold up the daemon via an
     unhandled exception.
     """
-    from baton_harness.chain.alert_post import post_slack_alert
+    from codereeve.chain.alert_post import post_slack_alert
 
     with patch(
         "urllib.request.urlopen",
@@ -195,7 +195,7 @@ def test_post_slack_alert_returns_false_on_arbitrary_exception() -> None:
     Confirms the fire-and-forget contract covers the general case, not
     only URLError and socket.timeout.
     """
-    from baton_harness.chain.alert_post import post_slack_alert
+    from codereeve.chain.alert_post import post_slack_alert
 
     with patch(
         "urllib.request.urlopen",
@@ -215,7 +215,7 @@ def test_post_slack_alert_returns_false_on_arbitrary_exception() -> None:
 
 def test_post_slack_alert_returns_true_on_2xx_response() -> None:
     """Returns True when urlopen succeeds (HTTP 2xx response)."""
-    from baton_harness.chain.alert_post import post_slack_alert
+    from codereeve.chain.alert_post import post_slack_alert
 
     with patch(
         "urllib.request.urlopen",
@@ -237,7 +237,7 @@ def test_post_slack_alert_returns_false_on_non_2xx_response() -> None:
     A 400 or 500 from the Slack webhook is treated as a delivery failure;
     the helper must return False without propagating an exception.
     """
-    from baton_harness.chain.alert_post import post_slack_alert
+    from codereeve.chain.alert_post import post_slack_alert
 
     for status in (400, 500, 503):
         with patch(
@@ -261,7 +261,7 @@ def test_post_slack_alert_uses_short_default_timeout() -> None:
     Inspects the timeout kwarg passed to ``urlopen`` when ``post_slack_alert``
     is called without an explicit timeout.
     """
-    from baton_harness.chain.alert_post import post_slack_alert
+    from codereeve.chain.alert_post import post_slack_alert
 
     captured_timeout: list[float] = []
 
@@ -297,7 +297,7 @@ def test_post_slack_alert_logs_warning_on_failure(
     Args:
         caplog: Pytest log-capture fixture.
     """
-    from baton_harness.chain.alert_post import post_slack_alert
+    from codereeve.chain.alert_post import post_slack_alert
 
     with (
         patch(
@@ -348,7 +348,7 @@ def test_url_secret_token_not_logged_on_url_error(
     Args:
         caplog: Pytest log-capture fixture.
     """
-    from baton_harness.chain.alert_post import post_slack_alert
+    from codereeve.chain.alert_post import post_slack_alert
 
     with (
         patch(
@@ -384,7 +384,7 @@ def test_url_secret_token_not_logged_on_non_2xx_response(
     Args:
         caplog: Pytest log-capture fixture.
     """
-    from baton_harness.chain.alert_post import post_slack_alert
+    from codereeve.chain.alert_post import post_slack_alert
 
     with (
         patch(
@@ -419,7 +419,7 @@ def test_url_secret_token_not_logged_on_generic_exception(
     Args:
         caplog: Pytest log-capture fixture.
     """
-    from baton_harness.chain.alert_post import post_slack_alert
+    from codereeve.chain.alert_post import post_slack_alert
 
     with (
         patch(

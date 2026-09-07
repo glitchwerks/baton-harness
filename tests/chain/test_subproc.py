@@ -1,4 +1,4 @@
-"""Unit tests for baton_harness.chain.subproc and Phase 1 (#269) migration.
+"""Unit tests for codereeve.chain.subproc and Phase 1 (#269) migration.
 
 Two coverage layers:
 
@@ -25,13 +25,13 @@ from typing import Any
 
 import pytest
 
-import baton_harness.chain.branches as branches_mod
-import baton_harness.chain.daemon as daemon_mod
-import baton_harness.chain.escalation as escalation_mod
-import baton_harness.chain.gh_deps as gh_deps_mod
-import baton_harness.chain.merge as merge_mod
-import baton_harness.chain.recovery as recovery_mod
-from baton_harness.chain.subproc import run_cmd
+import codereeve.chain.branches as branches_mod
+import codereeve.chain.daemon as daemon_mod
+import codereeve.chain.escalation as escalation_mod
+import codereeve.chain.gh_deps as gh_deps_mod
+import codereeve.chain.merge as merge_mod
+import codereeve.chain.recovery as recovery_mod
+from codereeve.chain.subproc import run_cmd
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -85,7 +85,7 @@ def recording_run(
         The ``_RecordingRun`` spy installed as ``subprocess.run``.
     """
     spy = _RecordingRun()
-    monkeypatch.setattr("baton_harness.chain.subproc.subprocess.run", spy)
+    monkeypatch.setattr("codereeve.chain.subproc.subprocess.run", spy)
     return spy
 
 

@@ -51,7 +51,7 @@ def _auto_patch_resolve_app_id() -> None:  # type: ignore[return]
     ``_resolve_app_id`` overrides this via the innermost-patch rule.
     """
     with patch(
-        "baton_harness.chain.daemon._resolve_app_id",
+        "codereeve.chain.daemon._resolve_app_id",
         return_value=_TEST_APP_ID,
     ):
         yield
@@ -78,13 +78,13 @@ def _auto_patch_ruleset_check_daemon() -> None:  # type: ignore[return]
     the tests call the REAL ``_should_launch_worker`` function directly
     (not the autouse mock), so the correct per-test status flows through.
     """
-    from baton_harness.chain.ruleset_status import (
+    from codereeve.chain.ruleset_status import (
         RulesetCheckResult,
         RulesetStatus,
     )
 
     with patch(
-        "baton_harness.chain.daemon.check_ruleset_signals",
+        "codereeve.chain.daemon.check_ruleset_signals",
         return_value=RulesetCheckResult(status=RulesetStatus.MATCH),
     ):
         yield
@@ -119,7 +119,7 @@ def _auto_patch_push_probe_daemon(
     Patch-target note (#273, Phase 6a): ``_probe_worker_push_denied`` and
     ``ProbeResult`` now live in ``daemon/push_probe.py``, re-exported by
     ``daemon/__init__.py``. This fixture's patch target
-    (``baton_harness.chain.daemon._probe_worker_push_denied``) still
+    (``codereeve.chain.daemon._probe_worker_push_denied``) still
     works unmodified because its only production caller,
     ``_should_launch_worker``, remains defined in ``daemon/__init__.py``
     and resolves the name via its own module globals — the same dict
@@ -129,10 +129,10 @@ def _auto_patch_push_probe_daemon(
         yield
         return
 
-    from baton_harness.chain.daemon import ProbeResult
+    from codereeve.chain.daemon import ProbeResult
 
     with patch(
-        "baton_harness.chain.daemon._probe_worker_push_denied",
+        "codereeve.chain.daemon._probe_worker_push_denied",
         return_value=ProbeResult(denied=True),
     ):
         yield

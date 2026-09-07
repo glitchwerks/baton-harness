@@ -1,10 +1,10 @@
-"""Unit tests for baton_harness.redact — secret-redaction helper.
+"""Unit tests for codereeve.redact — secret-redaction helper.
 
 Issue #351 (D6 step 1): ``redact_secrets`` is a hard prerequisite for
 threading hook diagnostics (``stderr_tail``) into escalation comments —
 per ``CLAUDE.md`` § Credentials and Secrets, redaction is a hard gate, not
 a follow-up. This module is deliberately placed at the package root
-(``src/baton_harness/redact.py``, not ``chain/``) so the vendored
+(``src/codereeve/redact.py``, not ``chain/``) so the vendored
 ``symphony`` tree can import it without creating a ``vendor -> chain``
 dependency — mirroring the ``_auth.py`` package-root precedent.
 
@@ -29,8 +29,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from baton_harness import redact as redact_mod
-from baton_harness.redact import redact_secrets
+from codereeve import redact as redact_mod
+from codereeve.redact import redact_secrets
 
 # ---------------------------------------------------------------------------
 # Fixtures / sample secrets

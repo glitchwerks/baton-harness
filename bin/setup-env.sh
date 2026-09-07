@@ -478,7 +478,7 @@ else
     echo "    ${BH_DAEMON_POSIX}" >&2
     echo "  Check that pyproject.toml declares:" >&2
     echo "    [project.scripts]" >&2
-    echo "    bh-daemon = \"baton_harness.chain.cli:main\"" >&2
+    echo "    bh-daemon = \"codereeve.chain.cli:main\"" >&2
     exit 1
 fi
 

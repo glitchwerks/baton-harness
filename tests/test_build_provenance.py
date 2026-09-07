@@ -36,8 +36,8 @@ def test_standard_identity_requires_and_preserves_assertions(
     identity = resolve_build_provenance(
         tmp_path,
         {
-            "BH_BUILD_VERSION": "1.2.3",
-            "BH_BUILD_SOURCE_REVISION": REVISION.upper(),
+            "CODEREEVE_BUILD_VERSION": "1.2.3",
+            "CODEREEVE_BUILD_SOURCE_REVISION": REVISION.upper(),
         },
         read_head=lambda _root: REVISION,
     )
@@ -59,8 +59,8 @@ def test_standard_identity_normalizes_a_valid_pep_440_version(
     identity = resolve_build_provenance(
         tmp_path,
         {
-            "BH_BUILD_VERSION": "v1.2.3",
-            "BH_BUILD_SOURCE_REVISION": REVISION,
+            "CODEREEVE_BUILD_VERSION": "v1.2.3",
+            "CODEREEVE_BUILD_SOURCE_REVISION": REVISION,
         },
         read_head=lambda _root: REVISION,
     )
@@ -75,10 +75,10 @@ def test_development_identity_uses_stable_version_and_exact_head(
     (tmp_path / "uv.lock").write_bytes(LOCK_CONTENT)
     identity = resolve_build_provenance(
         tmp_path,
-        {"BH_BUILD_DEVELOPMENT": "1"},
+        {"CODEREEVE_BUILD_DEVELOPMENT": "1"},
         read_head=lambda _root: REVISION,
     )
-    assert identity.package_version == "0.1.0.dev0"
+    assert identity.package_version == "0.2.0.dev0"
     assert identity.source_revision == REVISION
     assert identity.development is True
 
@@ -87,38 +87,12 @@ def test_development_identity_uses_stable_version_and_exact_head(
     ("environment", "read_head", "create_lock", "create_git"),
     [
         ({}, REVISION, True, False),
-        ({"BH_BUILD_VERSION": "1.2.3"}, REVISION, True, False),
-        ({"BH_BUILD_SOURCE_REVISION": REVISION}, REVISION, True, False),
+        ({"CODEREEVE_BUILD_VERSION": "1.2.3"}, REVISION, True, False),
+        ({"CODEREEVE_BUILD_SOURCE_REVISION": REVISION}, REVISION, True, False),
         (
             {
-                "BH_BUILD_VERSION": "not a version",
-                "BH_BUILD_SOURCE_REVISION": REVISION,
-            },
-            REVISION,
-            True,
-            False,
-        ),
-        (
-            {"BH_BUILD_VERSION": "1.2.3", "BH_BUILD_SOURCE_REVISION": "abc"},
-            REVISION,
-            True,
-            False,
-        ),
-        (
-            {
-                "BH_BUILD_VERSION": "1.2.3",
-                "BH_BUILD_SOURCE_REVISION": "g" * 40,
-            },
-            REVISION,
-            True,
-            False,
-        ),
-        ({"BH_BUILD_DEVELOPMENT": "true"}, REVISION, True, False),
-        (
-            {
-                "BH_BUILD_DEVELOPMENT": "1",
-                "BH_BUILD_VERSION": "1.2.3",
-                "BH_BUILD_SOURCE_REVISION": REVISION,
+                "CODEREEVE_BUILD_VERSION": "not a version",
+                "CODEREEVE_BUILD_SOURCE_REVISION": REVISION,
             },
             REVISION,
             True,
@@ -126,8 +100,37 @@ def test_development_identity_uses_stable_version_and_exact_head(
         ),
         (
             {
-                "BH_BUILD_VERSION": "1.2.3",
-                "BH_BUILD_SOURCE_REVISION": REVISION,
+                "CODEREEVE_BUILD_VERSION": "1.2.3",
+                "CODEREEVE_BUILD_SOURCE_REVISION": "abc",
+            },
+            REVISION,
+            True,
+            False,
+        ),
+        (
+            {
+                "CODEREEVE_BUILD_VERSION": "1.2.3",
+                "CODEREEVE_BUILD_SOURCE_REVISION": "g" * 40,
+            },
+            REVISION,
+            True,
+            False,
+        ),
+        ({"CODEREEVE_BUILD_DEVELOPMENT": "true"}, REVISION, True, False),
+        (
+            {
+                "CODEREEVE_BUILD_DEVELOPMENT": "1",
+                "CODEREEVE_BUILD_VERSION": "1.2.3",
+                "CODEREEVE_BUILD_SOURCE_REVISION": REVISION,
+            },
+            REVISION,
+            True,
+            False,
+        ),
+        (
+            {
+                "CODEREEVE_BUILD_VERSION": "1.2.3",
+                "CODEREEVE_BUILD_SOURCE_REVISION": REVISION,
             },
             "f" * 40,
             True,
@@ -135,8 +138,8 @@ def test_development_identity_uses_stable_version_and_exact_head(
         ),
         (
             {
-                "BH_BUILD_VERSION": "1.2.3",
-                "BH_BUILD_SOURCE_REVISION": REVISION,
+                "CODEREEVE_BUILD_VERSION": "1.2.3",
+                "CODEREEVE_BUILD_SOURCE_REVISION": REVISION,
             },
             REVISION,
             False,
@@ -170,7 +173,7 @@ def test_carried_record_must_exactly_match_resolved_identity(
 ) -> None:
     """An sdist record cannot differ from the asserted build identity."""
     (tmp_path / "uv.lock").write_bytes(LOCK_CONTENT)
-    record_path = tmp_path / "src" / "baton_harness" / "build_provenance.json"
+    record_path = tmp_path / "src" / "codereeve" / "build_provenance.json"
     record_path.parent.mkdir(parents=True)
     record_path.write_text(
         json.dumps(
@@ -189,8 +192,8 @@ def test_carried_record_must_exactly_match_resolved_identity(
         resolve_build_provenance(
             tmp_path,
             {
-                "BH_BUILD_VERSION": "1.2.3",
-                "BH_BUILD_SOURCE_REVISION": REVISION,
+                "CODEREEVE_BUILD_VERSION": "1.2.3",
+                "CODEREEVE_BUILD_SOURCE_REVISION": REVISION,
             },
             read_head=lambda _root: REVISION,
         )
@@ -207,7 +210,7 @@ def test_carried_record_rejects_values_with_wrong_json_types(
 ) -> None:
     """Reject carried values that compare equal but have wrong types."""
     (tmp_path / "uv.lock").write_bytes(LOCK_CONTENT)
-    record_path = tmp_path / "src" / "baton_harness" / "build_provenance.json"
+    record_path = tmp_path / "src" / "codereeve" / "build_provenance.json"
     record_path.parent.mkdir(parents=True)
     record = BuildProvenance(
         schema_version=1,
@@ -223,8 +226,42 @@ def test_carried_record_rejects_values_with_wrong_json_types(
         resolve_build_provenance(
             tmp_path,
             {
-                "BH_BUILD_VERSION": "1.2.3",
-                "BH_BUILD_SOURCE_REVISION": REVISION,
+                "CODEREEVE_BUILD_VERSION": "1.2.3",
+                "CODEREEVE_BUILD_SOURCE_REVISION": REVISION,
             },
             read_head=lambda _root: REVISION,
         )
+
+
+def test_conflicting_canonical_and_legacy_build_values_fail_closed(
+    tmp_path: Path,
+) -> None:
+    """Conflicting canonical and compatibility values are ambiguous."""
+    (tmp_path / "uv.lock").write_bytes(LOCK_CONTENT)
+    with pytest.raises(
+        BuildProvenanceError,
+        match="CODEREEVE_BUILD_VERSION and BH_BUILD_VERSION",
+    ):
+        resolve_build_provenance(
+            tmp_path,
+            {
+                "CODEREEVE_BUILD_VERSION": "0.2.0",
+                "BH_BUILD_VERSION": "9.9.9",
+                "CODEREEVE_BUILD_SOURCE_REVISION": REVISION,
+            },
+            read_head=lambda _root: REVISION,
+        )
+
+
+def test_legacy_build_variables_remain_compatible(tmp_path: Path) -> None:
+    """Temporary legacy aliases preserve existing build automation."""
+    (tmp_path / "uv.lock").write_bytes(LOCK_CONTENT)
+    identity = resolve_build_provenance(
+        tmp_path,
+        {
+            "BH_BUILD_VERSION": "0.2.0",
+            "BH_BUILD_SOURCE_REVISION": REVISION,
+        },
+        read_head=lambda _root: REVISION,
+    )
+    assert identity.package_version == "0.2.0"

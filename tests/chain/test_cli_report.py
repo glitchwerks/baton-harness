@@ -30,7 +30,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from baton_harness.chain.cli import main
+from codereeve.chain.cli import main
 
 # ---------------------------------------------------------------------------
 # Autouse fixtures
@@ -45,7 +45,7 @@ def _auto_patch_pre_bootstrap_gate() -> Iterator[None]:
     file's docstring for why this must not live in the shared
     ``chain/conftest.py`` autouse set.
     """
-    with patch("baton_harness.chain.doctor.run_gate", return_value=None):
+    with patch("codereeve.chain.doctor.run_gate", return_value=None):
         yield
 
 
@@ -88,24 +88,24 @@ def test_report_absolute_path_forwarded_to_run_daemon(tmp_path: Path) -> None:
 
     with (
         patch(
-            "baton_harness.chain.cli.bootstrap_secrets",
+            "codereeve.chain.cli.bootstrap_secrets",
             return_value="ghs_TESTTOKEN_xxxxxxx",
         ),
-        patch("baton_harness.chain.cli.validate_daemon_token"),
+        patch("codereeve.chain.cli.validate_daemon_token"),
         patch(
-            "baton_harness.chain.cli.load_workflow",
+            "codereeve.chain.cli.load_workflow",
             return_value=MagicMock(),
         ),
         patch(
-            "baton_harness.chain.cli.load_registry",
+            "codereeve.chain.cli.load_registry",
             return_value=[fake_repo_cfg],
         ),
         patch(
-            "baton_harness.chain.cli.run_daemon",
+            "codereeve.chain.cli.run_daemon",
             side_effect=fake_run_daemon,
         ),
-        patch("baton_harness.chain.cli.os.chdir"),
-        patch("baton_harness.chain.cli.os.path.isdir", return_value=True),
+        patch("codereeve.chain.cli.os.chdir"),
+        patch("codereeve.chain.cli.os.path.isdir", return_value=True),
     ):
         result = _run_main("--once", "--report", str(report_path_arg))
 
@@ -137,7 +137,7 @@ def test_report_relative_path_resolved_before_chdir(
     not relative to the managed-repo root the daemon chdirs into.
 
     A real ``os.chdir`` is wired through the patched
-    ``baton_harness.chain.cli.os.chdir`` (rather than a no-op mock, as
+    ``codereeve.chain.cli.os.chdir`` (rather than a no-op mock, as
     other tests use) so the process cwd genuinely changes partway through
     ``main()``, letting this test distinguish "resolved before chdir"
     from "resolved after chdir" -- the two would only produce the same
@@ -169,27 +169,27 @@ def test_report_relative_path_resolved_before_chdir(
 
     with (
         patch(
-            "baton_harness.chain.cli.bootstrap_secrets",
+            "codereeve.chain.cli.bootstrap_secrets",
             return_value="ghs_TESTTOKEN_xxxxxxx",
         ),
-        patch("baton_harness.chain.cli.validate_daemon_token"),
+        patch("codereeve.chain.cli.validate_daemon_token"),
         patch(
-            "baton_harness.chain.cli.load_workflow",
+            "codereeve.chain.cli.load_workflow",
             return_value=MagicMock(),
         ),
         patch(
-            "baton_harness.chain.cli.load_registry",
+            "codereeve.chain.cli.load_registry",
             return_value=[fake_repo_cfg],
         ),
         patch(
-            "baton_harness.chain.cli.run_daemon",
+            "codereeve.chain.cli.run_daemon",
             side_effect=fake_run_daemon,
         ),
         patch(
-            "baton_harness.chain.cli.os.chdir",
+            "codereeve.chain.cli.os.chdir",
             side_effect=_do_real_chdir,
         ),
-        patch("baton_harness.chain.cli.os.path.isdir", return_value=True),
+        patch("codereeve.chain.cli.os.path.isdir", return_value=True),
     ):
         result = _run_main("--once", "--report", str(relative_report))
 
@@ -237,24 +237,24 @@ def test_report_omitted_defaults_to_bh_project_root_session_report(
 
     with (
         patch(
-            "baton_harness.chain.cli.bootstrap_secrets",
+            "codereeve.chain.cli.bootstrap_secrets",
             return_value="ghs_TESTTOKEN_xxxxxxx",
         ),
-        patch("baton_harness.chain.cli.validate_daemon_token"),
+        patch("codereeve.chain.cli.validate_daemon_token"),
         patch(
-            "baton_harness.chain.cli.load_workflow",
+            "codereeve.chain.cli.load_workflow",
             return_value=MagicMock(),
         ),
         patch(
-            "baton_harness.chain.cli.load_registry",
+            "codereeve.chain.cli.load_registry",
             return_value=[fake_repo_cfg],
         ),
         patch(
-            "baton_harness.chain.cli.run_daemon",
+            "codereeve.chain.cli.run_daemon",
             side_effect=fake_run_daemon,
         ),
-        patch("baton_harness.chain.cli.os.chdir"),
-        patch("baton_harness.chain.cli.os.path.isdir", return_value=True),
+        patch("codereeve.chain.cli.os.chdir"),
+        patch("codereeve.chain.cli.os.path.isdir", return_value=True),
     ):
         result = _run_main("--once")
 
@@ -296,24 +296,24 @@ def test_report_forwarded_alongside_existing_run_daemon_kwargs(
 
     with (
         patch(
-            "baton_harness.chain.cli.bootstrap_secrets",
+            "codereeve.chain.cli.bootstrap_secrets",
             return_value="ghs_TESTTOKEN_xxxxxxx",
         ),
-        patch("baton_harness.chain.cli.validate_daemon_token"),
+        patch("codereeve.chain.cli.validate_daemon_token"),
         patch(
-            "baton_harness.chain.cli.load_workflow",
+            "codereeve.chain.cli.load_workflow",
             return_value=MagicMock(),
         ),
         patch(
-            "baton_harness.chain.cli.load_registry",
+            "codereeve.chain.cli.load_registry",
             return_value=[fake_repo_cfg],
         ),
         patch(
-            "baton_harness.chain.cli.run_daemon",
+            "codereeve.chain.cli.run_daemon",
             side_effect=fake_run_daemon,
         ),
-        patch("baton_harness.chain.cli.os.chdir"),
-        patch("baton_harness.chain.cli.os.path.isdir", return_value=True),
+        patch("codereeve.chain.cli.os.chdir"),
+        patch("codereeve.chain.cli.os.path.isdir", return_value=True),
     ):
         result = _run_main(
             "--once",

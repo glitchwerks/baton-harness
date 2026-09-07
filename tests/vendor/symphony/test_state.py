@@ -26,7 +26,7 @@ from unittest.mock import patch
 
 import pytest
 
-from baton_harness.vendor.symphony.state import (
+from codereeve.vendor.symphony.state import (
     IssueState,
     OrchestratorState,
     RetryEntry,
@@ -616,7 +616,7 @@ class TestPersistAtomicity:
 
         # Simulate a crash mid-write by raising from json.dump.
         with patch(
-            "baton_harness.vendor.symphony.state.json.dump",
+            "codereeve.vendor.symphony.state.json.dump",
             side_effect=OSError("disk full"),
         ):
             try:
@@ -657,7 +657,7 @@ class TestPersistUsesOsReplace:
             real_replace(src, dst)
 
         with patch(
-            "baton_harness.vendor.symphony.state.os.replace",
+            "codereeve.vendor.symphony.state.os.replace",
             side_effect=capturing_replace,
         ):
             orch.persist(state_path)
@@ -705,7 +705,7 @@ class TestPersistUsesOsReplace:
         with (
             patch("builtins.open", side_effect=capturing_open),
             patch(
-                "baton_harness.vendor.symphony.state.os.replace",
+                "codereeve.vendor.symphony.state.os.replace",
                 side_effect=capturing_replace,
             ),
         ):

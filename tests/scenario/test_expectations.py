@@ -1,7 +1,7 @@
-"""Unit tests for baton_harness.scenario (issue #306, Phase 5a of #243).
+"""Unit tests for codereeve.scenario (issue #306, Phase 5a of #243).
 
 This file is the frozen contract for the implemented scenario-assertion
-matcher in ``src/baton_harness/scenario/``, originally described in
+matcher in ``src/codereeve/scenario/``, originally described in
 ``docs/superpowers/plans/2026-07-09-daemon-report-scenario-harness-243.md``
 § 5.1 / § 6 Phase 5a.
 
@@ -98,7 +98,7 @@ Coverage:
   (``clean-implement``) must not raise (e.g. an ``IndexError`` from
   blindly indexing ``issues[0]``) when given an empty issues list —
   it must fail cleanly instead.
-- The ``python -m baton_harness.scenario.verify`` entry point itself
+- The ``python -m codereeve.scenario.verify`` entry point itself
   (not just the importable ``main`` function) is exercised once via
   subprocess, guarding against an implementer who defines ``main()``
   but omits the ``if __name__ == "__main__":`` dispatch — a module
@@ -116,8 +116,8 @@ from typing import Any
 
 import pytest
 
-from baton_harness.scenario.expectations import EXPECTATIONS
-from baton_harness.scenario.verify import (
+from codereeve.scenario.expectations import EXPECTATIONS
+from codereeve.scenario.verify import (
     AssertionResult,
     VerifyResult,
     main,
@@ -1013,7 +1013,7 @@ def test_main_unknown_scenario_returns_input_error(
 
 
 # ---------------------------------------------------------------------------
-# CLI: the actual "python -m baton_harness.scenario.verify" entry point
+# CLI: the actual "python -m codereeve.scenario.verify" entry point
 #
 # A subprocess test, not just a main(argv) call, because an implementer
 # who defines main() but forgets the `if __name__ == "__main__":`
@@ -1027,7 +1027,7 @@ def test_main_unknown_scenario_returns_input_error(
 def test_python_dash_m_entry_point_reports_fail_and_exits_nonzero(
     tmp_path: Path,
 ) -> None:
-    """``python -m baton_harness.scenario.verify`` runs and reports FAIL.
+    """``python -m codereeve.scenario.verify`` runs and reports FAIL.
 
     Uses a FAIL report specifically: a missing/broken module also exits
     non-zero, so asserting on the exit code alone would pass vacuously
@@ -1044,7 +1044,7 @@ def test_python_dash_m_entry_point_reports_fail_and_exits_nonzero(
         [
             sys.executable,
             "-m",
-            "baton_harness.scenario.verify",
+            "codereeve.scenario.verify",
             "--scenario",
             "clean-implement",
             "--report",

@@ -1,4 +1,4 @@
-"""Tests for baton_harness.chain.heartbeat (thread-based re-arch, issue #78).
+"""Tests for codereeve.chain.heartbeat (thread-based re-arch, issue #78).
 
 Covers acceptance criteria for the P1 thread-based heartbeat re-architecture:
 the monitor is a daemon OS thread so it beats even while the asyncio event
@@ -38,14 +38,14 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-from baton_harness.chain.heartbeat import (
+from codereeve.chain.heartbeat import (
     LivenessState,
     _heartbeat_tick,
     _write_heartbeat,
     run_heartbeat_loop,
 )
-from baton_harness.chain.obs_config import ObsConfig
-from baton_harness.chain.runlog import RunLog
+from codereeve.chain.obs_config import ObsConfig
+from codereeve.chain.runlog import RunLog
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -124,7 +124,7 @@ def test_tick_writes_heartbeat_file_with_now_isoformat(
         write_calls.append((path, timestamp))
 
     with patch(
-        "baton_harness.chain.heartbeat._write_heartbeat",
+        "codereeve.chain.heartbeat._write_heartbeat",
         side_effect=fake_write,
     ):
         _heartbeat_tick(obs, state, now=lambda: fixed_ts)
@@ -157,7 +157,7 @@ def test_tick_emits_heartbeat_runlog_event_when_runlog_provided(
     runlog = RunLog(runlog_path)
     state = LivenessState()
 
-    with patch("baton_harness.chain.heartbeat._write_heartbeat"):
+    with patch("codereeve.chain.heartbeat._write_heartbeat"):
         _heartbeat_tick(obs, state, runlog=runlog, now=lambda: _utc(0.0))
         _heartbeat_tick(obs, state, runlog=runlog, now=lambda: _utc(1.0))
 
@@ -221,9 +221,9 @@ def test_stall_fires_once_at_critical_with_correct_identity(
         return True
 
     with (
-        patch("baton_harness.chain.heartbeat._write_heartbeat"),
+        patch("codereeve.chain.heartbeat._write_heartbeat"),
         patch(
-            "baton_harness.chain.heartbeat.alert",
+            "codereeve.chain.heartbeat.alert",
             side_effect=fake_alert,
         ),
     ):
@@ -272,9 +272,9 @@ def test_stall_alert_fires_again_after_clear_and_mark_in_progress(
         return True
 
     with (
-        patch("baton_harness.chain.heartbeat._write_heartbeat"),
+        patch("codereeve.chain.heartbeat._write_heartbeat"),
         patch(
-            "baton_harness.chain.heartbeat.alert",
+            "codereeve.chain.heartbeat.alert",
             side_effect=fake_alert,
         ),
     ):
@@ -321,9 +321,9 @@ def test_stall_exact_boundary_does_not_alert(tmp_path: Path) -> None:
         return True
 
     with (
-        patch("baton_harness.chain.heartbeat._write_heartbeat"),
+        patch("codereeve.chain.heartbeat._write_heartbeat"),
         patch(
-            "baton_harness.chain.heartbeat.alert",
+            "codereeve.chain.heartbeat.alert",
             side_effect=fake_alert,
         ),
     ):
@@ -367,11 +367,11 @@ def test_no_stall_alert_when_elapsed_below_threshold(
 
     with (
         patch(
-            "baton_harness.chain.heartbeat._write_heartbeat",
+            "codereeve.chain.heartbeat._write_heartbeat",
             side_effect=lambda p, ts: write_calls.append(ts),
         ),
         patch(
-            "baton_harness.chain.heartbeat.alert",
+            "codereeve.chain.heartbeat.alert",
             side_effect=fake_alert,
         ),
     ):
@@ -408,7 +408,7 @@ def test_tick_swallows_write_heartbeat_exception(tmp_path: Path) -> None:
 
     # Must not raise.
     with patch(
-        "baton_harness.chain.heartbeat._write_heartbeat",
+        "codereeve.chain.heartbeat._write_heartbeat",
         side_effect=always_raises,
     ):
         _heartbeat_tick(obs, state, now=lambda: _utc(0.0))
@@ -501,9 +501,9 @@ def test_liveness_state_mark_in_progress_resets_stall_debounce(
         return True
 
     with (
-        patch("baton_harness.chain.heartbeat._write_heartbeat"),
+        patch("codereeve.chain.heartbeat._write_heartbeat"),
         patch(
-            "baton_harness.chain.heartbeat.alert",
+            "codereeve.chain.heartbeat.alert",
             side_effect=fake_alert,
         ),
     ):
@@ -544,9 +544,9 @@ def test_liveness_state_clear_resets_debounce_and_re_mark_works(
         return True
 
     with (
-        patch("baton_harness.chain.heartbeat._write_heartbeat"),
+        patch("codereeve.chain.heartbeat._write_heartbeat"),
         patch(
-            "baton_harness.chain.heartbeat.alert",
+            "codereeve.chain.heartbeat.alert",
             side_effect=fake_alert,
         ),
     ):
@@ -605,7 +605,7 @@ def test_run_heartbeat_loop_ticks_repeatedly_and_stops_on_event(
     )
 
     with patch(
-        "baton_harness.chain.heartbeat._write_heartbeat",
+        "codereeve.chain.heartbeat._write_heartbeat",
         side_effect=counting_write,
     ):
         thread.start()
@@ -662,7 +662,7 @@ def test_heartbeat_loop_beats_while_main_thread_blocks(
 
     try:
         with patch(
-            "baton_harness.chain.heartbeat._write_heartbeat",
+            "codereeve.chain.heartbeat._write_heartbeat",
             side_effect=counting_write,
         ):
             thread.start()
@@ -731,9 +731,9 @@ def test_stall_debounce_not_latched_on_delivery_failure(
         return True
 
     with (
-        patch("baton_harness.chain.heartbeat._write_heartbeat"),
+        patch("codereeve.chain.heartbeat._write_heartbeat"),
         patch(
-            "baton_harness.chain.heartbeat.alert",
+            "codereeve.chain.heartbeat.alert",
             side_effect=fake_alert_delivery_controlled,
         ),
     ):
@@ -1056,9 +1056,9 @@ def test_progress_stall_fires_when_worker_active_and_stale_progress(
         return True
 
     with (
-        patch("baton_harness.chain.heartbeat._write_heartbeat"),
+        patch("codereeve.chain.heartbeat._write_heartbeat"),
         patch(
-            "baton_harness.chain.heartbeat.alert",
+            "codereeve.chain.heartbeat.alert",
             side_effect=fake_alert,
         ),
     ):
@@ -1112,9 +1112,9 @@ def test_progress_stall_silent_when_worker_inactive_same_stale_progress(
         return True
 
     with (
-        patch("baton_harness.chain.heartbeat._write_heartbeat"),
+        patch("codereeve.chain.heartbeat._write_heartbeat"),
         patch(
-            "baton_harness.chain.heartbeat.alert",
+            "codereeve.chain.heartbeat.alert",
             side_effect=fake_alert,
         ),
     ):
@@ -1163,9 +1163,9 @@ def test_progress_stall_exact_boundary_does_not_alert(
         return True
 
     with (
-        patch("baton_harness.chain.heartbeat._write_heartbeat"),
+        patch("codereeve.chain.heartbeat._write_heartbeat"),
         patch(
-            "baton_harness.chain.heartbeat.alert",
+            "codereeve.chain.heartbeat.alert",
             side_effect=fake_alert,
         ),
     ):
@@ -1214,9 +1214,9 @@ def test_progress_stall_detail_string_distinguishable_from_wall_clock(
         return True
 
     with (
-        patch("baton_harness.chain.heartbeat._write_heartbeat"),
+        patch("codereeve.chain.heartbeat._write_heartbeat"),
         patch(
-            "baton_harness.chain.heartbeat.alert",
+            "codereeve.chain.heartbeat.alert",
             side_effect=capturing_alert,
         ),
     ):
@@ -1277,9 +1277,9 @@ def test_shared_latch_wall_clock_fires_suppresses_progress_stall(
         return True
 
     with (
-        patch("baton_harness.chain.heartbeat._write_heartbeat"),
+        patch("codereeve.chain.heartbeat._write_heartbeat"),
         patch(
-            "baton_harness.chain.heartbeat.alert",
+            "codereeve.chain.heartbeat.alert",
             side_effect=fake_alert,
         ),
     ):
@@ -1325,9 +1325,9 @@ def test_shared_latch_rearms_after_mark_in_progress_worker_active_true(
         return True
 
     with (
-        patch("baton_harness.chain.heartbeat._write_heartbeat"),
+        patch("codereeve.chain.heartbeat._write_heartbeat"),
         patch(
-            "baton_harness.chain.heartbeat.alert",
+            "codereeve.chain.heartbeat.alert",
             side_effect=fake_alert,
         ),
     ):

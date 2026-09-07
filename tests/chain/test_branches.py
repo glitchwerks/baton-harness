@@ -1,4 +1,4 @@
-"""Unit tests for baton_harness.chain.branches.
+"""Unit tests for codereeve.chain.branches.
 
 Owns the feature-branch lifecycle: naming, creation off main, idempotent
 re-create on resume, HEAD checkout before each ``_run_worker`` call, and
@@ -31,8 +31,8 @@ from unittest.mock import patch
 
 import pytest
 
-import baton_harness.chain.branches as branches_mod
-from baton_harness.chain.branches import (
+import codereeve.chain.branches as branches_mod
+from codereeve.chain.branches import (
     checkout_feature_branch,
     create_feature_branch,
     feature_branch_name,

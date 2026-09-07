@@ -23,10 +23,10 @@ import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from baton_harness.vendor.symphony.config import WorkflowConfig
-from baton_harness.vendor.symphony.hooks import HookResult
-from baton_harness.vendor.symphony.orchestrator import Orchestrator
-from baton_harness.vendor.symphony.tracker import Issue
+from codereeve.vendor.symphony.config import WorkflowConfig
+from codereeve.vendor.symphony.hooks import HookResult
+from codereeve.vendor.symphony.orchestrator import Orchestrator
+from codereeve.vendor.symphony.tracker import Issue
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -142,11 +142,11 @@ def test_blocked_label_terminates_turn_loop_early() -> None:
             side_effect=fake_fetch_issue_state,
         ),
         patch(
-            "baton_harness.vendor.symphony.orchestrator.run_hook",
+            "codereeve.vendor.symphony.orchestrator.run_hook",
             side_effect=fake_run_hook,
         ),
         patch(
-            "baton_harness.vendor.symphony.orchestrator.run_gh",
+            "codereeve.vendor.symphony.orchestrator.run_gh",
             side_effect=fake_run_gh,
         ),
         patch.object(
@@ -216,11 +216,11 @@ def test_running_guard_does_not_raise_when_state_missing() -> None:
             side_effect=fake_fetch_issue_state,
         ),
         patch(
-            "baton_harness.vendor.symphony.orchestrator.run_hook",
+            "codereeve.vendor.symphony.orchestrator.run_hook",
             side_effect=fake_run_hook,
         ),
         patch(
-            "baton_harness.vendor.symphony.orchestrator.run_gh",
+            "codereeve.vendor.symphony.orchestrator.run_gh",
             side_effect=fake_run_gh,
         ),
         patch.object(
@@ -287,11 +287,11 @@ def test_normal_run_without_block_runs_all_turns() -> None:
             side_effect=fake_fetch_issue_state,
         ),
         patch(
-            "baton_harness.vendor.symphony.orchestrator.run_hook",
+            "codereeve.vendor.symphony.orchestrator.run_hook",
             side_effect=fake_run_hook,
         ),
         patch(
-            "baton_harness.vendor.symphony.orchestrator.run_gh",
+            "codereeve.vendor.symphony.orchestrator.run_gh",
             side_effect=fake_run_gh,
         ),
         patch.object(

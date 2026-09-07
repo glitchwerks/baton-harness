@@ -5,7 +5,7 @@ session report instead of being recorded with
 ``outcome="skipped_blocked"``.
 
 **Frozen consuming contract** (do not touch):
-``src/baton_harness/scenario/expectations.py``'s ``"terminal-block"`` entry
+``src/codereeve/scenario/expectations.py``'s ``"terminal-block"`` entry
 requires ``issues_len == 1`` and ``issue.outcome == "skipped_blocked"``. Per
 the design doc (``docs/superpowers/plans/
 2026-07-09-daemon-report-scenario-harness-243.md`` §4, the "empty-``issues[]``
@@ -41,7 +41,7 @@ Coverage:
   the blocked issue being folded into or misclassified as the other
   issue's record.
 - The written report, fed through the frozen
-  ``baton_harness.scenario.verify.verify_report("terminal-block", ...)``
+  ``codereeve.scenario.verify.verify_report("terminal-block", ...)``
   matcher, actually PASSES — closing the loop against the exact consumer
   named in the issue.
 """
@@ -57,13 +57,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-import baton_harness.chain.daemon as daemon_mod
-from baton_harness.chain.daemon import run_daemon
-from baton_harness.chain.merge import MergeOutcome
-from baton_harness.chain.recovery import RecoveryResult
-from baton_harness.chain.registry import RepoConfig
-from baton_harness.scenario.verify import verify_report
-from baton_harness.vendor.symphony.config import WorkflowConfig
+import codereeve.chain.daemon as daemon_mod
+from codereeve.chain.daemon import run_daemon
+from codereeve.chain.merge import MergeOutcome
+from codereeve.chain.recovery import RecoveryResult
+from codereeve.chain.registry import RepoConfig
+from codereeve.scenario.verify import verify_report
+from codereeve.vendor.symphony.config import WorkflowConfig
 
 _OWNER = "glitchwerks"
 _REPO_NAME = "baton-harness"
@@ -221,7 +221,7 @@ def _make_run_side_effect(
 def _patch_run_worker(return_value: str = "pr_created") -> Any:  # noqa: ANN401
     """Patch Orchestrator._run_worker with an AsyncMock."""
     return patch(
-        "baton_harness.vendor.symphony.orchestrator.Orchestrator._run_worker",
+        "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
         new_callable=AsyncMock,
         return_value=return_value,
     )
@@ -239,17 +239,17 @@ def _common_success_patches() -> Any:  # noqa: ANN401
     def ctx() -> Any:  # noqa: ANN401
         with (
             patch(
-                "baton_harness.chain.daemon.fetch_blocked_by",
+                "codereeve.chain.daemon.fetch_blocked_by",
                 return_value=[],
             ),
-            patch("baton_harness.chain.branches.create_feature_branch"),
-            patch("baton_harness.chain.branches.checkout_feature_branch"),
+            patch("codereeve.chain.branches.create_feature_branch"),
+            patch("codereeve.chain.branches.checkout_feature_branch"),
             patch(
-                "baton_harness.chain.branches.record_cut_point",
+                "codereeve.chain.branches.record_cut_point",
                 return_value="deadbeef" * 5,
             ),
             patch(
-                "baton_harness.chain.recovery.reconstruct",
+                "codereeve.chain.recovery.reconstruct",
                 return_value=RecoveryResult(
                     done=set(),
                     parked_seed=set(),
@@ -258,10 +258,10 @@ def _common_success_patches() -> Any:  # noqa: ANN401
                 ),
             ),
             patch(
-                "baton_harness.chain.daemon.merge_issue_branch",
+                "codereeve.chain.daemon.merge_issue_branch",
                 return_value=MergeOutcome.MERGED,
             ),
-            patch("baton_harness.chain.daemon.alert", return_value=True),
+            patch("codereeve.chain.daemon.alert", return_value=True),
         ):
             yield
 
@@ -297,7 +297,7 @@ def test_solo_agent_ready_and_blocked_issue_records_skipped_blocked(
             ),
         ),
         _common_success_patches()(),
-        patch("baton_harness.chain.daemon.alert") as mock_alert,
+        patch("codereeve.chain.daemon.alert") as mock_alert,
     ):
         asyncio.run(
             run_daemon(
@@ -432,7 +432,7 @@ def test_live_recheck_excluded_issue_records_skipped_blocked(
             ),
         ),
         patch(
-            "baton_harness.chain.daemon._fetch_issue_labels",
+            "codereeve.chain.daemon._fetch_issue_labels",
             side_effect=fake_fetch_labels,
         ),
         _common_success_patches()(),
@@ -487,7 +487,7 @@ def test_written_report_satisfies_terminal_block_scenario_expectation(
     Drives ``run_daemon`` for the literal terminal-block seed (one issue
     carrying both ``agent-ready`` and ``blocked``), then feeds the written
     report through the untouched
-    ``baton_harness.scenario.verify.verify_report("terminal-block", ...)``
+    ``codereeve.scenario.verify.verify_report("terminal-block", ...)``
     matcher — the actual consumer named in issue #343 — and asserts it
     passes.
     """

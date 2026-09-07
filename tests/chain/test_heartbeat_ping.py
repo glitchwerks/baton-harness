@@ -26,21 +26,21 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-from baton_harness.chain.heartbeat import (
+from codereeve.chain.heartbeat import (
     _DEFAULT_PING_TIMEOUT_S,
     LivenessState,
     _heartbeat_tick,
     _ping_url,
 )
-from baton_harness.chain.obs_config import ObsConfig
+from codereeve.chain.obs_config import ObsConfig
 
 # ---------------------------------------------------------------------------
 # Helpers (mirror test_heartbeat.py conventions exactly)
 # ---------------------------------------------------------------------------
 
-_PING_SEAM = "baton_harness.chain.heartbeat._ping_url"
-_WRITE_SEAM = "baton_harness.chain.heartbeat._write_heartbeat"
-_ALERT_SEAM = "baton_harness.chain.heartbeat.alert"
+_PING_SEAM = "codereeve.chain.heartbeat._ping_url"
+_WRITE_SEAM = "codereeve.chain.heartbeat._write_heartbeat"
+_ALERT_SEAM = "codereeve.chain.heartbeat.alert"
 _URLOPEN_SEAM = "urllib.request.urlopen"
 
 

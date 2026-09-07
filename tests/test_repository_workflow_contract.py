@@ -236,6 +236,6 @@ def test_pr_policy_workflow_contract() -> None:
         {
             "name": "Validate pull request policy",
             "env": {"GITHUB_TOKEN": "${{ secrets.GITHUB_TOKEN }}"},
-            "run": ".venv/bin/python -m baton_harness.pr_policy",
+            "run": ".venv/bin/python -m codereeve.pr_policy",
         },
     ]

@@ -1,4 +1,4 @@
-"""Unit tests for baton_harness.chain.merge.
+"""Unit tests for codereeve.chain.merge.
 
 Tests the CI-gated ``--no-ff`` merge logic.  All subprocess calls are
 intercepted by patching the module-local ``_run`` seam; no live network or
@@ -95,8 +95,8 @@ from unittest.mock import patch
 
 import pytest
 
-import baton_harness.chain.merge as merge_mod
-from baton_harness.chain.merge import (
+import codereeve.chain.merge as merge_mod
+from codereeve.chain.merge import (
     REQUIRED_CHECKS,
     CiResult,
     MergeOutcome,
@@ -110,7 +110,7 @@ from baton_harness.chain.merge import (
 # We use a try/except at module level so that collection succeeds and
 # individual tests fail (rather than the whole module failing to import).
 # The implementation must provide:
-#   - CiAuthError(RuntimeError)  in baton_harness.chain.merge
+#   - CiAuthError(RuntimeError)  in codereeve.chain.merge
 #   - _query_action_jobs(owner, repo, sha) -> list[dict]  in the same module
 #
 # Until the implementation lands, CiAuthError is a placeholder that raises
@@ -120,7 +120,7 @@ from baton_harness.chain.merge import (
 # ---------------------------------------------------------------------------
 
 try:
-    from baton_harness.chain.merge import (
+    from codereeve.chain.merge import (
         CiAuthError,  # type: ignore[attr-defined]
     )
 except ImportError:
@@ -132,13 +132,13 @@ except ImportError:
             """Always raises — placeholder until implementation exists."""
             raise AssertionError(
                 "CiAuthError is not yet implemented in"
-                " baton_harness.chain.merge — this test must FAIL until"
+                " codereeve.chain.merge — this test must FAIL until"
                 " the implementation adds it."
             )
 
 
 try:
-    from baton_harness.chain.merge import (
+    from codereeve.chain.merge import (
         _query_action_jobs,  # type: ignore[attr-defined]
     )
 except ImportError:
@@ -147,7 +147,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Deferred imports for #353's CiDiagnostic surface.
 #
-# None of these exist in baton_harness.chain.merge yet (they are what T1
+# None of these exist in codereeve.chain.merge yet (they are what T1
 # adds). Following the same collection-survives-import-failure convention
 # used above for CiAuthError / _query_action_jobs: a placeholder keeps the
 # whole module importable so unrelated tests in this file are unaffected,
@@ -157,21 +157,21 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 try:
-    from baton_harness.chain.merge import (
+    from codereeve.chain.merge import (
         _DIAG_NAME_CAP,  # type: ignore[attr-defined]
     )
 except ImportError:
     _DIAG_NAME_CAP = None  # type: ignore[assignment]
 
 try:
-    from baton_harness.chain.merge import (
+    from codereeve.chain.merge import (
         CiDiagnostic,  # type: ignore[attr-defined]
     )
 except ImportError:
     CiDiagnostic = None  # type: ignore[assignment,misc]
 
 try:
-    from baton_harness.chain.merge import (
+    from codereeve.chain.merge import (
         _build_ci_diagnostic,  # type: ignore[attr-defined]
     )
 except ImportError:
@@ -2545,7 +2545,7 @@ class TestDependencyOrderMerge:
         branches = [f"baton/v2-daemon-{n}" for n in issues]
         shas = [f"sha{n}" for n in issues]
 
-        from baton_harness.chain.merge import merge_issue_branches
+        from codereeve.chain.merge import merge_issue_branches
 
         with patch.object(
             merge_mod,
@@ -2571,7 +2571,7 @@ class TestDependencyOrderMerge:
 
     def test_stops_on_red_ci_for_one_issue_in_list(self) -> None:
         """Stops processing the list if one issue has RED CI."""
-        from baton_harness.chain.merge import merge_issue_branches
+        from codereeve.chain.merge import merge_issue_branches
 
         call_num = 0
 
@@ -2976,7 +2976,7 @@ class TestProvenancePersistenceFailureSurfaced:
         warning_records = [
             r
             for r in records
-            if r.levelno >= logging.WARNING and "baton_harness" in r.name
+            if r.levelno >= logging.WARNING and "codereeve" in r.name
         ]
         assert warning_records, (
             "A WARNING must be logged when provenance write fails"
@@ -2988,7 +2988,7 @@ class TestProvenancePersistenceFailureSurfaced:
 
         Returns:
             A context manager yielding a list of ``LogRecord`` instances
-            emitted by the ``baton_harness`` logger during the block.
+            emitted by the ``codereeve`` logger during the block.
         """
         from collections.abc import Generator
         from contextlib import contextmanager
@@ -3002,7 +3002,7 @@ class TestProvenancePersistenceFailureSurfaced:
                     records.append(record)
 
             collector = _Collector()
-            root = logging.getLogger("baton_harness")
+            root = logging.getLogger("codereeve")
             root.addHandler(collector)
             old_level = root.level
             root.setLevel(logging.DEBUG)
@@ -3145,7 +3145,7 @@ class TestMergeIssueBranchThreadsInstallationToken:
         with patch.object(
             merge_mod, "_query_action_jobs", side_effect=_fake_query
         ):
-            from baton_harness.chain.merge import evaluate_ci
+            from codereeve.chain.merge import evaluate_ci
 
             evaluate_ci(
                 _OWNER,

@@ -5,7 +5,7 @@ into the daemon's ambient ``os.environ``.
 
 Background: issue #222 stopped writing the BWS-vault-fetched executor
 PAT into ``os.environ["GH_TOKEN"]`` inside ``bootstrap_secrets()``
-(``src/baton_harness/chain/cli.py``), holding it only in the
+(``src/codereeve/chain/cli.py``), holding it only in the
 module-global ``_BOOTSTRAPPED_GH_TOKEN``. This broke
 ``before_run.py``'s ``validate_github_token()`` gate, which reads
 ``GH_TOKEN``/``GITHUB_TOKEN`` straight from ``os.environ`` with no
@@ -42,7 +42,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from baton_harness.chain.identity import Identity, env_for
+from codereeve.chain.identity import Identity, env_for
 
 # ---------------------------------------------------------------------------
 # Type aliases — matches bws_client.RunFn (see test_cli_bootstrap_vault.py)
@@ -166,15 +166,15 @@ class TestBootstrapNeverWritesTokenToAmbientEnviron:
         """
         provider = _provider_mock()
 
-        import baton_harness.chain.cli as cli_mod
+        import codereeve.chain.cli as cli_mod
 
         with (
             patch(
-                "baton_harness.chain.bws_client.fetch_secret",
+                "codereeve.chain.bws_client.fetch_secret",
                 side_effect=_fetch_secret_stub,
             ),
             patch(
-                "baton_harness.chain.cli.build_installation_token_provider",
+                "codereeve.chain.cli.build_installation_token_provider",
                 return_value=provider,
             ),
             # bootstrap_secrets() sets the module-global

@@ -1,7 +1,7 @@
 """Tests for a ``required_checks`` WORKFLOW.md field — issue #225.
 
 The CI merge gate's required-check set is hardcoded today
-(``baton_harness.chain.merge.REQUIRED_CHECKS``) to the harness's OWN CI
+(``codereeve.chain.merge.REQUIRED_CHECKS``) to the harness's OWN CI
 job names.  Issue #225 adds an operator-facing override: a
 ``required_checks`` entry in ``config/WORKFLOW.md`` that, when set,
 supplies the merge gate's required-check list instead of the hardcoded
@@ -46,7 +46,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from baton_harness.vendor.symphony.config import (
+from codereeve.vendor.symphony.config import (
     WorkflowConfig,
     load_workflow,
 )

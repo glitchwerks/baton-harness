@@ -37,8 +37,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from baton_harness.chain import app_auth, cli
-from baton_harness.chain.bws_client import BwsClientError
+from codereeve.chain import app_auth, cli
+from codereeve.chain.bws_client import BwsClientError
 from tests.test_app_auth import _generate_rsa_keypair
 from tests.test_app_auth import file_key as file_key
 
@@ -121,7 +121,7 @@ def test_file_only_bootstrap_never_calls_bws(
     file_key: tuple[Path, str, bytes],
 ) -> None:
     """File-only daemon startup succeeds without touching the vault."""
-    with patch("baton_harness.chain.bws_client.fetch_secret") as fetch:
+    with patch("codereeve.chain.bws_client.fetch_secret") as fetch:
         provider = cli.bootstrap_secrets()
     assert isinstance(provider, app_auth.InstallationTokenProvider)
     assert provider.private_key_pem == file_key[1]
@@ -137,7 +137,7 @@ def test_file_provider_with_optional_pat_fetches_only_pat_and_key_from_file(
     monkeypatch.setenv("BWS_ACCESS_TOKEN", _ACCESS_TOKEN)
     monkeypatch.setenv("BWS_GH_TOKEN_SECRET_ID", _GH_TOKEN_SECRET_ID)
     with patch(
-        "baton_harness.chain.bws_client.fetch_secret",
+        "codereeve.chain.bws_client.fetch_secret",
         return_value=_FAKE_GH_TOKEN,
     ) as fetch:
         provider = cli.bootstrap_secrets()
@@ -162,7 +162,7 @@ def test_file_provider_with_optional_heartbeat_fetches_only_heartbeat_and_key_fr
         "BWS_HEARTBEAT_PING_URL_SECRET_ID", _HEARTBEAT_SECRET_ID
     )
     with patch(
-        "baton_harness.chain.bws_client.fetch_secret",
+        "codereeve.chain.bws_client.fetch_secret",
         return_value=_FAKE_HEARTBEAT_URL,
     ) as fetch:
         provider = cli.bootstrap_secrets()
@@ -189,9 +189,9 @@ def test_file_provider_with_optional_bws_secret_requires_access_token(
     """Missing optional-consumer credentials fail before any secret read."""
     monkeypatch.setenv(locator, _GH_TOKEN_SECRET_ID)
     with (
-        patch("baton_harness.chain.bws_client.fetch_secret") as fetch,
+        patch("codereeve.chain.bws_client.fetch_secret") as fetch,
         patch(
-            "baton_harness.chain.cli.build_installation_token_provider"
+            "codereeve.chain.cli.build_installation_token_provider"
         ) as build,
     ):
         with pytest.raises(app_auth.AppAuthError, match="BWS_ACCESS_TOKEN"):
@@ -220,7 +220,7 @@ def test_bootstrap_scrubs_bws_access_token_for_every_failure_stage(
         fetch.side_effect = BwsClientError("key fetch failed")
     else:
         fetch.return_value = "malformed-pem"
-    with patch("baton_harness.chain.bws_client.fetch_secret", fetch):
+    with patch("codereeve.chain.bws_client.fetch_secret", fetch):
         expected_error = (
             BwsClientError
             if stage == "optional_fetch"
@@ -240,7 +240,7 @@ def test_bootstrap_never_writes_installation_token_to_environment(
     """The minted provider credential remains outside ambient process state."""
     sentinel = "ghs_INSTALLATION_SENTINEL_359"
     with patch(
-        "baton_harness.chain.app_auth._github_http_post",
+        "codereeve.chain.app_auth._github_http_post",
         return_value={"token": sentinel, "expires_at": "2099-01-01T00:00:00Z"},
     ):
         provider = cli.bootstrap_secrets()
@@ -316,15 +316,15 @@ class TestGhTokenVaultFetch:
 
         with (
             patch(
-                "baton_harness.chain.bws_client.fetch_secret",
+                "codereeve.chain.bws_client.fetch_secret",
                 side_effect=stub,
             ),
             patch(
-                "baton_harness.chain.cli.build_installation_token_provider",
+                "codereeve.chain.cli.build_installation_token_provider",
                 return_value=provider,
             ),
         ):
-            import baton_harness.chain.cli as cli_mod
+            import codereeve.chain.cli as cli_mod
 
             cli_mod.bootstrap_secrets()
 
@@ -372,15 +372,15 @@ class TestGhTokenVaultFetch:
 
         with (
             patch(
-                "baton_harness.chain.bws_client.fetch_secret",
+                "codereeve.chain.bws_client.fetch_secret",
                 side_effect=recording_stub,
             ),
             patch(
-                "baton_harness.chain.cli.build_installation_token_provider",
+                "codereeve.chain.cli.build_installation_token_provider",
                 return_value=provider,
             ),
         ):
-            from baton_harness.chain.cli import bootstrap_secrets
+            from codereeve.chain.cli import bootstrap_secrets
 
             bootstrap_secrets()
 
@@ -423,15 +423,15 @@ class TestHeartbeatUrlVaultFetch:
 
         with (
             patch(
-                "baton_harness.chain.bws_client.fetch_secret",
+                "codereeve.chain.bws_client.fetch_secret",
                 side_effect=stub,
             ),
             patch(
-                "baton_harness.chain.cli.build_installation_token_provider",
+                "codereeve.chain.cli.build_installation_token_provider",
                 return_value=provider,
             ),
         ):
-            from baton_harness.chain.cli import bootstrap_secrets
+            from codereeve.chain.cli import bootstrap_secrets
 
             bootstrap_secrets()
 
@@ -483,15 +483,15 @@ class TestExistingEnvPreservation:
 
         with (
             patch(
-                "baton_harness.chain.bws_client.fetch_secret",
+                "codereeve.chain.bws_client.fetch_secret",
                 side_effect=recording_stub,
             ),
             patch(
-                "baton_harness.chain.cli.build_installation_token_provider",
+                "codereeve.chain.cli.build_installation_token_provider",
                 return_value=provider,
             ),
         ):
-            from baton_harness.chain.cli import bootstrap_secrets
+            from codereeve.chain.cli import bootstrap_secrets
 
             bootstrap_secrets()
 
@@ -539,15 +539,15 @@ class TestExistingEnvPreservation:
 
         with (
             patch(
-                "baton_harness.chain.bws_client.fetch_secret",
+                "codereeve.chain.bws_client.fetch_secret",
                 side_effect=recording_stub,
             ),
             patch(
-                "baton_harness.chain.cli.build_installation_token_provider",
+                "codereeve.chain.cli.build_installation_token_provider",
                 return_value=provider,
             ),
         ):
-            from baton_harness.chain.cli import bootstrap_secrets
+            from codereeve.chain.cli import bootstrap_secrets
 
             bootstrap_secrets()
 
@@ -584,15 +584,15 @@ class TestBackwardCompatNoSecretId:
 
         with (
             patch(
-                "baton_harness.chain.bws_client.fetch_secret",
+                "codereeve.chain.bws_client.fetch_secret",
                 side_effect=stub,
             ),
             patch(
-                "baton_harness.chain.cli.build_installation_token_provider",
+                "codereeve.chain.cli.build_installation_token_provider",
                 return_value=provider,
             ),
         ):
-            from baton_harness.chain.cli import bootstrap_secrets
+            from codereeve.chain.cli import bootstrap_secrets
 
             # Must not raise
             bootstrap_secrets()
@@ -618,15 +618,15 @@ class TestBackwardCompatNoSecretId:
 
         with (
             patch(
-                "baton_harness.chain.bws_client.fetch_secret",
+                "codereeve.chain.bws_client.fetch_secret",
                 side_effect=stub,
             ),
             patch(
-                "baton_harness.chain.cli.build_installation_token_provider",
+                "codereeve.chain.cli.build_installation_token_provider",
                 return_value=provider,
             ),
         ):
-            from baton_harness.chain.cli import bootstrap_secrets
+            from codereeve.chain.cli import bootstrap_secrets
 
             bootstrap_secrets()
 
@@ -673,15 +673,15 @@ class TestVaultErrorFailClosed:
 
         with (
             patch(
-                "baton_harness.chain.bws_client.fetch_secret",
+                "codereeve.chain.bws_client.fetch_secret",
                 side_effect=failing_stub,
             ),
             patch(
-                "baton_harness.chain.cli.build_installation_token_provider",
+                "codereeve.chain.cli.build_installation_token_provider",
                 return_value=provider,
             ),
         ):
-            from baton_harness.chain.cli import bootstrap_secrets
+            from codereeve.chain.cli import bootstrap_secrets
 
             with pytest.raises(BwsClientError, match="simulated vault outage"):
                 bootstrap_secrets()
@@ -717,15 +717,15 @@ class TestVaultErrorFailClosed:
 
         with (
             patch(
-                "baton_harness.chain.bws_client.fetch_secret",
+                "codereeve.chain.bws_client.fetch_secret",
                 side_effect=failing_stub,
             ),
             patch(
-                "baton_harness.chain.cli.build_installation_token_provider",
+                "codereeve.chain.cli.build_installation_token_provider",
                 return_value=provider,
             ),
         ):
-            from baton_harness.chain.cli import bootstrap_secrets
+            from codereeve.chain.cli import bootstrap_secrets
 
             with pytest.raises(BwsClientError, match="simulated vault outage"):
                 bootstrap_secrets()
@@ -793,7 +793,7 @@ class TestVaultFetchOrdering:
             return provider
 
         # Patch the name as bound in cli's namespace, not in app_auth.
-        # cli.py does `from baton_harness.chain.app_auth import
+        # cli.py does `from codereeve.chain.app_auth import
         # build_installation_token_provider`, so patching the app_auth
         # module's attribute only intercepts the call when cli is first
         # imported (Python caches the binding at import time).  Patching
@@ -801,15 +801,15 @@ class TestVaultFetchOrdering:
         # works whether cli is already imported or not.
         with (
             patch(
-                "baton_harness.chain.bws_client.fetch_secret",
+                "codereeve.chain.bws_client.fetch_secret",
                 side_effect=recording_stub,
             ),
             patch(
-                "baton_harness.chain.cli.build_installation_token_provider",
+                "codereeve.chain.cli.build_installation_token_provider",
                 side_effect=sentinel_provider_builder,
             ),
         ):
-            from baton_harness.chain.cli import bootstrap_secrets
+            from codereeve.chain.cli import bootstrap_secrets
 
             bootstrap_secrets()
 
@@ -879,15 +879,15 @@ class TestNoSecretLeakInRepr:
 
         with (
             patch(
-                "baton_harness.chain.bws_client.fetch_secret",
+                "codereeve.chain.bws_client.fetch_secret",
                 side_effect=stub,
             ),
             patch(
-                "baton_harness.chain.cli.build_installation_token_provider",
+                "codereeve.chain.cli.build_installation_token_provider",
                 return_value=provider,
             ),
         ):
-            from baton_harness.chain.cli import bootstrap_secrets
+            from codereeve.chain.cli import bootstrap_secrets
 
             result = bootstrap_secrets()
 
@@ -955,21 +955,21 @@ class TestGhTokenEmptyButPresentGuard:
 
         with (
             patch(
-                "baton_harness.chain.bws_client.fetch_secret",
+                "codereeve.chain.bws_client.fetch_secret",
                 side_effect=stub,
             ),
             # Patched on cli's own bound name (not app_auth's) so this
             # test is robust regardless of whether an earlier test in
-            # this module already imported baton_harness.chain.cli and
+            # this module already imported codereeve.chain.cli and
             # cached the `from ... import build_installation_token_
             # provider` binding — see the V6 ordering test's comment for
             # why patching app_auth alone is import-order-fragile.
             patch(
-                "baton_harness.chain.cli.build_installation_token_provider",
+                "codereeve.chain.cli.build_installation_token_provider",
                 return_value=provider,
             ),
         ):
-            import baton_harness.chain.cli as cli_mod
+            import codereeve.chain.cli as cli_mod
 
             cli_mod.bootstrap_secrets()
 
@@ -1004,7 +1004,7 @@ class TestValidateGhTokenBootTimeGuard:
     stable *public* contract: a standalone helper,
     ``validate_gh_token(token: str, secret_id_configured: bool) -> None``,
     mirroring the shape/naming of the sibling
-    ``baton_harness._auth.validate_daemon_token(token: str) -> None``
+    ``codereeve._auth.validate_daemon_token(token: str) -> None``
     pattern already established in ``cli.py``'s startup path (called
     right after ``bootstrap_secrets()`` at ~cli.py:365). Raises when a
     vault secret ID WAS configured but the resolved token is
@@ -1013,11 +1013,11 @@ class TestValidateGhTokenBootTimeGuard:
     empty ``GH_TOKEN`` is out of scope for this specific guard).
 
     This test imports ``validate_gh_token`` from
-    ``baton_harness.chain.cli`` — the module that owns GH_TOKEN
+    ``codereeve.chain.cli`` — the module that owns GH_TOKEN
     resolution today (``bootstrap_secrets``) and the daemon startup
     sequence that already calls the sibling ``validate_daemon_token``.
     If the implementer instead places the helper in
-    ``baton_harness._auth`` (alongside ``validate_daemon_token`` and
+    ``codereeve._auth`` (alongside ``validate_daemon_token`` and
     ``TokenValidationError``), only the import path here needs to move;
     the asserted contract (signature + raise/no-raise behavior) is
     unchanged. Flagged for router reconciliation if the implementer
@@ -1035,7 +1035,7 @@ class TestValidateGhTokenBootTimeGuard:
         ``AttributeError`` collection-time failure until the helper is
         added, which is itself valid evidence of the missing behavior.
         """
-        from baton_harness.chain.cli import validate_gh_token
+        from codereeve.chain.cli import validate_gh_token
 
         with pytest.raises(Exception, match="GH_TOKEN"):
             validate_gh_token("", secret_id_configured=True)
@@ -1047,7 +1047,7 @@ class TestValidateGhTokenBootTimeGuard:
 
         MUST FAIL today: ``validate_gh_token`` does not exist yet.
         """
-        from baton_harness.chain.cli import validate_gh_token
+        from codereeve.chain.cli import validate_gh_token
 
         with pytest.raises(Exception, match="GH_TOKEN"):
             validate_gh_token("   ", secret_id_configured=True)
@@ -1062,7 +1062,7 @@ class TestValidateGhTokenBootTimeGuard:
         MUST FAIL today: ``validate_gh_token`` does not exist yet, so
         the import itself raises.
         """
-        from baton_harness.chain.cli import validate_gh_token
+        from codereeve.chain.cli import validate_gh_token
 
         validate_gh_token("", secret_id_configured=False)
 
@@ -1072,7 +1072,7 @@ class TestValidateGhTokenBootTimeGuard:
         MUST FAIL today: ``validate_gh_token`` does not exist yet, so
         the import itself raises.
         """
-        from baton_harness.chain.cli import validate_gh_token
+        from codereeve.chain.cli import validate_gh_token
 
         validate_gh_token(
             "github_pat_TESTVAL_ABCDEFGHIJKLMNOP",

@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from baton_harness.provenance import (
+from codereeve.provenance import (
     ProvenanceError,
     load_provenance,
     validate_provenance,
@@ -77,7 +77,7 @@ def _provenance_file(text: str = "") -> MagicMock:
     """Return one inventory path for the generated provenance resource."""
     resource = MagicMock()
     resource.configure_mock(
-        **{"__str__.return_value": "baton_harness/build_provenance.json"}
+        **{"__str__.return_value": "codereeve/build_provenance.json"}
     )
     resource.read_text.return_value = text
     return resource
@@ -87,15 +87,16 @@ def test_load_provenance_rejects_invalid_json() -> None:
     """Report malformed packaged JSON without leaking decoder details."""
     with (
         patch(
-            "baton_harness.provenance.metadata.distribution",
+            "codereeve.provenance.metadata.distribution",
             return_value=_distribution(files=[_provenance_file("{")]),
-        ),
+        ) as distribution_lookup,
         pytest.raises(
             ProvenanceError,
             match="runtime provenance is unavailable",
         ),
     ):
         load_provenance()
+    distribution_lookup.assert_called_once_with("codereeve")
 
 
 @pytest.mark.parametrize(
@@ -109,7 +110,7 @@ def test_load_provenance_rejects_invalid_file_inventory(
     """Reject absent, missing, and ambiguous provenance inventory entries."""
     with (
         patch(
-            "baton_harness.provenance.metadata.distribution",
+            "codereeve.provenance.metadata.distribution",
             return_value=_distribution(files=files),
         ),
         pytest.raises(
@@ -127,7 +128,7 @@ def test_load_provenance_rejects_unreadable_inventory_file() -> None:
 
     with (
         patch(
-            "baton_harness.provenance.metadata.distribution",
+            "codereeve.provenance.metadata.distribution",
             return_value=_distribution(files=[resource]),
         ),
         pytest.raises(
@@ -142,5 +143,5 @@ def test_load_provenance_reads_the_real_editable_distribution() -> None:
     """Load the generated provenance retained by this editable installation."""
     record = load_provenance()
 
-    assert record.package_version == "0.1.0.dev0"
+    assert record.package_version == "0.2.0.dev0"
     assert record.development is True

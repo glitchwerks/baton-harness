@@ -20,8 +20,8 @@ from pathlib import Path
 
 import pytest
 
-from baton_harness.hooks import force_pr_not_merge
-from baton_harness.hooks.force_pr_not_merge import main as hook_main
+from codereeve.hooks import force_pr_not_merge
+from codereeve.hooks.force_pr_not_merge import main as hook_main
 
 
 @pytest.fixture

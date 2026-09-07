@@ -1,4 +1,4 @@
-"""Unit tests for baton_harness.after_run.
+"""Unit tests for codereeve.after_run.
 
 Tests cover:
 
@@ -21,8 +21,8 @@ from unittest.mock import patch
 
 import pytest
 
-from baton_harness import after_run
-from baton_harness.after_run import RunOutcome, _classify, _reconcile_labels
+from codereeve import after_run
+from codereeve.after_run import RunOutcome, _classify, _reconcile_labels
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -87,14 +87,14 @@ class TestClassifyUncommittedChanges:
 
     def test_uncommitted_changes_detected(self) -> None:
         """Non-empty porcelain output → UNCOMMITTED_CHANGES."""
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.return_value = _completed(stdout=" M src/foo.py\n")
             result = _classify()
         assert result == RunOutcome.UNCOMMITTED_CHANGES
 
     def test_uncommitted_changes_calls_git_status(self) -> None:
         """Confirm _classify checks git status --porcelain first."""
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.return_value = _completed(stdout=" M file.py\n")
             _classify()
         first_call_args = mock_run.call_args_list[0][0][0]
@@ -106,7 +106,7 @@ class TestClassifyNoCommits:
 
     def test_no_commits_when_cherry_empty(self) -> None:
         """Empty git cherry output → NO_COMMITS."""
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 _completed(stdout=""),  # git status — clean
                 _completed(stdout="abc123\n"),  # git rev-parse — base SHA
@@ -117,7 +117,7 @@ class TestClassifyNoCommits:
 
     def test_no_commits_when_cherry_has_no_plus_lines(self) -> None:
         """Cherry output with only minus lines → NO_COMMITS."""
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 _completed(stdout=""),  # git status — clean
                 _completed(stdout="abc123\n"),  # git rev-parse — base SHA
@@ -132,7 +132,7 @@ class TestClassifyCommittedNoPr:
 
     def test_committed_no_pr_when_gh_returns_empty_array(self) -> None:
         """Commits ahead of main + empty gh pr list array → COMMITTED_NO_PR."""
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 _completed(stdout=""),  # git status — clean
                 _completed(stdout="abc123\n"),  # git rev-parse — base SHA
@@ -145,7 +145,7 @@ class TestClassifyCommittedNoPr:
 
     def test_gh_json_parsed_with_json_loads(self) -> None:
         """PR list JSON is parsed via json.loads, not grepped."""
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             # JSON array with 'number' field — valid json.loads input
             pr_json = json.dumps([{"number": 7}])
             mock_run.side_effect = [
@@ -165,7 +165,7 @@ class TestClassifyPrOpened:
 
     def test_pr_opened_when_gh_returns_nonempty_array(self) -> None:
         """Non-empty gh pr list array → PR_OPENED."""
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             pr_json = json.dumps([{"number": 42}])
             mock_run.side_effect = [
                 _completed(stdout=""),  # git status — clean
@@ -179,7 +179,7 @@ class TestClassifyPrOpened:
 
     def test_pr_opened_uses_head_branch_from_git(self) -> None:
         """_classify passes the current branch name to gh pr list --head."""
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             pr_json = json.dumps([{"number": 5}])
             mock_run.side_effect = [
                 _completed(stdout=""),
@@ -212,7 +212,7 @@ class TestReconcilePrOpened:
 
     def test_adds_agent_done_label(self) -> None:
         """_reconcile_labels adds agent-done when outcome is PR_OPENED."""
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 _completed(stdout=_LABEL_AGENT_READY),  # gh issue view
                 _completed(),  # add agent-done
@@ -230,7 +230,7 @@ class TestReconcilePrOpened:
 
     def test_removes_agent_ready_label(self) -> None:
         """_reconcile_labels removes agent-ready when outcome is PR_OPENED."""
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 _completed(stdout=_LABEL_AGENT_READY),
                 _completed(),  # add agent-done
@@ -250,7 +250,7 @@ class TestReconcilePrOpened:
 
     def test_label_edit_failure_propagates_non_zero(self) -> None:
         """A gh label-edit failure returns non-zero (not swallowed)."""
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 _completed(stdout=_LABEL_AGENT_READY),
                 _completed(returncode=1),  # add agent-done fails
@@ -264,7 +264,7 @@ class TestReconcileBlocked:
 
     def test_removes_agent_ready_when_blocked(self) -> None:
         """_reconcile_labels removes agent-ready when blocked label present."""
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 _completed(stdout=_LABEL_BLOCKED),  # issue has both labels
                 _completed(),  # remove agent-ready
@@ -284,7 +284,7 @@ class TestReconcileBlocked:
 
     def test_blocked_label_edit_failure_propagates(self) -> None:
         """A gh remove-label failure on the block path returns non-zero."""
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 _completed(stdout=_LABEL_BLOCKED),
                 _completed(returncode=1),  # remove agent-ready fails
@@ -294,7 +294,7 @@ class TestReconcileBlocked:
 
     def test_blocked_takes_precedence_over_outcome(self) -> None:
         """The blocked label wins regardless of the F5 classification."""
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 _completed(stdout=_LABEL_BLOCKED),
                 _completed(),
@@ -333,7 +333,7 @@ class TestReconcileBlockedSingleStateInvariant:
         Single-state invariant: after reconciliation only ``blocked``
         remains.  ``agent-done`` must never be added on the block path.
         """
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 _completed(stdout=_LABEL_BLOCKED),  # issue has both labels
                 _completed(),  # --remove-label agent-ready
@@ -369,7 +369,7 @@ class TestReconcileBlockedSingleStateInvariant:
         the harness must not attempt a redundant label edit.
         """
         blocked_only = json.dumps({"labels": [{"name": "blocked"}]})
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 _completed(
                     stdout=blocked_only
@@ -389,7 +389,7 @@ class TestReconcileBlockedSingleStateInvariant:
         ``|| true`` silencing).  A non-zero returncode from the remove
         call must propagate to the caller.
         """
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 _completed(stdout=_LABEL_BLOCKED),  # both labels present
                 _completed(returncode=1),  # --remove-label fails
@@ -404,7 +404,7 @@ class TestReconcileBlockedSingleStateInvariant:
         ``blocked`` must override the outcome: ``agent-ready`` is removed,
         ``agent-done`` is NOT added, and the function returns ``0``.
         """
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 _completed(stdout=_LABEL_BLOCKED),  # both labels present
                 _completed(),  # --remove-label agent-ready
@@ -469,7 +469,7 @@ class TestReconcilePrOpenedLoopResilience:
                 else ""
             )
 
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 _completed(
                     stdout=json.dumps({"labels": [{"name": "agent-ready"}]})
@@ -519,7 +519,7 @@ class TestReconcilePrOpenedLoopResilience:
                 return _completed(returncode=1, stdout="")
             return _completed()
 
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = _side_effect
             exit_code = _reconcile_labels(42, RunOutcome.PR_OPENED)
 
@@ -535,7 +535,7 @@ class TestReconcilePrOpenedLoopResilience:
 
         Confirms the reordered implementation still completes successfully.
         """
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 _completed(
                     stdout=json.dumps({"labels": [{"name": "agent-ready"}]})
@@ -565,7 +565,7 @@ class TestReconcileRetryable:
 
     def test_no_commits_removes_agent_ready_sets_blocked(self) -> None:
         """NO_COMMITS: removes agent-ready and adds blocked."""
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 _completed(stdout=_LABEL_AGENT_READY),  # gh issue view
                 _completed(),  # remove agent-ready
@@ -583,7 +583,7 @@ class TestReconcileRetryable:
         self,
     ) -> None:
         """UNCOMMITTED_CHANGES: removes agent-ready and adds blocked."""
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 _completed(stdout=_LABEL_AGENT_READY),
                 _completed(),  # remove agent-ready
@@ -599,7 +599,7 @@ class TestReconcileRetryable:
 
     def test_committed_no_pr_removes_agent_ready_sets_blocked(self) -> None:
         """COMMITTED_NO_PR: removes agent-ready and adds blocked."""
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 _completed(stdout=_LABEL_AGENT_READY),
                 _completed(),  # remove agent-ready
@@ -640,7 +640,7 @@ class TestMain:
         monkeypatch.chdir(worktree)
         monkeypatch.delenv("CHAIN_BASE_BRANCH", raising=False)
         pr_json = json.dumps([{"number": 99}])
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 _completed(stdout=""),  # git status — clean
                 _completed(stdout="abc123\n"),  # git rev-parse — base SHA
@@ -665,7 +665,7 @@ class TestMain:
         monkeypatch.chdir(worktree)
         monkeypatch.delenv("CHAIN_BASE_BRANCH", raising=False)
         pr_json = json.dumps([{"number": 12}])
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 _completed(stdout=""),  # git status — clean
                 _completed(stdout="abc123\n"),  # git rev-parse — base SHA
@@ -693,46 +693,46 @@ class TestLabelConstantsRedirect:
 
     After the import redirect (issue #76), after_run removes its own
     constant definitions and imports them from
-    ``baton_harness.chain.labels``.  The three names must still be
+    ``codereeve.chain.labels``.  The three names must still be
     accessible on the ``after_run`` module, and they must resolve to the
-    same objects as those in ``baton_harness.chain.labels`` (not a copy).
+    same objects as those in ``codereeve.chain.labels`` (not a copy).
     """
 
     def test_after_run_label_agent_ready_is_chain_labels_object(
         self,
     ) -> None:
-        """after_run.LABEL_AGENT_READY is baton_harness.chain.labels object.
+        """after_run.LABEL_AGENT_READY is codereeve.chain.labels object.
 
         Importing the same name from both modules must yield the same
         interned string object, confirming the redirect is live and not a
         duplicated constant.
         """
-        import baton_harness.chain.labels as labels_mod
+        import codereeve.chain.labels as labels_mod
 
         assert after_run.LABEL_AGENT_READY is labels_mod.LABEL_AGENT_READY, (
             "after_run.LABEL_AGENT_READY must resolve to the same object as "
-            "baton_harness.chain.labels.LABEL_AGENT_READY (import redirect "
+            "codereeve.chain.labels.LABEL_AGENT_READY (import redirect "
             "not in place or value diverged)"
         )
 
     def test_after_run_label_agent_done_is_chain_labels_object(
         self,
     ) -> None:
-        """after_run.LABEL_AGENT_DONE is baton_harness.chain.labels object."""
-        import baton_harness.chain.labels as labels_mod
+        """after_run.LABEL_AGENT_DONE is codereeve.chain.labels object."""
+        import codereeve.chain.labels as labels_mod
 
         assert after_run.LABEL_AGENT_DONE is labels_mod.LABEL_AGENT_DONE, (
             "after_run.LABEL_AGENT_DONE must resolve to the same object as "
-            "baton_harness.chain.labels.LABEL_AGENT_DONE"
+            "codereeve.chain.labels.LABEL_AGENT_DONE"
         )
 
     def test_after_run_label_blocked_is_chain_labels_object(self) -> None:
-        """after_run.LABEL_BLOCKED is baton_harness.chain.labels object."""
-        import baton_harness.chain.labels as labels_mod
+        """after_run.LABEL_BLOCKED is codereeve.chain.labels object."""
+        import codereeve.chain.labels as labels_mod
 
         assert after_run.LABEL_BLOCKED is labels_mod.LABEL_BLOCKED, (
             "after_run.LABEL_BLOCKED must resolve to the same object as "
-            "baton_harness.chain.labels.LABEL_BLOCKED"
+            "codereeve.chain.labels.LABEL_BLOCKED"
         )
 
 
@@ -776,7 +776,7 @@ class TestReconcilePrOpenedIdempotency:
         StopIteration; the test asserts the call pattern, not the mock
         exhaustion behaviour.
         """
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 _completed(stdout=_LABEL_TORN),  # gh issue view
                 _completed(),  # unconditional remove (current code) OR add
@@ -824,7 +824,7 @@ class TestReconcilePrOpenedIdempotency:
         attempt to remove the absent agent-ready label, and must return ``0``
         (full idempotency — converges to the same single state).
         """
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             # Only side-effects that may legitimately fire:
             # 1. gh issue view (label fetch)
             # 2. Optionally: add agent-done (tolerated if gh is idempotent)
@@ -896,7 +896,7 @@ class TestReconcileCrashRecoveryScenarioF:
         function aborts before adding agent-done, so run2_exit != 0 and
         run2_add_fired is False.
         """
-        from baton_harness.chain.labels import (
+        from codereeve.chain.labels import (
             LABEL_AGENT_DONE,
             LABEL_AGENT_READY,
             STATE_LABELS,
@@ -933,7 +933,7 @@ class TestReconcileCrashRecoveryScenarioF:
                 return _completed()
             return _completed()
 
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = _run1_side_effect
             _reconcile_labels(55, RunOutcome.PR_OPENED)
 
@@ -975,7 +975,7 @@ class TestReconcileCrashRecoveryScenarioF:
                 return _completed()
             return _completed()
 
-        with patch("baton_harness.after_run._run") as mock_run2:
+        with patch("codereeve.after_run._run") as mock_run2:
             mock_run2.side_effect = _run2_side_effect
             run2_exit = _reconcile_labels(55, RunOutcome.PR_OPENED)
 
@@ -1053,7 +1053,7 @@ class TestImportContractAlert:
         """``after_run.alert`` must exist after the slice 3b import."""
         assert hasattr(after_run, "alert"), (
             "after_run must expose 'alert' in its module namespace — "
-            "import it as `from baton_harness.chain.escalation import alert` "
+            "import it as `from codereeve.chain.escalation import alert` "
             "(bare name, no 'as' alias)"
         )
 
@@ -1183,7 +1183,7 @@ class TestClassifySentinelAbsent:
 
         pr_json = json.dumps([{"number": 99}])
 
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 _completed(stdout=""),  # git status — clean
                 _completed(stdout="abc123\n"),  # git rev-parse — base SHA

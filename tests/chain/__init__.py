@@ -1,1 +1,1 @@
-"""Tests for the baton_harness.chain package."""
+"""Tests for the codereeve.chain package."""

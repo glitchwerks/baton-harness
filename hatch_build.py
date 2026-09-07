@@ -15,9 +15,9 @@ from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 from hatchling.metadata.plugin.interface import MetadataHookInterface
 from packaging.version import InvalidVersion, Version
 
-DEVELOPMENT_VERSION = "0.1.0.dev0"
+DEVELOPMENT_VERSION = "0.2.0.dev0"
 REVISION_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
-RECORD_PATH = Path("src/baton_harness/build_provenance.json")
+RECORD_PATH = Path("src/codereeve/build_provenance.json")
 RECORD_KEYS = frozenset(
     {
         "schema_version",
@@ -59,6 +59,35 @@ def lock_identity(lock_path: Path) -> str:
     return f"sha256:{sha256(content).hexdigest()}"
 
 
+def _compat_value(
+    env: Mapping[str, str], canonical: str, legacy: str
+) -> str | None:
+    """Resolve one canonical build variable and its temporary alias.
+
+    Args:
+        env: Build environment variables.
+        canonical: Canonical CodeReeve variable name.
+        legacy: Temporary Baton Harness compatibility alias.
+
+    Returns:
+        The canonical value when present, otherwise the legacy value.
+
+    Raises:
+        BuildProvenanceError: If both names provide different values.
+    """
+    canonical_value = env.get(canonical)
+    legacy_value = env.get(legacy)
+    if (
+        canonical_value is not None
+        and legacy_value is not None
+        and canonical_value != legacy_value
+    ):
+        raise BuildProvenanceError(
+            f"conflicting build identity variables: {canonical} and {legacy}"
+        )
+    return canonical_value if canonical_value is not None else legacy_value
+
+
 def resolve_build_provenance(
     root: Path,
     env: Mapping[str, str],
@@ -66,13 +95,27 @@ def resolve_build_provenance(
     read_head: Callable[[Path], str],
 ) -> BuildProvenance:
     """Validate explicit build assertions and return their identity."""
-    development_value = env.get("BH_BUILD_DEVELOPMENT")
+    development_value = _compat_value(
+        env,
+        "CODEREEVE_BUILD_DEVELOPMENT",
+        "BH_BUILD_DEVELOPMENT",
+    )
     if development_value not in (None, "1"):
-        raise BuildProvenanceError("BH_BUILD_DEVELOPMENT must be exactly '1'")
+        raise BuildProvenanceError(
+            "CODEREEVE_BUILD_DEVELOPMENT must be exactly '1'"
+        )
 
     development = development_value == "1"
-    version_assertion = env.get("BH_BUILD_VERSION")
-    revision_assertion = env.get("BH_BUILD_SOURCE_REVISION")
+    version_assertion = _compat_value(
+        env,
+        "CODEREEVE_BUILD_VERSION",
+        "BH_BUILD_VERSION",
+    )
+    revision_assertion = _compat_value(
+        env,
+        "CODEREEVE_BUILD_SOURCE_REVISION",
+        "BH_BUILD_SOURCE_REVISION",
+    )
     if development and (
         version_assertion is not None or revision_assertion is not None
     ):
@@ -86,13 +129,13 @@ def resolve_build_provenance(
     else:
         package_version = _validate_version(version_assertion)
         source_revision = _validate_revision(
-            revision_assertion, "BH_BUILD_SOURCE_REVISION"
+            revision_assertion, "CODEREEVE_BUILD_SOURCE_REVISION"
         )
         if _is_checkout(root):
             actual_head = _validate_revision(read_head(root), "Git HEAD")
             if actual_head != source_revision:
                 raise BuildProvenanceError(
-                    "BH_BUILD_SOURCE_REVISION does not match Git HEAD"
+                    "CODEREEVE_BUILD_SOURCE_REVISION does not match Git HEAD"
                 )
 
     identity = BuildProvenance(
@@ -109,12 +152,12 @@ def resolve_build_provenance(
 def _validate_version(value: str | None) -> str:
     """Require and validate a PEP 440 version assertion."""
     if not value:
-        raise BuildProvenanceError("BH_BUILD_VERSION is required")
+        raise BuildProvenanceError("CODEREEVE_BUILD_VERSION is required")
     try:
         normalized = str(Version(value))
     except InvalidVersion as exc:
         raise BuildProvenanceError(
-            "BH_BUILD_VERSION must be a PEP 440 version"
+            "CODEREEVE_BUILD_VERSION must be a PEP 440 version"
         ) from exc
     return normalized
 
@@ -217,9 +260,9 @@ class CustomBuildHook(BuildHookInterface[Any]):
 
         source = str(self._provenance_path)
         destination = (
-            "src/baton_harness/build_provenance.json"
+            "src/codereeve/build_provenance.json"
             if self.target_name == "sdist"
-            else "baton_harness/build_provenance.json"
+            else "codereeve/build_provenance.json"
         )
         build_data.setdefault("force_include", {})[source] = destination
         if self.target_name == "wheel":

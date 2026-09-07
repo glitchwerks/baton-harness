@@ -107,7 +107,7 @@ from unittest.mock import patch
 
 import pytest
 
-from baton_harness.chain.obs_config import ObsConfig
+from codereeve.chain.obs_config import ObsConfig
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -170,8 +170,8 @@ def test_should_launch_worker_returns_true_on_match(
     Args:
         tmp_path: Pytest tmp_path fixture.
     """
-    import baton_harness.chain.daemon as daemon_mod
-    from baton_harness.chain.ruleset_status import (
+    import codereeve.chain.daemon as daemon_mod
+    from codereeve.chain.ruleset_status import (
         RulesetCheckResult,
         RulesetStatus,
     )
@@ -190,7 +190,7 @@ def test_should_launch_worker_returns_true_on_match(
             return_value=RulesetCheckResult(status=RulesetStatus.MATCH),
         ),
         patch(
-            "baton_harness.chain.daemon.post_slack_alert",
+            "codereeve.chain.daemon.post_slack_alert",
             side_effect=_fake_post,
         ),
     ):
@@ -235,8 +235,8 @@ def test_should_launch_worker_refuses_and_alerts_on_drift(
     Args:
         tmp_path: Pytest tmp_path fixture.
     """
-    import baton_harness.chain.daemon as daemon_mod
-    from baton_harness.chain.ruleset_status import (
+    import codereeve.chain.daemon as daemon_mod
+    from codereeve.chain.ruleset_status import (
         RulesetCheckResult,
         RulesetStatus,
     )
@@ -269,7 +269,7 @@ def test_should_launch_worker_refuses_and_alerts_on_drift(
             side_effect=_fake_check,
         ),
         patch(
-            "baton_harness.chain.daemon.post_slack_alert",
+            "codereeve.chain.daemon.post_slack_alert",
             side_effect=_fake_post,
         ),
     ):
@@ -325,8 +325,8 @@ def test_should_launch_worker_refuses_and_alerts_on_absent(
     Args:
         tmp_path: Pytest tmp_path fixture.
     """
-    import baton_harness.chain.daemon as daemon_mod
-    from baton_harness.chain.ruleset_status import (
+    import codereeve.chain.daemon as daemon_mod
+    from codereeve.chain.ruleset_status import (
         RulesetCheckResult,
         RulesetStatus,
     )
@@ -347,7 +347,7 @@ def test_should_launch_worker_refuses_and_alerts_on_absent(
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.post_slack_alert",
+            "codereeve.chain.daemon.post_slack_alert",
             side_effect=_fake_post,
         ),
     ):
@@ -397,8 +397,8 @@ def test_should_launch_worker_refuses_and_alerts_on_error_fail_closed(
     Args:
         tmp_path: Pytest tmp_path fixture.
     """
-    import baton_harness.chain.daemon as daemon_mod
-    from baton_harness.chain.ruleset_status import (
+    import codereeve.chain.daemon as daemon_mod
+    from codereeve.chain.ruleset_status import (
         RulesetCheckResult,
         RulesetStatus,
     )
@@ -419,7 +419,7 @@ def test_should_launch_worker_refuses_and_alerts_on_error_fail_closed(
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.post_slack_alert",
+            "codereeve.chain.daemon.post_slack_alert",
             side_effect=_fake_post,
         ),
     ):
@@ -479,8 +479,8 @@ def test_should_launch_worker_refuses_and_alerts_on_not_provisioned(
     Args:
         tmp_path: Pytest tmp_path fixture.
     """
-    import baton_harness.chain.daemon as daemon_mod
-    from baton_harness.chain.ruleset_status import (
+    import codereeve.chain.daemon as daemon_mod
+    from codereeve.chain.ruleset_status import (
         RulesetCheckResult,
         RulesetStatus,
     )
@@ -502,7 +502,7 @@ def test_should_launch_worker_refuses_and_alerts_on_not_provisioned(
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.post_slack_alert",
+            "codereeve.chain.daemon.post_slack_alert",
             side_effect=_fake_post,
         ),
     ):
@@ -566,8 +566,8 @@ def test_alert_post_failure_does_not_crash_launch_decision(
     Args:
         tmp_path: Pytest tmp_path fixture.
     """
-    import baton_harness.chain.daemon as daemon_mod
-    from baton_harness.chain.ruleset_status import (
+    import codereeve.chain.daemon as daemon_mod
+    from codereeve.chain.ruleset_status import (
         RulesetCheckResult,
         RulesetStatus,
     )
@@ -583,7 +583,7 @@ def test_alert_post_failure_does_not_crash_launch_decision(
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.post_slack_alert",
+            "codereeve.chain.daemon.post_slack_alert",
             side_effect=RuntimeError("post helper itself raised"),
         ),
     ):
@@ -621,8 +621,8 @@ def test_no_ping_url_configured_skips_post_but_still_refuses(
         tmp_path: Pytest tmp_path fixture.
         caplog: Pytest log-capture fixture.
     """
-    import baton_harness.chain.daemon as daemon_mod
-    from baton_harness.chain.ruleset_status import (
+    import codereeve.chain.daemon as daemon_mod
+    from codereeve.chain.ruleset_status import (
         RulesetCheckResult,
         RulesetStatus,
     )
@@ -643,7 +643,7 @@ def test_no_ping_url_configured_skips_post_but_still_refuses(
             ),
         ),
         patch(
-            "baton_harness.chain.daemon.post_slack_alert",
+            "codereeve.chain.daemon.post_slack_alert",
             side_effect=_fake_post,
         ),
         caplog.at_level(logging.WARNING),
@@ -706,8 +706,8 @@ def test_should_launch_worker_never_calls_ruleset_is_provisioned(
         status: The ``RulesetStatus`` name to drive through
             ``check_ruleset_signals`` for this parametrized run.
     """
-    import baton_harness.chain.daemon as daemon_mod
-    from baton_harness.chain.ruleset_status import (
+    import codereeve.chain.daemon as daemon_mod
+    from codereeve.chain.ruleset_status import (
         RulesetCheckResult,
         RulesetStatus,
     )
@@ -737,7 +737,7 @@ def test_should_launch_worker_never_calls_ruleset_is_provisioned(
             side_effect=_forbidden_ruleset_is_provisioned,
         ) as mock_legacy,
         patch(
-            "baton_harness.chain.daemon.post_slack_alert",
+            "codereeve.chain.daemon.post_slack_alert",
             return_value=True,
         ),
     ):
@@ -812,7 +812,7 @@ def test_daemon_launch_loop_calls_should_launch_worker_before_run_worker(
     """
     from unittest.mock import AsyncMock, MagicMock
 
-    import baton_harness.chain.daemon as daemon_mod
+    import codereeve.chain.daemon as daemon_mod
 
     obs = _make_obs(tmp_path)
 
@@ -901,7 +901,7 @@ def test_daemon_launch_loop_skips_run_worker_when_preflight_refuses(
     """
     from unittest.mock import AsyncMock, MagicMock
 
-    import baton_harness.chain.daemon as daemon_mod
+    import codereeve.chain.daemon as daemon_mod
 
     obs = _make_obs(tmp_path)
 
@@ -983,7 +983,7 @@ def test_build_preflight_runner_injects_gh_token_into_subprocess_env(
     """
     import subprocess as _subprocess
 
-    import baton_harness.chain.daemon as daemon_mod
+    import codereeve.chain.daemon as daemon_mod
 
     captured_env: list[dict[str, str] | None] = []
 
@@ -1010,7 +1010,7 @@ def test_build_preflight_runner_injects_gh_token_into_subprocess_env(
     runner = runner_factory(_TOKEN)
 
     with patch(
-        "baton_harness.chain.daemon.subprocess.run", side_effect=_spy_run
+        "codereeve.chain.daemon.subprocess.run", side_effect=_spy_run
     ):
         runner(["gh", "api", "repos/o/r/rulesets"])
 
@@ -1049,7 +1049,7 @@ def test_launch_one_issue_uses_build_preflight_runner_not_default_runner(
     """
     from unittest.mock import AsyncMock, MagicMock
 
-    import baton_harness.chain.daemon as daemon_mod
+    import codereeve.chain.daemon as daemon_mod
 
     obs = _make_obs(tmp_path)
 
@@ -1136,7 +1136,7 @@ def test_preflight_refusal_restores_agent_ready_label(
        refusal.
 
     This test drives ``_launch_one_issue`` and patches the label-edit
-    primitive (``baton_harness.chain.daemon._label_edit``) to record calls.
+    primitive (``codereeve.chain.daemon._label_edit``) to record calls.
     It then asserts that no net removal of agent-ready occurs: either
     agent-ready is never touched, OR a subsequent add=["agent-ready"] call
     is made before the function returns.
@@ -1158,7 +1158,7 @@ def test_preflight_refusal_restores_agent_ready_label(
     """
     from unittest.mock import AsyncMock, MagicMock
 
-    import baton_harness.chain.daemon as daemon_mod
+    import codereeve.chain.daemon as daemon_mod
 
     obs = _make_obs(tmp_path)
 
@@ -1254,7 +1254,7 @@ def test_preflight_refusal_posts_blocking_comment_with_reason(
       value or an out-param — code-writer's choice of mechanism).
 
     The comment machinery is pinned by patching
-    ``baton_harness.chain.daemon.escalate`` (the existing blocking-comment
+    ``codereeve.chain.daemon.escalate`` (the existing blocking-comment
     primitive used elsewhere in daemon.py) OR any equivalent comment-post
     call the code-writer chooses.  The test asserts at least one call with
     a body containing ``"preflight refused"``.
@@ -1264,9 +1264,9 @@ def test_preflight_refusal_posts_blocking_comment_with_reason(
     object instead of bool, or raises a typed exception), the test accepts
     any comment containing ``"preflight refused"``.
 
-    The daemon imports ``alert`` from ``baton_harness.chain.escalation``
-    (as ``from baton_harness.chain.escalation import alert``).  The test
-    patches ``baton_harness.chain.daemon.alert`` — the name as bound in
+    The daemon imports ``alert`` from ``codereeve.chain.escalation``
+    (as ``from codereeve.chain.escalation import alert``).  The test
+    patches ``codereeve.chain.daemon.alert`` — the name as bound in
     the daemon module's namespace — so any call site in _launch_one_issue
     that uses the locally-bound ``alert(...)`` is captured.
 
@@ -1275,7 +1275,7 @@ def test_preflight_refusal_posts_blocking_comment_with_reason(
     """
     from unittest.mock import AsyncMock, MagicMock
 
-    import baton_harness.chain.daemon as daemon_mod
+    import codereeve.chain.daemon as daemon_mod
 
     obs = _make_obs(tmp_path)
 
@@ -1369,7 +1369,7 @@ def test_build_preflight_runner_passes_positive_timeout_to_subprocess_run(
     """
     import subprocess as _subprocess
 
-    import baton_harness.chain.daemon as daemon_mod
+    import codereeve.chain.daemon as daemon_mod
 
     captured_kwargs: list[dict[str, Any]] = []
 
@@ -1391,7 +1391,7 @@ def test_build_preflight_runner_passes_positive_timeout_to_subprocess_run(
     runner = runner_factory(_TOKEN)
 
     with patch(
-        "baton_harness.chain.daemon.subprocess.run", side_effect=_spy_run
+        "codereeve.chain.daemon.subprocess.run", side_effect=_spy_run
     ):
         runner(["gh", "api", "repos/o/r/rulesets"])
 
@@ -1435,7 +1435,7 @@ def test_should_launch_worker_fails_closed_when_comparator_raises_timeout(
     """
     import subprocess as _subprocess
 
-    import baton_harness.chain.daemon as daemon_mod
+    import codereeve.chain.daemon as daemon_mod
 
     obs = _make_obs(tmp_path)
     post_calls: list[tuple[str, str]] = []
@@ -1452,7 +1452,7 @@ def test_should_launch_worker_fails_closed_when_comparator_raises_timeout(
             daemon_mod, "check_ruleset_signals", side_effect=_raising_check
         ),
         patch(
-            "baton_harness.chain.daemon.post_slack_alert",
+            "codereeve.chain.daemon.post_slack_alert",
             side_effect=_fake_post,
         ),
     ):

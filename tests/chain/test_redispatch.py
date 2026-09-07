@@ -1,4 +1,4 @@
-"""Unit tests for baton_harness.chain.redispatch.
+"""Unit tests for codereeve.chain.redispatch.
 
 Tests the ``exceeds_threshold`` pure helper and the ``RedispatchTally``
 durable persistence class that tracks per-issue re-dispatch counts across
@@ -34,7 +34,7 @@ from unittest.mock import patch
 
 import pytest
 
-from baton_harness.chain.redispatch import (
+from codereeve.chain.redispatch import (
     RedispatchTally,
     exceeds_threshold,
 )

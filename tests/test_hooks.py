@@ -28,7 +28,7 @@ import asyncio
 import os
 from unittest.mock import patch
 
-from baton_harness.vendor.symphony.hooks import run_hook
+from codereeve.vendor.symphony.hooks import run_hook
 
 # ---------------------------------------------------------------------------
 # Helpers

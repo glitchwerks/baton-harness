@@ -1,4 +1,4 @@
-"""Unit tests for baton_harness.chain.gh_deps.
+"""Unit tests for codereeve.chain.gh_deps.
 
 All ``gh api`` subprocess calls are intercepted by monkeypatching the
 module-local ``_run`` helper so no real ``gh`` binary is required.
@@ -34,8 +34,8 @@ from unittest.mock import patch
 
 import pytest
 
-import baton_harness.chain.gh_deps as gh_deps_mod
-from baton_harness.chain.gh_deps import (
+import codereeve.chain.gh_deps as gh_deps_mod
+from codereeve.chain.gh_deps import (
     fetch_blocked_by,
     fetch_blocking,
     fetch_milestone_members,

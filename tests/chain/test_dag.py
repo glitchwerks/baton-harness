@@ -1,4 +1,4 @@
-"""Unit tests for baton_harness.chain.dag.
+"""Unit tests for codereeve.chain.dag.
 
 ``dag.py`` is a pure module (no I/O) that builds an adjacency map from
 ``blocked_by`` edge data scoped to a membership set, and exposes the
@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import pytest
 
-from baton_harness.chain.dag import DagResult, build_dag
+from codereeve.chain.dag import DagResult, build_dag
 
 
 class TestBuildDagGraph:

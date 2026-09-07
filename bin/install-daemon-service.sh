@@ -282,7 +282,7 @@ if [[ ! -x "${_BH_PYTHON}" ]]; then
     echo "baton-harness: error: project Python not found; run bin/setup-env.sh first." >&2
     exit 1
 fi
-if ! _bh_requires_bws="$("${_BH_PYTHON}" -m baton_harness.chain.app_private_key requires-bws)"; then
+if ! _bh_requires_bws="$("${_BH_PYTHON}" -m codereeve.chain.app_private_key requires-bws)"; then
     echo "baton-harness: error: invalid App private-key configuration" >&2
     exit 1
 fi

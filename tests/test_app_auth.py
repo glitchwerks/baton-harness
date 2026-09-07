@@ -1,4 +1,4 @@
-"""Tests for baton_harness.chain.app_auth — GitHub App JWT and token minting.
+"""Tests for codereeve.chain.app_auth — GitHub App JWT and token minting.
 
 Coverage:
 - ``build_app_jwt`` produces an RS256 JWT with correct claims (iss, iat,
@@ -19,8 +19,8 @@ Coverage:
   from ``os.environ`` after startup (env-discipline scrub).
 
 CLI entrypoint coverage (issue #200 — ``main()`` in
-``baton_harness.chain.app_auth``, invoked as
-``python -m baton_harness.chain.app_auth {jwt|token}``):
+``codereeve.chain.app_auth``, invoked as
+``python -m codereeve.chain.app_auth {jwt|token}``):
 
 - ``main(["jwt"])`` mints and prints an App JWT to stdout, exit 0.
 - ``main(["token"])`` mints and prints an installation token to stdout,
@@ -34,8 +34,8 @@ CLI entrypoint coverage (issue #200 — ``main()`` in
   message naming the missing var, without ever calling
   ``bws_client.fetch_secret`` or the network transport.
 - All Bitwarden and GitHub HTTP calls are intercepted via
-  ``baton_harness.chain.bws_client.fetch_secret`` and
-  ``baton_harness.chain.app_auth._github_http_post`` mocks — no live
+  ``codereeve.chain.bws_client.fetch_secret`` and
+  ``codereeve.chain.app_auth._github_http_post`` mocks — no live
   network call is made by this test module.
 
 These CLI tests import ``main`` locally inside each test body (not at
@@ -61,7 +61,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.serialization import load_der_public_key
 
-from baton_harness.chain.app_auth import (
+from codereeve.chain.app_auth import (
     AppAuthError,
     InstallationTokenProvider,
     bootstrap_secrets,
@@ -70,7 +70,7 @@ from baton_harness.chain.app_auth import (
     main,
     mint_installation_token,
 )
-from baton_harness.chain.app_private_key import (
+from codereeve.chain.app_private_key import (
     AppPrivateKeyConfig,
     AppPrivateKeyProvider,
 )
@@ -582,7 +582,7 @@ class TestGithubHttpPost:
 
     def test_retries_retryable_5xx_then_returns_json(self) -> None:
         """A transient 5xx from GitHub must be retried and then succeed."""
-        import baton_harness.chain.app_auth as app_auth
+        import codereeve.chain.app_auth as app_auth
 
         response = MagicMock()
         response.read.return_value = json.dumps(
@@ -611,7 +611,7 @@ class TestGithubHttpPost:
 
     def test_http_401_raises_without_retry(self) -> None:
         """A non-retryable 4xx from GitHub must fail closed immediately."""
-        import baton_harness.chain.app_auth as app_auth
+        import codereeve.chain.app_auth as app_auth
 
         with patch(
             "urllib.request.urlopen",
@@ -636,7 +636,7 @@ class TestGithubHttpPost:
         receive the parsed response dict and urlopen must be called
         exactly twice.
         """
-        import baton_harness.chain.app_auth as app_auth
+        import codereeve.chain.app_auth as app_auth
 
         response = MagicMock()
         response.read.return_value = json.dumps(
@@ -673,7 +673,7 @@ class TestGithubHttpPost:
         must be called exactly ``_HTTP_POST_MAX_ATTEMPTS`` times, and
         the error message must reference the underlying timeout.
         """
-        import baton_harness.chain.app_auth as app_auth
+        import codereeve.chain.app_auth as app_auth
 
         with patch(
             "urllib.request.urlopen",
@@ -793,22 +793,22 @@ class TestBootstrapSecretsEnvDisciplineInvariants:
 
 
 # ---------------------------------------------------------------------------
-# E. CLI entrypoint (issue #200): main() in baton_harness.chain.app_auth
+# E. CLI entrypoint (issue #200): main() in codereeve.chain.app_auth
 #
 # Contract asserted by these tests (authored here — no implementation
 # exists yet):
-#   - ``baton_harness.chain.app_auth.main(argv: list[str]) -> int``
+#   - ``codereeve.chain.app_auth.main(argv: list[str]) -> int``
 #   - ``main(["jwt"])``   -> mints + prints an App JWT to stdout, exit 0.
 #   - ``main(["token"])`` -> mints + prints an installation token to
 #     stdout, exit 0.
 #   - Required env vars: BH_GITHUB_APP_ID, BWS_PEM_SECRET_ID,
 #     BWS_ACCESS_TOKEN (both modes); BH_GITHUB_APP_INSTALLATION_ID
 #     (token mode only — jwt mode does not need an installation id).
-#   - PEM fetch goes through ``baton_harness.chain.bws_client
+#   - PEM fetch goes through ``codereeve.chain.bws_client
 #     .fetch_secret`` (patched at that module attribute, matching the
 #     established pattern in test_cli_bootstrap_vault.py).
 #   - The GitHub HTTP transport for token mode goes through
-#     ``baton_harness.chain.app_auth._github_http_post`` (the existing
+#     ``codereeve.chain.app_auth._github_http_post`` (the existing
 #     internal transport helper already used by
 #     ``build_installation_token_provider``).
 # ---------------------------------------------------------------------------
@@ -866,7 +866,7 @@ def test_build_provider_bws_loads_once_and_proves_jwt_before_return() -> None:
         AppPrivateKeyProvider.BWS, bws_secret_id=_CLI_PEM_SECRET_ID
     )
     with patch(
-        "baton_harness.chain.app_auth._github_http_post",
+        "codereeve.chain.app_auth._github_http_post",
         side_effect=_http_post_ok,
     ) as post:
         provider = build_installation_token_provider(
@@ -908,7 +908,7 @@ def test_build_provider_file_never_calls_bws(
 
 def test_build_provider_rejects_malformed_pem_before_github_call() -> None:
     """Invalid PEM cannot escape bootstrap and reach GitHub."""
-    with patch("baton_harness.chain.app_auth._github_http_post") as post:
+    with patch("codereeve.chain.app_auth._github_http_post") as post:
         with pytest.raises(AppAuthError, match="bws.*RS256"):
             build_installation_token_provider(
                 _APP_ID,
@@ -928,7 +928,7 @@ def test_cli_jwt_file_provider_prints_valid_jwt_without_bws(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """A real file PEM signs a verifiable JWT without BWS credentials."""
-    with patch("baton_harness.chain.bws_client.fetch_secret") as fetch:
+    with patch("codereeve.chain.bws_client.fetch_secret") as fetch:
         assert main(["jwt"]) == 0
     output = capsys.readouterr()
     claims = jwt.decode(
@@ -947,9 +947,9 @@ def test_cli_token_file_provider_mints_without_bws(
 ) -> None:
     """Token mode prints only the minted installation credential."""
     with (
-        patch("baton_harness.chain.bws_client.fetch_secret") as fetch,
+        patch("codereeve.chain.bws_client.fetch_secret") as fetch,
         patch(
-            "baton_harness.chain.app_auth._github_http_post",
+            "codereeve.chain.app_auth._github_http_post",
             side_effect=_http_post_ok,
         ),
     ):
@@ -967,7 +967,7 @@ def test_cli_bws_provider_requires_access_token(
 ) -> None:
     """A valid BWS source requires exactly its bootstrap credential."""
     monkeypatch.delenv("BWS_ACCESS_TOKEN")
-    with patch("baton_harness.chain.bws_client.fetch_secret") as fetch:
+    with patch("codereeve.chain.bws_client.fetch_secret") as fetch:
         assert main(["jwt"]) == 2
     output = capsys.readouterr()
     assert output.out == ""
@@ -1000,7 +1000,7 @@ def test_cli_scrubs_ambient_bws_token_on_success_and_failure(
     if not valid_pem:
         file_key[0].write_text("malformed-private-key", encoding="utf-8")
     with patch(
-        "baton_harness.chain.app_auth._github_http_post",
+        "codereeve.chain.app_auth._github_http_post",
         side_effect=_http_post_ok,
     ) as post:
         assert main([mode]) == (0 if valid_pem else 1)
@@ -1021,7 +1021,7 @@ def test_cli_errors_never_include_pem_or_access_token(
     sentinel = "PRIVATE-KEY-SENTINEL-359"
     file_key[0].write_text(sentinel, encoding="utf-8")
     monkeypatch.setenv("BWS_ACCESS_TOKEN", _CLI_ACCESS_TOKEN_SENTINEL)
-    with patch("baton_harness.chain.app_auth._github_http_post") as post:
+    with patch("codereeve.chain.app_auth._github_http_post") as post:
         assert main([mode]) == 1
     output = capsys.readouterr()
     assert sentinel not in output.out + output.err
@@ -1078,7 +1078,7 @@ class TestCliJwtMode:
     """``main(["jwt"])`` mints and prints an App JWT.
 
     MUST FAIL today: ``main`` does not exist yet in
-    ``baton_harness.chain.app_auth`` — expect ``ImportError``.
+    ``codereeve.chain.app_auth`` — expect ``ImportError``.
     """
 
     def test_prints_valid_app_jwt_and_exits_zero(
@@ -1091,10 +1091,10 @@ class TestCliJwtMode:
         stub = _make_cli_fetch_secret_stub(pem)
 
         with patch(
-            "baton_harness.chain.bws_client.fetch_secret",
+            "codereeve.chain.bws_client.fetch_secret",
             side_effect=stub,
         ):
-            from baton_harness.chain.app_auth import main
+            from codereeve.chain.app_auth import main
 
             exit_code = main(["jwt"])
 
@@ -1122,10 +1122,10 @@ class TestCliJwtMode:
         stub = _make_cli_fetch_secret_stub(pem)
 
         with patch(
-            "baton_harness.chain.bws_client.fetch_secret",
+            "codereeve.chain.bws_client.fetch_secret",
             side_effect=stub,
         ):
-            from baton_harness.chain.app_auth import main
+            from codereeve.chain.app_auth import main
 
             main(["jwt"])
 
@@ -1168,15 +1168,15 @@ class TestCliTokenMode:
 
         with (
             patch(
-                "baton_harness.chain.bws_client.fetch_secret",
+                "codereeve.chain.bws_client.fetch_secret",
                 side_effect=stub,
             ),
             patch(
-                "baton_harness.chain.app_auth._github_http_post",
+                "codereeve.chain.app_auth._github_http_post",
                 side_effect=fake_http_post,
             ),
         ):
-            from baton_harness.chain.app_auth import main
+            from codereeve.chain.app_auth import main
 
             exit_code = main(["token"])
 
@@ -1211,15 +1211,15 @@ class TestCliTokenMode:
 
         with (
             patch(
-                "baton_harness.chain.bws_client.fetch_secret",
+                "codereeve.chain.bws_client.fetch_secret",
                 side_effect=stub,
             ),
             patch(
-                "baton_harness.chain.app_auth._github_http_post",
+                "codereeve.chain.app_auth._github_http_post",
                 side_effect=fake_http_post,
             ),
         ):
-            from baton_harness.chain.app_auth import main
+            from codereeve.chain.app_auth import main
 
             main(["token"])
 
@@ -1260,16 +1260,16 @@ class TestCliTokenMode:
 
         with (
             patch(
-                "baton_harness.chain.bws_client.fetch_secret",
+                "codereeve.chain.bws_client.fetch_secret",
                 side_effect=stub,
             ),
             patch(
-                "baton_harness.chain.app_auth._github_http_post",
+                "codereeve.chain.app_auth._github_http_post",
                 side_effect=fake_http_post,
             ),
             patch("urllib.request.urlopen", side_effect=_explode),
         ):
-            from baton_harness.chain.app_auth import main
+            from codereeve.chain.app_auth import main
 
             exit_code = main(["token"])
 
@@ -1298,10 +1298,10 @@ class TestCliMissingEnvVars:
         )
 
         with patch(
-            "baton_harness.chain.bws_client.fetch_secret",
+            "codereeve.chain.bws_client.fetch_secret",
             fetch_mock,
         ):
-            from baton_harness.chain.app_auth import main
+            from codereeve.chain.app_auth import main
 
             exit_code = main(["jwt"])
 
@@ -1328,10 +1328,10 @@ class TestCliMissingEnvVars:
         )
 
         with patch(
-            "baton_harness.chain.bws_client.fetch_secret",
+            "codereeve.chain.bws_client.fetch_secret",
             fetch_mock,
         ):
-            from baton_harness.chain.app_auth import main
+            from codereeve.chain.app_auth import main
 
             exit_code = main(["jwt"])
 
@@ -1358,10 +1358,10 @@ class TestCliMissingEnvVars:
         )
 
         with patch(
-            "baton_harness.chain.bws_client.fetch_secret",
+            "codereeve.chain.bws_client.fetch_secret",
             fetch_mock,
         ):
-            from baton_harness.chain.app_auth import main
+            from codereeve.chain.app_auth import main
 
             exit_code = main(["jwt"])
 
@@ -1389,10 +1389,10 @@ class TestCliMissingEnvVars:
         stub = _make_cli_fetch_secret_stub(pem)
 
         with patch(
-            "baton_harness.chain.bws_client.fetch_secret",
+            "codereeve.chain.bws_client.fetch_secret",
             side_effect=stub,
         ):
-            from baton_harness.chain.app_auth import main
+            from codereeve.chain.app_auth import main
 
             token_exit = main(["token"])
             token_captured = capsys.readouterr()
@@ -1420,10 +1420,10 @@ class TestCliMissingEnvVars:
         stub = _make_cli_fetch_secret_stub(pem)
 
         with patch(
-            "baton_harness.chain.bws_client.fetch_secret",
+            "codereeve.chain.bws_client.fetch_secret",
             side_effect=stub,
         ):
-            from baton_harness.chain.app_auth import main
+            from codereeve.chain.app_auth import main
 
             exit_code = main(["token"])
 
@@ -1465,10 +1465,10 @@ class TestCliErrorPathDoesNotLeakSecrets:
         stub = _make_cli_fetch_secret_stub(fake_invalid_pem)
 
         with patch(
-            "baton_harness.chain.bws_client.fetch_secret",
+            "codereeve.chain.bws_client.fetch_secret",
             side_effect=stub,
         ):
-            from baton_harness.chain.app_auth import main
+            from codereeve.chain.app_auth import main
 
             exit_code = main(["jwt"])
 
@@ -1502,7 +1502,7 @@ class TestCliErrorPathDoesNotLeakSecrets:
         contains the BWS_ACCESS_TOKEN value that was used for the
         attempted fetch.
         """
-        from baton_harness.chain.bws_client import BwsClientError
+        from codereeve.chain.bws_client import BwsClientError
 
         def failing_fetch(
             secret_id: str,
@@ -1515,10 +1515,10 @@ class TestCliErrorPathDoesNotLeakSecrets:
             )
 
         with patch(
-            "baton_harness.chain.bws_client.fetch_secret",
+            "codereeve.chain.bws_client.fetch_secret",
             side_effect=failing_fetch,
         ):
-            from baton_harness.chain.app_auth import main
+            from codereeve.chain.app_auth import main
 
             exit_code = main(["jwt"])
 
@@ -1541,7 +1541,7 @@ class TestCliErrorPathDoesNotLeakSecrets:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         """Vault error text is reported without leaking the access token."""
-        from baton_harness.chain.bws_client import BwsClientError
+        from codereeve.chain.bws_client import BwsClientError
 
         def failing_fetch(
             secret_id: str,
@@ -1554,10 +1554,10 @@ class TestCliErrorPathDoesNotLeakSecrets:
             )
 
         with patch(
-            "baton_harness.chain.bws_client.fetch_secret",
+            "codereeve.chain.bws_client.fetch_secret",
             side_effect=failing_fetch,
         ):
-            from baton_harness.chain.app_auth import main
+            from codereeve.chain.app_auth import main
 
             exit_code = main(["jwt"])
 

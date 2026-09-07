@@ -30,8 +30,8 @@ from __future__ import annotations
 
 import pytest
 
-from baton_harness.vendor.symphony.config import WorkflowConfig
-from baton_harness.vendor.symphony.worker import Worker
+from codereeve.vendor.symphony.config import WorkflowConfig
+from codereeve.vendor.symphony.worker import Worker
 
 # ---------------------------------------------------------------------------
 # Constants — the exact deny tokens the #130 fix must produce.

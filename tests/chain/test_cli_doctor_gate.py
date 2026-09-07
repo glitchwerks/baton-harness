@@ -10,9 +10,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from baton_harness.chain import doctor, sandbox_config
-from baton_harness.chain.cli import main
-from baton_harness.chain.doctor import (
+from codereeve.chain import doctor, sandbox_config
+from codereeve.chain.cli import main
+from codereeve.chain.doctor import (
     CheckResult,
     CheckStatus,
     Phase,
@@ -30,7 +30,7 @@ def test_explicit_config_root_reaches_registry_after_gate(
     """Inferred roots reach real registry loading only after readiness."""
     import os
 
-    from baton_harness.chain import cli
+    from codereeve.chain import cli
 
     selected_root = tmp_path / "selected"
     config_dir = selected_root / ".bh"
@@ -64,7 +64,7 @@ def test_explicit_config_root_reaches_registry_after_gate(
         patch.dict(os.environ, initial_env, clear=True),
         patch.object(cli, "_doctor_gate", side_effect=gate),
         patch.object(cli, "load_workflow", return_value=MagicMock()),
-        patch("baton_harness.chain.cli.os.chdir"),
+        patch("codereeve.chain.cli.os.chdir"),
         patch.object(cli, "_assert_force_pr_not_merge_tripwire"),
         patch.object(
             cli, "bootstrap_secrets", return_value="ghs_TESTTOKEN_sentinel"
@@ -86,7 +86,7 @@ def test_explicit_config_root_reaches_registry_after_gate(
 
 def test_doctor_probe_filters_retained_bootstrap_authority() -> None:
     """Live worker probes retain the established credential isolation."""
-    from baton_harness.chain import cli
+    from codereeve.chain import cli
 
     ctx = cli._doctor_context(None)
     ctx.env = {
@@ -95,7 +95,7 @@ def test_doctor_probe_filters_retained_bootstrap_authority() -> None:
         "GH_INSTALLATION_TOKEN": "app-token",
     }
     ctx.installation_token = "app-token"
-    with patch("baton_harness.chain.cli.subprocess.run") as run:
+    with patch("codereeve.chain.cli.subprocess.run") as run:
         ctx.runner(["gh", "auth", "status"])
     probe_env = run.call_args.kwargs["env"]
     assert "GH_TOKEN" not in probe_env
@@ -142,7 +142,7 @@ def test_daemon_config_and_gate_order(
     """Resolution precedes effects; either gate failure stops startup."""
     import os
 
-    from baton_harness.chain import cli
+    from codereeve.chain import cli
 
     path = tmp_path / "selected.env"
     path.write_text(
@@ -220,7 +220,7 @@ def test_daemon_config_and_gate_order(
             "load_registry",
             return_value=[MagicMock(project_root=str(tmp_path))],
         ),
-        patch("baton_harness.chain.cli.os.chdir"),
+        patch("codereeve.chain.cli.os.chdir"),
         patch.object(cli, "_assert_force_pr_not_merge_tripwire"),
         patch.object(cli, "bootstrap_secrets", side_effect=bootstrap),
         patch.object(cli, "validate_daemon_token"),
@@ -283,7 +283,7 @@ def test_report_render_failure_is_fixed_and_atomic(
     with (
         patch.object(doctor, "run_report", return_value=[]),
         patch(
-            f"baton_harness.chain.doctor_report.render_{format}",
+            f"codereeve.chain.doctor_report.render_{format}",
             side_effect=RuntimeError("secret-sentinel"),
         ),
     ):
@@ -302,7 +302,7 @@ def test_live_vault_retains_prebootstrap_authority(
     """Real vault check sees retained BWS authority after environment scrub."""
     import os
 
-    from baton_harness.chain import cli
+    from codereeve.chain import cli
 
     path = tmp_path / "operator.env"
     path.write_text(
@@ -348,15 +348,15 @@ def test_live_vault_retains_prebootstrap_authority(
             "load_registry",
             return_value=[MagicMock(project_root=str(tmp_path))],
         ),
-        patch("baton_harness.chain.cli.os.chdir"),
+        patch("codereeve.chain.cli.os.chdir"),
         patch.object(cli, "_assert_force_pr_not_merge_tripwire"),
         patch.object(cli, "bootstrap_secrets", side_effect=bootstrap),
         patch.object(cli, "validate_daemon_token"),
         patch(
-            "baton_harness.chain.bws_client.fetch_secret", side_effect=fetch
+            "codereeve.chain.bws_client.fetch_secret", side_effect=fetch
         ),
         patch(
-            "baton_harness.chain.app_auth.build_app_jwt",
+            "codereeve.chain.app_auth.build_app_jwt",
             return_value="signed-jwt",
         ),
         patch.object(cli, "run_daemon", side_effect=daemon),
@@ -396,25 +396,25 @@ def _run_file_provider_gate(
         patch.object(doctor, "CATALOG", checks),
         patch.object(doctor, "run_gate", new=_REAL_RUN_GATE),
         patch(
-            "baton_harness.chain.cli.load_workflow", return_value=MagicMock()
+            "codereeve.chain.cli.load_workflow", return_value=MagicMock()
         ),
         patch(
-            "baton_harness.chain.cli.load_registry",
+            "codereeve.chain.cli.load_registry",
             return_value=[MagicMock(project_root=str(tmp_path))],
         ),
-        patch("baton_harness.chain.sandbox_config.read_and_validate"),
-        patch("baton_harness.chain.cli.os.chdir"),
-        patch("baton_harness.chain.cli._assert_force_pr_not_merge_tripwire"),
+        patch("codereeve.chain.sandbox_config.read_and_validate"),
+        patch("codereeve.chain.cli.os.chdir"),
+        patch("codereeve.chain.cli._assert_force_pr_not_merge_tripwire"),
         patch(
-            "baton_harness.chain.cli.shutil.which",
+            "codereeve.chain.cli.shutil.which",
             return_value="/usr/bin/bws" if optional_bws else None,
         ),
         patch(
-            "baton_harness.chain.cli.bootstrap_secrets",
+            "codereeve.chain.cli.bootstrap_secrets",
             return_value="ghs_TESTTOKEN_sentinel",
         ) as bootstrap,
-        patch("baton_harness.chain.cli.validate_daemon_token"),
-        patch("baton_harness.chain.cli.run_daemon", new_callable=AsyncMock),
+        patch("codereeve.chain.cli.validate_daemon_token"),
+        patch("codereeve.chain.cli.run_daemon", new_callable=AsyncMock),
     ):
         result = _run_main_allow_system_exit("--once")
     return result, bootstrap.call_count
@@ -444,7 +444,7 @@ def test_cli_doctor_gate_blocks_file_provider_optional_bws_without_token(
 @pytest.fixture(autouse=True)
 def _auto_patch_pre_bootstrap_gate() -> Iterator[None]:
     """No-op both doctor gates for tests exercising other CLI behavior."""
-    with patch("baton_harness.chain.doctor.run_gate", return_value=None):
+    with patch("codereeve.chain.doctor.run_gate", return_value=None):
         yield
 
 
@@ -523,28 +523,28 @@ def _patched_pre_doctor_seams(
     """
     with (
         patch(
-            "baton_harness.chain.cli.load_workflow",
+            "codereeve.chain.cli.load_workflow",
             return_value=MagicMock(),
         ),
         patch(
-            "baton_harness.chain.cli.load_registry",
+            "codereeve.chain.cli.load_registry",
             return_value=[MagicMock()],
         ),
-        patch("baton_harness.chain.cli.os.chdir"),
-        patch("baton_harness.chain.cli.os.path.isdir", return_value=True),
+        patch("codereeve.chain.cli.os.chdir"),
+        patch("codereeve.chain.cli.os.path.isdir", return_value=True),
         # Stub the real subprocess-based tripwire self-test so this suite
         # never depends on it actually succeeding in the test environment
         # (the --doctor path reports FORCE_PR_TRIPWIRE via the catalog
         # instead; it must not additionally hard-block on the native
         # self-test before the report is even produced).
-        patch("baton_harness.chain.cli._assert_force_pr_not_merge_tripwire"),
-        patch("baton_harness.chain.cli.bootstrap_secrets") as bootstrap_mock,
+        patch("codereeve.chain.cli._assert_force_pr_not_merge_tripwire"),
+        patch("codereeve.chain.cli.bootstrap_secrets") as bootstrap_mock,
         patch(
-            "baton_harness.chain.cli.run_daemon",
+            "codereeve.chain.cli.run_daemon",
             new_callable=AsyncMock,
         ) as run_daemon_mock,
         patch(
-            "baton_harness.chain.doctor.run_report",
+            "codereeve.chain.doctor.run_report",
             return_value=run_report_return,
         ) as run_report_mock,
     ):
@@ -739,25 +739,25 @@ def test_no_doctor_flag_runs_daemon_path_and_never_calls_run_report() -> None:
 
     with (
         patch(
-            "baton_harness.chain.cli.bootstrap_secrets",
+            "codereeve.chain.cli.bootstrap_secrets",
             return_value="ghs_TESTTOKEN_xxxxxxx",
         ),
-        patch("baton_harness.chain.cli.validate_daemon_token"),
+        patch("codereeve.chain.cli.validate_daemon_token"),
         patch(
-            "baton_harness.chain.cli.load_workflow",
+            "codereeve.chain.cli.load_workflow",
             return_value=MagicMock(),
         ),
         patch(
-            "baton_harness.chain.cli.load_registry",
+            "codereeve.chain.cli.load_registry",
             return_value=[MagicMock()],
         ),
         patch(
-            "baton_harness.chain.cli.run_daemon",
+            "codereeve.chain.cli.run_daemon",
             side_effect=fake_run_daemon,
         ),
-        patch("baton_harness.chain.cli.os.chdir"),
-        patch("baton_harness.chain.cli.os.path.isdir", return_value=True),
-        patch("baton_harness.chain.doctor.run_report") as run_report_mock,
+        patch("codereeve.chain.cli.os.chdir"),
+        patch("codereeve.chain.cli.os.path.isdir", return_value=True),
+        patch("codereeve.chain.doctor.run_report") as run_report_mock,
     ):
         result = _run_main("--once")
 
@@ -836,33 +836,33 @@ class TestPreBootstrapDoctorGate:
 
         with (
             patch(
-                "baton_harness.chain.cli.load_workflow",
+                "codereeve.chain.cli.load_workflow",
                 return_value=MagicMock(),
             ),
             patch(
-                "baton_harness.chain.cli.load_registry",
+                "codereeve.chain.cli.load_registry",
                 return_value=[fake_repo_cfg],
             ),
-            patch("baton_harness.chain.cli.os.chdir"),
+            patch("codereeve.chain.cli.os.chdir"),
             patch(
-                "baton_harness.chain.cli.os.path.isdir",
+                "codereeve.chain.cli.os.path.isdir",
                 return_value=True,
             ),
             patch(
-                "baton_harness.chain.cli._assert_force_pr_not_merge_tripwire",
+                "codereeve.chain.cli._assert_force_pr_not_merge_tripwire",
                 side_effect=fake_self_test,
             ),
             patch(
-                "baton_harness.chain.doctor.run_gate",
+                "codereeve.chain.doctor.run_gate",
                 side_effect=fake_run_gate,
             ) as gate_mock,
             patch(
-                "baton_harness.chain.cli.bootstrap_secrets",
+                "codereeve.chain.cli.bootstrap_secrets",
                 side_effect=fake_bootstrap,
             ),
-            patch("baton_harness.chain.cli.validate_daemon_token"),
+            patch("codereeve.chain.cli.validate_daemon_token"),
             patch(
-                "baton_harness.chain.cli.run_daemon",
+                "codereeve.chain.cli.run_daemon",
                 side_effect=fake_run_daemon,
             ),
         ):
@@ -917,32 +917,32 @@ class TestPreBootstrapDoctorGate:
 
         with (
             patch(
-                "baton_harness.chain.cli.load_workflow",
+                "codereeve.chain.cli.load_workflow",
                 return_value=MagicMock(),
             ),
             patch(
-                "baton_harness.chain.cli.load_registry",
+                "codereeve.chain.cli.load_registry",
                 return_value=[fake_repo_cfg],
             ),
-            patch("baton_harness.chain.cli.os.chdir"),
+            patch("codereeve.chain.cli.os.chdir"),
             patch(
-                "baton_harness.chain.cli.os.path.isdir",
+                "codereeve.chain.cli.os.path.isdir",
                 return_value=True,
             ),
             patch(
-                "baton_harness.chain.cli._assert_force_pr_not_merge_tripwire",
+                "codereeve.chain.cli._assert_force_pr_not_merge_tripwire",
             ),
             patch(
-                "baton_harness.chain.doctor.run_gate",
+                "codereeve.chain.doctor.run_gate",
                 side_effect=doctor.DoctorGateError(()),
             ) as gate_mock,
             patch(
-                "baton_harness.chain.cli.bootstrap_secrets",
+                "codereeve.chain.cli.bootstrap_secrets",
                 side_effect=fake_bootstrap,
             ),
-            patch("baton_harness.chain.cli.validate_daemon_token"),
+            patch("codereeve.chain.cli.validate_daemon_token"),
             patch(
-                "baton_harness.chain.cli.run_daemon",
+                "codereeve.chain.cli.run_daemon",
                 side_effect=fake_run_daemon,
             ),
         ):

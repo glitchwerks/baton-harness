@@ -1,4 +1,4 @@
-"""Tests for baton_harness.chain.labels — state constants and invariant check.
+"""Tests for codereeve.chain.labels — state constants and invariant check.
 
 Coverage:
 - Constant string values for the four state labels (#351 D3 adds
@@ -23,8 +23,8 @@ Coverage:
 
 from __future__ import annotations
 
-import baton_harness.chain.daemon as daemon_mod
-from baton_harness.chain.labels import (
+import codereeve.chain.daemon as daemon_mod
+from codereeve.chain.labels import (
     LABEL_AGENT_DONE,
     LABEL_AGENT_READY,
     LABEL_BLOCKED,
@@ -95,7 +95,7 @@ class TestStateLabels:
 
     def test_state_labels_constants_match_collection(self) -> None:
         """The four constant objects are members of STATE_LABELS."""
-        from baton_harness.chain.labels import LABEL_AGENT_FAILED
+        from codereeve.chain.labels import LABEL_AGENT_FAILED
 
         assert LABEL_AGENT_READY in STATE_LABELS
         assert LABEL_AGENT_DONE in STATE_LABELS
@@ -104,7 +104,7 @@ class TestStateLabels:
 
     def test_label_agent_failed_value(self) -> None:
         """LABEL_AGENT_FAILED equals 'agent-failed' (#351 D3)."""
-        from baton_harness.chain.labels import LABEL_AGENT_FAILED
+        from codereeve.chain.labels import LABEL_AGENT_FAILED
 
         assert LABEL_AGENT_FAILED == "agent-failed"
 
@@ -132,7 +132,7 @@ class TestDispatchExcludeLabels:
         surfaces as this test's own failure rather than a collection
         error for the whole module.
         """
-        from baton_harness.chain.labels import LABEL_AGENT_FAILED
+        from codereeve.chain.labels import LABEL_AGENT_FAILED
 
         assert LABEL_AGENT_FAILED in daemon_mod._DISPATCH_EXCLUDE_LABELS, (
             "agent-failed must join _DISPATCH_EXCLUDE_LABELS (#351 D3"
@@ -346,9 +346,9 @@ class TestTargetStateFromObserved:
 
         Raises:
             AttributeError: If the function has not yet been implemented in
-                ``baton_harness.chain.labels``.
+                ``codereeve.chain.labels``.
         """
-        from baton_harness.chain import labels as labels_mod
+        from codereeve.chain import labels as labels_mod
 
         return labels_mod.target_state_from_observed
 

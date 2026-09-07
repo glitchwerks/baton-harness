@@ -1,4 +1,4 @@
-"""Tests for baton_harness.chain.bws_client — Bitwarden Secrets client.
+"""Tests for codereeve.chain.bws_client — Bitwarden Secrets client.
 
 Coverage:
 - ``fetch_secret`` extracts and returns the secret ``value`` from a
@@ -23,7 +23,7 @@ from collections.abc import Callable
 
 import pytest
 
-from baton_harness.chain.bws_client import BwsClientError, fetch_secret
+from codereeve.chain.bws_client import BwsClientError, fetch_secret
 
 # ---------------------------------------------------------------------------
 # Type alias for the injected run callable

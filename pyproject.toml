@@ -7,9 +7,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "baton-harness"
+name = "codereeve"
 dynamic = ["version"]
-description = "Policy and tooling layer wrapping Baton for autonomous Claude Code agent runs."
+description = "Disciplined autonomous software-development orchestration."
 requires-python = ">=3.10"
 # Runtime dependencies: pyyaml and jinja2 are required by the vendored
 # symphony package (config.py uses yaml, prompt.py uses jinja2).
@@ -45,19 +45,19 @@ dev = [
 # PATH inside the venv. The launcher (bin/run.sh) activates the venv or
 # ensures they are resolvable before starting Baton.
 [project.scripts]
-bh-after-create = "baton_harness.after_create:main"
-bh-before-run = "baton_harness.before_run:main"
-bh-after-run = "baton_harness.after_run:main"
-bh-daemon = "baton_harness.chain.cli:main"
-bh-force-pr-not-merge = "baton_harness.hooks.force_pr_not_merge:main"
-bh-verify-foundation = "baton_harness.verify_foundation:main"
+bh-after-create = "codereeve.after_create:main"
+bh-before-run = "codereeve.before_run:main"
+bh-after-run = "codereeve.after_run:main"
+bh-daemon = "codereeve.chain.cli:main"
+bh-force-pr-not-merge = "codereeve.hooks.force_pr_not_merge:main"
+bh-verify-foundation = "codereeve.verify_foundation:main"
 
 # ---------------------------------------------------------------------------
 # Tool configuration
 # ---------------------------------------------------------------------------
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/baton_harness"]
+packages = ["src/codereeve"]
 
 [tool.hatch.metadata.hooks.custom]
 path = "hatch_build.py"

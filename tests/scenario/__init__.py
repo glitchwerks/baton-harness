@@ -1,1 +1,1 @@
-"""Tests for the baton_harness.scenario package."""
+"""Tests for the codereeve.scenario package."""

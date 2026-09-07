@@ -1,7 +1,7 @@
 """Unit tests for P1 worktree orphan-GC (issue #33, detect-first).
 
 Tests the async ``scan_orphan_worktrees`` function (to be added to /
-already present in ``baton_harness.chain.recovery``) and the daemon
+already present in ``codereeve.chain.recovery``) and the daemon
 wiring that emits ``orphan_worktree`` alerts and conditionally calls
 ``cleanup_worktree``.
 
@@ -68,7 +68,7 @@ import subprocess
 from collections.abc import Callable
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import baton_harness.chain.recovery as recovery_mod
+import codereeve.chain.recovery as recovery_mod
 
 # ---------------------------------------------------------------------------
 # Constants

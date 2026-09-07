@@ -17,9 +17,9 @@ from subprocess import CompletedProcess, TimeoutExpired
 
 import pytest
 
-import baton_harness.verify_foundation as verify_foundation
-from baton_harness.resources import RESOURCE_NAMES
-from baton_harness.verify_foundation import (
+import codereeve.verify_foundation as verify_foundation
+from codereeve.resources import RESOURCE_NAMES
+from codereeve.verify_foundation import (
     EXPECTED_ENTRY_POINTS,
     FoundationError,
     _dev_only_distributions,
@@ -47,7 +47,7 @@ def _write_sdist(root: Path, extra: str | None = None) -> Path:
         "source/pyproject.toml": b"[project]\n",
         "source/hatch_build.py": b"# hook\n",
         "source/uv.lock": (_REPO_ROOT / "uv.lock").read_bytes(),
-        "source/src/baton_harness/build_provenance.json": json.dumps(
+        "source/src/codereeve/build_provenance.json": json.dumps(
             _IDENTITY
         ).encode(),
     }
@@ -90,9 +90,9 @@ def test_archive_rejects_invalid_record(
     path = tmp_path / "bad.whl"
     with zipfile.ZipFile(path, "w") as archive:
         if record is not None:
-            archive.writestr("baton_harness/build_provenance.json", record)
+            archive.writestr("codereeve/build_provenance.json", record)
         archive.writestr(
-            "baton_harness.dist-info/METADATA", "Version: 0.0.0+foundation\n"
+            "codereeve.dist-info/METADATA", "Version: 0.0.0+foundation\n"
         )
     with pytest.raises(FoundationError):
         verify_foundation.inspect_provenance_archive(path, _IDENTITY)
@@ -149,10 +149,10 @@ def test_wheel_metadata_version_must_match_record(tmp_path: Path) -> None:
     path = tmp_path / "mismatch.whl"
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr(
-            "baton_harness/build_provenance.json", json.dumps(_IDENTITY)
+            "codereeve/build_provenance.json", json.dumps(_IDENTITY)
         )
         archive.writestr(
-            "baton_harness.dist-info/METADATA", "Version: 9.9.9\n"
+            "codereeve.dist-info/METADATA", "Version: 9.9.9\n"
         )
     with pytest.raises(FoundationError, match="installed version"):
         verify_foundation.inspect_provenance_archive(path, _IDENTITY)
@@ -163,7 +163,7 @@ def test_source_lock_bytes_must_match_record(tmp_path: Path) -> None:
     path = tmp_path / "mismatch.tar.gz"
     with tarfile.open(path, "w:gz") as archive:
         for name, data in {
-            "source/src/baton_harness/build_provenance.json": json.dumps(
+            "source/src/codereeve/build_provenance.json": json.dumps(
                 _IDENTITY
             ).encode(),
             "source/uv.lock": b"different lock",
@@ -331,33 +331,33 @@ def _write_wheel(
     Returns:
         Path to the generated archive.
     """
-    wheel = root / "baton_harness-0.1.0-py3-none-any.whl"
+    wheel = root / "codereeve-0.1.0-py3-none-any.whl"
     scripts = EXPECTED_ENTRY_POINTS if entry_points is None else entry_points
     declarations = "\n".join(
-        f"{name} = baton_harness.fake:main" for name in sorted(scripts)
+        f"{name} = codereeve.fake:main" for name in sorted(scripts)
     )
     with zipfile.ZipFile(wheel, "w") as archive:
         archive.writestr(
-            "baton_harness/build_provenance.json", json.dumps(_IDENTITY)
+            "codereeve/build_provenance.json", json.dumps(_IDENTITY)
         )
         archive.writestr(
-            "baton_harness-0.1.0.dist-info/METADATA",
+            "codereeve-0.1.0.dist-info/METADATA",
             "Version: 0.0.0+foundation\n",
         )
         for name in resources:
-            archive.writestr(f"baton_harness/resources/{name}", b"test")
+            archive.writestr(f"codereeve/resources/{name}", b"test")
         if duplicate_resource is not None:
             archive.writestr(
-                f"baton_harness/resources/{duplicate_resource}",
+                f"codereeve/resources/{duplicate_resource}",
                 b"duplicate",
             )
         if shadow_resource is not None:
             archive.writestr(
-                f"shadow/baton_harness/resources/{shadow_resource}",
+                f"shadow/codereeve/resources/{shadow_resource}",
                 b"shadow",
             )
         archive.writestr(
-            "baton_harness-0.1.0.dist-info/entry_points.txt",
+            "codereeve-0.1.0.dist-info/entry_points.txt",
             entry_points_text
             if entry_points_text is not None
             else f"[console_scripts]\n{declarations}\n",
@@ -425,7 +425,7 @@ def test_shadow_resource_path_cannot_satisfy_wheel_contract(
 
 def test_invalid_wheel_archive_is_normalized(tmp_path: Path) -> None:
     """A corrupt wheel reports a stable foundation error."""
-    wheel = tmp_path / "baton_harness-0.1.0-py3-none-any.whl"
+    wheel = tmp_path / "codereeve-0.1.0-py3-none-any.whl"
     wheel.write_bytes(b"not a zip archive")
 
     with pytest.raises(FoundationError, match="could not inspect wheel"):
@@ -604,21 +604,21 @@ def test_dev_only_distributions_exclude_runtime_closure(
 
 def test_complete_installed_state_passes(tmp_path: Path) -> None:
     """A non-editable in-prefix install with all commands is accepted."""
-    package_file = tmp_path / "venv" / "site-packages" / "baton_harness"
+    package_file = tmp_path / "venv" / "site-packages" / "codereeve"
     package_file.mkdir(parents=True)
     _validate_installed_state(
         direct_url_json='{"archive_info": {}}',
         package_file=package_file / "__init__.py",
         prefix=tmp_path / "venv",
         entry_points=EXPECTED_ENTRY_POINTS,
-        installed_distributions=frozenset({"baton-harness", "jinja2"}),
+        installed_distributions=frozenset({"codereeve", "jinja2"}),
         forbidden_distributions=frozenset({"pytest", "ruff"}),
     )
 
 
 def test_editable_installed_state_fails_closed(tmp_path: Path) -> None:
     """An editable wheel replacement cannot pass production validation."""
-    package_file = tmp_path / "venv" / "site-packages" / "baton_harness.py"
+    package_file = tmp_path / "venv" / "site-packages" / "codereeve.py"
 
     with pytest.raises(FoundationError, match="editable installation"):
         _validate_installed_state(
@@ -626,7 +626,7 @@ def test_editable_installed_state_fails_closed(tmp_path: Path) -> None:
             package_file=package_file,
             prefix=tmp_path / "venv",
             entry_points=EXPECTED_ENTRY_POINTS,
-            installed_distributions=frozenset({"baton-harness"}),
+            installed_distributions=frozenset({"codereeve"}),
             forbidden_distributions=frozenset(),
         )
 
@@ -640,7 +640,7 @@ def test_invalid_direct_url_shape_fails_closed(
     direct_url_json: str,
 ) -> None:
     """Structurally corrupt direct-URL metadata cannot raise AttributeError."""
-    package_file = tmp_path / "venv" / "site-packages" / "baton_harness.py"
+    package_file = tmp_path / "venv" / "site-packages" / "codereeve.py"
 
     with pytest.raises(
         FoundationError, match="invalid installed direct_url.json"
@@ -650,7 +650,7 @@ def test_invalid_direct_url_shape_fails_closed(
             package_file=package_file,
             prefix=tmp_path / "venv",
             entry_points=EXPECTED_ENTRY_POINTS,
-            installed_distributions=frozenset({"baton-harness"}),
+            installed_distributions=frozenset({"codereeve"}),
             forbidden_distributions=frozenset(),
         )
 
@@ -662,10 +662,10 @@ def test_package_imported_outside_environment_fails_closed(
     with pytest.raises(FoundationError, match="outside environment"):
         _validate_installed_state(
             direct_url_json=None,
-            package_file=tmp_path / "checkout" / "baton_harness.py",
+            package_file=tmp_path / "checkout" / "codereeve.py",
             prefix=tmp_path / "venv",
             entry_points=EXPECTED_ENTRY_POINTS,
-            installed_distributions=frozenset({"baton-harness"}),
+            installed_distributions=frozenset({"codereeve"}),
             forbidden_distributions=frozenset(),
         )
 
@@ -677,10 +677,10 @@ def test_missing_installed_entry_point_fails_closed(tmp_path: Path) -> None:
     ):
         _validate_installed_state(
             direct_url_json=None,
-            package_file=tmp_path / "venv" / "baton_harness.py",
+            package_file=tmp_path / "venv" / "codereeve.py",
             prefix=tmp_path / "venv",
             entry_points=EXPECTED_ENTRY_POINTS - {"bh-daemon"},
-            installed_distributions=frozenset({"baton-harness"}),
+            installed_distributions=frozenset({"codereeve"}),
             forbidden_distributions=frozenset(),
         )
 
@@ -690,10 +690,10 @@ def test_dev_only_distribution_fails_closed(tmp_path: Path) -> None:
     with pytest.raises(FoundationError, match="dev-only distributions"):
         _validate_installed_state(
             direct_url_json=None,
-            package_file=tmp_path / "venv" / "baton_harness.py",
+            package_file=tmp_path / "venv" / "codereeve.py",
             prefix=tmp_path / "venv",
             entry_points=EXPECTED_ENTRY_POINTS,
-            installed_distributions=frozenset({"baton-harness", "pytest"}),
+            installed_distributions=frozenset({"codereeve", "pytest"}),
             forbidden_distributions=frozenset({"pytest", "ruff"}),
         )
 

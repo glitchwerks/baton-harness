@@ -1,4 +1,4 @@
-"""Unit tests for baton_harness._cli — shared CLI helpers.
+"""Unit tests for codereeve._cli — shared CLI helpers.
 
 Tests cover:
 - ``resolve_issue_number``: derives the GitHub issue number from a worktree
@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from baton_harness._cli import err, log, resolve_issue_number
+from codereeve._cli import err, log, resolve_issue_number
 
 pytestmark = pytest.mark.fast
 

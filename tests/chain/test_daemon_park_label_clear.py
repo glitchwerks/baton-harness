@@ -24,12 +24,12 @@ import subprocess
 from typing import Any
 from unittest.mock import patch
 
-import baton_harness.chain.daemon as daemon_mod
-from baton_harness.chain.daemon import run_daemon
-from baton_harness.chain.merge import MergeOutcome
-from baton_harness.chain.recovery import RecoveryResult
-from baton_harness.chain.registry import RepoConfig
-from baton_harness.vendor.symphony.config import WorkflowConfig
+import codereeve.chain.daemon as daemon_mod
+from codereeve.chain.daemon import run_daemon
+from codereeve.chain.merge import MergeOutcome
+from codereeve.chain.recovery import RecoveryResult
+from codereeve.chain.registry import RepoConfig
+from codereeve.vendor.symphony.config import WorkflowConfig
 
 # ---------------------------------------------------------------------------
 # Shared helpers — copied from test_daemon.py conventions
@@ -208,24 +208,24 @@ def test_parked_seed_clears_agent_in_progress_before_mark_parked() -> None:
 
     with (
         patch.object(daemon_mod, "_run", side_effect=recording_run),
-        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=recovery,
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         patch(
-            "baton_harness.vendor.symphony.orchestrator.Orchestrator"
+            "codereeve.vendor.symphony.orchestrator.Orchestrator"
             "._run_worker",
             side_effect=fake_run_worker,
         ),
@@ -347,24 +347,24 @@ def test_ci_gate_reentry_no_pr_clears_agent_in_progress() -> None:
 
     with (
         patch.object(daemon_mod, "_run", side_effect=recording_run),
-        patch("baton_harness.chain.daemon.fetch_blocked_by", return_value=[]),
-        patch("baton_harness.chain.branches.create_feature_branch"),
-        patch("baton_harness.chain.branches.checkout_feature_branch"),
+        patch("codereeve.chain.daemon.fetch_blocked_by", return_value=[]),
+        patch("codereeve.chain.branches.create_feature_branch"),
+        patch("codereeve.chain.branches.checkout_feature_branch"),
         patch(
-            "baton_harness.chain.branches.record_cut_point",
+            "codereeve.chain.branches.record_cut_point",
             return_value="deadbeef" * 5,
         ),
         patch(
-            "baton_harness.chain.recovery.reconstruct",
+            "codereeve.chain.recovery.reconstruct",
             return_value=recovery,
         ),
         patch(
-            "baton_harness.chain.daemon.merge_issue_branch",
+            "codereeve.chain.daemon.merge_issue_branch",
             return_value=MergeOutcome.MERGED,
         ),
-        patch("baton_harness.chain.daemon.alert", return_value=True),
+        patch("codereeve.chain.daemon.alert", return_value=True),
         patch(
-            "baton_harness.vendor.symphony.orchestrator.Orchestrator"
+            "codereeve.vendor.symphony.orchestrator.Orchestrator"
             "._run_worker",
             side_effect=fake_run_worker,
         ),

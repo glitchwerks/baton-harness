@@ -21,13 +21,13 @@ from unittest.mock import patch
 
 import pytest
 
-import baton_harness.before_run as before_run_mod
-from baton_harness.after_run import (
+import codereeve.before_run as before_run_mod
+from codereeve.after_run import (
     RunOutcome,
     _classify,
     _reconcile_labels,
 )
-from baton_harness.before_run import main as before_run_main
+from codereeve.before_run import main as before_run_main
 
 # ---------------------------------------------------------------------------
 # Auth bypass — before_run now validates GH PAT as Step 0.
@@ -322,7 +322,7 @@ class TestAfterRunChainBaseBranch:
                 return _ok(stdout="")  # no commits ahead
             return _ok()
 
-        with patch("baton_harness.after_run._run", side_effect=fake_run):
+        with patch("codereeve.after_run._run", side_effect=fake_run):
             _classify()
 
         cherry_calls = [c for c in calls if "cherry" in c]
@@ -347,7 +347,7 @@ class TestAfterRunChainBaseBranch:
                 return _ok(stdout="")
             return _ok()
 
-        with patch("baton_harness.after_run._run", side_effect=fake_run):
+        with patch("codereeve.after_run._run", side_effect=fake_run):
             _classify()
 
         cherry_calls = [c for c in calls if "cherry" in c]
@@ -381,7 +381,7 @@ class TestAfterRunChainBaseBranch:
                 return _ok(stdout="")
             return _ok()
 
-        with patch("baton_harness.after_run._run", side_effect=fake_run):
+        with patch("codereeve.after_run._run", side_effect=fake_run):
             _classify()
 
         assert "rev-parse" in call_order, "git rev-parse must be called"
@@ -426,7 +426,7 @@ class TestPriority3NoLongerLeavesAgentReady:
 
     def test_committed_no_pr_removes_agent_ready(self) -> None:
         """COMMITTED_NO_PR: agent-ready is removed (not left in place)."""
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 self._completed(stdout=_LABEL_AGENT_READY),  # gh issue view
                 self._completed(),  # remove agent-ready
@@ -450,7 +450,7 @@ class TestPriority3NoLongerLeavesAgentReady:
 
     def test_committed_no_pr_sets_blocked(self) -> None:
         """COMMITTED_NO_PR: blocked label is added."""
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 self._completed(stdout=_LABEL_AGENT_READY),
                 self._completed(),  # remove agent-ready
@@ -470,7 +470,7 @@ class TestPriority3NoLongerLeavesAgentReady:
 
     def test_no_commits_removes_agent_ready(self) -> None:
         """NO_COMMITS: agent-ready is removed (not left in place)."""
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 self._completed(stdout=_LABEL_AGENT_READY),
                 self._completed(),  # remove agent-ready
@@ -493,7 +493,7 @@ class TestPriority3NoLongerLeavesAgentReady:
 
     def test_no_commits_sets_blocked(self) -> None:
         """NO_COMMITS: blocked label is added."""
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 self._completed(stdout=_LABEL_AGENT_READY),
                 self._completed(),  # remove agent-ready
@@ -512,7 +512,7 @@ class TestPriority3NoLongerLeavesAgentReady:
 
     def test_uncommitted_changes_removes_agent_ready(self) -> None:
         """UNCOMMITTED_CHANGES: agent-ready is removed."""
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 self._completed(stdout=_LABEL_AGENT_READY),
                 self._completed(),  # remove agent-ready
@@ -533,7 +533,7 @@ class TestPriority3NoLongerLeavesAgentReady:
 
     def test_uncommitted_changes_sets_blocked(self) -> None:
         """UNCOMMITTED_CHANGES: blocked label is added."""
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 self._completed(stdout=_LABEL_AGENT_READY),
                 self._completed(),  # remove agent-ready
@@ -550,7 +550,7 @@ class TestPriority3NoLongerLeavesAgentReady:
 
     def test_label_edit_failure_propagates_nonzero(self) -> None:
         """Label-edit failure on Priority-3 path returns non-zero."""
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 self._completed(stdout=_LABEL_AGENT_READY),
                 self._completed(returncode=1),  # remove agent-ready fails
@@ -562,7 +562,7 @@ class TestPriority3NoLongerLeavesAgentReady:
     def test_agent_ready_absent_still_sets_blocked(self) -> None:
         """Even when agent-ready is absent, blocked is still added."""
         no_labels = json.dumps({"labels": []})
-        with patch("baton_harness.after_run._run") as mock_run:
+        with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = [
                 self._completed(stdout=no_labels),  # no agent-ready
                 self._completed(),  # add blocked
