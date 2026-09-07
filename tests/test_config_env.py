@@ -67,6 +67,37 @@ def test_parse_env_text_preserves_adjacent_hashes_as_unquoted_values() -> None:
     ]
 
 
+def test_parse_env_text_accepts_unquoted_windows_path_literals() -> None:
+    """Unquoted values retain ordinary Windows path separators literally."""
+    parsed = parse_env_text(
+        "PRIVATE_KEY=C:\\Users\\operator\\CodeReeve\\key.pem\n",
+        source="config.env",
+    )
+    assert [(item.key, item.value) for item in parsed] == [
+        ("PRIVATE_KEY", r"C:\Users\operator\CodeReeve\key.pem"),
+    ]
+
+
+def test_parse_env_text_accepts_unquoted_windows_path_with_final_separator(
+) -> None:
+    """A literal directory path may end in a Windows path separator."""
+    parsed = parse_env_text(
+        "PRIVATE_KEY_DIRECTORY=C:\\Users\\operator\\CodeReeve\\",
+        source="config.env",
+    )
+    assert [(item.key, item.value) for item in parsed] == [
+        ("PRIVATE_KEY_DIRECTORY", "C:\\Users\\operator\\CodeReeve\\"),
+    ]
+
+
+def test_parse_env_text_rejects_trailing_backslash_continuation() -> None:
+    """A trailing backslash cannot continue an assignment onto another line."""
+    with pytest.raises(ConfigSyntaxError) as caught:
+        parse_env_text("VALUE=one \\\ntwo\n", source="private.env")
+
+    assert "private.env:1" in str(caught.value)
+
+
 def test_parse_env_text_unescapes_only_matching_quote_mode() -> None:
     """Matching quote and backslash escapes remain literal otherwise."""
     parsed = parse_env_text(

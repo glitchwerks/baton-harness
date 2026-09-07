@@ -216,11 +216,14 @@ def parse_env_text(text: str, *, source: str) -> tuple[Assignment, ...]:
 
     assignments: list[Assignment] = []
     pending_trivia: list[str] = []
-    for line_number, raw in enumerate(_physical_lines(text, source), start=1):
+    physical_lines = _physical_lines(text, source)
+    for line_number, raw in enumerate(physical_lines, start=1):
         parsed = _parse_line(raw, source, line_number)
         if parsed is None:
             pending_trivia.append(raw)
             continue
+        if raw.endswith("\\") and line_number < len(physical_lines):
+            raise ConfigSyntaxError(source, line_number)
         assignments.append(
             replace(parsed, leading_trivia=tuple(pending_trivia))
         )
@@ -457,8 +460,6 @@ def _parse_unquoted_assignment(
     untrimmed_value = raw[index:value_end]
     value = untrimmed_value.rstrip()
     comment = raw[index + len(value) :]
-    if "\\" in value:
-        raise ConfigSyntaxError(source, line_number)
     if "'" in value or '"' in value:
         raise ConfigSyntaxError(source, line_number)
     _reject_unsafe(value, source, line_number)
