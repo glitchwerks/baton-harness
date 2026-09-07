@@ -16,13 +16,13 @@ daemon is the entry point; `bin/run-daemon.sh` is the launcher. See
 
 The harness owns everything *shareable* across projects: the Python hook modules that run
 before and after each agent turn, per-project workflow config, a CLAUDE.md template, and
-the `bh-daemon` always-on daemon. Each target project carries only its own committed
-`CLAUDE.md` and CI workflow.
+the always-on daemon. Each target project carries only its own committed `CLAUDE.md` and
+CI workflow.
 
-The hooks and daemon are shipped as a proper Python package (`baton_harness`) with console
-entry points (`bh-after-create`, `bh-before-run`, `bh-after-run`, `bh-daemon`) so they
-are on `PATH` after `pip install` and can be wired directly into WORKFLOW.md hook lines
-without path gymnastics.
+The hooks and daemon ship in the `codereeve` Python distribution and package. Installing
+it provides one canonical `codereeve` executable with daemon, doctor, provenance, hook,
+and verification subcommands. The former `bh-*` console scripts remain temporary
+compatibility shims for the 0.2 and 0.3 release lines only.
 
 The orchestration engine (`symphony`) is vendored into the package rather than installed
 as an external dependency. Upstream `mraza007/baton` is dormant (3 commits, no releases,
@@ -137,7 +137,7 @@ dedicated branch, and use a pull request to integrate changes into `main`.
 # Create the virtual environment, then install the project editably with
 # the exact runtime and development dependencies recorded in uv.lock.
 uv venv .venv
-BH_BUILD_DEVELOPMENT=1 uv sync --locked --extra dev
+CODEREEVE_BUILD_DEVELOPMENT=1 uv sync --locked --extra dev
 ```
 
 ### Running the quality gate
@@ -167,8 +167,8 @@ pushing:
 .venv/bin/python        -m pytest               # macOS/Linux
 
 # Frozen wheel and Python 3.10/3.13 installation proof
-.venv/Scripts/bh-verify-foundation.exe            # Windows
-.venv/bin/bh-verify-foundation                    # macOS/Linux
+.venv/Scripts/codereeve.exe verify                # Windows
+.venv/bin/codereeve verify                        # macOS/Linux
 ```
 
 Note: `src/baton_harness/vendor/symphony/` is **not** excluded from these checks. Issue `#224`
@@ -181,7 +181,7 @@ provenance and pre-#224 patches, not an active exclusion or re-vendor procedure.
 
 Development uses the editable environment above. Production installation is
 non-editable and contains runtime dependencies only. Before deployment, run
-`bh-verify-foundation` from the repository's locked development environment.
+`codereeve verify` from the repository's locked development environment.
 The command:
 
 1. rejects a missing or stale `uv.lock` and resource-mirror drift;
@@ -197,28 +197,41 @@ Use repeated `--python VERSION` arguments for a focused diagnostic run. CI and
 release validation use the default 3.10 and 3.13 endpoints. The command only
 reports drift; it never updates the lock or repairs resource mirrors.
 
-Standard builds require an explicit PEP 440 `BH_BUILD_VERSION` and a 40-hex-character
-`BH_BUILD_SOURCE_REVISION`. In a checkout the revision must match HEAD. Production
+Standard builds require an explicit PEP 440 `CODEREEVE_BUILD_VERSION` and a
+40-hex-character `CODEREEVE_BUILD_SOURCE_REVISION`. In a checkout the revision must
+match HEAD. Production
 pins an immutable release tag (for example `v1.0.0`); release automation may derive
 both assertions from that tag, but the hook validates explicit values, not tag names.
-Editable installs opt in with `BH_BUILD_DEVELOPMENT=1`, use stable `0.1.0.dev0`, and
-record the exact commit at build time in `source_revision`.
+Editable installs opt in with `CODEREEVE_BUILD_DEVELOPMENT=1`, use stable `0.2.0.dev0`,
+and record the exact commit at build time in `source_revision`.
+
+The old build-variable names are accepted only as temporary 0.2/0.3 compatibility
+surfaces and are removed in 0.4.0:
+
+| Canonical variable | Temporary compatibility variable |
+|---|---|
+| `CODEREEVE_BUILD_VERSION` | `BH_BUILD_VERSION` |
+| `CODEREEVE_BUILD_SOURCE_REVISION` | `BH_BUILD_SOURCE_REVISION` |
+| `CODEREEVE_BUILD_DEVELOPMENT` | `BH_BUILD_DEVELOPMENT` |
+
+Do not set both names for one value; use the canonical `CODEREEVE_BUILD_*` names in new
+automation.
 
 To reproduce the non-editable installation manually from the repository root,
 use the following Bash commands. Set `RUNTIME_PYTHON` to the path for the host
 platform as shown. Replace the illustrative version and revision with the selected
-release identity; unset any ambient `BH_BUILD_DEVELOPMENT` first:
+release identity; unset any ambient development-build flags first:
 
 ```bash
-unset BH_BUILD_DEVELOPMENT
+unset CODEREEVE_BUILD_DEVELOPMENT BH_BUILD_DEVELOPMENT
 mkdir -p .tmp
 uv lock --check
 uv export --locked --no-emit-project --format requirements.txt \
   --output-file .tmp/runtime-requirements.txt
 uv export --locked --extra dev --no-emit-project --format requirements.txt \
   --output-file .tmp/build-requirements.txt
-BH_BUILD_VERSION=1.0.0 \
-BH_BUILD_SOURCE_REVISION=0123456789abcdef0123456789abcdef01234567 \
+CODEREEVE_BUILD_VERSION=1.0.0 \
+CODEREEVE_BUILD_SOURCE_REVISION=0123456789abcdef0123456789abcdef01234567 \
 uv build --build-constraints .tmp/build-requirements.txt --require-hashes \
   --sdist --wheel --out-dir .tmp/dist
 uv venv .tmp/runtime-venv --python 3.13
@@ -227,27 +240,56 @@ RUNTIME_PYTHON=.tmp/runtime-venv/Scripts/python.exe  # Windows Git Bash
 # RUNTIME_PYTHON=.tmp/runtime-venv/bin/python        # macOS/Linux
 uv pip sync --python "$RUNTIME_PYTHON" .tmp/runtime-requirements.txt
 uv pip install --python "$RUNTIME_PYTHON" --no-deps \
-  .tmp/dist/baton_harness-*.whl
+  .tmp/dist/codereeve-*.whl
 uv pip check --python "$RUNTIME_PYTHON"
 ```
 
+The build produces `codereeve-<version>-py3-none-any.whl` and
+`codereeve-<version>.tar.gz`.
+
 This staging environment contains the locked runtime closure and the built wheel;
-it does not select the `dev` extra. Run `bh-verify-foundation` before promoting the
+it does not select the `dev` extra. Run `codereeve verify` before promoting the
 wheel to a deployment environment. Its installed smoke processes run with empty
 temporary home/config directories and only execution-essential environment values.
+
+### Supported 0.2 upgrade and rollback
+
+Build or obtain the 0.2 wheel before touching the active environment. Stage it in a
+separate `.venv-codereeve`, install and verify it there, and only then switch the service
+configuration to the new executable:
+
+```bash
+# Build with the release's exact tag-derived version and 40-hex revision, or
+# place an independently obtained codereeve-0.2.0-py3-none-any.whl in dist/.
+CODEREEVE_BUILD_VERSION=0.2.0 \
+CODEREEVE_BUILD_SOURCE_REVISION=0123456789abcdef0123456789abcdef01234567 \
+uv build --wheel --out-dir dist
+
+uv venv .venv-codereeve
+uv pip install --python .venv-codereeve/bin/python \
+  dist/codereeve-0.2.0-py3-none-any.whl
+.venv-codereeve/bin/codereeve verify
+```
+
+On Windows, use `.venv-codereeve/Scripts/python.exe` and
+`.venv-codereeve/Scripts/codereeve.exe verify`. Change the existing service
+configuration only after verification succeeds. Keep the original `.venv` completely
+unchanged until the rollback window closes; rollback consists of pointing the service
+configuration back to that original environment. Service and path renaming is outside
+this upgrade step and remains tracked separately.
 
 ### Provenance and preflight
 
 ```bash
-bh-daemon --version
-bh-daemon --provenance
-bh-daemon --doctor --phase installation --format json --strict
-bh-daemon --doctor --phase configuration --config /path/to/config.env --strict
-bh-daemon --doctor --phase live --strict
+codereeve --version
+codereeve provenance
+codereeve doctor --phase installation --format json --strict
+codereeve doctor --phase configuration --config /path/to/config.env --strict
+codereeve doctor --phase live --strict
 ```
 
-`--version` prints the installed distribution version; `--provenance` prints the
-validated packaged identity JSON without consulting Git or credentials.
+`codereeve --version` prints the installed distribution version; `codereeve provenance`
+prints the validated packaged identity JSON without consulting Git or credentials.
 Installation checks are offline and credential-free; configuration checks are
 local-only; live checks may use credentials and network access. Repeat `--phase`
 to select multiple phases; omission runs all three. Text is the default format.
@@ -263,29 +305,43 @@ compatibility command and exits 0 only on PASS. See
 [operator preflight and JSON schema](docs/repository-onboarding.md#5-bh-daemon---doctor--strict--preflight-before-the-first-real-run)
 for report fields and startup ordering.
 
-### Console entry-point convention
+### Unified command convention
 
-The three lifecycle hooks and the daemon are installed as console scripts by `pyproject.toml`:
+The `codereeve` executable is the canonical command surface installed by
+`pyproject.toml`:
 
-| Script | Entry point | Module |
-|---|---|---|
-| `bh-after-create` | `baton_harness.after_create:main` | `src/baton_harness/after_create.py` |
-| `bh-before-run` | `baton_harness.before_run:main` | `src/baton_harness/before_run.py` |
-| `bh-after-run` | `baton_harness.after_run:main` | `src/baton_harness/after_run.py` |
-| `bh-daemon` | `baton_harness.chain.cli:main` | `src/baton_harness/chain/cli.py` |
-| `bh-force-pr-not-merge` | `baton_harness.hooks.force_pr_not_merge:main` | `src/baton_harness/hooks/force_pr_not_merge.py` |
-| `bh-verify-foundation` | `baton_harness.verify_foundation:main` | `src/baton_harness/verify_foundation.py` |
+| Command | Purpose |
+|---|---|
+| `codereeve daemon` | Run the always-on daemon; accepts the existing daemon options |
+| `codereeve doctor` | Run installation, configuration, or live preflight checks |
+| `codereeve provenance` | Print validated packaged build provenance |
+| `codereeve hook after-create` | Run the post-worktree-creation lifecycle hook |
+| `codereeve hook before-run` | Run the pre-agent-turn lifecycle hook |
+| `codereeve hook after-run` | Run the post-agent-turn lifecycle hook |
+| `codereeve hook force-pr-not-merge` | Enforce the worker no-merge boundary |
+| `codereeve verify` | Verify frozen wheel and installation foundations |
 
-After `BH_BUILD_DEVELOPMENT=1 uv sync --locked --extra dev`, these commands are on `PATH` inside
-the editable development venv.
-WORKFLOW.md hook lines wire them as:
+After `CODEREEVE_BUILD_DEVELOPMENT=1 uv sync --locked --extra dev`, `codereeve` is on
+`PATH` inside the editable development venv. WORKFLOW.md hook lines use:
 
 ```yaml
 hooks:
-  after_create: bh-after-create
-  before_run:   bh-before-run
-  after_run:    bh-after-run
+  after_create: codereeve hook after-create
+  before_run:   codereeve hook before-run
+  after_run:    codereeve hook after-run
 ```
+
+The six legacy scripts remain temporary compatibility shims in 0.2 and 0.3 and are
+removed in 0.4.0:
+
+| Temporary legacy script | Canonical replacement |
+|---|---|
+| `bh-daemon` | `codereeve daemon` |
+| `bh-after-create` | `codereeve hook after-create` |
+| `bh-before-run` | `codereeve hook before-run` |
+| `bh-after-run` | `codereeve hook after-run` |
+| `bh-force-pr-not-merge` | `codereeve hook force-pr-not-merge` |
+| `bh-verify-foundation` | `codereeve verify` |
 
 The hooks derive the issue number from `ISSUE_NUMBER` (threaded by the vendored `run_hook
 env=` patch VP-1). As a fallback, `basename($PWD)` is used — the worktree directory name
@@ -344,8 +400,8 @@ checklist — what to install and export before a first run.
   seeds this automatically for throwaway sandboxes)
 
 The separate `baton` package is **not required** — `symphony` is vendored inside the
-`baton_harness` package. Use `BH_BUILD_DEVELOPMENT=1 uv sync --locked --extra dev` for an editable local
-development installation.
+`codereeve` package. Use `CODEREEVE_BUILD_DEVELOPMENT=1 uv sync --locked --extra dev`
+for an editable local development installation.
 
 ### GitHub App private-key provider
 
@@ -488,11 +544,11 @@ The `--once` flag runs exactly one poll-dispatch tick then exits — safe for a 
 bin/run-daemon.sh   # polls continuously; stop with Ctrl-C
 ```
 
-**Using the console script directly** (after `uv pip install -e .`):
+**Using the canonical console script directly** (after the editable install above):
 
 ```bash
-bh-daemon --once
-bh-daemon           # continuous
+codereeve daemon --once
+codereeve daemon           # continuous
 ```
 
 **Additional variables set automatically by the launcher:**

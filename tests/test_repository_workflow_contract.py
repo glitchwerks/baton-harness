@@ -167,6 +167,17 @@ def test_agent_policy_files_are_byte_identical() -> None:
     ).read_bytes()
 
 
+def test_readme_presents_codereeve_as_canonical_cli() -> None:
+    """The README presents the unified CodeReeve command as canonical."""
+    text = Path("README.md").read_text(encoding="utf-8")
+    assert "codereeve daemon" in text
+    assert "codereeve doctor" in text
+    assert "codereeve provenance" in text
+    assert "codereeve hook after-create" in text
+    assert "codereeve verify" in text
+    assert "removed in 0.4.0" in text
+
+
 def test_coderabbit_is_label_opt_in_only() -> None:
     """CodeRabbit reviews are advisory and opt in through one PR label."""
     config = _load_yaml(".coderabbit.yaml")

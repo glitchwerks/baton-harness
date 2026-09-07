@@ -30,20 +30,9 @@ dev = [
     "types-PyYAML>=6.0",
 ]
 
-# Console entry points — one per hook.
-# These are the invocation form that WORKFLOW.md hook lines should call:
-#   after_create: bh-after-create
-#   before_run:   bh-before-run
-#   after_run:    bh-after-run
-#
-# Example WORKFLOW.md hook line (issue #5):
-#   after_create: bh-after-create
-#   before_run:   bh-before-run
-#   after_run:    bh-after-run
-#
-# After `pip install -e .` or `uv pip install -e .`, these commands are on
-# PATH inside the venv. The launcher (bin/run.sh) activates the venv or
-# ensures they are resolvable before starting Baton.
+# `codereeve` is the unified canonical executable. The six `bh-*` scripts are
+# temporary compatibility shims for the 0.2 and 0.3 release lines and are
+# removed in 0.4.0. New WORKFLOW.md hook lines use `codereeve hook <name>`.
 [project.scripts]
 codereeve = "codereeve.cli:main"
 bh-after-create = "codereeve.legacy_cli:after_create_main"
