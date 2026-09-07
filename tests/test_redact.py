@@ -27,6 +27,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from baton_harness import redact as redact_mod
 from baton_harness.redact import redact_secrets
 
@@ -43,6 +45,39 @@ _TOKEN_SAMPLES = {
     "github_pat_": "github_pat_11AAAAAAA0_"
     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 }
+
+
+@pytest.mark.parametrize(
+    ("text", "secret"),
+    [
+        (
+            "-----BEGIN PRIVATE KEY-----\nmaterial\n-----END PRIVATE KEY-----",
+            "material",
+        ),
+        (
+            "-----BEGIN RSA PRIVATE KEY-----\nmaterial\n"
+            "-----END RSA PRIVATE KEY-----",
+            "material",
+        ),
+        ("https://user:password@example.test/path", "password"),
+        ("Authorization: Bearer opaque-credential", "opaque-credential"),
+        ("Authorization: Basic opaque-credential", "opaque-credential"),
+        (
+            "https://example.test/?access_token=oauth-secret&safe=yes",
+            "oauth-secret",
+        ),
+        ('{"refresh_token":"refresh-secret"}', "refresh-secret"),
+        ('{"accessToken": "oauth-secret"}', "oauth-secret"),
+        ('{"api_key": "api-secret"}', "api-secret"),
+        ("CLIENT_SECRET='secret with spaces'", "secret with spaces"),
+        ('{"refresh_token":"escaped\\"secret"}', "secret"),
+    ],
+)
+def test_extended_credentials_are_redacted(text: str, secret: str) -> None:
+    """Structural credentials cannot survive in diagnostics."""
+    rendered = redact_secrets(f"failure: {text}")
+    assert secret not in rendered
+    assert "«redacted»" in rendered
 
 
 # ---------------------------------------------------------------------------
