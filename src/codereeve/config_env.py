@@ -56,6 +56,27 @@ class Assignment:
     trailing_trivia: tuple[str, ...] = ()
 
 
+class _TriviaOnlyAssignments(tuple[Assignment, ...]):
+    """Tuple-compatible parsed result that retains a trivia-only file."""
+
+    file_trivia: tuple[str, ...]
+
+    def __new__(
+        cls, file_trivia: Sequence[str]
+    ) -> _TriviaOnlyAssignments:
+        """Create an empty assignment tuple with its source trivia.
+
+        Args:
+            file_trivia: Physical comment and blank lines in source order.
+
+        Returns:
+            An empty tuple-compatible parsed result.
+        """
+        result = super().__new__(cls)
+        result.file_trivia = tuple(file_trivia)
+        return result
+
+
 @dataclass(frozen=True)
 class EnvLayer:
     """A named environment source in descending priority order.
@@ -208,6 +229,8 @@ def parse_env_text(text: str, *, source: str) -> tuple[Assignment, ...]:
         assignments[-1] = replace(
             assignments[-1], trailing_trivia=tuple(pending_trivia)
         )
+    if not assignments:
+        return _TriviaOnlyAssignments(pending_trivia)
     return tuple(assignments)
 
 
@@ -319,6 +342,11 @@ def rewrite_assignments(
         for alias in PRODUCT_ALIASES
         for key in (alias.canonical, alias.legacy)
     }
+    if not assignments:
+        if isinstance(assignments, _TriviaOnlyAssignments):
+            trivia = assignments.file_trivia
+            return "" if not trivia else "\n".join(trivia) + "\n"
+        return ""
     selected = _rewrite_selection(assignments, PRODUCT_ALIASES)
     emitted: set[str] = set()
     lines: list[str] = []

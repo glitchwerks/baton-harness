@@ -297,6 +297,17 @@ def test_rewrite_assignments_retains_trivia_and_collapsed_comments() -> None:
     )
 
 
+def test_rewrite_assignments_retains_trivia_only_file() -> None:
+    """Migration round-trips a file that contains no assignments."""
+    assignments = parse_env_text(
+        "# heading\n\n# footer\n",
+        source="config.env",
+    )
+    assert rewrite_assignments(assignments, path_values={}) == (
+        "# heading\n\n# footer\n"
+    )
+
+
 def test_rewrite_assignments_rewrites_equal_pair_and_default_path(
 ) -> None:
     """Equal aliases collapse while custom path values remain exact."""
