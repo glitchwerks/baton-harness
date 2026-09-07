@@ -1,6 +1,6 @@
 # CodeReeve Rename Design
 
-**Status:** Draft for written review
+**Status:** Approved
 **Epic:** #390
 **Milestone:** CodeReeve rename (#14)
 **Target releases:** 0.2.0, 0.3.0, and 0.4.0
