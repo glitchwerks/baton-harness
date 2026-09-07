@@ -470,9 +470,7 @@ class TestClassifyRetryWithRecovery:
                 _completed(stdout=_NON_JSON_BANNERS[0]),  # attempt 1 fail
                 _completed(stdout=_PR_JSON_OPEN),  # attempt 2 success
             ]
-            with patch(
-                "codereeve.after_run.time", create=True
-            ) as mock_time:
+            with patch("codereeve.after_run.time", create=True) as mock_time:
                 mock_time.sleep = sleep_mock
                 _classify()
 
@@ -510,9 +508,7 @@ class TestClassifyRetryWithRecovery:
 
         with patch("codereeve.after_run._run") as mock_run:
             mock_run.side_effect = _tracking_side_effect
-            with patch(
-                "codereeve.after_run.time", create=True
-            ) as mock_time:
+            with patch("codereeve.after_run.time", create=True) as mock_time:
                 mock_time.sleep = MagicMock()
                 try:
                     _classify()
@@ -536,9 +532,7 @@ class TestClassifyRetryWithRecovery:
             mock_run.side_effect = list(_GIT_PREFIX_CLEAN) + [
                 _completed(stdout=_PR_JSON_OPEN)
             ]
-            with patch(
-                "codereeve.after_run.time", create=True
-            ) as mock_time:
+            with patch("codereeve.after_run.time", create=True) as mock_time:
                 mock_time.sleep = sleep_mock
                 result = _classify()
 

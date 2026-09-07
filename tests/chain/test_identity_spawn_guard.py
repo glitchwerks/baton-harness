@@ -452,10 +452,7 @@ class TestChainPackageSpawnGuard:
         regression it exists to catch.
         """
         chain_root = (
-            Path(__file__).resolve().parents[2]
-            / "src"
-            / "codereeve"
-            / "chain"
+            Path(__file__).resolve().parents[2] / "src" / "codereeve" / "chain"
         )
 
         violations = _find_unguarded_spawn_calls(chain_root)

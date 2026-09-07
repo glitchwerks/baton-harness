@@ -225,8 +225,7 @@ def test_parked_seed_clears_agent_in_progress_before_mark_parked() -> None:
         ),
         patch("codereeve.chain.daemon.alert", return_value=True),
         patch(
-            "codereeve.vendor.symphony.orchestrator.Orchestrator"
-            "._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
         ),
     ):
@@ -364,8 +363,7 @@ def test_ci_gate_reentry_no_pr_clears_agent_in_progress() -> None:
         ),
         patch("codereeve.chain.daemon.alert", return_value=True),
         patch(
-            "codereeve.vendor.symphony.orchestrator.Orchestrator"
-            "._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
         ),
     ):

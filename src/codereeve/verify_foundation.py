@@ -498,15 +498,13 @@ def _smoke_entry_points(
                     UnicodeError,
                 ) as exc:
                     raise FoundationError(
-                        "entry-point smoke could not complete "
-                        f"({name}): {exc}"
+                        f"entry-point smoke could not complete ({name}): {exc}"
                     ) from exc
                 notice = f"{name} is deprecated;"
                 notice_lines = [
                     line
                     for line in result.stderr.splitlines()
-                    if line.startswith(notice)
-                    and "removed in 0.4.0" in line
+                    if line.startswith(notice) and "removed in 0.4.0" in line
                 ]
                 if requires_notice and (
                     len(notice_lines) != 1

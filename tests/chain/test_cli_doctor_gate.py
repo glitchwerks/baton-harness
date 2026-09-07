@@ -358,9 +358,7 @@ def test_live_vault_retains_prebootstrap_authority(
         patch.object(cli, "_assert_force_pr_not_merge_tripwire"),
         patch.object(cli, "bootstrap_secrets", side_effect=bootstrap),
         patch.object(cli, "validate_daemon_token"),
-        patch(
-            "codereeve.chain.bws_client.fetch_secret", side_effect=fetch
-        ),
+        patch("codereeve.chain.bws_client.fetch_secret", side_effect=fetch),
         patch(
             "codereeve.chain.app_auth.build_app_jwt",
             return_value="signed-jwt",
@@ -401,9 +399,7 @@ def _run_file_provider_gate(
         ),
         patch.object(doctor, "CATALOG", checks),
         patch.object(doctor, "run_gate", new=_REAL_RUN_GATE),
-        patch(
-            "codereeve.chain.cli.load_workflow", return_value=MagicMock()
-        ),
+        patch("codereeve.chain.cli.load_workflow", return_value=MagicMock()),
         patch(
             "codereeve.chain.cli.load_registry",
             return_value=[MagicMock(project_root=str(tmp_path))],

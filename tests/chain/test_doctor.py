@@ -1278,6 +1278,34 @@ def test_pkg_entry_points_check_requires_all_console_scripts() -> None:
     distribution_lookup.assert_called_once_with("codereeve")
 
 
+def test_pkg_entry_points_check_requires_canonical_command() -> None:
+    """Legacy scripts alone cannot satisfy the CodeReeve installation check."""
+    check = _get_check("PKG_ENTRY_POINTS")
+    distribution = Mock()
+    distribution.entry_points = tuple(
+        doctor.metadata.EntryPoint(
+            name=name,
+            value=f"codereeve.legacy_cli:{handler}",
+            group="console_scripts",
+        )
+        for name, handler in (
+            ("bh-after-create", "after_create_main"),
+            ("bh-before-run", "before_run_main"),
+            ("bh-after-run", "after_run_main"),
+            ("bh-daemon", "daemon_main"),
+            ("bh-force-pr-not-merge", "force_pr_not_merge_main"),
+            ("bh-verify-foundation", "verify_foundation_main"),
+        )
+    )
+    with patch(
+        "codereeve.chain.doctor.metadata.distribution",
+        return_value=distribution,
+    ):
+        result = check(_make_ctx())
+    assert result.status is CheckStatus.FAIL
+    assert result.detail == "Missing installed console scripts: codereeve"
+
+
 def test_pkg_resources_check_reads_every_packaged_resource() -> None:
     """PKG_RESOURCES reads every member of the canonical resource manifest."""
     check = _get_check("PKG_RESOURCES")

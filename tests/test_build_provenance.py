@@ -21,12 +21,17 @@ LOCK_CONTENT = b"locked\n"
 
 
 def test_sdist_excludes_ignored_workspace_state(tmp_path: Path) -> None:
-    """An sdist cannot capture ignored runtime, ledger, or scratch files."""
+    """An sdist excludes workspace state and the staged environment."""
     root = Path(__file__).resolve().parents[1]
     marker_name = "sdist-boundary-sentinel.txt"
     markers = [
         root / directory / marker_name
-        for directory in (".baton-harness", ".superpowers", ".tmp")
+        for directory in (
+            ".baton-harness",
+            ".superpowers",
+            ".tmp",
+            ".venv-codereeve",
+        )
     ]
     created_directories: list[Path] = []
     for marker in markers:

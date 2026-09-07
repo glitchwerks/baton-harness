@@ -403,6 +403,7 @@ def _check_package_imports(ctx: DoctorContext) -> CheckResult:
 
 _REQUIRED_ENTRY_POINTS = frozenset(
     {
+        "codereeve",
         "bh-after-create",
         "bh-before-run",
         "bh-after-run",

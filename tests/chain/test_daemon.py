@@ -709,9 +709,7 @@ def test_agent_in_progress_removed_on_every_terminal_outcome() -> None:
 
         with (
             patch.object(daemon_mod, "_run", side_effect=recording_run),
-            patch(
-                "codereeve.chain.daemon.fetch_blocked_by", return_value=[]
-            ),
+            patch("codereeve.chain.daemon.fetch_blocked_by", return_value=[]),
             patch("codereeve.chain.branches.create_feature_branch"),
             patch("codereeve.chain.branches.checkout_feature_branch"),
             patch(
@@ -2864,8 +2862,7 @@ def test_worker_exception_routes_through_alert_severity_warn() -> None:
         ),
         patch("codereeve.chain.daemon.alert", mock_alert),
         patch(
-            "codereeve.vendor.symphony.orchestrator.Orchestrator"
-            "._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=exploding_worker,
         ),
     ):
@@ -4019,8 +4016,7 @@ def test_redispatch_loop_breach_skips_worker_and_parks(
         ),
         patch("codereeve.chain.daemon.alert", mock_alert),
         patch(
-            "codereeve.vendor.symphony.orchestrator."
-            "Orchestrator._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=tracking_worker,
         ),
     ):
@@ -4227,8 +4223,7 @@ def test_redispatch_below_threshold_dispatches_worker(
         ),
         patch("codereeve.chain.daemon.alert", mock_alert),
         patch(
-            "codereeve.vendor.symphony.orchestrator."
-            "Orchestrator._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=tracking_worker,
         ),
     ):
@@ -5881,9 +5876,7 @@ class TestAsyncEscalationStartupWarning:
         monkeypatch.delenv("BH_SLACK_WEBHOOK_URL", raising=False)
         obs = _minimal_obs_config(heartbeat_ping_url=None)
 
-        with caplog.at_level(
-            logging.WARNING, logger="codereeve.chain.daemon"
-        ):
+        with caplog.at_level(logging.WARNING, logger="codereeve.chain.daemon"):
             warn_if_async_escalation_unconfigured(obs)
 
         warning_records = [
@@ -5926,9 +5919,7 @@ class TestAsyncEscalationStartupWarning:
             heartbeat_ping_url="https://uptime.example/ping"
         )
 
-        with caplog.at_level(
-            logging.WARNING, logger="codereeve.chain.daemon"
-        ):
+        with caplog.at_level(logging.WARNING, logger="codereeve.chain.daemon"):
             warn_if_async_escalation_unconfigured(obs)
 
         warning_records = [
@@ -5961,9 +5952,7 @@ class TestAsyncEscalationStartupWarning:
         )
         obs = _minimal_obs_config(heartbeat_ping_url=None)
 
-        with caplog.at_level(
-            logging.WARNING, logger="codereeve.chain.daemon"
-        ):
+        with caplog.at_level(logging.WARNING, logger="codereeve.chain.daemon"):
             warn_if_async_escalation_unconfigured(obs)
 
         warning_records = [
@@ -5998,9 +5987,7 @@ class TestAsyncEscalationStartupWarning:
             heartbeat_ping_url="https://uptime.example/ping"
         )
 
-        with caplog.at_level(
-            logging.WARNING, logger="codereeve.chain.daemon"
-        ):
+        with caplog.at_level(logging.WARNING, logger="codereeve.chain.daemon"):
             warn_if_async_escalation_unconfigured(obs)
 
         warning_records = [
@@ -6031,9 +6018,7 @@ class TestAsyncEscalationStartupWarning:
         monkeypatch.setenv("BH_SLACK_WEBHOOK_URL", "")
         obs = _minimal_obs_config(heartbeat_ping_url=None)
 
-        with caplog.at_level(
-            logging.WARNING, logger="codereeve.chain.daemon"
-        ):
+        with caplog.at_level(logging.WARNING, logger="codereeve.chain.daemon"):
             warn_if_async_escalation_unconfigured(obs)
 
         warning_records = [
@@ -6906,8 +6891,7 @@ def test_blocked_live_label_prevents_dispatch() -> None:
         ),
         patch("codereeve.chain.daemon.alert", return_value=True),
         patch(
-            "codereeve.vendor.symphony.orchestrator.Orchestrator"
-            "._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
         ),
     ):
@@ -6996,8 +6980,7 @@ def test_non_blocked_live_label_still_dispatches() -> None:
         ),
         patch("codereeve.chain.daemon.alert", return_value=True),
         patch(
-            "codereeve.vendor.symphony.orchestrator.Orchestrator"
-            "._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
         ),
     ):
@@ -7142,8 +7125,7 @@ def test_mixed_frontier_only_non_blocked_dispatched() -> None:
         ),
         patch("codereeve.chain.daemon.alert", return_value=True),
         patch(
-            "codereeve.vendor.symphony.orchestrator.Orchestrator"
-            "._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
         ),
     ):
@@ -7241,8 +7223,7 @@ def test_label_fetch_failure_is_fail_closed_no_dispatch() -> None:
         ),
         patch("codereeve.chain.daemon.alert", return_value=True),
         patch(
-            "codereeve.vendor.symphony.orchestrator.Orchestrator"
-            "._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
         ),
     ):
@@ -7419,8 +7400,7 @@ def test_unmilestoned_issue_dispatched_alongside_milestoned_in_same_tick() -> (
         ),
         patch("codereeve.chain.daemon.alert", return_value=True),
         patch(
-            "codereeve.vendor.symphony.orchestrator.Orchestrator"
-            "._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
         ),
     ):
@@ -7637,8 +7617,7 @@ def test_second_work_unit_skipped_when_blocked_mid_drain() -> None:
             side_effect=fake_alert,
         ),
         patch(
-            "codereeve.vendor.symphony.orchestrator.Orchestrator"
-            "._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
         ),
     ):
@@ -7861,8 +7840,7 @@ def test_second_work_unit_skipped_on_non_blocked_exclude_label_mid_drain() -> (
             side_effect=fake_alert,
         ),
         patch(
-            "codereeve.vendor.symphony.orchestrator.Orchestrator"
-            "._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
         ),
     ):
@@ -8063,8 +8041,7 @@ def test_agent_ready_and_agent_failed_issue_alerts_once_across_restarts(
             side_effect=fake_alert,
         ),
         patch(
-            "codereeve.vendor.symphony.orchestrator.Orchestrator"
-            "._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
         ),
     ):
@@ -8325,8 +8302,7 @@ def test_second_work_unit_skipped_when_agent_ready_removed_mid_drain() -> None:
             side_effect=fake_alert,
         ),
         patch(
-            "codereeve.vendor.symphony.orchestrator.Orchestrator"
-            "._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
         ),
     ):
@@ -8551,8 +8527,7 @@ def test_malformed_3_label_state_fires_critical_alert() -> None:
             side_effect=capturing_alert,
         ),
         patch(
-            "codereeve.vendor.symphony.orchestrator.Orchestrator"
-            "._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
         ),
     ):
@@ -8683,8 +8658,7 @@ def test_two_label_torn_state_no_multi_state_critical_alert() -> None:
             side_effect=capturing_alert,
         ),
         patch(
-            "codereeve.vendor.symphony.orchestrator.Orchestrator"
-            "._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
         ),
     ):
@@ -11352,8 +11326,7 @@ def test_pre_dispatch_race_excludes_label_on_final_fetch() -> None:
         ),
         patch("codereeve.chain.daemon.alert", return_value=True),
         patch(
-            "codereeve.vendor.symphony.orchestrator.Orchestrator"
-            "._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             side_effect=fake_run_worker,
         ),
     ):

@@ -1009,9 +1009,7 @@ def test_build_preflight_runner_injects_gh_token_into_subprocess_env(
 
     runner = runner_factory(_TOKEN)
 
-    with patch(
-        "codereeve.chain.daemon.subprocess.run", side_effect=_spy_run
-    ):
+    with patch("codereeve.chain.daemon.subprocess.run", side_effect=_spy_run):
         runner(["gh", "api", "repos/o/r/rulesets"])
 
     assert captured_env, "subprocess.run must be called by the runner"
@@ -1390,9 +1388,7 @@ def test_build_preflight_runner_passes_positive_timeout_to_subprocess_run(
 
     runner = runner_factory(_TOKEN)
 
-    with patch(
-        "codereeve.chain.daemon.subprocess.run", side_effect=_spy_run
-    ):
+    with patch("codereeve.chain.daemon.subprocess.run", side_effect=_spy_run):
         runner(["gh", "api", "repos/o/r/rulesets"])
 
     assert captured_kwargs, "subprocess.run must be called by the runner"

@@ -533,9 +533,7 @@ def test_wheel_rejects_provenance_only_under_legacy_package(
             "Version: 0.0.0+foundation\n",
         )
 
-    with pytest.raises(
-        FoundationError, match="canonical provenance record"
-    ):
+    with pytest.raises(FoundationError, match="canonical provenance record"):
         verify_foundation.inspect_provenance_archive(wheel, _IDENTITY)
 
 
@@ -556,9 +554,7 @@ def test_sdist_rejects_provenance_only_under_legacy_package(
             member.size = len(data)
             archive.addfile(member, io.BytesIO(data))
 
-    with pytest.raises(
-        FoundationError, match="canonical provenance record"
-    ):
+    with pytest.raises(FoundationError, match="canonical provenance record"):
         verify_foundation.inspect_provenance_archive(source, _IDENTITY)
 
 
@@ -838,9 +834,7 @@ def test_incompatible_distribution_fails_closed(
             package_file=tmp_path / "venv" / "codereeve.py",
             prefix=tmp_path / "venv",
             entry_points=EXPECTED_ENTRY_POINTS,
-            installed_distributions=frozenset(
-                {"codereeve", legacy_name}
-            ),
+            installed_distributions=frozenset({"codereeve", legacy_name}),
             incompatible_distributions=frozenset({"baton-harness"}),
             forbidden_distributions=frozenset(),
         )
@@ -1043,12 +1037,12 @@ def test_installed_entry_points_use_only_safe_smokes(tmp_path: Path) -> None:
     guard_calls = [
         call
         for call in runner.calls
-        if call[0][1:] in {
+        if call[0][1:]
+        in {
             ("hook", "force-pr-not-merge"),
             (),
         }
-        and Path(call[0][0]).stem
-        in {"codereeve", "bh-force-pr-not-merge"}
+        and Path(call[0][0]).stem in {"codereeve", "bh-force-pr-not-merge"}
     ]
     assert len(guard_calls) == 2
     assert all(call[3] == "{}" for call in guard_calls)
@@ -1062,10 +1056,7 @@ def test_installed_entry_points_use_only_safe_smokes(tmp_path: Path) -> None:
         call
         for call in runner.calls
         if Path(call[0][0]).stem in lifecycle_names
-        and (
-            Path(call[0][0]).stem != "codereeve"
-            or call[0][1:2] == ("hook",)
-        )
+        and (Path(call[0][0]).stem != "codereeve" or call[0][1:2] == ("hook",))
         and call[0][1:] != ("hook", "force-pr-not-merge")
     ]
     assert len(lifecycle_calls) == 6
@@ -1378,8 +1369,7 @@ def test_verifier_output_uses_canonical_command_name(
     )
     assert verify_foundation.main(["--installed"]) == 0
     assert (
-        capsys.readouterr().out
-        == "codereeve verify: all invariants passed\n"
+        capsys.readouterr().out == "codereeve verify: all invariants passed\n"
     )
 
     def fail_installed(_forbidden: frozenset[str]) -> None:

@@ -25,6 +25,4 @@ def test_version_matches_pyproject() -> None:
     """
     import importlib.metadata
 
-    assert codereeve.__version__ == importlib.metadata.version(
-        "codereeve"
-    )
+    assert codereeve.__version__ == importlib.metadata.version("codereeve")

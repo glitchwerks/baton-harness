@@ -328,8 +328,7 @@ def test_lone_orphan_milestone_triggers_reconstruct_and_tally(
             side_effect=spy_record_and_check,
         ),
         patch(
-            "codereeve.vendor.symphony.orchestrator."
-            "Orchestrator._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             new_callable=AsyncMock,
             return_value="pr_created",
         ),
@@ -448,8 +447,7 @@ def test_milestone_with_ready_and_orphan_runs_work_unit_exactly_once() -> None:
             side_effect=spy_run_work_unit,
         ),
         patch(
-            "codereeve.vendor.symphony.orchestrator."
-            "Orchestrator._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             new_callable=AsyncMock,
             return_value="pr_created",
         ),
@@ -579,8 +577,7 @@ def test_lone_orphan_populates_liveness_state(
             side_effect=spy_mark_in_progress,
         ),
         patch(
-            "codereeve.vendor.symphony.orchestrator."
-            "Orchestrator._run_worker",
+            "codereeve.vendor.symphony.orchestrator.Orchestrator._run_worker",
             new_callable=AsyncMock,
             return_value="pr_created",
         ),
