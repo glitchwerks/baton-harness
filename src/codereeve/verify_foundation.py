@@ -502,9 +502,15 @@ def _smoke_entry_points(
                         f"({name}): {exc}"
                     ) from exc
                 notice = f"{name} is deprecated;"
+                notice_lines = [
+                    line
+                    for line in result.stderr.splitlines()
+                    if line.startswith(notice)
+                    and "removed in 0.4.0" in line
+                ]
                 if requires_notice and (
-                    notice not in result.stderr
-                    or "removed in 0.4.0" not in result.stderr
+                    len(notice_lines) != 1
+                    or result.stderr.count(notice) != 1
                     or notice in result.stdout
                 ):
                     raise FoundationError(

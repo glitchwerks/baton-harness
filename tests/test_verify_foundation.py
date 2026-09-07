@@ -1106,6 +1106,35 @@ def test_legacy_smoke_requires_removal_notice_on_stderr(
         _smoke_entry_points(tmp_path / "bin", runner=runner)
 
 
+def test_legacy_smoke_rejects_duplicate_removal_notice(
+    tmp_path: Path,
+) -> None:
+    """A legacy wrapper must emit its removal notice exactly once."""
+    normal = _SmokeRunner()
+
+    def runner(
+        command: Sequence[str],
+        *,
+        cwd: Path,
+        env: Mapping[str, str] | None = None,
+        input_text: str | None = None,
+        timeout_seconds: float = 300,
+    ) -> CompletedProcess[str]:
+        result = normal(
+            command,
+            cwd=cwd,
+            env=env,
+            input_text=input_text,
+            timeout_seconds=timeout_seconds,
+        )
+        if Path(command[0]).stem == "bh-daemon":
+            result.stderr *= 2
+        return result
+
+    with pytest.raises(FoundationError, match="removal notice"):
+        _smoke_entry_points(tmp_path / "bin", runner=runner)
+
+
 @pytest.mark.parametrize(
     "flag", ["provenance", "--provenance", "doctor", "--doctor"]
 )
