@@ -153,10 +153,14 @@ hex strings. `development` is a JSON boolean.
 ## Runtime provenance contract
 
 Add `baton_harness.provenance` as the sole loader and validator for the packaged
-record. It will read the record through `importlib.resources`, validate the complete
-schema, obtain the installed version with `importlib.metadata.version("baton-harness")`,
-and require exact equality with `package_version`. It will not inspect `.git` or infer
-identity from a checkout (#358).
+record. It will obtain `importlib.metadata.distribution("baton-harness")`, require
+exactly one `baton_harness/build_provenance.json` entry in its installed-file inventory,
+and read that `PackagePath`; this keeps editable installs tied to the generated
+distribution artifact rather than the source tree. It will validate the complete schema,
+use `distribution.version`, and require exact equality with `package_version`. It will
+not inspect `.git` or infer identity from a checkout (#358). Python documents the
+distribution file inventory, `PackagePath.read_text()`, and the `files is None` case at
+https://docs.python.org/3.10/library/importlib.metadata.html (fetched 2026-09-06).
 
 `baton_harness.__version__` will use installed distribution metadata instead of a
 second literal. `bh-daemon --version` will print `bh-daemon <package_version>` and

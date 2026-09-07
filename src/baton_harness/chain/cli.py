@@ -28,6 +28,7 @@ import tempfile
 from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 
+from baton_harness import __version__
 from baton_harness._auth import (
     TokenValidationError,
     validate_daemon_token,
@@ -47,6 +48,7 @@ from baton_harness.chain.app_private_key import (
 from baton_harness.chain.daemon import run_daemon
 from baton_harness.chain.identity import Identity, env_for
 from baton_harness.chain.registry import load_registry
+from baton_harness.provenance import ProvenanceError, load_provenance
 from baton_harness.resources import as_path
 from baton_harness.vendor.symphony.config import load_workflow
 
@@ -257,8 +259,27 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Exit nonzero when doctor finds a critical failure.",
     )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
+    parser.add_argument(
+        "--provenance",
+        action="store_true",
+        help="Print validated build provenance as JSON and exit.",
+    )
 
     args = parser.parse_args(argv)
+
+    if args.provenance:
+        try:
+            provenance = load_provenance()
+        except ProvenanceError as exc:
+            print(f"bh-daemon: provenance error: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(provenance.as_dict(), sort_keys=True))
+        return 0
 
     if args.doctor or args.check_vault:
         from baton_harness.chain import bws_client, doctor
