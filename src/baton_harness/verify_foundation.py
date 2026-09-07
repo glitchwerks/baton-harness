@@ -4,20 +4,24 @@ from __future__ import annotations
 
 import argparse
 import configparser
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
 import sysconfig
+import tarfile
 import tempfile
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from email.parser import Parser
 from importlib import metadata
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Protocol
 from zipfile import BadZipFile, ZipFile
 
+from baton_harness.provenance import ProvenanceError, validate_provenance
 from baton_harness.resources import (
     RESOURCE_NAMES,
     PackagedResourceError,
@@ -307,6 +311,21 @@ def _smoke_entry_points(
     """
     smoke_cases = (
         ("bh-daemon", ("--help",), None, 0),
+        ("bh-daemon", ("--version",), None, 0),
+        ("bh-daemon", ("--provenance",), None, 0),
+        (
+            "bh-daemon",
+            (
+                "--doctor",
+                "--phase",
+                "installation",
+                "--format",
+                "json",
+                "--strict",
+            ),
+            None,
+            0,
+        ),
         ("bh-after-create", (), None, 1),
         ("bh-before-run", (), None, 1),
         ("bh-after-run", (), None, 1),
@@ -317,6 +336,8 @@ def _smoke_entry_points(
         child_env = dict(os.environ)
         child_env.pop("PYTHONPATH", None)
         child_env.pop("PYTHONHOME", None)
+        smoke_version = ""
+        smoke_provenance: dict[str, object] | None = None
         for name, arguments, input_text, expected_status in smoke_cases:
             executable = executable_dir / (
                 f"{name}.exe" if os.name == "nt" else name
@@ -341,6 +362,45 @@ def _smoke_entry_points(
                     f"entry-point smoke failed ({name}): expected exit "
                     f"{expected_status}, got {result.returncode}: {detail}"
                 )
+            try:
+                if arguments == ("--version",):
+                    smoke_version = result.stdout.strip().removeprefix(
+                        "bh-daemon "
+                    )
+                    if not smoke_version:
+                        raise FoundationError("empty installed version")
+                elif arguments == ("--provenance",):
+                    smoke_provenance = validate_provenance(
+                        json.loads(result.stdout), smoke_version
+                    ).as_dict()
+                    if smoke_provenance["development"] is not False:
+                        raise FoundationError(
+                            "installed provenance is developmental"
+                        )
+                elif "--doctor" in arguments:
+                    report = json.loads(result.stdout)
+                    if (
+                        not isinstance(report, dict)
+                        or report.get("schema_version") != 1
+                        or report.get("provenance")
+                        != {
+                            key: value
+                            for key, value in (smoke_provenance or {}).items()
+                            if key != "schema_version"
+                        }
+                        or not isinstance(report.get("checks"), list)
+                        or not report["checks"]
+                        or not isinstance(report.get("summary"), dict)
+                        or report["summary"].get("critical_failures") != 0
+                        or report.get("selected_phases") != ["installation"]
+                    ):
+                        raise FoundationError(
+                            "invalid installed doctor report"
+                        )
+            except (ValueError, ProvenanceError) as exc:
+                raise FoundationError(
+                    f"invalid installed JSON smoke: {exc}"
+                ) from exc
 
 
 def _read_installed_resources(
@@ -471,6 +531,122 @@ def inspect_wheel(wheel: Path) -> None:
         ) from exc
 
 
+def _source_members(archive: tarfile.TarFile) -> list[tarfile.TarInfo]:
+    """Reject unsafe archive entries before reading or extracting a tree.
+
+    Args:
+        archive: Open source archive.
+
+    Returns:
+        Validated regular-file and directory entries under one root.
+
+    Raises:
+        FoundationError: If any path or entry type is unsafe.
+    """
+    members = archive.getmembers()
+    seen: set[str] = set()
+    roots: set[str] = set()
+    for member in members:
+        path = PurePosixPath(member.name)
+        if (
+            path.is_absolute()
+            or PureWindowsPath(member.name).drive
+            or "\\" in member.name
+            or ".." in path.parts
+            or ".git" in (part.lower() for part in path.parts)
+            or not path.parts
+            or not (member.isfile() or member.isdir())
+            or str(path) in seen
+        ):
+            raise FoundationError(
+                f"unsafe source archive member: {member.name}"
+            )
+        seen.add(str(path))
+        roots.add(path.parts[0])
+    if len(roots) != 1:
+        raise FoundationError("source archive must contain one root")
+    return members
+
+
+def inspect_provenance_archive(
+    path: Path, expected: Mapping[str, object]
+) -> None:
+    """Validate canonical archive provenance against metadata and identity.
+
+    Args:
+        path: Wheel or gzipped source archive.
+        expected: Complete asserted standard-build provenance.
+
+    Raises:
+        FoundationError: If archive contents or provenance are inconsistent.
+    """
+    try:
+        version = str(expected["package_version"])
+        if path.suffix == ".whl":
+            with ZipFile(path) as wheel:
+                names = wheel.namelist()
+                canonical = "baton_harness/build_provenance.json"
+                if names.count(canonical) != 1:
+                    raise FoundationError(
+                        "expected one canonical provenance record"
+                    )
+                records = [
+                    name
+                    for name in names
+                    if name.endswith(".dist-info/METADATA")
+                    and name.count("/") == 1
+                ]
+                if len(records) != 1:
+                    raise FoundationError(
+                        "expected one wheel Core Metadata record"
+                    )
+                versions = (
+                    Parser()
+                    .parsestr(wheel.read(records[0]).decode("utf-8"))
+                    .get_all("Version", [])
+                )
+                if len(versions) != 1:
+                    raise FoundationError("expected one metadata version")
+                version = versions[0]
+                raw = wheel.read(canonical)
+        else:
+            with tarfile.open(path, "r:gz") as source:
+                members = _source_members(source)
+                root = PurePosixPath(members[0].name).parts[0]
+                canonical = f"{root}/src/baton_harness/build_provenance.json"
+                names = [member.name for member in members]
+                if names.count(canonical) != 1:
+                    raise FoundationError(
+                        "expected one canonical provenance record"
+                    )
+                record = source.extractfile(canonical)
+                lock = source.extractfile(f"{root}/uv.lock")
+                if record is None or lock is None:
+                    raise FoundationError(
+                        "source archive missing provenance or lock"
+                    )
+                raw = record.read()
+                digest = "sha256:" + hashlib.sha256(lock.read()).hexdigest()
+                if digest != expected["lock_identity"]:
+                    raise FoundationError(
+                        "source archive lock digest mismatch"
+                    )
+        provenance = validate_provenance(json.loads(raw), version)
+        if provenance.as_dict() != dict(expected):
+            raise FoundationError("archive provenance identity mismatch")
+    except (
+        OSError,
+        BadZipFile,
+        tarfile.TarError,
+        UnicodeError,
+        ValueError,
+        KeyError,
+    ) as exc:
+        raise FoundationError(
+            f"could not inspect provenance archive {path}: {exc}"
+        ) from exc
+
+
 def verify_repository(
     root: Path,
     python_versions: Sequence[str],
@@ -498,6 +674,31 @@ def verify_repository(
         assert_config_mirrors(root)
     except PackagedResourceError as exc:
         raise FoundationError(str(exc)) from exc
+
+    try:
+        revision_result = runner(("git", "rev-parse", "HEAD"), cwd=root)
+        revision = revision_result.stdout.strip()
+        if (
+            revision_result.returncode
+            or re.fullmatch(r"[0-9a-f]{40}", revision) is None
+        ):
+            raise FoundationError("could not determine repository HEAD")
+        expected: dict[str, object] = {
+            "schema_version": 1,
+            "package_version": "0.0.0+foundation",
+            "source_revision": revision,
+            "lock_identity": "sha256:"
+            + hashlib.sha256((root / "uv.lock").read_bytes()).hexdigest(),
+            "development": False,
+        }
+    except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
+        raise FoundationError(
+            f"could not determine build identity: {exc}"
+        ) from exc
+    build_env = dict(os.environ)
+    build_env.pop("BH_BUILD_DEVELOPMENT", None)
+    build_env["BH_BUILD_VERSION"] = "0.0.0+foundation"
+    build_env["BH_BUILD_SOURCE_REVISION"] = revision
 
     with _temporary_workspace(keep_temp) as workspace:
         distributions = workspace / "dist"
@@ -550,6 +751,7 @@ def verify_repository(
                 str(distributions),
             ),
             cwd=root,
+            env=build_env,
         )
         wheels = sorted(distributions.glob("*.whl"))
         if len(wheels) != 1:
@@ -558,6 +760,53 @@ def verify_repository(
             )
         wheel = wheels[0]
         inspect_wheel(wheel)
+        inspect_provenance_archive(wheel, expected)
+        sources = sorted(distributions.glob("*.tar.gz"))
+        if len(sources) != 1:
+            raise FoundationError("expected exactly one source archive")
+        inspect_provenance_archive(sources[0], expected)
+        extracted = workspace / "source"
+        extracted.mkdir()
+        with tarfile.open(sources[0], "r:gz") as archive:
+            members = _source_members(archive)
+            # Only regular files/directories survive the full preflight.
+            # Copy manually for identical safety on Python 3.10 and newer.
+            for member in members:
+                destination = extracted.joinpath(
+                    *PurePosixPath(member.name).parts
+                )
+                if member.isdir():
+                    destination.mkdir(parents=True, exist_ok=True)
+                else:
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    contents = archive.extractfile(member)
+                    if contents is None:
+                        raise FoundationError("unreadable source archive file")
+                    destination.write_bytes(contents.read())
+        source_root = next(extracted.iterdir())
+        if (source_root / ".git").exists():
+            raise FoundationError("source rebuild contains .git")
+        rebuilt = workspace / "rebuilt"
+        _run_checked(
+            runner,
+            (
+                "uv",
+                "build",
+                "--build-constraints",
+                str(dev_requirements),
+                "--require-hashes",
+                "--wheel",
+                "--out-dir",
+                str(rebuilt),
+            ),
+            cwd=source_root,
+            env=build_env,
+        )
+        rebuilt_wheels = sorted(rebuilt.glob("*.whl"))
+        if len(rebuilt_wheels) != 1:
+            raise FoundationError("expected exactly one rebuilt wheel")
+        inspect_wheel(rebuilt_wheels[0])
+        inspect_provenance_archive(rebuilt_wheels[0], expected)
 
         smoke_cwd = workspace / "outside-checkout"
         smoke_cwd.mkdir()
