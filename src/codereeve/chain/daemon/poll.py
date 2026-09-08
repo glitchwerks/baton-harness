@@ -92,6 +92,7 @@ from codereeve.chain.registry import RepoConfig
 from codereeve.chain.runlog import RunLog
 from codereeve.chain.session_report import SessionReport
 from codereeve.config_env import runtime_environment
+from codereeve.migration.lease import WriterLease
 from codereeve.paths import RuntimePaths, select_runtime_paths
 from codereeve.vendor.symphony.config import WorkflowConfig
 from codereeve.vendor.symphony.workspace import WorkspaceManager
@@ -185,6 +186,7 @@ async def run_daemon(
     report_path: Path | None = None,
     failure_tally: FailureTally | None = None,
     runtime_paths: RuntimePaths | None = None,
+    writer_lease: WriterLease | None = None,
 ) -> None:
     """Run the always-on serial daemon outer loop.
 
@@ -212,269 +214,283 @@ async def run_daemon(
             one is constructed from observability configuration.
         runtime_paths: CLI-validated locations; direct callers select them
             before any startup effects when omitted.
+        writer_lease: Optional live CLI-owned lease, retained by its caller.
     """
-    values = runtime_environment().values
-    selected = runtime_paths or select_runtime_paths(
-        Path(registry[0].project_root), values
-    )
-    state = selected.state_directory
-    if poll_interval_s is None:
-        poll_interval_s = config.poll_interval_ms / 1000
-
-    _log.info(
-        "daemon: starting (poll_interval=%.1fs, once=%s)",
-        poll_interval_s,
-        once,
-    )
-
-    # (issue #225) Reset the required_checks fallback-warning guard on
-    # every daemon startup, so the warning fires at most once per
-    # ``run_daemon`` invocation (not once per merge) while still firing
-    # fresh on every new daemon run. Writes directly to the
-    # gh_api_helpers submodule's own global (#274, Phase 6b) -- see the
-    # `_gh_api_helpers_mod` import comment above for why a bare `global`
-    # here would silently target the wrong module.
-    _gh_api_helpers_mod._required_checks_warned = False
-
-    # --- Observability startup (best-effort; risk R2 — must never raise). ---
-    runlog: RunLog | None = None
-    obs: ObsConfig | None = None
-    tally: RedispatchTally | None = None
-    try:
-        obs = replace(
-            _daemon_mod.load_obs_config(),
-            ruleset_baseline_path=selected.ruleset_baseline,
+    with WriterLease.hold(
+        Path(registry[0].project_root) / ".codereeve-migration.lock",
+        purpose="daemon",
+        lease=writer_lease,
+    ):
+        values = runtime_environment().values
+        selected = runtime_paths or select_runtime_paths(
+            Path(registry[0].project_root), values
         )
-        warn_if_async_escalation_unconfigured(obs)  # risk R2 — never raises
-        # Constructed via _daemon_mod.RunLog (a live attribute lookup, not
-        # the bare `RunLog` name imported above for typing only) so that
-        # test_daemon.py's `patch.object(daemon_mod, "RunLog", ...)`
-        # keeps injecting a mock class here.
-        runlog = _daemon_mod.RunLog(obs.runlog_path)
-        runlog.emit(
-            {
-                "ts": datetime.now(timezone.utc).isoformat(),
-                "event": "daemon_start",
-                "issue": None,
-                "outcome": None,
-                "severity": "info",
-                "detail": "daemon starting up",
-                "tick_id": None,
-            }
-        )
-    except Exception as exc:  # noqa: BLE001
-        _log.warning("daemon: observability init failed: %s", exc)
-        runlog = None
+        state = selected.state_directory
+        if poll_interval_s is None:
+            poll_interval_s = config.poll_interval_ms / 1000
 
-    report: SessionReport | None = None
-    if report_path is not None:
-        report = SessionReport(
-            mode="once" if once else "continuous",
-            poll_interval_s=poll_interval_s,
-            registry=[{"owner": r.owner, "repo": r.repo} for r in registry],
-            started_at=datetime.now(timezone.utc).isoformat(),
+        _log.info(
+            "daemon: starting (poll_interval=%.1fs, once=%s)",
+            poll_interval_s,
+            once,
         )
 
-    try:
-        if tally is None:
-            obs_for_tally = _daemon_mod.load_obs_config()
-            tally = RedispatchTally(
-                obs_for_tally.redispatch_counts_path,
-                window_ticks=obs_for_tally.redispatch_window_ticks,
-                max_count=obs_for_tally.redispatch_max,
-            )
-    except Exception as exc:  # noqa: BLE001
-        _log.warning("daemon: redispatch tally init failed: %s", exc)
-        tally = None
+        # (issue #225) Reset the required_checks fallback-warning guard on
+        # every daemon startup, so the warning fires at most once per
+        # ``run_daemon`` invocation (not once per merge) while still firing
+        # fresh on every new daemon run. Writes directly to the
+        # gh_api_helpers submodule's own global (#274, Phase 6b) -- see the
+        # `_gh_api_helpers_mod` import comment above for why a bare `global`
+        # here would silently target the wrong module.
+        _gh_api_helpers_mod._required_checks_warned = False
 
-    try:
-        if failure_tally is None:
-            obs_for_failures = obs or _daemon_mod.load_obs_config()
-            failure_tally = FailureTally(
-                obs_for_failures.failure_counts_path,
-                max_count=obs_for_failures.max_issue_failures,
-            )
-    except Exception as exc:  # noqa: BLE001
-        _log.warning("daemon: failure tally init failed: %s", exc)
-        failure_tally = None
-
-    # --- Startup reconciliation sweep (G3 creds, G2 marker, G1 orphans). ---
-    # reconcile_startup may raise SystemExit on fatal credential failure —
-    # that propagates out of run_daemon intentionally (the daemon cannot
-    # operate without valid credentials).  All other failures are suppressed
-    # inside reconcile_startup itself.
-    await reconcile_startup(
-        registry,
-        obs,
-        runlog,
-        installation_token=installation_token,
-        report=report,
-    )
-
-    # --- SIGTERM handler (Fix 3 / PR #107): graceful shutdown clears marker.
-    # Build the marker path once so both the handler and the finally block
-    # reference the same path (single source of truth).
-    _daemon_marker = state / "daemon.alive"
-    _exit_reason: list[str] = ["exception"]
-
-    def _sigterm_handler(signum: int, frame: object) -> None:  # noqa: ARG001
-        """Clear the daemon.alive marker then raise SystemExit."""
+        # Observability startup is best-effort and must never raise.
+        runlog: RunLog | None = None
+        obs: ObsConfig | None = None
+        tally: RedispatchTally | None = None
         try:
-            _daemon_marker.unlink(missing_ok=True)
-        except Exception:  # noqa: BLE001
-            pass
-        _exit_reason[0] = "sigterm"
-        raise SystemExit(0)
-
-    try:
-        signal.signal(signal.SIGTERM, _sigterm_handler)
-    except (OSError, ValueError):
-        # signal.signal may fail if called from a non-main thread (e.g.
-        # certain test harnesses); degrade gracefully rather than crashing.
-        pass
-
-    # --- Heartbeat monitor setup. ----------------------------------------
-    # Construct liveness state shared between the daemon and the monitor.
-    #
-    # LivenessState is written from the daemon (asyncio) thread and read
-    # from the monitor thread; field assignments are atomic under the GIL
-    # and this is best-effort liveness, so no lock is required.
-    liveness_state = LivenessState()
-
-    # Start the heartbeat OS thread unconditionally — including once=True
-    # runs (--once CLI / smoke tests).  A real thread beats independently
-    # of the asyncio event loop, so it continues writing heartbeats even
-    # while the loop is blocked inside the synchronous CI gate
-    # (time.sleep in merge.py up to 1800 s).
-    stop_event = threading.Event()
-    monitor_thread: threading.Thread | None = None
-    if obs is not None:
-        try:
-            monitor_thread = threading.Thread(
-                target=run_heartbeat_loop,
-                args=(obs, liveness_state, stop_event),
-                kwargs={"runlog": runlog},
-                name="heartbeat-monitor",
-                daemon=True,
+            obs = replace(
+                _daemon_mod.load_obs_config(),
+                ruleset_baseline_path=selected.ruleset_baseline,
             )
-            monitor_thread.start()
+            warn_if_async_escalation_unconfigured(
+                obs
+            )  # risk R2 — never raises
+            # Constructed via _daemon_mod.RunLog (a live attribute lookup, not
+            # the bare `RunLog` name imported above for typing only) so that
+            # test_daemon.py's `patch.object(daemon_mod, "RunLog", ...)`
+            # keeps injecting a mock class here.
+            runlog = _daemon_mod.RunLog(obs.runlog_path)
+            runlog.emit(
+                {
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "event": "daemon_start",
+                    "issue": None,
+                    "outcome": None,
+                    "severity": "info",
+                    "detail": "daemon starting up",
+                    "tick_id": None,
+                }
+            )
         except Exception as exc:  # noqa: BLE001
-            _log.warning("daemon: heartbeat thread startup failed: %s", exc)
-            monitor_thread = None
+            _log.warning("daemon: observability init failed: %s", exc)
+            runlog = None
 
-    try:
-        while True:
-            # Advance the re-dispatch tally tick once per outer poll cycle
-            # (before iterating repos so the tick is shared across all
-            # repos in the same outer loop iteration).
-            if tally is not None:
-                tally.advance_tick()
+        report: SessionReport | None = None
+        if report_path is not None:
+            report = SessionReport(
+                mode="once" if once else "continuous",
+                poll_interval_s=poll_interval_s,
+                registry=[
+                    {"owner": r.owner, "repo": r.repo} for r in registry
+                ],
+                started_at=datetime.now(timezone.utc).isoformat(),
+            )
 
-            for repo_cfg in registry:
-                if report is not None:
-                    report.begin_tick(
-                        started_at=datetime.now(timezone.utc).isoformat()
-                    )
-                _tick_error: str | None = None
-                _issues_processed: set[int] = set()
-                # FIX 2: defensive catch around each per-repo tick.  A
-                # failure building or running one work unit must not kill
-                # the always-on daemon.  Log, escalate if possible, then
-                # continue to the next repo/tick.
-                try:
-                    _issues_processed = await _daemon_mod._poll_and_run(
-                        config,
-                        repo_cfg,
-                        ci_poll_interval=ci_poll_interval,
-                        ci_timeout=ci_timeout,
-                        runlog=runlog,
-                        tally=tally,
-                        failure_tally=failure_tally,
-                        liveness_state=liveness_state,
-                        obs=obs,
-                        installation_token=installation_token,
-                        worker_gh_pat=worker_gh_pat,
-                        report=report,
-                    )
-                except Exception as exc:
-                    _tick_error = str(exc)
-                    _log.error(
-                        "daemon: unhandled exception for %s/%s: %s; "
-                        "daemon continues",
-                        repo_cfg.owner,
-                        repo_cfg.repo,
-                        exc,
-                    )
-                    try:
-                        _daemon_mod.alert(
-                            repo_cfg.owner,
-                            repo_cfg.repo,
-                            None,
-                            f"Daemon tick failed for {repo_cfg.owner}/"
-                            f"{repo_cfg.repo}: {exc}",
-                            severity="critical",
-                            kind="debug",
-                            runlog=runlog,
-                            installation_token=installation_token,
-                        )
-                    except Exception:
-                        pass  # escalation may fail; daemon must survive
-                finally:
-                    if report is not None:
-                        report.end_tick(
-                            issues_processed=sorted(_issues_processed),
-                            ended_at=datetime.now(timezone.utc).isoformat(),
-                            error=_tick_error,
-                        )
-
-            if once:
-                _exit_reason[0] = "once_complete"
-                break
-
-            await asyncio.sleep(poll_interval_s)
-    except KeyboardInterrupt:
-        _exit_reason[0] = "keyboard_interrupt"
-        raise
-    finally:
-        # Signal the monitor thread and wait for it to exit cleanly.
-        stop_event.set()
-        if monitor_thread is not None:
-            monitor_thread.join(timeout=5.0)
-        # Clear the G2 ungraceful-exit marker on graceful shutdown so the
-        # next startup does not misread a clean stop as a crash.
         try:
-            _daemon_marker.unlink(missing_ok=True)
-        except Exception:  # noqa: BLE001
-            pass  # best-effort; never raise in finally
-        if report is not None:
+            if tally is None:
+                obs_for_tally = _daemon_mod.load_obs_config()
+                tally = RedispatchTally(
+                    obs_for_tally.redispatch_counts_path,
+                    window_ticks=obs_for_tally.redispatch_window_ticks,
+                    max_count=obs_for_tally.redispatch_max,
+                )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("daemon: redispatch tally init failed: %s", exc)
+            tally = None
+
+        try:
+            if failure_tally is None:
+                obs_for_failures = obs or _daemon_mod.load_obs_config()
+                failure_tally = FailureTally(
+                    obs_for_failures.failure_counts_path,
+                    max_count=obs_for_failures.max_issue_failures,
+                )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("daemon: failure tally init failed: %s", exc)
+            failure_tally = None
+
+        # Startup reconciliation (G3 creds, G2 marker, G1 orphans).
+        # reconcile_startup may raise SystemExit on fatal credential failure —
+        # that propagates out of run_daemon intentionally (the daemon cannot
+        # operate without valid credentials). Other failures are
+        # suppressed inside reconcile_startup itself.
+        await reconcile_startup(
+            registry,
+            obs,
+            runlog,
+            installation_token=installation_token,
+            report=report,
+        )
+
+        # SIGTERM (Fix 3 / PR #107): graceful shutdown clears marker.
+        # Build the marker path once so both the handler and the finally block
+        # reference the same path (single source of truth).
+        _daemon_marker = state / "daemon.alive"
+        _exit_reason: list[str] = ["exception"]
+
+        def _sigterm_handler(signum: int, frame: object) -> None:  # noqa: ARG001
+            """Clear the daemon.alive marker then raise SystemExit."""
             try:
-                report.set_exit_reason(
-                    _exit_reason[0],
-                    ended_at=datetime.now(timezone.utc).isoformat(),
-                )
-                if report_path is not None:
-                    report.write(report_path)
-            except Exception as exc:  # noqa: BLE001
-                _log.warning(
-                    "daemon: session report finalization failed: %s", exc
-                )
-        if runlog is not None:
-            try:
-                runlog.emit(
-                    {
-                        "ts": datetime.now(timezone.utc).isoformat(),
-                        "event": "daemon_stop",
-                        "issue": None,
-                        "outcome": None,
-                        "severity": "info",
-                        "detail": "daemon stopping",
-                        "tick_id": None,
-                    }
-                )
+                _daemon_marker.unlink(missing_ok=True)
             except Exception:  # noqa: BLE001
                 pass
+            _exit_reason[0] = "sigterm"
+            raise SystemExit(0)
 
-    _log.info("daemon: stopped")
+        try:
+            signal.signal(signal.SIGTERM, _sigterm_handler)
+        except (OSError, ValueError):
+            # signal.signal may fail if called from a non-main thread (e.g.
+            # certain test harnesses); degrade gracefully rather than crashing.
+            pass
+
+        # --- Heartbeat monitor setup. ----------------------------------------
+        # Construct liveness state shared between the daemon and the monitor.
+        #
+        # LivenessState is written from the daemon (asyncio) thread and read
+        # from the monitor thread; field assignments are atomic under the GIL
+        # and this is best-effort liveness, so no lock is required.
+        liveness_state = LivenessState()
+
+        # Start the heartbeat OS thread unconditionally — including once=True
+        # runs (--once CLI / smoke tests).  A real thread beats independently
+        # of the asyncio event loop, so it continues writing heartbeats even
+        # while the loop is blocked inside the synchronous CI gate
+        # (time.sleep in merge.py up to 1800 s).
+        stop_event = threading.Event()
+        monitor_thread: threading.Thread | None = None
+        if obs is not None:
+            try:
+                monitor_thread = threading.Thread(
+                    target=run_heartbeat_loop,
+                    args=(obs, liveness_state, stop_event),
+                    kwargs={"runlog": runlog},
+                    name="heartbeat-monitor",
+                    daemon=True,
+                )
+                monitor_thread.start()
+            except Exception as exc:  # noqa: BLE001
+                _log.warning(
+                    "daemon: heartbeat thread startup failed: %s", exc
+                )
+                monitor_thread = None
+
+        try:
+            while True:
+                # Advance the re-dispatch tally tick once per outer poll cycle
+                # (before iterating repos so the tick is shared across all
+                # repos in the same outer loop iteration).
+                if tally is not None:
+                    tally.advance_tick()
+
+                for repo_cfg in registry:
+                    if report is not None:
+                        report.begin_tick(
+                            started_at=datetime.now(timezone.utc).isoformat()
+                        )
+                    _tick_error: str | None = None
+                    _issues_processed: set[int] = set()
+                    # FIX 2: defensive catch around each per-repo tick.  A
+                    # failure building or running one work unit must not kill
+                    # the always-on daemon.  Log, escalate if possible, then
+                    # continue to the next repo/tick.
+                    try:
+                        _issues_processed = await _daemon_mod._poll_and_run(
+                            config,
+                            repo_cfg,
+                            ci_poll_interval=ci_poll_interval,
+                            ci_timeout=ci_timeout,
+                            runlog=runlog,
+                            tally=tally,
+                            failure_tally=failure_tally,
+                            liveness_state=liveness_state,
+                            obs=obs,
+                            installation_token=installation_token,
+                            worker_gh_pat=worker_gh_pat,
+                            report=report,
+                        )
+                    except Exception as exc:
+                        _tick_error = str(exc)
+                        _log.error(
+                            "daemon: unhandled exception for %s/%s: %s; "
+                            "daemon continues",
+                            repo_cfg.owner,
+                            repo_cfg.repo,
+                            exc,
+                        )
+                        try:
+                            _daemon_mod.alert(
+                                repo_cfg.owner,
+                                repo_cfg.repo,
+                                None,
+                                f"Daemon tick failed for {repo_cfg.owner}/"
+                                f"{repo_cfg.repo}: {exc}",
+                                severity="critical",
+                                kind="debug",
+                                runlog=runlog,
+                                installation_token=installation_token,
+                            )
+                        except Exception:
+                            pass  # escalation may fail; daemon must survive
+                    finally:
+                        if report is not None:
+                            report.end_tick(
+                                issues_processed=sorted(_issues_processed),
+                                ended_at=datetime.now(
+                                    timezone.utc
+                                ).isoformat(),
+                                error=_tick_error,
+                            )
+
+                if once:
+                    _exit_reason[0] = "once_complete"
+                    break
+
+                await asyncio.sleep(poll_interval_s)
+        except KeyboardInterrupt:
+            _exit_reason[0] = "keyboard_interrupt"
+            raise
+        finally:
+            # Signal the monitor thread and wait for it to exit cleanly.
+            stop_event.set()
+            if monitor_thread is not None:
+                monitor_thread.join()
+            # Clear the G2 ungraceful-exit marker on graceful shutdown so the
+            # next startup does not misread a clean stop as a crash.
+            try:
+                _daemon_marker.unlink(missing_ok=True)
+            except Exception:  # noqa: BLE001
+                pass  # best-effort; never raise in finally
+            if report is not None:
+                try:
+                    report.set_exit_reason(
+                        _exit_reason[0],
+                        ended_at=datetime.now(timezone.utc).isoformat(),
+                    )
+                    if report_path is not None:
+                        report.write(report_path)
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning(
+                        "daemon: session report finalization failed: %s", exc
+                    )
+            if runlog is not None:
+                try:
+                    runlog.emit(
+                        {
+                            "ts": datetime.now(timezone.utc).isoformat(),
+                            "event": "daemon_stop",
+                            "issue": None,
+                            "outcome": None,
+                            "severity": "info",
+                            "detail": "daemon stopping",
+                            "tick_id": None,
+                        }
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+
+        _log.info("daemon: stopped")
 
 
 async def _poll_and_run(

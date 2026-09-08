@@ -54,6 +54,7 @@ from codereeve.config_env import (
     apply_resolved_environment,
     runtime_environment,
 )
+from codereeve.migration.lease import LeaseError, WriterLease
 from codereeve.paths import (
     PathConflictError,
     runtime_state_directory,
@@ -558,72 +559,85 @@ def main(
         )
         return 1
 
-    # Bootstrap GitHub App installation token (slice 3a).
-    # Must run AFTER chdir so the managed repo is the process cwd.
-    # bootstrap_secrets removes BWS_ACCESS_TOKEN from os.environ in
-    # finally on every bootstrap exit, after any selected vault reads.
-    # The installation token is NEVER written to os.environ; it is
-    # passed by value to run_daemon (env-discipline invariant).
     try:
-        global _BOOTSTRAPPED_GH_TOKEN
-        _BOOTSTRAPPED_GH_TOKEN = ""
-        installation_token = bootstrap_secrets()
-    except (AppAuthError, Exception) as exc:
-        print(
-            f"{prog}: error: failed to bootstrap GitHub App token: {exc}",
-            file=sys.stderr,
+        lease = WriterLease.acquire(
+            Path(project_root) / ".codereeve-migration.lock", purpose="daemon"
         )
+    except LeaseError as exc:
+        print(f"{prog}: {exc}", file=sys.stderr)
         return 1
 
-    # Fail fast if a vault-configured GH_TOKEN resolved empty (issue #212).
-    worker_gh_pat = os.environ.get("GH_TOKEN", "") or _BOOTSTRAPPED_GH_TOKEN
-    try:
-        validate_gh_token(
-            worker_gh_pat,
-            secret_id_configured=bool(
-                os.environ.get("BWS_GH_TOKEN_SECRET_ID")
-            ),
-        )
-    except TokenValidationError as exc:
-        print(
-            f"{prog}: error: GH_TOKEN failed boot-time validation: {exc}",
-            file=sys.stderr,
-        )
-        return 1
-
-    # Validate the minted token before entering the event loop.
-    try:
-        resolved_token = resolve_installation_token(installation_token)
-        validate_daemon_token(resolved_token)
-    except TokenValidationError as exc:
-        print(
-            f"{prog}: error: invalid installation token from bootstrap: {exc}",
-            file=sys.stderr,
-        )
-        return 1
-
-    gate_ctx.installation_token = resolved_token
-    gate_ctx.env["GH_TOKEN"] = worker_gh_pat
-    if not _doctor_gate(gate_ctx, (doctor.Phase.LIVE,), prog=prog):
-        return 1
-
-    # Run the daemon.  run_daemon calls reconcile_startup internally as
-    # part of its startup sweep (Gap 1A invariant: cli.py must NOT call
-    # reconcile_startup directly through any import path).
-    try:
-        asyncio.run(
-            run_daemon(
-                config,
-                registry,
-                once=args.once,
-                poll_interval_s=args.poll_interval,
-                installation_token=installation_token,
-                worker_gh_pat=worker_gh_pat,
-                report_path=report_path,
-                runtime_paths=gate_ctx.runtime_paths,
+    with lease:
+        # Bootstrap GitHub App installation token (slice 3a).
+        # Must run AFTER chdir so the managed repo is the process cwd.
+        # bootstrap_secrets removes BWS_ACCESS_TOKEN from os.environ in
+        # finally on every bootstrap exit, after any selected vault reads.
+        # The installation token is NEVER written to os.environ; it is
+        # passed by value to run_daemon (env-discipline invariant).
+        try:
+            global _BOOTSTRAPPED_GH_TOKEN
+            _BOOTSTRAPPED_GH_TOKEN = ""
+            installation_token = bootstrap_secrets()
+        except (AppAuthError, Exception) as exc:
+            print(
+                f"{prog}: error: failed to bootstrap GitHub App token: {exc}",
+                file=sys.stderr,
             )
+            return 1
+
+        # Fail fast if a vault-configured GH_TOKEN resolved empty (issue #212).
+        worker_gh_pat = (
+            os.environ.get("GH_TOKEN", "") or _BOOTSTRAPPED_GH_TOKEN
         )
-    except KeyboardInterrupt:
-        _log.info("%s: interrupted by user", prog)
+        try:
+            validate_gh_token(
+                worker_gh_pat,
+                secret_id_configured=bool(
+                    os.environ.get("BWS_GH_TOKEN_SECRET_ID")
+                ),
+            )
+        except TokenValidationError as exc:
+            print(
+                f"{prog}: error: GH_TOKEN failed boot-time validation: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+
+        # Validate the minted token before entering the event loop.
+        try:
+            resolved_token = resolve_installation_token(installation_token)
+            validate_daemon_token(resolved_token)
+        except TokenValidationError as exc:
+            print(
+                f"{prog}: error: invalid installation token "
+                f"from bootstrap: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+
+        gate_ctx.installation_token = resolved_token
+        gate_ctx.env["GH_TOKEN"] = worker_gh_pat
+        if not _doctor_gate(gate_ctx, (doctor.Phase.LIVE,), prog=prog):
+            return 1
+
+        # Run the daemon.  run_daemon calls reconcile_startup internally as
+        # part of its startup sweep (Gap 1A invariant: cli.py must NOT call
+        # reconcile_startup directly through any import path).
+        try:
+            asyncio.run(
+                run_daemon(
+                    config,
+                    registry,
+                    once=args.once,
+                    poll_interval_s=args.poll_interval,
+                    installation_token=installation_token,
+                    worker_gh_pat=worker_gh_pat,
+                    report_path=report_path,
+                    runtime_paths=gate_ctx.runtime_paths,
+                    writer_lease=lease,
+                )
+            )
+        except KeyboardInterrupt:
+            _log.info("%s: interrupted by user", prog)
 
     return 0

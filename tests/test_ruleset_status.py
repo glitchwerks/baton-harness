@@ -2056,3 +2056,94 @@ def test_check_ruleset_signals_drift_names_structural_key_that_differs(
     assert "enforcement" in detail, f"detail must name the key: {detail!r}"
     assert "active" in detail, f"detail must carry expected value: {detail!r}"
     assert "disabled" in detail, f"detail must carry live value: {detail!r}"
+
+
+@pytest.mark.parametrize("held", [False, True])
+def test_baseline_publication_obeys_project_writer_lease(
+    tmp_path: Path, held: bool
+) -> None:
+    """A migration excludes even directory creation by the real publisher."""
+    from codereeve.chain.ruleset_status import publish_baseline
+    from codereeve.migration.lease import LeaseError, WriterLease
+
+    lock = tmp_path / ".codereeve-migration.lock"
+    lease = WriterLease.acquire(lock, purpose="migration") if held else None
+    try:
+        if held:
+            with pytest.raises(LeaseError):
+                publish_baseline(tmp_path, "o/r", {"main": {"ruleset_id": 1}})
+            assert not (tmp_path / ".codereeve").exists()
+        else:
+            publish_baseline(tmp_path, "o/r", {"main": {"ruleset_id": 1}})
+            publish_baseline(
+                tmp_path, "o/other", {"feature": {"ruleset_id": 2}}
+            )
+            data = json.loads(
+                (tmp_path / ".codereeve/ruleset-baseline.json").read_text()
+            )
+            assert data == {
+                "o/r": {"main": {"ruleset_id": 1}},
+                "o/other": {"feature": {"ruleset_id": 2}},
+            }
+    finally:
+        if lease is not None:
+            lease.close()
+
+
+@pytest.mark.parametrize("held", [False, True])
+def test_provisioner_embedded_writer_uses_real_lease(
+    tmp_path: Path, held: bool
+) -> None:
+    """Execute the shipped Python capture body under actual contention."""
+    import re
+    import sys
+
+    from codereeve.migration.lease import WriterLease
+
+    script = (
+        Path(__file__).resolve().parents[1] / "bin/provision-ruleset.sh"
+    ).read_text()
+    blocks = re.findall(r"-c '(.*?)' \"", script, re.DOTALL)
+    code = blocks[-1]
+    destination = tmp_path / ".codereeve/ruleset-baseline.json"
+    destination.parent.mkdir()
+    lease = (
+        WriterLease.acquire(
+            tmp_path / ".codereeve-migration.lock", purpose="migration"
+        )
+        if held
+        else None
+    )
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                code,
+                "o/r",
+                "1",
+                '{"updated_at":"t"}',
+                "2",
+                '{"updated_at":"t"}',
+                str(destination),
+                str(tmp_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    finally:
+        if lease is not None:
+            lease.close()
+    if held:
+        assert result.returncode != 0
+        assert not destination.exists()
+    else:
+        assert result.returncode == 0, result.stderr
+        assert (
+            json.loads(destination.read_text())["o/r"][
+                "harness-main-no-merge"
+            ]["ruleset_id"]
+            == 1
+        )

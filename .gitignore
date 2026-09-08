@@ -32,3 +32,8 @@ __pycache__/
 
 # Claude Code local runtime state (agent-memory, worktrees) — not source
 .claude/
+
+# CodeReeve runtime state and private migration recovery artifacts (#393)
+.codereeve/
+.codereeve-migration/
+.codereeve-migration.lock

@@ -61,10 +61,43 @@ from typing import cast
 from codereeve.chain.identity import Identity, env_for
 from codereeve.chain.subproc import run_cmd
 from codereeve.config_env import runtime_environment
-from codereeve.paths import select_runtime_paths
+from codereeve.migration.lease import WriterLease
+from codereeve.paths import select_runtime_paths, validate_safe_file_path
 from codereeve.resources import PackageResource, resource
 
 _log = logging.getLogger(__name__)
+
+
+def publish_baseline(
+    project_root: Path, owner_repo: str, entries: dict[str, object]
+) -> None:
+    """Publish the provisioner's local baseline under the project lease.
+
+    Args:
+        project_root: Managed project root shared with daemon/migration.
+        owner_repo: Repository slug whose baseline entries are replaced.
+        entries: Ruleset IDs and timestamps fetched by the provisioner.
+
+    Raises:
+        LeaseError: Another cooperative writer owns this project.
+        PathConflictError: The destination or an ancestor is unsafe.
+        OSError: Reading or publishing the baseline fails.
+    """
+    with WriterLease.acquire(
+        project_root / ".codereeve-migration.lock", purpose="ruleset baseline"
+    ):
+        path = project_root / ".codereeve" / "ruleset-baseline.json"
+        validate_safe_file_path(path, label="ruleset baseline")
+        try:
+            baseline = json.loads(path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            baseline = {}
+        baseline[owner_repo] = entries
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(baseline, indent=2) + "\n", encoding="utf-8"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Packaged defaults remain replaceable with Paths in focused tests.

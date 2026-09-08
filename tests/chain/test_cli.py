@@ -29,8 +29,51 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from codereeve.chain.cli import _workflow_path, main
+from codereeve.chain.registry import RepoConfig
+from codereeve.migration.lease import WriterLease, probe_writer_lease
+from codereeve.migration.model import EvidenceState
 from codereeve.provenance import Provenance, ProvenanceError
 from codereeve.resources import read_bytes
+
+
+@pytest.mark.parametrize("held", [False, True])
+def test_cli_writer_lease_precedes_bootstrap_and_releases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, held: bool
+) -> None:
+    """Contention skips bootstrap; bootstrap failure releases CLI ownership."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    lock = tmp_path / ".codereeve-migration.lock"
+    lease = WriterLease.acquire(lock, purpose="migration") if held else None
+
+    def bootstrap() -> str:
+        """Check CLI ownership at the first secret/network effect."""
+        assert probe_writer_lease(lock) is EvidenceState.BLOCKED
+        raise RuntimeError("bootstrap failed")
+
+    try:
+        with (
+            patch(
+                "codereeve.chain.cli.load_workflow", return_value=MagicMock()
+            ),
+            patch(
+                "codereeve.chain.cli.load_registry",
+                return_value=[RepoConfig("o", "r", tmp_path)],
+            ),
+            patch("codereeve.chain.cli.os.chdir"),
+            patch("codereeve.chain.cli._assert_force_pr_not_merge_tripwire"),
+            patch(
+                "codereeve.chain.cli.bootstrap_secrets", side_effect=bootstrap
+            ) as secret,
+            patch("codereeve.chain.cli.run_daemon") as daemon,
+        ):
+            assert main(["--once"]) == 1
+        assert secret.call_count == (0 if held else 1)
+        daemon.assert_not_called()
+    finally:
+        if lease is not None:
+            lease.close()
+    assert probe_writer_lease(lock) is EvidenceState.CLEAR
+
 
 # ---------------------------------------------------------------------------
 # Autouse fixtures
@@ -221,7 +264,7 @@ def test_main_registry_unset_exits_1() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_main_once_calls_run_daemon_with_once_true() -> None:
+def test_main_once_calls_run_daemon_with_once_true(tmp_path: Path) -> None:
     """--once flag passes once=True to run_daemon."""
     called_kwargs: dict = {}
 
@@ -240,7 +283,7 @@ def test_main_once_calls_run_daemon_with_once_true() -> None:
         ),
         patch(
             "codereeve.chain.cli.load_registry",
-            return_value=[MagicMock()],
+            return_value=[MagicMock(project_root=tmp_path)],
         ),
         patch(
             "codereeve.chain.cli.run_daemon",
@@ -255,7 +298,7 @@ def test_main_once_calls_run_daemon_with_once_true() -> None:
     assert called_kwargs.get("once") is True
 
 
-def test_main_poll_interval_override() -> None:
+def test_main_poll_interval_override(tmp_path: Path) -> None:
     """--poll-interval is passed to run_daemon."""
     called_kwargs: dict = {}
 
@@ -274,7 +317,7 @@ def test_main_poll_interval_override() -> None:
         ),
         patch(
             "codereeve.chain.cli.load_registry",
-            return_value=[MagicMock()],
+            return_value=[MagicMock(project_root=tmp_path)],
         ),
         patch(
             "codereeve.chain.cli.run_daemon",
@@ -294,14 +337,16 @@ def test_main_poll_interval_override() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_main_chdirs_into_project_root_before_run_daemon() -> None:
+def test_main_chdirs_into_project_root_before_run_daemon(
+    tmp_path: Path,
+) -> None:
     """CLI must chdir into the managed repo before calling run_daemon.
 
     The vendored GitHubTracker calls ``gh`` without ``--repo``, so those
     calls resolve against the process cwd.  The daemon MUST set cwd to
     ``BH_PROJECT_ROOT`` before the event loop starts.
     """
-    project_root = Path("/fake/project/root")
+    project_root = tmp_path
     chdir_calls: list[object] = []
     run_daemon_called_after_chdir = False
 
@@ -403,13 +448,15 @@ def test_explicit_workflow_remains_an_absolute_path(tmp_path: Path) -> None:
         assert path == supplied.resolve()
 
 
-def test_main_workflow_path_resolved_absolute_before_chdir() -> None:
+def test_main_workflow_path_resolved_absolute_before_chdir(
+    tmp_path: Path,
+) -> None:
     """Workflow path must be absolute before chdir so it survives cwd change.
 
     If a relative ``--workflow`` path were passed without resolving it first,
     the ``chdir`` into the managed repo would break config loading.
     """
-    project_root = Path("/fake/project/root")
+    project_root = tmp_path
 
     # Track the sequence: when was load_workflow called relative to chdir?
     call_sequence: list[str] = []
@@ -476,14 +523,14 @@ class TestDaemonStartupAuthWiring:
     """
 
     def test_main_calls_bootstrap_secrets_after_cwd_validation(
-        self,
+        self, tmp_path: Path
     ) -> None:
         """bootstrap_secrets is called after chdir and before asyncio.run.
 
         Records the call-order of chdir and bootstrap_secrets via a shared
         sequence list.  chdir MUST appear before bootstrap_secrets.
         """
-        project_root = Path("/fake/project/root")
+        project_root = tmp_path
         call_order: list[str] = []
 
         # Sentinel bootstrap that records its position in the sequence.
@@ -543,7 +590,7 @@ class TestDaemonStartupAuthWiring:
         )
 
     def test_main_validates_minted_token_with_validate_daemon_token(
-        self,
+        self, tmp_path: Path
     ) -> None:
         """validate_daemon_token is called with the bootstrap token.
 
@@ -551,7 +598,7 @@ class TestDaemonStartupAuthWiring:
         validate_daemon_token must be called with exactly that value,
         and main() must return 0.
         """
-        project_root = Path("/fake/project/root")
+        project_root = tmp_path
         _sentinel_token = "ghs_TESTTOKEN_sentinel_abc123"
         validated_with: list[str] = []
 
@@ -605,7 +652,7 @@ class TestDaemonStartupAuthWiring:
         )
 
     def test_main_rejects_non_installation_token_from_bootstrap(
-        self,
+        self, tmp_path: Path
     ) -> None:
         """A non-ghs_ token from bootstrap causes main() to return non-zero.
 
@@ -613,7 +660,7 @@ class TestDaemonStartupAuthWiring:
         raises (it already does for non-ghs_); main() must return non-zero
         WITHOUT entering asyncio.run.
         """
-        project_root = Path("/fake/project/root")
+        project_root = tmp_path
         asyncio_run_called = False
 
         def fake_bootstrap(**kwargs: object) -> str:
@@ -672,8 +719,7 @@ class TestDaemonStartupAuthWiring:
         )
 
     def test_main_bws_access_token_popped_from_environ_before_daemon_starts(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """BWS_ACCESS_TOKEN is removed from environ before daemon starts.
 
@@ -688,7 +734,7 @@ class TestDaemonStartupAuthWiring:
         sentinel_bws = "0.sentinel-bws-access-token-for-test"
         monkeypatch.setenv("BWS_ACCESS_TOKEN", sentinel_bws)
 
-        project_root = Path("/fake/project/root")
+        project_root = tmp_path
         environ_after_bootstrap: dict[str, str] = {}
 
         def fake_bootstrap(**kwargs: object) -> str:
@@ -741,7 +787,7 @@ class TestDaemonStartupAuthWiring:
         )
 
     def test_main_installation_token_never_written_to_environ(
-        self,
+        self, tmp_path: Path
     ) -> None:
         """The installation token is never written to os.environ.
 
@@ -751,7 +797,7 @@ class TestDaemonStartupAuthWiring:
         never stored in the process environment.
         """
         sentinel_token = "ghs_SENTINEL_NEVER_IN_ENVIRON_xyz999"
-        project_root = Path("/fake/project/root")
+        project_root = tmp_path
         environ_snapshot: dict[str, str] = {}
 
         def fake_bootstrap(**kwargs: object) -> str:
@@ -808,10 +854,10 @@ class TestDaemonStartupAuthWiring:
             )
 
     def test_main_accepts_refreshable_provider_from_bootstrap(
-        self,
+        self, tmp_path: Path
     ) -> None:
         """main() validates one token but passes provider to run_daemon."""
-        project_root = Path("/fake/project/root")
+        project_root = tmp_path
         validated_with: list[str] = []
         run_daemon_kwargs: dict[str, object] = {}
 
@@ -894,7 +940,7 @@ class TestCliGap1DuplicateReconcileAndTokenThreading:
     """
 
     def test_cli_main_does_not_call_reconcile_startup_directly(
-        self,
+        self, tmp_path: Path
     ) -> None:
         """cli.main() must NOT call reconcile_startup through ANY path.
 
@@ -931,7 +977,7 @@ class TestCliGap1DuplicateReconcileAndTokenThreading:
             ),
             patch(
                 "codereeve.chain.cli.load_registry",
-                return_value=[MagicMock()],
+                return_value=[MagicMock(project_root=tmp_path)],
             ),
             # Spy on the reconcile module symbol directly — catches any
             # call routed through codereeve.chain.reconcile.
@@ -968,7 +1014,7 @@ class TestCliGap1DuplicateReconcileAndTokenThreading:
         )
 
     def test_cli_main_passes_installation_token_to_run_daemon(
-        self,
+        self, tmp_path: Path
     ) -> None:
         """cli.main() must forward the minted token to run_daemon.
 
@@ -998,7 +1044,7 @@ class TestCliGap1DuplicateReconcileAndTokenThreading:
             ),
             patch(
                 "codereeve.chain.cli.load_registry",
-                return_value=[MagicMock()],
+                return_value=[MagicMock(project_root=tmp_path)],
             ),
             patch(
                 "codereeve.chain.cli.run_daemon",
@@ -1026,10 +1072,10 @@ class TestForcePrNotMergeStartupSelfTest:
     """Startup self-test wiring for the force-pr-not-merge tripwire."""
 
     def test_main_runs_tripwire_self_test_before_bootstrap(
-        self,
+        self, tmp_path: Path
     ) -> None:
         """main() runs the hook self-test after chdir and before bootstrap."""
-        project_root = Path("/fake/project/root")
+        project_root = tmp_path
         call_order: list[str] = []
 
         fake_repo_cfg = MagicMock()
@@ -1087,9 +1133,11 @@ class TestForcePrNotMergeStartupSelfTest:
             f"bootstrap; got {call_order!r}"
         )
 
-    def test_main_exits_when_tripwire_self_test_fails(self) -> None:
+    def test_main_exits_when_tripwire_self_test_fails(
+        self, tmp_path: Path
+    ) -> None:
         """A failing hook self-test stops startup before bootstrap/run."""
-        project_root = Path("/fake/project/root")
+        project_root = tmp_path
         bootstrap_called = False
         run_daemon_called = False
 

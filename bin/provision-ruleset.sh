@@ -484,7 +484,6 @@ _capture_baseline() {
 
     local baseline_dir="${CODEREEVE_PROJECT_ROOT}/.codereeve"
     local baseline_path="${baseline_dir}/ruleset-baseline.json"
-    mkdir -p "${baseline_dir}"
 
     local main_id feat_id
     if ! main_id="$(_lookup_id "harness-main-no-merge")"; then
@@ -512,8 +511,10 @@ _capture_baseline() {
 
     if ! "${_PYTHON}" -c '
 import json, sys
+from pathlib import Path
+from codereeve.chain.ruleset_status import publish_baseline
 
-owner_repo, main_id, main_body, feat_id, feat_body, baseline_path = sys.argv[1:7]
+owner_repo, main_id, main_body, feat_id, feat_body, baseline_path, project_root = sys.argv[1:8]
 
 
 def _entry(ruleset_id, body):
@@ -521,21 +522,12 @@ def _entry(ruleset_id, body):
     return {"ruleset_id": int(ruleset_id), "updated_at": parsed["updated_at"]}
 
 
-try:
-    with open(baseline_path, encoding="utf-8") as f:
-        baseline = json.load(f)
-except (FileNotFoundError, json.JSONDecodeError):
-    baseline = {}
-
-baseline[owner_repo] = {
+publish_baseline(Path(project_root), owner_repo, {
     "harness-main-no-merge": _entry(main_id, main_body),
     "harness-feature-daemon-only": _entry(feat_id, feat_body),
-}
+})
 
-with open(baseline_path, "w", encoding="utf-8", newline="\n") as f:
-    json.dump(baseline, f, indent=2)
-    f.write("\n")
-' "${REPO_SLUG}" "${main_id}" "${main_body}" "${feat_id}" "${feat_body}" "${baseline_path}"; then
+' "${REPO_SLUG}" "${main_id}" "${main_body}" "${feat_id}" "${feat_body}" "${baseline_path}" "${CODEREEVE_PROJECT_ROOT}"; then
         echo "provision-ruleset: WARNING — failed to write ruleset baseline (parse/write error); skipping." >&2
         return 0
     fi
