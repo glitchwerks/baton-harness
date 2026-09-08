@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 # bin/init-sandbox.sh — Target sandbox repo initialisation (smoke-test ready)
 #
-# Prepares a throwaway sandbox GitHub repository for a bh-daemon smoke test:
+# Prepares a throwaway sandbox GitHub repository for a codereeve daemon smoke test:
 #   - Creates the six required harness labels (idempotent)
 #   - Seeds scenario-specific issues (the default hello scenario creates the
 #     existing trivial trigger + hello-feature DAG milestone)
 #   - Writes a stub CI workflow to the sandbox repo and pushes it
-#   - Writes .bh/config.env with repo/App/vault identifiers
-#   - Seeds .symphony/, .baton-harness/, and .bh/ into .gitignore and pushes it
+#   - Writes .codereeve/config.env with repo/App/vault identifiers
+#   - Seeds .symphony/ and .codereeve/ into .gitignore and pushes it
 #
 # Usage:
 #   bin/init-sandbox.sh [--scenario <name>] [--help|-h]
 #
 # Required environment variables:
-#   BH_REPO_OWNER      GitHub repository owner (org or user login)
-#   BH_REPO_NAME       GitHub repository name (without owner prefix)
-#   BH_PROJECT_ROOT    Absolute path to the local clone of the sandbox repo
+#   CODEREEVE_REPO_OWNER      GitHub repository owner (org or user login)
+#   CODEREEVE_REPO_NAME       GitHub repository name (without owner prefix)
+#   CODEREEVE_PROJECT_ROOT    Absolute path to the local clone of the sandbox repo
 #
 # WARNING: this script writes to a live GitHub repository and creates issues,
 # labels, and pushes a workflow.  ONLY point it at a throwaway sandbox repo.
@@ -35,10 +35,10 @@ print_safety_banner() {
     echo "    - Creates labels" >&2
     echo "    - Creates GitHub issues" >&2
     echo "    - Pushes a CI workflow file to the default branch" >&2
-    echo "    - Seeds .symphony/, .baton-harness/, and .bh/ into .gitignore" >&2
+    echo "    - Seeds .symphony/ and .codereeve/ into .gitignore" >&2
     echo "" >&2
     echo "  ONLY point it at a THROWAWAY SANDBOX repo — never a real project." >&2
-    echo "  Target repo is read from BH_REPO_OWNER / BH_REPO_NAME." >&2
+    echo "  Target repo is read from CODEREEVE_REPO_OWNER / CODEREEVE_REPO_NAME." >&2
     echo "" >&2
     echo "  Creates fresh issues each run; intended for a clean sandbox." >&2
     echo "  Issue/milestone creation may duplicate on re-run — use a fresh" >&2
@@ -54,10 +54,10 @@ usage() {
     cat <<'EOF'
 Usage: bin/init-sandbox.sh [--scenario <name>] [--help|-h]
 
-Prepares a throwaway sandbox GitHub repository for a bh-daemon smoke test.
+Prepares a throwaway sandbox GitHub repository for a codereeve daemon smoke test.
 
 Options:
-  --scenario <name>  Seed one of the scenarios below. Overrides BH_SCENARIO.
+  --scenario <name>  Seed one of the scenarios below. Overrides CODEREEVE_SCENARIO.
   --help, -h         Show this help.
 
 Scenario selection:
@@ -72,22 +72,22 @@ The last three scenarios require a live daemon, real agent dispatch, and OAuth
 credentials; ordinary GitHub Actions CI alone cannot exercise them.
 
 Required environment variables:
-  BH_REPO_OWNER      GitHub repository owner (org or user login)
-  BH_REPO_NAME       GitHub repository name (without owner prefix)
-  BH_PROJECT_ROOT    Absolute path to the local clone of the sandbox repo
+  CODEREEVE_REPO_OWNER      GitHub repository owner (org or user login)
+  CODEREEVE_REPO_NAME       GitHub repository name (without owner prefix)
+  CODEREEVE_PROJECT_ROOT    Absolute path to the local clone of the sandbox repo
 
 Optional environment variables:
-  BH_SCENARIO        Optional scenario fallback when --scenario is omitted
+  CODEREEVE_SCENARIO        Optional scenario fallback when --scenario is omitted
 
 Steps performed:
-  1. Preflight checks (gh auth, git, BH_PROJECT_ROOT is a git repo)
+  1. Preflight checks (gh auth, git, CODEREEVE_PROJECT_ROOT is a git repo)
   2. Create required labels (idempotent — skipped if already present)
   3. Seed the selected scenario's issue/milestone content
-  4. Write stub CI workflow (.github/workflows/ci.yml) to BH_PROJECT_ROOT
+  4. Write stub CI workflow (.github/workflows/ci.yml) to CODEREEVE_PROJECT_ROOT
      and push to the sandbox default branch (idempotent if unchanged)
-  5. Write BH_PROJECT_ROOT/.bh/config.env with sandbox repo/App/vault config;
+  5. Write CODEREEVE_PROJECT_ROOT/.codereeve/config.env with sandbox repo/App/vault config;
      when the file exists, prompt to overwrite it or reuse it unchanged
-  6. Seed .symphony/, .baton-harness/, and .bh/ into BH_PROJECT_ROOT/.gitignore
+  6. Seed .symphony/ and .codereeve/ into CODEREEVE_PROJECT_ROOT/.gitignore
      and push (idempotent — skipped if the entries are already present)
 
 Idempotency notes:
@@ -101,7 +101,7 @@ EOF
     print_safety_banner
 }
 
-SCENARIO="${BH_SCENARIO:-hello}"
+SCENARIO="${CODEREEVE_SCENARIO:-hello}"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --scenario)
@@ -141,23 +141,23 @@ esac
 print_safety_banner
 
 # ---------------------------------------------------------------------------
-# Source shared env-config loader (host.env -> BH_PROJECT_ROOT;
-# .bh/config.env -> BH_REPO_OWNER/BH_REPO_NAME/etc; operator env wins)
+# Source shared env-config loader (host.env -> CODEREEVE_PROJECT_ROOT;
+# .codereeve/config.env -> CODEREEVE_REPO_OWNER/CODEREEVE_REPO_NAME/etc; operator env wins)
 # ---------------------------------------------------------------------------
 
-_BH_LOAD_CONFIG="$(dirname "${BASH_SOURCE[0]}")/lib/load-config.sh"
-if [[ -f "${_BH_LOAD_CONFIG}" ]]; then
+_codereeve_load_config="$(dirname "${BASH_SOURCE[0]}")/lib/load-config.sh"
+if [[ -f "${_codereeve_load_config}" ]]; then
     # shellcheck disable=SC1090,SC1091
-    source "${_BH_LOAD_CONFIG}"
+    source "${_codereeve_load_config}"
 fi
-unset _BH_LOAD_CONFIG
+unset _codereeve_load_config
 
 # ---------------------------------------------------------------------------
 # Validate required environment variables
 # ---------------------------------------------------------------------------
 
 _missing_env=()
-for _var in BH_REPO_OWNER BH_REPO_NAME BH_PROJECT_ROOT; do
+for _var in CODEREEVE_REPO_OWNER CODEREEVE_REPO_NAME CODEREEVE_PROJECT_ROOT; do
     if [[ -z "${!_var:-}" ]]; then
         _missing_env+=("${_var}")
     fi
@@ -169,19 +169,19 @@ if [[ ${#_missing_env[@]} -gt 0 ]]; then
         echo "  missing: ${_var}" >&2
     done
     echo "" >&2
-    echo "BH_PROJECT_ROOT: set it via one of:" >&2
-    echo "  - Run bin/setup-env.sh (writes BH_PROJECT_ROOT to ~/.config/baton-harness/host.env)" >&2
-    echo "  - Or export BH_PROJECT_ROOT in your shell as a last-resort override" >&2
+    echo "CODEREEVE_PROJECT_ROOT: set it via one of:" >&2
+    echo "  - Run bin/setup-env.sh (writes CODEREEVE_PROJECT_ROOT to ~/.config/codereeve/host.env)" >&2
+    echo "  - Or export CODEREEVE_PROJECT_ROOT in your shell as a last-resort override" >&2
     echo "" >&2
-    echo "BH_REPO_OWNER / BH_REPO_NAME: this script writes them to \${BH_PROJECT_ROOT}/.bh/config.env" >&2
+    echo "CODEREEVE_REPO_OWNER / CODEREEVE_REPO_NAME: this script writes them to \${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env" >&2
     echo "  for future runs, but on a first/bootstrap run that file does not exist yet — export" >&2
     echo "  them yourself before running bin/init-sandbox.sh:" >&2
-    echo "    export BH_REPO_OWNER=<owner>" >&2
-    echo "    export BH_REPO_NAME=<repo>" >&2
+    echo "    export CODEREEVE_REPO_OWNER=<owner>" >&2
+    echo "    export CODEREEVE_REPO_NAME=<repo>" >&2
     exit 1
 fi
 
-REPO_SLUG="${BH_REPO_OWNER}/${BH_REPO_NAME}"
+REPO_SLUG="${CODEREEVE_REPO_OWNER}/${CODEREEVE_REPO_NAME}"
 
 # ---------------------------------------------------------------------------
 # Preflight checks
@@ -217,16 +217,16 @@ if ! command -v git &>/dev/null; then
 fi
 echo "baton-harness: git OK"
 
-# BH_PROJECT_ROOT exists and is a git repo
-if [[ ! -d "${BH_PROJECT_ROOT}" ]]; then
-    echo "baton-harness: error: BH_PROJECT_ROOT does not exist: ${BH_PROJECT_ROOT}" >&2
+# CODEREEVE_PROJECT_ROOT exists and is a git repo
+if [[ ! -d "${CODEREEVE_PROJECT_ROOT}" ]]; then
+    echo "baton-harness: error: CODEREEVE_PROJECT_ROOT does not exist: ${CODEREEVE_PROJECT_ROOT}" >&2
     exit 1
 fi
-if ! git -C "${BH_PROJECT_ROOT}" rev-parse --git-dir &>/dev/null; then
-    echo "baton-harness: error: BH_PROJECT_ROOT is not a git repository: ${BH_PROJECT_ROOT}" >&2
+if ! git -C "${CODEREEVE_PROJECT_ROOT}" rev-parse --git-dir &>/dev/null; then
+    echo "baton-harness: error: CODEREEVE_PROJECT_ROOT is not a git repository: ${CODEREEVE_PROJECT_ROOT}" >&2
     exit 1
 fi
-echo "baton-harness: BH_PROJECT_ROOT is a git repo: ${BH_PROJECT_ROOT}"
+echo "baton-harness: CODEREEVE_PROJECT_ROOT is a git repo: ${CODEREEVE_PROJECT_ROOT}"
 
 echo "baton-harness: target repo: ${REPO_SLUG}"
 
@@ -682,7 +682,7 @@ DEFAULT_BRANCH_FROM_GH=0
 DEFAULT_BRANCH="$(gh repo view "${REPO_SLUG}" --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || true)"
 if [[ -z "${DEFAULT_BRANCH}" || "${DEFAULT_BRANCH}" == "null" ]]; then
     # Empty repo (no default-branch ref yet) — use the local clone's current (possibly unborn) branch.
-    DEFAULT_BRANCH="$(git -C "${BH_PROJECT_ROOT}" symbolic-ref --short HEAD 2>/dev/null || true)"
+    DEFAULT_BRANCH="$(git -C "${CODEREEVE_PROJECT_ROOT}" symbolic-ref --short HEAD 2>/dev/null || true)"
 else
     DEFAULT_BRANCH_FROM_GH=1
 fi
@@ -693,40 +693,40 @@ echo "baton-harness:   target branch: ${DEFAULT_BRANCH}"
 
 # Guard: abort if the local clone is in detached-HEAD state
 # symbolic-ref -q HEAD: exit 0 on a normal OR unborn branch; non-zero only on detached HEAD.
-if ! git -C "${BH_PROJECT_ROOT}" symbolic-ref -q HEAD >/dev/null 2>&1; then
-    echo "baton-harness: error: BH_PROJECT_ROOT is in detached-HEAD state — check out a branch before running this script" >&2
-    echo "  Example: git -C \"${BH_PROJECT_ROOT}\" checkout ${DEFAULT_BRANCH}" >&2
+if ! git -C "${CODEREEVE_PROJECT_ROOT}" symbolic-ref -q HEAD >/dev/null 2>&1; then
+    echo "baton-harness: error: CODEREEVE_PROJECT_ROOT is in detached-HEAD state — check out a branch before running this script" >&2
+    echo "  Example: git -C \"${CODEREEVE_PROJECT_ROOT}\" checkout ${DEFAULT_BRANCH}" >&2
     exit 1
 fi
 
 if [[ "${DEFAULT_BRANCH_FROM_GH}" == 1 ]]; then
     _git_output=""
-    _git_output="$(git -C "${BH_PROJECT_ROOT}" fetch origin "+${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}" 2>&1)" || {
+    _git_output="$(git -C "${CODEREEVE_PROJECT_ROOT}" fetch origin "+${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}" 2>&1)" || {
         echo "baton-harness: error: failed to fetch origin/${DEFAULT_BRANCH}: ${_git_output}" >&2
         exit 1
     }
 
     _current_branch=""
-    _current_branch="$(git -C "${BH_PROJECT_ROOT}" symbolic-ref --short HEAD 2>&1)" || {
+    _current_branch="$(git -C "${CODEREEVE_PROJECT_ROOT}" symbolic-ref --short HEAD 2>&1)" || {
         echo "baton-harness: error: failed to determine the current branch: ${_current_branch}" >&2
         exit 1
     }
 
     if [[ "${_current_branch}" != "${DEFAULT_BRANCH}" ]]; then
         _local_default_branch=""
-        _local_default_branch="$(git -C "${BH_PROJECT_ROOT}" branch --list --format='%(refname:short)' -- "${DEFAULT_BRANCH}" 2>&1)" || {
+        _local_default_branch="$(git -C "${CODEREEVE_PROJECT_ROOT}" branch --list --format='%(refname:short)' -- "${DEFAULT_BRANCH}" 2>&1)" || {
             echo "baton-harness: error: failed to inspect local branch '${DEFAULT_BRANCH}': ${_local_default_branch}" >&2
             exit 1
         }
 
         _git_output=""
         if [[ -n "${_local_default_branch}" ]]; then
-            _git_output="$(git -C "${BH_PROJECT_ROOT}" checkout "${DEFAULT_BRANCH}" 2>&1)" || {
+            _git_output="$(git -C "${CODEREEVE_PROJECT_ROOT}" checkout "${DEFAULT_BRANCH}" 2>&1)" || {
                 echo "baton-harness: error: failed to check out default branch '${DEFAULT_BRANCH}': ${_git_output}" >&2
                 exit 1
             }
         else
-            _git_output="$(git -C "${BH_PROJECT_ROOT}" checkout -b "${DEFAULT_BRANCH}" "origin/${DEFAULT_BRANCH}" 2>&1)" || {
+            _git_output="$(git -C "${CODEREEVE_PROJECT_ROOT}" checkout -b "${DEFAULT_BRANCH}" "origin/${DEFAULT_BRANCH}" 2>&1)" || {
                 echo "baton-harness: error: failed to create default branch '${DEFAULT_BRANCH}' tracking origin/${DEFAULT_BRANCH}: ${_git_output}" >&2
                 exit 1
             }
@@ -734,26 +734,26 @@ if [[ "${DEFAULT_BRANCH_FROM_GH}" == 1 ]]; then
     fi
 
     _git_output=""
-    _git_output="$(git -C "${BH_PROJECT_ROOT}" merge-base --is-ancestor HEAD "origin/${DEFAULT_BRANCH}" 2>&1)" || {
+    _git_output="$(git -C "${CODEREEVE_PROJECT_ROOT}" merge-base --is-ancestor HEAD "origin/${DEFAULT_BRANCH}" 2>&1)" || {
         echo "baton-harness: error: local '${DEFAULT_BRANCH}' contains commits not present in origin/${DEFAULT_BRANCH}: ${_git_output}" >&2
         exit 1
     }
 
     _git_output=""
-    _git_output="$(git -C "${BH_PROJECT_ROOT}" merge --ff-only "origin/${DEFAULT_BRANCH}" 2>&1)" || {
+    _git_output="$(git -C "${CODEREEVE_PROJECT_ROOT}" merge --ff-only "origin/${DEFAULT_BRANCH}" 2>&1)" || {
         echo "baton-harness: error: failed to fast-forward '${DEFAULT_BRANCH}' to origin/${DEFAULT_BRANCH}: ${_git_output}" >&2
         exit 1
     }
 fi
 
-WORKFLOW_DIR="${BH_PROJECT_ROOT}/.github/workflows"
+WORKFLOW_DIR="${CODEREEVE_PROJECT_ROOT}/.github/workflows"
 WORKFLOW_FILE="${WORKFLOW_DIR}/ci.yml"
 
 # Build the expected workflow content. The ci-fail scenario changes only the
 # pytest step so all four required check names still appear in the API response.
 if [[ "${SCENARIO}" == "ci-fail" ]]; then
     read -r -d '' WORKFLOW_CONTENT <<'YAML' || true
-# Stub CI workflow for bh-daemon smoke testing.
+# Stub CI workflow for codereeve daemon smoke testing.
 # Job names must match REQUIRED_CHECKS in baton_harness/chain/merge.py exactly.
 # Every job exits 0 EXCEPT Test (pytest), which intentionally exits 1
 # to produce a deterministic CI_FAILED outcome for the ci-fail scenario.
@@ -790,7 +790,7 @@ jobs:
 YAML
 else
     read -r -d '' WORKFLOW_CONTENT <<'YAML' || true
-# Stub CI workflow for bh-daemon smoke testing.
+# Stub CI workflow for codereeve daemon smoke testing.
 # Job names must match REQUIRED_CHECKS in baton_harness/chain/merge.py exactly.
 # Each job exits 0 — sufficient for the CI gate to pass.
 name: CI
@@ -829,12 +829,12 @@ fi
 mkdir -p "${WORKFLOW_DIR}"
 printf '%s\n' "${WORKFLOW_CONTENT}" > "${WORKFLOW_FILE}"
 
-git -C "${BH_PROJECT_ROOT}" add ".github/workflows/ci.yml"
-if git -C "${BH_PROJECT_ROOT}" diff --cached --quiet -- ".github/workflows/ci.yml"; then
+git -C "${CODEREEVE_PROJECT_ROOT}" add ".github/workflows/ci.yml"
+if git -C "${CODEREEVE_PROJECT_ROOT}" diff --cached --quiet -- ".github/workflows/ci.yml"; then
     echo "baton-harness:   ci.yml unchanged, skipping commit"
 else
-    git -C "${BH_PROJECT_ROOT}" commit -m "chore: add stub CI workflow for bh-daemon smoke test" -- .github/workflows/ci.yml  # -- <path>: never sweep a pre-staged index into the seed commit
-    git -C "${BH_PROJECT_ROOT}" push -u origin HEAD:"${DEFAULT_BRANCH}"
+    git -C "${CODEREEVE_PROJECT_ROOT}" commit -m "chore: add stub CI workflow for codereeve daemon smoke test" -- .github/workflows/ci.yml  # -- <path>: never sweep a pre-staged index into the seed commit
+    git -C "${CODEREEVE_PROJECT_ROOT}" push -u origin HEAD:"${DEFAULT_BRANCH}"
     echo "baton-harness:   ci.yml committed and pushed to sandbox"
 fi
 
@@ -847,7 +847,7 @@ fi
 
 echo "baton-harness: seeding .symphony/ into sandbox .gitignore ..."
 
-GITIGNORE_FILE="${BH_PROJECT_ROOT}/.gitignore"
+GITIGNORE_FILE="${CODEREEVE_PROJECT_ROOT}/.gitignore"
 GITIGNORE_SEEDED=0
 
 if [[ ! -f "${GITIGNORE_FILE}" ]]; then
@@ -865,58 +865,46 @@ else
     GITIGNORE_SEEDED=1
 fi
 
-# Also seed .baton-harness/ (runlog dir) into the sandbox .gitignore.
-if grep -qxF '.baton-harness/' "${GITIGNORE_FILE}"; then
-    echo "baton-harness:   .baton-harness/ already in .gitignore, skipping"
+# Also seed .codereeve/ (runlog dir) into the sandbox .gitignore.
+if grep -qxF '.codereeve/' "${GITIGNORE_FILE}"; then
+    echo "baton-harness:   .codereeve/ already in .gitignore, skipping"
 else
     if [[ -s "${GITIGNORE_FILE}" && -n "$(tail -c1 "${GITIGNORE_FILE}")" ]]; then
         printf '\n' >> "${GITIGNORE_FILE}"
     fi
-    printf '%s\n' '.baton-harness/' >> "${GITIGNORE_FILE}"
-    echo "baton-harness:   .baton-harness/ appended to .gitignore"
-    GITIGNORE_SEEDED=1
-fi
-
-# Also seed .bh/ (sandbox config dir) into the sandbox .gitignore.
-if grep -qxF '.bh/' "${GITIGNORE_FILE}"; then
-    echo "baton-harness:   .bh/ already in .gitignore, skipping"
-else
-    if [[ -s "${GITIGNORE_FILE}" && -n "$(tail -c1 "${GITIGNORE_FILE}")" ]]; then
-        printf '\n' >> "${GITIGNORE_FILE}"
-    fi
-    printf '%s\n' '.bh/' >> "${GITIGNORE_FILE}"
-    echo "baton-harness:   .bh/ appended to .gitignore"
+    printf '%s\n' '.codereeve/' >> "${GITIGNORE_FILE}"
+    echo "baton-harness:   .codereeve/ appended to .gitignore"
     GITIGNORE_SEEDED=1
 fi
 
 if [[ "${GITIGNORE_SEEDED}" == 1 ]]; then
-    git -C "${BH_PROJECT_ROOT}" add ".gitignore"
-    if git -C "${BH_PROJECT_ROOT}" diff --cached --quiet -- ".gitignore"; then
+    git -C "${CODEREEVE_PROJECT_ROOT}" add ".gitignore"
+    if git -C "${CODEREEVE_PROJECT_ROOT}" diff --cached --quiet -- ".gitignore"; then
         echo "baton-harness:   .gitignore unchanged, skipping commit"
     else
-        git -C "${BH_PROJECT_ROOT}" commit -m "chore: gitignore .symphony/ daemon state" -- .gitignore  # -- <path>: never sweep a pre-staged index into the seed commit
-        git -C "${BH_PROJECT_ROOT}" push -u origin HEAD:"${DEFAULT_BRANCH}"
+        git -C "${CODEREEVE_PROJECT_ROOT}" commit -m "chore: gitignore .symphony/ daemon state" -- .gitignore  # -- <path>: never sweep a pre-staged index into the seed commit
+        git -C "${CODEREEVE_PROJECT_ROOT}" push -u origin HEAD:"${DEFAULT_BRANCH}"
         echo "baton-harness:   .gitignore committed and pushed to sandbox"
     fi
 fi
 
 # ---------------------------------------------------------------------------
-# Write .bh/config.env
+# Write .codereeve/config.env
 # ---------------------------------------------------------------------------
 
 _bh_prompt_and_write_sandbox_config() {
-    echo "baton-harness: writing sandbox config to ${BH_PROJECT_ROOT}/.bh/config.env ..."
+    echo "baton-harness: writing sandbox config to ${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env ..."
 
-    if [[ "${BH_SETUP_NO_PROMPT:-0}" == "1" || ! -t 0 || ! -t 1 ]]; then
-        echo "baton-harness: error: interactive prompts required to write .bh/config.env" >&2
-        echo "  Re-run in a terminal with stdin/stdout attached and without BH_SETUP_NO_PROMPT=1." >&2
+    if [[ "${CODEREEVE_SETUP_NO_PROMPT:-0}" == "1" || ! -t 0 || ! -t 1 ]]; then
+        echo "baton-harness: error: interactive prompts required to write .codereeve/config.env" >&2
+        echo "  Re-run in a terminal with stdin/stdout attached and without CODEREEVE_SETUP_NO_PROMPT=1." >&2
         exit 1
     fi
 
-    read -r -p "  BH_GITHUB_APP_ID (GitHub App numeric ID): " _bh_github_app_id
-    read -r -p "  BH_GITHUB_APP_INSTALLATION_ID (GitHub App installation numeric ID): " _bh_github_app_installation_id
+    read -r -p "  CODEREEVE_GITHUB_APP_ID (GitHub App numeric ID): " _bh_github_app_id
+    read -r -p "  CODEREEVE_GITHUB_APP_INSTALLATION_ID (GitHub App installation numeric ID): " _bh_github_app_installation_id
     while true; do
-        if ! read -r -p "  BH_GITHUB_APP_KEY_PROVIDER (bws/file): " _bh_app_key_provider; then
+        if ! read -r -p "  CODEREEVE_GITHUB_APP_KEY_PROVIDER (bws/file): " _bh_app_key_provider; then
             echo "baton-harness: error: could not read App private-key provider" >&2
             return 1
         fi
@@ -940,7 +928,7 @@ _bh_prompt_and_write_sandbox_config() {
         _bh_app_key_source="export BWS_PEM_SECRET_ID='${_bws_pem_secret_id}'"
     else
         while true; do
-            if ! read -r -p "  BH_GITHUB_APP_PRIVATE_KEY_FILE (absolute path to secured PEM file): " _bh_app_key_file; then
+            if ! read -r -p "  CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE (absolute path to secured PEM file): " _bh_app_key_file; then
                 echo "baton-harness: error: could not read App private-key file path" >&2
                 return 1
             fi
@@ -954,21 +942,21 @@ _bh_prompt_and_write_sandbox_config() {
                     ;;
             esac
         done
-        _bh_app_key_source="export BH_GITHUB_APP_PRIVATE_KEY_FILE='${_bh_app_key_file}'"
+        _bh_app_key_source="export CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE='${_bh_app_key_file}'"
     fi
     read -r -p "  BWS_GH_TOKEN_SECRET_ID (required for the standard App-token deploy — the worker PAT is vault-fetched from this ID; only skip if GH_TOKEN is supplied by other means): " _bws_gh_token_secret_id
     read -r -p "  BWS_HEARTBEAT_PING_URL_SECRET_ID (optional; press Enter to skip): " _bws_heartbeat_ping_url_secret_id
 
-    mkdir -p "${BH_PROJECT_ROOT}/.bh"
-    cat > "${BH_PROJECT_ROOT}/.bh/config.env" <<EOF
-# .bh/config.env — Sandbox configuration for baton-harness.
+    mkdir -p "${CODEREEVE_PROJECT_ROOT}/.codereeve"
+    cat > "${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env" <<EOF
+# .codereeve/config.env — Sandbox configuration for baton-harness.
 # Generated by bin/init-sandbox.sh. Edit as needed.
 # Required:
-export BH_REPO_OWNER=${BH_REPO_OWNER}
-export BH_REPO_NAME=${BH_REPO_NAME}
-export BH_GITHUB_APP_ID=${_bh_github_app_id}
-export BH_GITHUB_APP_INSTALLATION_ID=${_bh_github_app_installation_id}
-export BH_GITHUB_APP_KEY_PROVIDER=${_bh_app_key_provider}
+export CODEREEVE_REPO_OWNER=${CODEREEVE_REPO_OWNER}
+export CODEREEVE_REPO_NAME=${CODEREEVE_REPO_NAME}
+export CODEREEVE_GITHUB_APP_ID=${_bh_github_app_id}
+export CODEREEVE_GITHUB_APP_INSTALLATION_ID=${_bh_github_app_installation_id}
+export CODEREEVE_GITHUB_APP_KEY_PROVIDER=${_bh_app_key_provider}
 ${_bh_app_key_source}
 # Required for the standard App-token deploy (leave empty ONLY if GH_TOKEN is
 # supplied by other means, e.g. a direct export — see README "Override / fallback"):
@@ -977,10 +965,10 @@ export BWS_GH_TOKEN_SECRET_ID=${_bws_gh_token_secret_id}
 export BWS_HEARTBEAT_PING_URL_SECRET_ID=${_bws_heartbeat_ping_url_secret_id}
 EOF
 
-    echo "baton-harness: .bh/config.env written to ${BH_PROJECT_ROOT}/.bh/config.env"
+    echo "baton-harness: .codereeve/config.env written to ${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env"
 }
 
-if ! _bh_resolve_config_with_reuse_prompt "${BH_PROJECT_ROOT}/.bh/config.env" _bh_prompt_and_write_sandbox_config; then
+if ! _bh_resolve_config_with_reuse_prompt "${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env" _bh_prompt_and_write_sandbox_config; then
     exit 1
 fi
 
@@ -992,7 +980,7 @@ echo ""
 echo "baton-harness: sandbox initialisation complete."
 echo ""
 echo "  Sandbox repo:    ${REPO_SLUG}"
-echo "  Local clone:     ${BH_PROJECT_ROOT}"
+echo "  Local clone:     ${CODEREEVE_PROJECT_ROOT}"
 echo "  Scenario:        ${SCENARIO}"
 echo ""
 echo "  Created:"
@@ -1022,10 +1010,10 @@ case "${SCENARIO}" in
         ;;
 esac
 echo "    - Stub CI workflow: .github/workflows/ci.yml"
-echo "    - Created .bh/config.env"
-echo "    - .symphony/, .baton-harness/, and .bh/ entries in: .gitignore"
+echo "    - Created .codereeve/config.env"
+echo "    - .symphony/ and .codereeve/ entries in: .gitignore"
 echo ""
 echo "  Next steps:"
-echo "    1. Ensure BH_PROJECT_ROOT is set (bin/setup-env.sh writes it to host.env, or export it)"
+echo "    1. Ensure CODEREEVE_PROJECT_ROOT is set (bin/setup-env.sh writes it to host.env, or export it)"
 echo "    2. Run:  bin/run-daemon.sh --once"
 echo ""

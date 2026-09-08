@@ -92,7 +92,7 @@ def _make_harness_fixture(tmp_path: Path) -> Path:
     load_config.parent.mkdir(parents=True)
     shutil.copy2(SETUP_ENV, setup)
     shutil.copy2(LOAD_CONFIG, load_config)
-    daemon = harness / ".venv" / "Scripts" / "bh-daemon"
+    daemon = harness / ".venv" / "Scripts" / "codereeve"
     daemon.parent.mkdir(parents=True)
     daemon.write_text("test console entry point\n", encoding="utf-8")
     return setup
@@ -115,11 +115,12 @@ def _base_env(tmp_path: Path, fake_bin: Path) -> dict[str, str]:
     log_path = tmp_path / "commands.log"
 
     env = dict(os.environ)
+    env["CODEREEVE_VENV"] = str(HARNESS / ".venv")
     for key in (
-        "BH_SETUP_NO_PROMPT",
-        "BH_PROJECT_ROOT",
+        "CODEREEVE_SETUP_NO_PROMPT",
+        "CODEREEVE_PROJECT_ROOT",
         "BWS_ACCESS_TOKEN",
-        "BH_GITHUB_APP_KEY_PROVIDER",
+        "CODEREEVE_GITHUB_APP_KEY_PROVIDER",
         "BWS_GH_TOKEN_SECRET_ID",
         "BWS_HEARTBEAT_PING_URL_SECRET_ID",
     ):
@@ -179,7 +180,7 @@ def _run_setup(
             log_path,
         )
 
-    env["BH_SETUP_NO_PROMPT"] = "1"
+    env["CODEREEVE_SETUP_NO_PROMPT"] = "1"
     proc = subprocess.run(
         [_BASH, str(setup)],
         env=env,
@@ -270,7 +271,7 @@ def test_present_token_value_is_never_printed(tmp_path: Path) -> None:
         _write_executable(fake_bin / name, content)
     env = _base_env(tmp_path, fake_bin)
     sentinel = "task-7a-secret-token-sentinel"
-    env["BH_SETUP_NO_PROMPT"] = "1"
+    env["CODEREEVE_SETUP_NO_PROMPT"] = "1"
     env["BWS_ACCESS_TOKEN"] = sentinel
 
     proc = subprocess.run(

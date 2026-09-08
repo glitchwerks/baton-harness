@@ -13,8 +13,8 @@ possible cleanly -- never silently commit onto whatever branch happens
 to be checked out.
 
 Bug B: the ``.gitignore``-seeding block (~line 796-826) seeds
-``.symphony/`` and ``.baton-harness/`` but not ``.bh/``, even though
-the same script unconditionally writes ``.bh/config.env`` a few lines
+``.symphony/`` and ``.codereeve/`` but not ``.codereeve/``, even though
+the same script unconditionally writes ``.codereeve/config.env`` a few lines
 later.
 
 These tests drive the real ``bin/init-sandbox.sh`` via subprocess
@@ -36,7 +36,7 @@ factoring the script (it is not decomposed into isolable functions;
 see the return-summary note on this constraint).
 
 Every full run of the script eventually reaches the interactive
-``.bh/config.env`` prompt step and fails there (this subprocess has no
+``.codereeve/config.env`` prompt step and fails there (this subprocess has no
 tty), so a "happy path" run's overall exit code is never 0 -- success
 for the section under test is verified via git state (what actually
 landed on the "origin" bare repo) and stdout markers, not the final
@@ -316,10 +316,10 @@ def _run_init_sandbox(
 
     Args:
         tmp_path: Pytest-provided temp directory for the test.
-        project_root: The local clone to point ``BH_PROJECT_ROOT`` at.
+        project_root: The local clone to point ``CODEREEVE_PROJECT_ROOT`` at.
         default_branch: The branch name the fake ``gh repo view`` call
             reports as the sandbox repo's default branch.
-        scenario: The ``--scenario``/``BH_SCENARIO`` value. Defaults to
+        scenario: The ``--scenario``/``CODEREEVE_SCENARIO`` value. Defaults to
             ``"recovery"``, which seeds no issues/milestones and so
             makes no further ``gh`` calls the stub would need to
             handle between the label preflight and the section under
@@ -329,7 +329,7 @@ def _run_init_sandbox(
         The completed ``init-sandbox.sh`` process, including captured
         output. The overall exit code is expected to be non-zero even
         on the "happy path" for the section under test, because the
-        script's later ``.bh/config.env`` step requires an interactive
+        script's later ``.codereeve/config.env`` step requires an interactive
         terminal this subprocess does not have.
     """
     gh_bin_dir = tmp_path / "gh_bin"
@@ -340,10 +340,10 @@ def _run_init_sandbox(
     xdg_config_home.mkdir(exist_ok=True)
 
     env = _git_env()
-    env.pop("BH_REPO_OWNER", None)
-    env.pop("BH_REPO_NAME", None)
-    env.pop("BH_PROJECT_ROOT", None)
-    env.pop("BH_SCENARIO", None)
+    env.pop("CODEREEVE_REPO_OWNER", None)
+    env.pop("CODEREEVE_REPO_NAME", None)
+    env.pop("CODEREEVE_PROJECT_ROOT", None)
+    env.pop("CODEREEVE_SCENARIO", None)
     env["PATH"] = os.pathsep.join(
         part
         for part in [
@@ -356,10 +356,10 @@ def _run_init_sandbox(
     )
     env["HOME"] = home.as_posix()
     env["XDG_CONFIG_HOME"] = xdg_config_home.as_posix()
-    env["BH_PROJECT_ROOT"] = project_root.as_posix()
-    env["BH_REPO_OWNER"] = "fake-owner"
-    env["BH_REPO_NAME"] = "fake-repo"
-    env["BH_SCENARIO"] = scenario
+    env["CODEREEVE_PROJECT_ROOT"] = project_root.as_posix()
+    env["CODEREEVE_REPO_OWNER"] = "fake-owner"
+    env["CODEREEVE_REPO_NAME"] = "fake-repo"
+    env["CODEREEVE_SCENARIO"] = scenario
     env["FAKE_GH_DEFAULT_BRANCH"] = default_branch
 
     return subprocess.run(
@@ -382,7 +382,7 @@ def test_wrong_branch_behind_default_lands_commit_only_on_synced_default(
     """A leftover feature-branch checkout must never receive the commit.
 
     Reproduces the primary trigger from the issue: the daemon's normal
-    operation leaves ``BH_PROJECT_ROOT`` parked on ``feature/<slug>``
+    operation leaves ``CODEREEVE_PROJECT_ROOT`` parked on ``feature/<slug>``
     after a prior dispatch, and the sandbox repo's default branch has
     since advanced (e.g. another PR merged) while that feature branch
     was being worked. The fix must switch to the default branch, fast-
@@ -624,7 +624,7 @@ def test_already_synced_default_branch_still_commits_and_pushes_workflow(
         f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
     )
     # The overall process still exits non-zero because writing
-    # .bh/config.env requires an interactive terminal this subprocess
+    # .codereeve/config.env requires an interactive terminal this subprocess
     # doesn't have -- expected and unrelated to the branch-guard fix.
     assert proc.returncode == 1
     assert "interactive prompts required" in proc.stderr
@@ -638,11 +638,11 @@ def test_already_synced_default_branch_still_commits_and_pushes_workflow(
 def test_gitignore_seeds_bh_directory_alongside_existing_entries(
     tmp_path: Path,
 ) -> None:
-    """The .gitignore seed step must also cover ``.bh/``.
+    """The .gitignore seed step must also cover ``.codereeve/``.
 
-    The script unconditionally writes ``.bh/config.env`` later in the
+    The script unconditionally writes ``.codereeve/config.env`` later in the
     same run, but the gitignore-seeding block currently only seeds
-    ``.symphony/`` and ``.baton-harness/``. All three must be present.
+    ``.symphony/`` and ``.codereeve/``. All three must be present.
     """
     _origin, project_root = _make_origin_and_clone(tmp_path)
 
@@ -653,24 +653,24 @@ def test_gitignore_seeds_bh_directory_alongside_existing_entries(
     )
     # Line-exact, matching the script's own idempotency check for the
     # existing two entries (`grep -qxF '.symphony/' ...`) -- a
-    # substring match would also accept e.g. ".bh/config.env" or a
-    # comment mentioning ".bh/", neither of which actually gitignores
-    # the ".bh/" directory itself.
+    # substring match would also accept e.g. ".codereeve/config.env" or a
+    # comment mentioning ".codereeve/", neither of which actually gitignores
+    # the ".codereeve/" directory itself.
     gitignore_lines = gitignore_content.splitlines()
     assert ".symphony/" in gitignore_lines, (
         f"expected pre-existing .symphony/ entry; got:\n"
         f"{gitignore_content}\n"
         f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
     )
-    assert ".baton-harness/" in gitignore_lines, (
-        f"expected pre-existing .baton-harness/ entry; got:\n"
+    assert ".codereeve/" in gitignore_lines, (
+        f"expected pre-existing .codereeve/ entry; got:\n"
         f"{gitignore_content}\n"
         f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
     )
-    assert ".bh/" in gitignore_lines, (
-        "the script unconditionally writes .bh/config.env later in the "
-        "same run but never seeds .bh/ into .gitignore alongside "
-        ".symphony/ and .baton-harness/ (issue #349 bug B)\n"
+    assert ".codereeve/" in gitignore_lines, (
+        "the script unconditionally writes .codereeve/config.env later in the "
+        "same run but never seeds .codereeve/ into .gitignore alongside "
+        ".symphony/ and .codereeve/ (issue #349 bug B)\n"
         f"got .gitignore:\n{gitignore_content}\n"
         f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
     )

@@ -33,10 +33,10 @@ def _write_config_env(tmp_path: Path) -> Path:
         The isolated project root containing the config fixture.
     """
     project_root = tmp_path / "project"
-    config_dir = project_root / ".bh"
+    config_dir = project_root / ".codereeve"
     config_dir.mkdir(parents=True)
     (config_dir / "config.env").write_text(
-        "BH_GITHUB_APP_ID=111\n", encoding="utf-8", newline="\n"
+        "CODEREEVE_GITHUB_APP_ID=111\n", encoding="utf-8", newline="\n"
     )
     return project_root
 
@@ -86,9 +86,9 @@ def _run_daemon(
     xdg_config_home.mkdir()
 
     env = dict(os.environ)
-    env.pop("BH_REPO_OWNER", None)
-    env.pop("BH_REPO_NAME", None)
-    env.pop("BH_PROJECT_ROOT", None)
+    env.pop("CODEREEVE_REPO_OWNER", None)
+    env.pop("CODEREEVE_REPO_NAME", None)
+    env.pop("CODEREEVE_PROJECT_ROOT", None)
     env["PATH"] = os.pathsep.join(
         part
         for part in [
@@ -101,11 +101,11 @@ def _run_daemon(
     )
     env["HOME"] = home.as_posix()
     env["XDG_CONFIG_HOME"] = xdg_config_home.as_posix()
-    env["BH_PROJECT_ROOT"] = project_root.as_posix()
+    env["CODEREEVE_PROJECT_ROOT"] = project_root.as_posix()
     if owner is not None:
-        env["BH_REPO_OWNER"] = owner
+        env["CODEREEVE_REPO_OWNER"] = owner
     if name is not None:
-        env["BH_REPO_NAME"] = name
+        env["CODEREEVE_REPO_NAME"] = name
 
     return subprocess.run(
         [_BASH, str(RUN_DAEMON)],
@@ -138,4 +138,7 @@ def test_missing_owner_and_name_reports_error_not_silent_death(
     proc = _run_daemon(tmp_path)
 
     assert proc.returncode == 1
-    assert "BH_REPO_OWNER or BH_REPO_NAME missing from" in proc.stderr
+    assert (
+        "CODEREEVE_REPO_OWNER or CODEREEVE_REPO_NAME missing from"
+        in proc.stderr
+    )

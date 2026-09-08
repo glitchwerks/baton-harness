@@ -11,9 +11,9 @@ agent:
   command: claude
   permission_mode: bypassPermissions
 hooks:
-  after_create: . "$BH_VENV/bin/activate" && bh-after-create
-  before_run: . "$BH_VENV/bin/activate" && bh-before-run
-  after_run: . "$BH_VENV/bin/activate" && bh-after-run
+  after_create: . "$CODEREEVE_VENV/bin/activate" && codereeve hook after-create
+  before_run: . "$CODEREEVE_VENV/bin/activate" && codereeve hook before-run
+  after_run: . "$CODEREEVE_VENV/bin/activate" && codereeve hook after-run
 ---
 <!--
 NOTE on hook categories (slice 3b — issue #157):
@@ -21,7 +21,7 @@ The `hooks:` block above lists the THREE Python-baton-hooks fired by the
 daemon's worker turn loop (after_create / before_run / after_run).
 
 There is a SECOND category — Claude Code PreToolUse hooks — installed
-per-worktree by bh-after-create via a generated .claude/settings.json.
+per-worktree by codereeve hook after-create via a generated .claude/settings.json.
 The current PreToolUse hook is `force-pr-not-merge`
 (`src/baton_harness/hooks/force_pr_not_merge.py`); it is paired with the
 branch ruleset provisioned via `bin/provision-ruleset.sh`. See
@@ -67,7 +67,7 @@ reorder them.
    Run:
    ```
    gh pr create --draft \
-     --base "$BH_FEATURE_BRANCH" \
+     --base "$CODEREEVE_FEATURE_BRANCH" \
      --title "<short description>" \
      --body "Closes #{{ issue.number }}"
    ```

@@ -447,7 +447,7 @@ fi
 if [[ "${{1:-}}" == "-c" ]]; then
   if [[ "${{2:-}}" == *"urllib.request"* ]]; then
     if [[ "$mode" == "strict" ]]; then
-      if [[ "${{_BH_PROBE_TOKEN_INNER:-}}" == "worker-token-123" ]]; then
+    if [[ "${{_codereeve_probe_token_inner:-}}" == "worker-token-123" ]]; then
         echo 'HTTP_STATUS:403'
         echo 'harness-main-no-merge'
         exit 1
@@ -477,12 +477,12 @@ exec "$real_python" "$@"
             ]
             if part
         ),
-        "BH_PROBE_SANDBOX_REPO": "fake-owner/fake-repo",
-        "BH_PROBE_PR_NUMBER": "42",
-        "BH_PROBE_WORKER_TOKEN_PATH": str(token_path),
+        "CODEREEVE_PROBE_SANDBOX_REPO": "fake-owner/fake-repo",
+        "CODEREEVE_PROBE_PR_NUMBER": "42",
+        "CODEREEVE_PROBE_WORKER_TOKEN_PATH": str(token_path),
     }
     if with_hook:
-        env["BH_PROBE_HOOK_SCRIPT"] = str(hook_path)
+        env["CODEREEVE_PROBE_HOOK_SCRIPT"] = str(hook_path)
     return harness, env
 
 
@@ -529,7 +529,7 @@ class TestProbeScriptRegressions:
     def test_python_vector_exports_worker_token_before_subprocess(
         self, tmp_path: Path
     ) -> None:
-        """Vector 7 must set _BH_PROBE_TOKEN_INNER before spawning Python."""
+        """Vector 7 exports the worker token before spawning Python."""
         harness, env = _make_probe_harness(
             tmp_path, python_requires_env_token=True
         )

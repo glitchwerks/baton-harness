@@ -11,26 +11,26 @@
 # (Name-string lookup at endpoint 2 returns 404 silently — must not be used.)
 #
 # Required environment variables:
-#   BH_REPO_OWNER                    GitHub repository owner.
-#   BH_REPO_NAME                     GitHub repository name.
-#   BH_GITHUB_APP_ID                 Numeric App ID for ruleset bypass
+#   CODEREEVE_REPO_OWNER                    GitHub repository owner.
+#   CODEREEVE_REPO_NAME                     GitHub repository name.
+#   CODEREEVE_GITHUB_APP_ID                 Numeric App ID for ruleset bypass
 #                                    (NOT the same as installation id).
-#   BH_GITHUB_APP_INSTALLATION_ID    Required for app_auth.py at runtime.
+#   CODEREEVE_GITHUB_APP_INSTALLATION_ID    Required for app_auth.py at runtime.
 #                                    Validated for presence only here.
-#   BH_GITHUB_APP_KEY_PROVIDER       Explicit bws/file selector, validated
+#   CODEREEVE_GITHUB_APP_KEY_PROVIDER       Explicit bws/file selector, validated
 #                                    by the Python app_auth command.
 #   BWS_PEM_SECRET_ID                Required only for provider bws.
-#   BH_GITHUB_APP_PRIVATE_KEY_FILE   Absolute secured PEM path, required
+#   CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE   Absolute secured PEM path, required
 #                                    only for provider file.
 #   BWS_ACCESS_TOKEN                 Required for the bws App-key source.
 #                                    Python owns all key loading and signing.
 #
 # Optional environment variables:
-#   BH_ADMIN_ROLE_ID                 Numeric RepositoryRole id for admin
+#   CODEREEVE_ADMIN_ROLE_ID                 Numeric RepositoryRole id for admin
 #                                    bypass on main. Default: 5 (community-
 #                                    cited; not officially documented).
-#   BH_APP_AUTH_JWT_CMD              Command that prints the App JWT.
-#   BH_APP_AUTH_TOKEN_CMD            Command that prints the installation
+#   CODEREEVE_APP_AUTH_JWT_CMD              Command that prints the App JWT.
+#   CODEREEVE_APP_AUTH_TOKEN_CMD            Command that prints the installation
 #                                    token.
 #
 # Exit codes:
@@ -46,9 +46,9 @@ Usage: bin/provision-ruleset.sh [--help|-h]
 
 Idempotently provisions the harness-main-no-merge and
 harness-feature-daemon-only rulesets in the target sandbox repo.
-App authentication is delegated to Python: set BH_GITHUB_APP_KEY_PROVIDER
+App authentication is delegated to Python: set CODEREEVE_GITHUB_APP_KEY_PROVIDER
 to bws (with BWS_PEM_SECRET_ID and BWS_ACCESS_TOKEN) or file (with
-BH_GITHUB_APP_PRIVATE_KEY_FILE pointing to a secured absolute PEM path).
+CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE pointing to a secured absolute PEM path).
 EOF
 }
 
@@ -61,32 +61,32 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HARNESS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # ---------------------------------------------------------------------------
-# Source shared env-config loader (host.env -> BH_PROJECT_ROOT;
-# .bh/config.env -> BH_REPO_OWNER/BH_REPO_NAME/BH_GITHUB_APP_ID/etc;
+# Source shared env-config loader (host.env -> CODEREEVE_PROJECT_ROOT;
+# .codereeve/config.env -> CODEREEVE_REPO_OWNER/CODEREEVE_REPO_NAME/CODEREEVE_GITHUB_APP_ID/etc;
 # operator env wins). Lets the four required vars below resolve from
-# .bh/config.env instead of requiring manual export every time.
+# .codereeve/config.env instead of requiring manual export every time.
 # ---------------------------------------------------------------------------
-_BH_LOAD_CONFIG="${SCRIPT_DIR}/lib/load-config.sh"
-if [[ -f "${_BH_LOAD_CONFIG}" ]]; then
+_codereeve_load_config="${SCRIPT_DIR}/lib/load-config.sh"
+if [[ -f "${_codereeve_load_config}" ]]; then
     # shellcheck disable=SC1090,SC1091
-    source "${_BH_LOAD_CONFIG}"
+    source "${_codereeve_load_config}"
 fi
 
-if [[ -z "${BH_PROJECT_ROOT:-}" ]]; then
-    if [[ -t 0 && -t 1 && "${BH_SETUP_NO_PROMPT:-0}" != "1" ]]; then
-        read -r -p "provision-ruleset: BH_PROJECT_ROOT (absolute path to local sandbox clone): " BH_PROJECT_ROOT
-        if [[ -z "${BH_PROJECT_ROOT}" || "${BH_PROJECT_ROOT}" != /* ]]; then
-            echo "provision-ruleset: BH_PROJECT_ROOT must be a non-empty absolute path" >&2
+if [[ -z "${CODEREEVE_PROJECT_ROOT:-}" ]]; then
+    if [[ -t 0 && -t 1 && "${CODEREEVE_SETUP_NO_PROMPT:-0}" != "1" ]]; then
+        read -r -p "provision-ruleset: CODEREEVE_PROJECT_ROOT (absolute path to local sandbox clone): " CODEREEVE_PROJECT_ROOT
+        if [[ -z "${CODEREEVE_PROJECT_ROOT}" || "${CODEREEVE_PROJECT_ROOT}" != /* ]]; then
+            echo "provision-ruleset: CODEREEVE_PROJECT_ROOT must be a non-empty absolute path" >&2
             exit 2
         fi
-        export BH_PROJECT_ROOT
-        if [[ -f "${_BH_LOAD_CONFIG}" ]]; then
+        export CODEREEVE_PROJECT_ROOT
+        if [[ -f "${_codereeve_load_config}" ]]; then
             # shellcheck disable=SC1090,SC1091
-            source "${_BH_LOAD_CONFIG}"
+            source "${_codereeve_load_config}"
         fi
     fi
 fi
-unset _BH_LOAD_CONFIG
+unset _codereeve_load_config
 
 # ---------------------------------------------------------------------------
 # Python resolver — mirrors after_create.py:L99-L106.
@@ -99,39 +99,39 @@ _PYTHON="${HARNESS_DIR}/.venv/Scripts/python.exe"
 # Env validation.
 # ---------------------------------------------------------------------------
 _missing=()
-for v in BH_REPO_OWNER BH_REPO_NAME BH_GITHUB_APP_ID BH_GITHUB_APP_INSTALLATION_ID; do
+for v in CODEREEVE_REPO_OWNER CODEREEVE_REPO_NAME CODEREEVE_GITHUB_APP_ID CODEREEVE_GITHUB_APP_INSTALLATION_ID; do
     if [[ -z "${!v:-}" ]]; then
         _missing+=("${v}")
     fi
 done
 if [[ ${#_missing[@]} -gt 0 ]]; then
     echo "provision-ruleset: missing env vars: ${_missing[*]}" >&2
-    if [[ -n "${BH_PROJECT_ROOT:-}" ]]; then
-        _bh_config_env="${BH_PROJECT_ROOT}/.bh/config.env"
-        echo "  detail: BH_PROJECT_ROOT=${BH_PROJECT_ROOT}" >&2
+    if [[ -n "${CODEREEVE_PROJECT_ROOT:-}" ]]; then
+        _bh_config_env="${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env"
+        echo "  detail: CODEREEVE_PROJECT_ROOT=${CODEREEVE_PROJECT_ROOT}" >&2
         if [[ -f "${_bh_config_env}" ]]; then
-            echo "  detail: .bh/config.env=${_bh_config_env} (exists)" >&2
+            echo "  detail: .codereeve/config.env=${_bh_config_env} (exists)" >&2
         else
-            echo "  detail: .bh/config.env=${_bh_config_env} (does not exist)" >&2
+            echo "  detail: .codereeve/config.env=${_bh_config_env} (does not exist)" >&2
         fi
         unset _bh_config_env
     else
-        echo "  detail: BH_PROJECT_ROOT=(unset)" >&2
-        echo "  detail: .bh/config.env=(not checked: BH_PROJECT_ROOT unset)" >&2
+        echo "  detail: CODEREEVE_PROJECT_ROOT=(unset)" >&2
+        echo "  detail: .codereeve/config.env=(not checked: CODEREEVE_PROJECT_ROOT unset)" >&2
     fi
     for _v in "${_missing[@]}"; do
-        if [[ -z "${BH_PROJECT_ROOT:-}" ]]; then
-            echo "  detail: ${_v}: not checked (BH_PROJECT_ROOT unset)" >&2
+        if [[ -z "${CODEREEVE_PROJECT_ROOT:-}" ]]; then
+            echo "  detail: ${_v}: not checked (CODEREEVE_PROJECT_ROOT unset)" >&2
         else
-            _v_config_env="${BH_PROJECT_ROOT}/.bh/config.env"
+            _v_config_env="${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env"
             if [[ ! -f "${_v_config_env}" ]]; then
-                echo "  detail: ${_v}: .bh/config.env does not exist" >&2
+                echo "  detail: ${_v}: .codereeve/config.env does not exist" >&2
             elif [[ ! -r "${_v_config_env}" ]]; then
-                echo "  detail: ${_v}: .bh/config.env exists but is not readable" >&2
+                echo "  detail: ${_v}: .codereeve/config.env exists but is not readable" >&2
             elif grep -qE "^[[:space:]]*(export[[:space:]]+)?${_v}=" "${_v_config_env}"; then
-                echo "  detail: ${_v}: present in .bh/config.env but resolved empty" >&2
+                echo "  detail: ${_v}: present in .codereeve/config.env but resolved empty" >&2
             else
-                echo "  detail: ${_v}: not defined in .bh/config.env" >&2
+                echo "  detail: ${_v}: not defined in .codereeve/config.env" >&2
             fi
             unset _v_config_env
         fi
@@ -140,8 +140,8 @@ if [[ ${#_missing[@]} -gt 0 ]]; then
     exit 2
 fi
 
-REPO_SLUG="${BH_REPO_OWNER}/${BH_REPO_NAME}"
-ADMIN_ROLE_ID="${BH_ADMIN_ROLE_ID:-5}"
+REPO_SLUG="${CODEREEVE_REPO_OWNER}/${CODEREEVE_REPO_NAME}"
+ADMIN_ROLE_ID="${CODEREEVE_ADMIN_ROLE_ID:-5}"
 
 # ---------------------------------------------------------------------------
 # Isolate the subprocess Python environment.
@@ -157,9 +157,9 @@ unset PYTHONHOME PYTHONPATH 2>/dev/null || true
 
 # Acquire the App JWT before making any GitHub API call. The command override
 # is a test/operator seam; production falls back to the app_auth module.
-if [[ -n "${BH_APP_AUTH_JWT_CMD:-}" ]]; then
+if [[ -n "${CODEREEVE_APP_AUTH_JWT_CMD:-}" ]]; then
     # Trusted operator/test-only override; never wire to untrusted input.
-    if ! _APP_JWT="$(eval "${BH_APP_AUTH_JWT_CMD}")"; then
+    if ! _APP_JWT="$(eval "${CODEREEVE_APP_AUTH_JWT_CMD}")"; then
         echo "provision-ruleset: could not obtain the App JWT." >&2
         exit 2
     fi
@@ -175,7 +175,7 @@ if [[ -z "${_APP_JWT}" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Preflight: cross-check BH_GITHUB_APP_ID against GET /app (B3).
+# Preflight: cross-check CODEREEVE_GITHUB_APP_ID against GET /app (B3).
 # App JWTs require the Bearer authorization scheme, which gh api does not use.
 # Capture curl's response body and HTTP status separately, then parse the body.
 # ---------------------------------------------------------------------------
@@ -198,7 +198,7 @@ if ! _app_http_status="$(
         2>"${_app_stderr_file}"
 )"; then
     _app_stderr="$(cat "${_app_stderr_file}" 2>/dev/null || true)"
-    echo "provision-ruleset: PREFLIGHT FAILURE — GET /app failed; cannot confirm BH_GITHUB_APP_ID. A freshly-minted App JWT is always used for this call, so any failure means that credential is unusable." >&2
+    echo "provision-ruleset: PREFLIGHT FAILURE — GET /app failed; cannot confirm CODEREEVE_GITHUB_APP_ID. A freshly-minted App JWT is always used for this call, so any failure means that credential is unusable." >&2
     if [[ -n "${_app_stderr}" ]]; then
         echo "  ${_app_stderr}" >&2
     fi
@@ -206,7 +206,7 @@ if ! _app_http_status="$(
 elif [[ "${_app_http_status}" == "401" ]]; then
     _warn_skip_appid_check
 elif [[ "${_app_http_status}" != "200" ]]; then
-    echo "provision-ruleset: PREFLIGHT FAILURE — GET /app failed; cannot confirm BH_GITHUB_APP_ID. A freshly-minted App JWT is always used for this call, so any failure means that credential is unusable." >&2
+    echo "provision-ruleset: PREFLIGHT FAILURE — GET /app failed; cannot confirm CODEREEVE_GITHUB_APP_ID. A freshly-minted App JWT is always used for this call, so any failure means that credential is unusable." >&2
     echo "  GET /app returned HTTP ${_app_http_status}." >&2
     exit 1
 else
@@ -215,27 +215,27 @@ else
             'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); print(data["id"] if isinstance(data, dict) and "id" in data else "")' \
             "${_app_body_file}" 2>/dev/null
     )"; then
-        echo "provision-ruleset: PREFLIGHT FAILURE — GET /app returned an unparseable JSON body; cannot confirm BH_GITHUB_APP_ID." >&2
+        echo "provision-ruleset: PREFLIGHT FAILURE — GET /app returned an unparseable JSON body; cannot confirm CODEREEVE_GITHUB_APP_ID." >&2
         exit 1
     fi
     if [[ -z "${_live_app_id}" ]]; then
         _warn_skip_appid_check
-    elif [[ "${_live_app_id}" != "${BH_GITHUB_APP_ID}" ]]; then
-        echo "provision-ruleset: PREFLIGHT FAILURE — BH_GITHUB_APP_ID=${BH_GITHUB_APP_ID}" >&2
+    elif [[ "${_live_app_id}" != "${CODEREEVE_GITHUB_APP_ID}" ]]; then
+        echo "provision-ruleset: PREFLIGHT FAILURE — CODEREEVE_GITHUB_APP_ID=${CODEREEVE_GITHUB_APP_ID}" >&2
         echo "  but GET /app .id returned ${_live_app_id}." >&2
-        echo "  BH_GITHUB_APP_ID must be the App ID from https://github.com/settings/apps/<slug>," >&2
+        echo "  CODEREEVE_GITHUB_APP_ID must be the App ID from https://github.com/settings/apps/<slug>," >&2
         echo "  NOT the Installation ID. Aborting before writing ruleset." >&2
         exit 2
     else
-        echo "provision-ruleset: preflight OK — App ID ${BH_GITHUB_APP_ID} confirmed via GET /app"
+        echo "provision-ruleset: preflight OK — App ID ${CODEREEVE_GITHUB_APP_ID} confirmed via GET /app"
     fi
 fi
 
 # Acquire the installation token only after the App-ID preflight. All
 # repository- and organization-scoped calls below use this credential.
-if [[ -n "${BH_APP_AUTH_TOKEN_CMD:-}" ]]; then
+if [[ -n "${CODEREEVE_APP_AUTH_TOKEN_CMD:-}" ]]; then
     # Trusted operator/test-only override; never wire to untrusted input.
-    if ! _INSTALL_TOKEN="$(eval "${BH_APP_AUTH_TOKEN_CMD}")"; then
+    if ! _INSTALL_TOKEN="$(eval "${CODEREEVE_APP_AUTH_TOKEN_CMD}")"; then
         echo "provision-ruleset: could not obtain the installation token." >&2
         exit 2
     fi
@@ -281,7 +281,7 @@ fi
 if [[ "${ADMIN_ROLE_ID}" != "5" ]]; then
     _custom_roles_err="$(mktemp)"
     if _custom_roles_json="$(
-        GH_TOKEN="${_INSTALL_TOKEN}" gh api "orgs/${BH_REPO_OWNER}/custom-repository-roles" 2>"${_custom_roles_err}"
+        GH_TOKEN="${_INSTALL_TOKEN}" gh api "orgs/${CODEREEVE_REPO_OWNER}/custom-repository-roles" 2>"${_custom_roles_err}"
     )"; then
         _custom_role_match="$(
             printf '%s' "${_custom_roles_json}" \
@@ -296,17 +296,17 @@ for entry in json.loads(sys.stdin.read()):
         )"
         rm -f "${_custom_roles_err}"
         if [[ "${_custom_role_match}" != "match" ]]; then
-            echo "provision-ruleset: PREFLIGHT FAILURE — BH_ADMIN_ROLE_ID=${ADMIN_ROLE_ID}" >&2
+            echo "provision-ruleset: PREFLIGHT FAILURE — CODEREEVE_ADMIN_ROLE_ID=${ADMIN_ROLE_ID}" >&2
             echo "  GitHub custom repository roles did not report an admin-based role with that id." >&2
-            echo "  Override the id to a validated admin role or omit BH_ADMIN_ROLE_ID to use the default 5." >&2
+            echo "  Override the id to a validated admin role or omit CODEREEVE_ADMIN_ROLE_ID to use the default 5." >&2
             exit 2
         fi
         echo "provision-ruleset: preflight OK — custom admin RepositoryRole actor_id=${ADMIN_ROLE_ID} validated via org custom roles API"
     else
         _custom_roles_stderr="$(cat "${_custom_roles_err}")"
         rm -f "${_custom_roles_err}"
-        echo "provision-ruleset: PREFLIGHT FAILURE — BH_ADMIN_ROLE_ID=${ADMIN_ROLE_ID} is a non-default override." >&2
-        echo "  GitHub did not expose a custom-role validation API for ${BH_REPO_OWNER}." >&2
+        echo "provision-ruleset: PREFLIGHT FAILURE — CODEREEVE_ADMIN_ROLE_ID=${ADMIN_ROLE_ID} is a non-default override." >&2
+        echo "  GitHub did not expose a custom-role validation API for ${CODEREEVE_REPO_OWNER}." >&2
         echo "  stderr: ${_custom_roles_stderr}" >&2
         echo "  Refusing to write rulesets because the override cannot be validated." >&2
         exit 2
@@ -358,7 +358,7 @@ print(json.dumps(_strip(json.loads(sys.stdin.read()))))
 _render_config() {
     local src="$1"
     sed \
-        -e "s|\"__BH_GITHUB_APP_ID__\"|${BH_GITHUB_APP_ID}|g" \
+        -e "s|\"__BH_GITHUB_APP_ID__\"|${CODEREEVE_GITHUB_APP_ID}|g" \
         -e "s|\"__BH_ADMIN_ROLE_ID__\"|${ADMIN_ROLE_ID}|g" \
         "${src}" | _strip_comments
 }
@@ -471,18 +471,18 @@ _apply_ruleset "harness-feature-daemon-only" "${HARNESS_DIR}/config/ruleset.feat
 # legitimate ruleset edit made by this run is captured in the fresh pin
 # rather than immediately flagged as drift on the next preflight.
 #
-# Non-fatal by design: a missing BH_PROJECT_ROOT or an unresolvable
+# Non-fatal by design: a missing CODEREEVE_PROJECT_ROOT or an unresolvable
 # ruleset id only warns and skips the capture — provisioning itself has
 # already succeeded (or no-op'd) above, and the operator can re-run this
-# script once BH_PROJECT_ROOT is set to pin the baseline.
+# script once CODEREEVE_PROJECT_ROOT is set to pin the baseline.
 # ---------------------------------------------------------------------------
 _capture_baseline() {
-    if [[ -z "${BH_PROJECT_ROOT:-}" ]]; then
-        echo "provision-ruleset: WARNING — BH_PROJECT_ROOT not set; skipping ruleset baseline capture." >&2
+    if [[ -z "${CODEREEVE_PROJECT_ROOT:-}" ]]; then
+        echo "provision-ruleset: WARNING — CODEREEVE_PROJECT_ROOT not set; skipping ruleset baseline capture." >&2
         return 0
     fi
 
-    local baseline_dir="${BH_PROJECT_ROOT}/.bh"
+    local baseline_dir="${CODEREEVE_PROJECT_ROOT}/.codereeve"
     local baseline_path="${baseline_dir}/ruleset-baseline.json"
     mkdir -p "${baseline_dir}"
 
