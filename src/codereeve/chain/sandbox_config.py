@@ -369,6 +369,16 @@ def _provider_error_message(
     return _value_message(key, reason, layers)
 
 
+def _without_empty_values(layer: _SourceLayer) -> _SourceLayer:
+    """Return a layer with empty values removed for fallback selection only."""
+    return _SourceLayer(
+        layer.source,
+        {key: value for key, value in layer.values.items() if value},
+        layer.line_numbers,
+        is_environment=layer.is_environment,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -584,15 +594,9 @@ def _resolve_config(
     except AliasConflictError as exc:
         raise SandboxConfigError(str(exc)) from exc
 
-    override_values = {key: value for key, value in env.items() if value}
     effective_layers = (
-        _SourceLayer(
-            "environment variable",
-            override_values,
-            {},
-            is_environment=True,
-        ),
-        *additional_layers,
+        _without_empty_values(environment_layer),
+        *(_without_empty_values(layer) for layer in additional_layers),
         file_layer,
     )
     try:
@@ -605,6 +609,13 @@ def _resolve_config(
 
     for required_key in _REQUIRED_KEYS:
         if not resolved.get(required_key):
+            selected_source = _selected_source_layer(
+                required_key, effective_layers
+            )
+            if selected_source is not None:
+                raise SandboxConfigError(
+                    _value_message(required_key, "is empty", effective_layers)
+                )
             raise SandboxConfigError(f"missing required key: {required_key}")
 
     for key in _VALUE_VALIDATED_KEYS:

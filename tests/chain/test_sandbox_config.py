@@ -1863,7 +1863,9 @@ class TestCanonicalConfigSourceSelection:
         is_explicit: bool,
     ) -> None:
         """Explicit and default selection reject either alias direction."""
-        layout = PathLayout.for_environment(tmp_path, {})
+        layout = PathLayout.for_environment(
+            tmp_path, {}, home=tmp_path / "home"
+        )
         layout.canonical_state.mkdir()
         content = _VALID_ENV_CONTENT
         if file_key.startswith("CODEREEVE_"):
@@ -1927,7 +1929,9 @@ class TestCanonicalConfigSourceSelection:
         self, tmp_path: Path, is_explicit: bool
     ) -> None:
         """Final compatibility records retain legacy keys from config files."""
-        layout = PathLayout.for_environment(tmp_path, {})
+        layout = PathLayout.for_environment(
+            tmp_path, {}, home=tmp_path / "home"
+        )
         layout.canonical_state.mkdir()
         layout.canonical_config.write_text(
             _VALID_ENV_CONTENT, encoding="utf-8"
@@ -2022,7 +2026,9 @@ class TestCanonicalConfigSourceSelection:
         self, tmp_path: Path
     ) -> None:
         """Canonical configuration is parsed into semantic config fields."""
-        layout = PathLayout.for_environment(tmp_path, {})
+        layout = PathLayout.for_environment(
+            tmp_path, {}, home=tmp_path / "home"
+        )
         layout.canonical_state.mkdir()
         layout.canonical_config.write_text(
             _VALID_ENV_CONTENT.replace("BH_", "CODEREEVE_"),
@@ -2042,7 +2048,9 @@ class TestCanonicalConfigSourceSelection:
         self, tmp_path: Path
     ) -> None:
         """A legacy-only project remains readable during compatibility."""
-        layout = PathLayout.for_environment(tmp_path, {})
+        layout = PathLayout.for_environment(
+            tmp_path, {}, home=tmp_path / "home"
+        )
         layout.legacy_config.parent.mkdir()
         layout.legacy_config.write_text(_VALID_ENV_CONTENT, encoding="utf-8")
 
@@ -2058,7 +2066,9 @@ class TestCanonicalConfigSourceSelection:
         self, tmp_path: Path
     ) -> None:
         """Equivalent canonical and legacy values remain ambiguous."""
-        layout = PathLayout.for_environment(tmp_path, {})
+        layout = PathLayout.for_environment(
+            tmp_path, {}, home=tmp_path / "home"
+        )
         layout.canonical_state.mkdir()
         layout.legacy_config.parent.mkdir()
         layout.canonical_config.write_text(
@@ -2138,6 +2148,92 @@ class TestCanonicalConfigSourceSelection:
 
         with pytest.raises(PathConflictError, match="host config"):
             resolve_config_sources(None, {}, layout)
+
+    def test_explicit_config_rejects_linked_grandparent_with_missing_parent(
+        self, tmp_path: Path
+    ) -> None:
+        """An absent explicit file cannot hide a linked grandparent."""
+        target_root = tmp_path / "target-root"
+        target_root.mkdir()
+        linked_root = tmp_path / "linked-root"
+        try:
+            linked_root.symlink_to(target_root, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"symlinks are unavailable: {exc}")
+        layout = PathLayout.for_environment(tmp_path, {})
+
+        with pytest.raises(PathConflictError, match="sandbox config"):
+            resolve_config_sources(
+                linked_root / "missing" / "operator.env", {}, layout
+            )
+
+    @pytest.mark.parametrize(
+        ("file_key", "line_number", "expected_value"),
+        [
+            ("CODEREEVE_GITHUB_APP_ID", 3, _APP_ID),
+            ("BH_GITHUB_APP_INSTALLATION_ID", 4, _INSTALL_ID),
+            ("CODEREEVE_GITHUB_APP_KEY_PROVIDER", 5, "bws"),
+        ],
+    )
+    def test_empty_required_assignment_reports_canonical_source_and_line(
+        self,
+        tmp_path: Path,
+        file_key: str,
+        line_number: int,
+        expected_value: str,
+    ) -> None:
+        """Canonical, legacy, and provider empties retain source provenance."""
+        explicit = tmp_path / "operator.env"
+        content = _VALID_ENV_CONTENT
+        if file_key.startswith("CODEREEVE_"):
+            content = content.replace("BH_", "CODEREEVE_")
+        explicit.write_text(
+            content.replace(
+                f"{file_key}={expected_value}",
+                f"{file_key}=",
+            ),
+            encoding="utf-8",
+        )
+        layout = PathLayout.for_environment(tmp_path, {})
+
+        with pytest.raises(SandboxConfigError) as exc_info:
+            resolve_config_sources(explicit, {}, layout)
+
+        canonical_key = (
+            file_key
+            if file_key.startswith("CODEREEVE_")
+            else f"CODEREEVE_{file_key[3:]}"
+        )
+        message = str(exc_info.value)
+        assert canonical_key in message
+        assert f"{explicit}:{line_number}" in message
+        assert "missing required key" not in message
+
+    def test_empty_host_value_falls_back_to_project_value(
+        self, tmp_path: Path
+    ) -> None:
+        """An empty host placeholder leaves the project same-spelling value."""
+        layout = PathLayout.for_environment(
+            tmp_path,
+            {"XDG_CONFIG_HOME": str(tmp_path / "xdg")},
+        )
+        layout.canonical_host.parent.mkdir(parents=True)
+        layout.canonical_host.write_text(
+            "CODEREEVE_REPO_OWNER=\n", encoding="utf-8"
+        )
+        layout.canonical_state.mkdir()
+        layout.canonical_config.write_text(
+            _VALID_ENV_CONTENT.replace("BH_", "CODEREEVE_"),
+            encoding="utf-8",
+        )
+
+        resolved = resolve_config_sources(
+            None,
+            {"CODEREEVE_PROJECT_ROOT": str(tmp_path)},
+            layout,
+        )
+
+        assert resolved.config.repo_owner == _OWNER
 
     def test_reports_invalid_value_by_key_source_and_line_without_value(
         self, tmp_path: Path

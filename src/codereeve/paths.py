@@ -200,7 +200,7 @@ def _is_safe_path(path: Path, label: str, expected_mode: int) -> bool:
 
 def _validate_existing_ancestors(path: Path, label: str) -> None:
     """Reject linked or non-directory ancestors without resolving ``path``."""
-    for ancestor in path.parents:
+    for ancestor in reversed(path.parents):
         try:
             mode = ancestor.lstat().st_mode
         except FileNotFoundError:

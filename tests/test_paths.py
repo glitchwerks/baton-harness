@@ -175,6 +175,46 @@ def test_file_selection_rejects_linked_parent_without_final_file(
         )
 
 
+def test_file_selection_rejects_linked_grandparent_with_missing_parent(
+    tmp_path: Path,
+) -> None:
+    """A missing child cannot hide an unsafe linked grandparent directory."""
+    target_root = tmp_path / "target-root"
+    target_root.mkdir()
+    linked_root = tmp_path / "linked-root"
+    try:
+        linked_root.symlink_to(target_root, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlinks are unavailable: {exc}")
+
+    with pytest.raises(PathConflictError, match="config"):
+        select_compatible_file(
+            linked_root / "missing" / "config.env",
+            tmp_path / ".bh" / "config.env",
+            label="config",
+        )
+
+
+def test_directory_selection_rejects_linked_grandparent_with_missing_parent(
+    tmp_path: Path,
+) -> None:
+    """Directory selection also inspects existing linked grandparents."""
+    target_root = tmp_path / "target-root"
+    target_root.mkdir()
+    linked_root = tmp_path / "linked-root"
+    try:
+        linked_root.symlink_to(target_root, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlinks are unavailable: {exc}")
+
+    with pytest.raises(PathConflictError, match="state"):
+        select_compatible_directory(
+            linked_root / "missing" / ".codereeve",
+            tmp_path / ".baton-harness",
+            label="state",
+        )
+
+
 def test_directory_selection_does_not_consider_symphony_state(
     tmp_path: Path,
 ) -> None:
