@@ -43,13 +43,13 @@ def test_render_unit_emits_canonical_service_contract() -> None:
         "[Service]\n"
         "Type=simple\n"
         "User=runner\n"
-        'WorkingDirectory="/srv/managed project"\n'
+        "WorkingDirectory=/srv/managed project\n"
         'Environment="CODEREEVE_PROJECT_ROOT=/srv/managed project"\n'
         'Environment="HOME=/home/runner home"\n'
         'Environment="PATH=/opt/codereeve environment/bin:'
         '/usr/local/bin:/usr/bin:/bin"\n'
-        'EnvironmentFile="/etc/codereeve/secrets.env"\n'
-        'ExecStart="/opt/codereeve environment/bin/codereeve" '
+        "EnvironmentFile=/etc/codereeve/secrets.env\n"
+        'ExecStart=":/opt/codereeve environment/bin/codereeve" '
         '"daemon" "--workflow" "/srv/managed project/WORKFLOW.md"\n'
         "KillMode=control-group\n"
         "TimeoutStopSec=120\n"
@@ -72,14 +72,14 @@ def test_render_unit_omits_optional_files_when_absent() -> None:
         line for line in text.splitlines() if line.startswith("ExecStart=")
     )
     assert exec_start == (
-        'ExecStart="/opt/codereeve environment/bin/codereeve" "daemon"'
+        'ExecStart=":/opt/codereeve environment/bin/codereeve" "daemon"'
     )
     assert "EnvironmentFile=" not in text
     assert "CODEREEVE_CUTOVER_GATE" not in text
 
 
-def test_render_unit_quotes_and_escapes_systemd_tokens() -> None:
-    """Catch splitting, C escape, specifier, and variable expansion bugs."""
+def test_render_unit_uses_directive_specific_systemd_escaping() -> None:
+    """Catch scalar/token parsing and expansion-context regressions."""
     spec = _spec(
         project_root=_path('/srv/managed "root" 100% $cash'),
         environment=_path('/opt/env "quoted" 25% $money'),
@@ -91,17 +91,15 @@ def test_render_unit_quotes_and_escapes_systemd_tokens() -> None:
 
     text = render_unit(spec, gate=gate)
 
-    assert 'WorkingDirectory="/srv/managed \\"root\\" 100%% $cash"' in text
+    assert 'WorkingDirectory=/srv/managed "root" 100%% $cash' in text
     assert (
         'Environment="HOME=/home/back \\\\ \\"quoted\\" 10%% $owner"' in text
     )
+    assert 'EnvironmentFile=/etc/secret \\ file 75%% "$token".env' in text
     assert (
-        'EnvironmentFile="/etc/secret \\\\ file 75%% \\"$token\\".env"' in text
-    )
-    assert (
-        'ExecStart="/opt/env \\"quoted\\" 25%% $$money/bin/codereeve" '
+        'ExecStart=":/opt/env \\"quoted\\" 25%% $money/bin/codereeve" '
         '"daemon" "--workflow" '
-        '"/srv/flow \\\\ file 50%% \\"$$draft\\".md"' in text
+        '"/srv/flow \\\\ file 50%% \\"$draft\\".md"' in text
     )
     assert (
         'Environment="CODEREEVE_CUTOVER_GATE=/run/gate \\\\ '
@@ -117,6 +115,13 @@ def test_service_spec_rejects_relative_paths(field: str) -> None:
     """Catch relative paths that would depend on systemd's process context."""
     with pytest.raises(CutoverError, match="service path must be absolute"):
         _spec(**{field: _path("relative/path")})
+
+
+@pytest.mark.parametrize("field", ["project_root", "environment", "home"])
+def test_service_spec_rejects_missing_required_paths(field: str) -> None:
+    """Catch invalid specifications reaching later backend consumers."""
+    with pytest.raises(CutoverError, match="service path must be absolute"):
+        _spec(**{field: None})
 
 
 @pytest.mark.parametrize(
@@ -150,6 +155,13 @@ def test_service_spec_rejects_user_injection(bad_user: str) -> None:
         assert bad_user not in str(exc.value)
 
 
+@pytest.mark.parametrize("bad_user", [None, 7])
+def test_service_spec_rejects_non_string_user(bad_user: object) -> None:
+    """Catch raw regex TypeError escaping the fixed diagnostic contract."""
+    with pytest.raises(CutoverError, match="service user is invalid"):
+        _spec(run_user=bad_user)
+
+
 @pytest.mark.parametrize("timeout", [0.0, -1.0, float("nan"), float("inf")])
 def test_service_spec_rejects_non_positive_or_non_finite_timeout(
     timeout: float,
@@ -170,6 +182,24 @@ def test_render_unit_rejects_windows_target_path() -> None:
     """Catch accidentally emitting a Windows drive path into a Linux unit."""
     with pytest.raises(CutoverError, match="service path must be absolute"):
         _spec(environment=Path("C:/codereeve-env"))
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("project_root", "/srv/trailing-space "),
+        ("project_root", "/srv/trailing-backslash\\"),
+        ("secrets", "/etc/codereeve/*.env"),
+        ("secrets", "/etc/codereeve/secret?.env"),
+        ("secrets", "/etc/codereeve/secret[12].env"),
+    ],
+)
+def test_render_unit_rejects_unrepresentable_raw_scalar_path(
+    field: str, value: str
+) -> None:
+    """Catch silent target changes in raw scalar systemd directives."""
+    with pytest.raises(CutoverError, match="service path cannot be rendered"):
+        render_unit(_spec(**{field: _path(value)}))
 
 
 def test_render_unit_has_no_process_or_filesystem_effects(

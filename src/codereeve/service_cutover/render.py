@@ -10,12 +10,11 @@ from .model import CutoverError, ServiceSpec, _validated_path_text
 _SYSTEM_PATH = "/usr/local/bin:/usr/bin:/bin"
 
 
-def _quote_systemd(value: str, *, escape_dollar: bool = False) -> str:
+def _quote_systemd_token(value: str) -> str:
     """Quote one systemd token while preserving its literal value.
 
     Args:
         value: One directive value or command argument.
-        escape_dollar: Whether Exec-style dollar expansion is active.
 
     Returns:
         A double-quoted systemd token with C escapes and specifiers escaped.
@@ -29,9 +28,27 @@ def _quote_systemd(value: str, *, escape_dollar: bool = False) -> str:
         raise CutoverError("service value contains control data")
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     escaped = escaped.replace("%", "%%")
-    if escape_dollar:
-        escaped = escaped.replace("$", "$$")
     return f'"{escaped}"'
+
+
+def _raw_scalar_path(value: str, *, reject_glob: bool = False) -> str:
+    """Serialize a path consumed as an unquoted scalar by systemd.
+
+    Args:
+        value: Validated absolute POSIX path.
+        reject_glob: Whether systemd would interpret glob metacharacters.
+
+    Returns:
+        A raw scalar with percent specifiers escaped.
+
+    Raises:
+        CutoverError: If systemd cannot preserve the literal path spelling.
+    """
+    if value[-1].isspace() or value.endswith("\\"):
+        raise CutoverError("service path cannot be rendered")
+    if reject_glob and any(character in value for character in "*?["):
+        raise CutoverError("service path cannot be rendered")
+    return value.replace("%", "%%")
 
 
 def _timeout_text(timeout_s: float) -> str:
@@ -84,31 +101,30 @@ def render_unit(spec: ServiceSpec, *, gate: Path | None = None) -> str:
         "[Service]",
         "Type=simple",
         f"User={spec.run_user}",
-        f"WorkingDirectory={_quote_systemd(project_root)}",
+        f"WorkingDirectory={_raw_scalar_path(project_root)}",
         "Environment="
-        + _quote_systemd(f"CODEREEVE_PROJECT_ROOT={project_root}"),
-        f"Environment={_quote_systemd(f'HOME={home}')}",
+        + _quote_systemd_token(f"CODEREEVE_PROJECT_ROOT={project_root}"),
+        f"Environment={_quote_systemd_token(f'HOME={home}')}",
         "Environment="
-        + _quote_systemd(f"PATH={environment}/bin:{_SYSTEM_PATH}"),
+        + _quote_systemd_token(f"PATH={environment}/bin:{_SYSTEM_PATH}"),
     ]
     if gate_text is not None:
         lines.append(
             "Environment="
-            + _quote_systemd(f"CODEREEVE_CUTOVER_GATE={gate_text}")
+            + _quote_systemd_token(f"CODEREEVE_CUTOVER_GATE={gate_text}")
         )
     if secrets is not None:
-        lines.append(f"EnvironmentFile={_quote_systemd(secrets)}")
+        lines.append(
+            "EnvironmentFile=" + _raw_scalar_path(secrets, reject_glob=True)
+        )
 
-    command = [f"{environment}/bin/codereeve", "daemon"]
+    command = [f":{environment}/bin/codereeve", "daemon"]
     if workflow is not None:
         command.extend(("--workflow", workflow))
     lines.extend(
         (
             "ExecStart="
-            + " ".join(
-                _quote_systemd(argument, escape_dollar=True)
-                for argument in command
-            ),
+            + " ".join(_quote_systemd_token(argument) for argument in command),
             "KillMode=control-group",
             f"TimeoutStopSec={_timeout_text(spec.timeout_s)}",
             "Restart=on-failure",

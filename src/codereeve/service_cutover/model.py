@@ -65,17 +65,19 @@ class ServiceSpec:
         Raises:
             CutoverError: If a path, user, or timeout is unsafe or invalid.
         """
-        paths = (
+        for required_path in (
             self.project_root,
             self.environment,
-            self.workflow,
-            self.secrets,
             self.home,
-        )
-        for path in paths:
-            if path is not None:
-                _validated_path_text(path)
-        if not _RUN_USER_PATTERN.fullmatch(self.run_user):
+        ):
+            _validated_path_text(required_path)
+        for optional_path in (self.workflow, self.secrets):
+            if optional_path is not None:
+                _validated_path_text(optional_path)
+        valid_user = isinstance(
+            self.run_user, str
+        ) and _RUN_USER_PATTERN.fullmatch(self.run_user)
+        if not valid_user:
             raise CutoverError("service user is invalid")
         try:
             timeout_is_valid = (
