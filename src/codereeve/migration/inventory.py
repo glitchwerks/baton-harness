@@ -57,6 +57,7 @@ class _Inventory:
         *,
         directory: bool = False,
         retain: bool = False,
+        read_contents: bool = True,
     ) -> bool:
         """Inspect ancestors, type, readability, and recursive descendants.
 
@@ -65,6 +66,8 @@ class _Inventory:
             scope: Static diagnostic scope.
             directory: Require a directory and inspect its descendants.
             retain: Retain bytes for literal config parsing only.
+            read_contents: Read file bytes; false only for lock metadata,
+                because Windows mandatory locks also exclude reads.
 
         Returns:
             Whether the path exists; unsafe existing paths still count for
@@ -96,7 +99,7 @@ class _Inventory:
                     self.inspect(
                         child, scope, directory=stat.S_ISDIR(child_mode)
                     )
-            else:
+            elif read_contents:
                 with path.open("rb") as stream:
                     if retain:
                         self.files[path] = stream.read()
@@ -235,7 +238,7 @@ def _inspect_evidence(
     project = context.layout.canonical_state.parent
     transaction_root = project / ".codereeve-migration"
     lock = project / ".codereeve-migration.lock"
-    lock_exists = scan.inspect(lock, "lease")
+    lock_exists = scan.inspect(lock, "lease", read_contents=False)
     if evidence.lease is EvidenceState.BLOCKED:
         scan.finding("writer_lease_held", "lease", lock)
     elif lock_exists and evidence.lease is EvidenceState.UNKNOWN:

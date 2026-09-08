@@ -8,6 +8,7 @@ import os
 import re
 import stat
 import uuid
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -533,7 +534,9 @@ def load_incomplete_journal(path: Path) -> RecoveryState:
         )
 
 
-def _append(path: Path, data: bytes) -> None:
+def _append(
+    path: Path, data: bytes, *, file_sync: Callable[[int], None] | None = None
+) -> None:
     """Append one complete line and fsync before returning."""
     validate_safe_file_path(path, label="journal")
     fd = os.open(
@@ -546,7 +549,7 @@ def _append(path: Path, data: bytes) -> None:
             raise JournalError(
                 "partial journal append; manual recovery required"
             )
-        _fsync_file(fd)
+        (file_sync or _fsync_file)(fd)
     finally:
         os.close(fd)
 
@@ -554,15 +557,24 @@ def _append(path: Path, data: bytes) -> None:
 class MigrationJournal:
     """Append-only writer; callers must retain the project writer lease."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(
+        self, path: Path, *, file_sync: Callable[[int], None] | None = None
+    ) -> None:
         """Retain artifact locations; use create or open for validation."""
         self.path = path
         self.manifest_path = path.parent / "manifest.json"
         self._failed = False
+        self._file_sync = file_sync
 
     @classmethod
     def create(
-        cls, transaction_root: Path, report: MigrationReport, now: datetime
+        cls,
+        transaction_root: Path,
+        report: MigrationReport,
+        now: datetime,
+        *,
+        directory_sync: Callable[[Path], None] | None = None,
+        file_sync: Callable[[int], None] | None = None,
     ) -> MigrationJournal:
         """Create exclusive private artifacts, inventorying metadata only.
 
@@ -570,6 +582,8 @@ class MigrationJournal:
             transaction_root: Project .codereeve-migration directory.
             report: Ready plan with at least one original input.
             now: A timezone-aware timestamp, normalized to UTC.
+            directory_sync: Optional explicit directory durability capability.
+            file_sync: Optional file durability capability retained on writer.
 
         Returns:
             Durable journal containing its initial created event.
@@ -579,6 +593,8 @@ class MigrationJournal:
                 durability, or any failed persistence boundary.
         """
         try:
+            sync_directory = directory_sync or fsync_directory
+            sync_file = file_sync or _fsync_file
             if (
                 report.status is not MigrationStatus.READY
                 or not report.actions
@@ -589,7 +605,7 @@ class MigrationJournal:
             validate_safe_file_path(
                 transaction_root / "probe", label="transaction root"
             )
-            fsync_directory(transaction_root.parent)
+            sync_directory(transaction_root.parent)
             now = now.astimezone(timezone.utc)
             transaction_id = (
                 now.strftime("%Y%m%dT%H%M%S%fZ") + "-" + uuid.uuid4().hex
@@ -601,7 +617,7 @@ class MigrationJournal:
             )
             if not transaction_root.exists():
                 _private_directory(transaction_root)
-                fsync_directory(transaction_root.parent)
+                sync_directory(transaction_root.parent)
             elif (
                 os.name != "nt"
                 and stat.S_IMODE(transaction_root.stat().st_mode) & 0o077
@@ -611,7 +627,7 @@ class MigrationJournal:
                 )
             directory = transaction_root / transaction_id
             _private_directory(directory)
-            fsync_directory(transaction_root)
+            sync_directory(transaction_root)
             data = {
                 "schema_version": 1,
                 "transaction_id": transaction_id,
@@ -636,11 +652,11 @@ class MigrationJournal:
                 )
                 if os.write(fd, content) != len(content):
                     raise JournalError("partial manifest write")
-                _fsync_file(fd)
+                sync_file(fd)
             finally:
                 os.close(fd)
             os.replace(temporary, directory / "manifest.json")
-            fsync_directory(directory)
+            sync_directory(directory)
             path = directory / "journal.jsonl"
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             os.close(fd)
@@ -650,22 +666,26 @@ class MigrationJournal:
                 "previous": _digest(data),
                 "event": JournalEvent("", "created").as_dict(),
             }
-            _append(
-                path, _json({**payload, "checksum": _digest(payload)}) + b"\n"
-            )
-            fsync_directory(directory)
-            return cls(path)
+            content = _json({**payload, "checksum": _digest(payload)}) + b"\n"
+            if file_sync is None:
+                _append(path, content)
+            else:
+                _append(path, content, file_sync=file_sync)
+            sync_directory(directory)
+            return cls(path, file_sync=file_sync)
         except (OSError, PathConflictError, ValueError, TypeError):
             raise JournalError(
                 "transaction creation failed; inspect recovery metadata"
             ) from None
 
     @classmethod
-    def open(cls, path: Path) -> MigrationJournal:
+    def open(
+        cls, path: Path, *, file_sync: Callable[[int], None] | None = None
+    ) -> MigrationJournal:
         """Reopen a verified journal under a caller-owned writer lease."""
         if load_incomplete_journal(path).manual_recovery:
             raise JournalError("journal corrupt; manual recovery required")
-        return cls(path)
+        return cls(path, file_sync=file_sync)
 
     def record(self, event: JournalEvent) -> None:
         """Validate and durably append one event before returning.
@@ -692,10 +712,13 @@ class MigrationJournal:
                 "event": validated.as_dict(),
             }
             try:
-                _append(
-                    self.path,
-                    _json({**payload, "checksum": _digest(payload)}) + b"\n",
+                content = (
+                    _json({**payload, "checksum": _digest(payload)}) + b"\n"
                 )
+                if self._file_sync is None:
+                    _append(self.path, content)
+                else:
+                    _append(self.path, content, file_sync=self._file_sync)
             except JournalError:
                 self._failed = True
                 raise

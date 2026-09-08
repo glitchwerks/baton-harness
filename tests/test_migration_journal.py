@@ -378,3 +378,31 @@ def test_created_only_recovery_can_finish_without_inventing_operations(
     evidence = probe_journals(root)
     assert evidence.journals is EvidenceState.CLEAR
     assert evidence.verified_transactions == (journal.path.parent,)
+
+
+def test_explicit_durability_callbacks_cover_create_and_reopen(
+    tmp_path: Path,
+    report: MigrationReport,
+) -> None:
+    """Injected storage durability is retained by both journal writers."""
+    import os
+
+    flushed: list[int] = []
+
+    def sync(fd: int) -> None:
+        """Flush real files and record the actual descriptor boundary."""
+        os.fsync(fd)
+        flushed.append(fd)
+
+    journal = MigrationJournal.create(
+        tmp_path / "transactions",
+        report,
+        datetime.now(timezone.utc),
+        directory_sync=lambda path: None,
+        file_sync=sync,
+    )
+    assert len(flushed) >= 2
+    reopened = MigrationJournal.open(journal.path, file_sync=sync)
+    before = len(flushed)
+    reopened.record(JournalEvent("", "restored"))
+    assert len(flushed) == before + 1
