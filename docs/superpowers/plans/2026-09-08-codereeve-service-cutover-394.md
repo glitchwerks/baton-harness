@@ -82,7 +82,7 @@ def test_zero_exit_does_not_authorize_missing_checks(backend, spec):
 
 ### Task 3: Durable cutover journal and filesystem snapshots
 
-**Files:** Create `journal.py`, `test_journal.py`; fill immutable snapshot declarations in model and backend integration.
+**Files:** Create `journal.py` and, when needed for focused filesystem responsibilities, `storage.py`, with `test_journal.py`/`test_storage.py`; fill immutable snapshot declarations in model and backend integration (#394 durable recovery scope).
 
 **Interfaces:** `CutoverJournal.create(root, spec, snapshot, *, storage)`, `open(path, *, storage)`, `record(event, metadata)`, `capture_publication(paths)`, `restore_publication()`. `ServiceSnapshot` holds validated unit metadata and private backup references; raw environment/unit/secret bytes never appear in its serialized public metadata. `Storage` defaults to real exclusive creation, fsync, no-follow inspection and same-filesystem rename; test seam permits injected durability only.
 
