@@ -298,6 +298,10 @@ def _converted(path: Path, project: Path) -> bytes:
         "CODEREEVE_REDISPATCH_COUNTS_PATH": "dispatch-counts.json",
     }
     paths = {}
+    paths["CODEREEVE_DAEMON_SECRETS_PATH"] = (
+        "/etc/bh-daemon/secrets.env",
+        "/etc/codereeve/secrets.env",
+    )
     values = resolve_environment(
         (
             EnvLayer(

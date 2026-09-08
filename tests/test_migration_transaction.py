@@ -195,6 +195,54 @@ def test_host_and_secrets_preserve_confidentiality_and_stage_locally(
             assert event.source.parent == event.destination.parent
 
 
+@pytest.mark.parametrize("secrets_present", [False, True])
+@pytest.mark.parametrize(
+    "value", ["/etc/bh-daemon/secrets.env", "/private/custom.env"]
+)
+def test_secrets_default_conversion_is_deterministic(
+    context: MigrationContext,
+    secrets_present: bool,
+    value: str,
+) -> None:
+    """Default conversion is independent of actions and injected etc roots."""
+    put(
+        context.layout.legacy_config,
+        f"BH_DAEMON_SECRETS_PATH={value}\n".encode(),
+    )
+    if secrets_present:
+        put(context.layout.legacy_secrets, b"BWS_ACCESS_TOKEN=TOP_SECRET\n")
+    verified = []
+
+    class PublicVerifier(PortableOperations):
+        """Replay conversion before the original sources are moved."""
+
+        def boundary(self, name: str, phase: str, path: Path) -> None:
+            """Check the public verifier using only the stage and manifest."""
+            super().boundary(name, phase, path)
+            if (name, phase) == ("verify", "after") and (
+                path / "config.env"
+            ).is_file():
+                manifest_path = next(
+                    (
+                        context.layout.canonical_state.parent
+                        / ".codereeve-migration"
+                    ).glob("*/manifest.json")
+                )
+                verify_staged_migration(path, verify_manifest(manifest_path))
+                verified.append(path)
+
+    apply_migration(context, operations=PublicVerifier(check_managed=False))
+    expected = (
+        "/etc/codereeve/secrets.env"
+        if value == "/etc/bh-daemon/secrets.env"
+        else value
+    )
+    assert context.layout.canonical_config.read_text() == (
+        f"CODEREEVE_DAEMON_SECRETS_PATH={expected}\n"
+    )
+    assert len(verified) == 1
+
+
 @pytest.mark.parametrize(
     "problem", ["canonical", "collision", "aliases", "journal"]
 )

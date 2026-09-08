@@ -323,6 +323,40 @@ def test_bridge_emits_aliases_empty_and_third_party(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
+    "spelling", ["BH_DAEMON_SECRETS_PATH", "CODEREEVE_DAEMON_SECRETS_PATH"]
+)
+def test_loader_preserves_daemon_secrets_path_override(
+    tmp_path: Path,
+    spelling: str,
+) -> None:
+    """Old and new host overrides reach existing legacy shell consumers."""
+    from tests.test_load_config_export_visibility import _BASH
+
+    environment = _security_env(tmp_path)
+    host = Path(environment["XDG_CONFIG_HOME"]) / "codereeve" / "host.env"
+    host.parent.mkdir(parents=True)
+    host.write_text(
+        f"{spelling}=/private/custom-secrets.env\n", encoding="utf-8"
+    )
+    proc = subprocess.run(
+        [
+            _BASH,
+            "-c",
+            'source "$1" && printf "%s\\n%s\\n" '
+            '"$CODEREEVE_DAEMON_SECRETS_PATH" "$BH_DAEMON_SECRETS_PATH"',
+            "bash",
+            (ROOT / "bin/lib/load-config.sh").as_posix(),
+        ],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.splitlines() == ["/private/custom-secrets.env"] * 2
+
+
+@pytest.mark.parametrize(
     "unsafe",
     [
         "$(touch sentinel)",

@@ -15,18 +15,13 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 from codereeve.config_env import PRODUCT_ALIASES
 from codereeve.paths import PathLayout
 
 ROOT = Path(__file__).resolve().parents[1]
 pytestmark = pytest.mark.fast
-
-# #394 owns the service installer cutover. This single interface exception
-# expires in 0.4.0; it does not exempt any other interface in the installer.
-ENV_COMPATIBILITY = {
-    ("bin/install-daemon-service.sh", "BH_DAEMON_SECRETS_PATH"),
-}
 
 # Read-only compatibility recognition and transactional old-default rewrite.
 # Each exact (file, function, literal) exception expires in 0.4.0. An added
@@ -44,6 +39,11 @@ PATH_COMPATIBILITY = {
         "src/codereeve/migration/transaction.py",
         "_converted",
         ".baton-harness/",
+    ),
+    (
+        "src/codereeve/migration/transaction.py",
+        "_converted",
+        "/etc/bh-daemon/secrets.env",
     ),
 }
 
@@ -141,7 +141,7 @@ def test_all_product_environment_interfaces_are_registered() -> None:
             or name == "BATON_HARNESS_DIR"
             if name not in registered
         )
-    assert missing == ENV_COMPATIBILITY, sorted(missing ^ ENV_COMPATIBILITY)
+    assert not missing, sorted(missing)
     docs = (ROOT / "README.md").read_text(encoding="utf-8") + (
         ROOT / "docs/codereeve-migration.md"
     ).read_text(encoding="utf-8")
@@ -172,7 +172,7 @@ def test_shell_configuration_has_only_reviewed_execution_targets() -> None:
         (path.relative_to(ROOT).as_posix(), command, target)
         for path in _production_files()
         if path.suffix != ".py"
-        for command, target in _execution_targets(_interface_text(path))
+        for command, target in _execution_targets(_execution_text(path))
         if (command, target) not in allowed
     }
     assert not violations, sorted(violations)
@@ -211,10 +211,26 @@ def _python_interfaces(text: str) -> set[str]:
             candidates = [node.slice]
         elif isinstance(node, ast.Call):
             function = ast.unparse(node.func).split(".")[-1]
-            if function in {"get", "getenv", "pop", "setdefault"}:
+            if function in {
+                "get",
+                "getenv",
+                "pop",
+                "setdefault",
+                "putenv",
+                "unsetenv",
+            }:
                 candidates = node.args[:1]
             elif function in {"resolve_alias_pair", "_compat_value"}:
                 candidates = node.args[1:3]
+            elif function == "update":
+                for argument in node.args:
+                    if isinstance(argument, ast.Dict):
+                        candidates.extend(key for key in argument.keys if key)
+                names.update(item.arg for item in node.keywords if item.arg)
+        elif isinstance(node, ast.AugAssign) and isinstance(
+            node.value, ast.Dict
+        ):
+            candidates = [key for key in node.value.keys if key]
         names.update(
             item.value
             for item in candidates
@@ -244,6 +260,13 @@ def _shell_interfaces(text: str) -> set[str]:
                 visible,
             )
         )
+        for export in re.finditer(
+            r"(?:^|[;\s])(?:export|declare\s+-[a-zA-Z]*x[a-zA-Z]*)\s+([^;]+)",
+            visible,
+        ):
+            names.update(
+                re.findall(r"(?:^|\s)([A-Z][A-Z_0-9]*)(?=\s|=|$)", export[1])
+            )
         assignment = re.match(r"\s*([A-Z][A-Z_0-9]*)=(.*)$", visible)
         if assignment and not re.search(
             rf"\$\{{?{assignment[1]}\b", assignment[2]
@@ -279,10 +302,18 @@ def _execution_targets(text: str) -> set[tuple[str, str]]:
                     "&&",
                     "||",
                     "(",
+                    ")",
+                    "{",
                     "then",
                     "do",
                     "!",
                     "if",
+                    "elif",
+                    "while",
+                    "until",
+                    "else",
+                    "time",
+                    "coproc",
                     "command",
                     "builtin",
                 }
@@ -355,6 +386,34 @@ message = "BH_DIAGNOSTIC"
     }
 
 
+@pytest.mark.parametrize(
+    "statement",
+    [
+        'os.environ.update({"BH_UNREGISTERED": "value"})',
+        'os.environ.update(BH_UNREGISTERED="value")',
+        'os.putenv("BH_UNREGISTERED", "value")',
+        'os.environ |= {"BH_UNREGISTERED": "value"}',
+    ],
+)
+def test_python_scan_tracks_environment_mutations(statement: str) -> None:
+    """Mutation APIs cannot export names outside the product catalog."""
+    assert _python_interfaces(statement) == {"BH_UNREGISTERED"}
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "BH_UNREGISTERED=value\nexport BH_UNREGISTERED",
+        "export BH_UNREGISTERED BH_SECOND=value",
+        "declare -x BH_UNREGISTERED=value",
+        "declare -rx BH_UNREGISTERED",
+    ],
+)
+def test_shell_scan_tracks_split_and_declared_exports(statement: str) -> None:
+    """An assignment followed by a bare export remains an interface."""
+    assert "BH_UNREGISTERED" in _shell_interfaces(statement)
+
+
 def test_shell_scan_tracks_interfaces_without_internal_locals() -> None:
     """Unknown exported variables fail while installer locals stay local."""
     text = """
@@ -388,6 +447,14 @@ Environment=BH_SERVICE=value
         ('. "$config_file"', (".", "$config_file")),
         ('if value="$(eval "$contents")"; then', ("eval", "$contents")),
         ("true; source config.env", ("source", "config.env")),
+        ("load() { source host.env; }", ("source", "host.env")),
+        ("while source config.env; do true; done", ("source", "config.env")),
+        ("until . config.env; do true; done", (".", "config.env")),
+        (
+            "if false; then true; elif source host.env; then true; fi",
+            ("source", "host.env"),
+        ),
+        ("case x in x) eval contents;; esac", ("eval", "contents")),
     ],
 )
 def test_execution_scan_catches_direct_and_indirect_execution(
@@ -450,12 +517,7 @@ def test_shell_legacy_paths_reject_new_writers() -> None:
         (path.relative_to(ROOT).as_posix(), line.strip())
         for path in _production_files()
         if path.suffix == ".sh"
-        for line in _shell_code(path.read_text(encoding="utf-8"))
-        if not line.lstrip().startswith("echo ")
-        and re.search(
-            r"(?:\.bh|\.baton-harness)/|/etc/bh-daemon/|baton-harness/host.env",
-            line,
-        )
+        for line in _shell_legacy_lines(path.read_text(encoding="utf-8"))
     }
     assert actual == allowed, sorted(actual ^ allowed)
 
@@ -486,3 +548,384 @@ def test_shell_code_preserves_new_write_outside_help() -> None:
     """A write appended to an installer or loader is still inspected."""
     text = "# old\ncat <<'END'\nhistory\nEND\ntouch .bh/new.json\n"
     assert _shell_code(text) == ["cat <<'END'", "touch .bh/new.json"]
+
+
+def _derived_legacy_writes(
+    text: str, *, attribute_prefix: str = "legacy_"
+) -> set[tuple[str, str]]:
+    """Find common mutations of paths derived from legacy layout fields."""
+    found: set[tuple[str, str]] = set()
+    tree = ast.parse(text)
+    for function in ast.walk(tree):
+        if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        aliases: set[str] = set()
+
+        def legacy(expression: ast.AST, known: set[str] = aliases) -> bool:
+            """Recognize direct layout attributes and simple assigned paths."""
+            return any(
+                (
+                    isinstance(node, ast.Attribute)
+                    and node.attr.startswith(attribute_prefix)
+                )
+                or (isinstance(node, ast.Name) and node.id in known)
+                for node in ast.walk(expression)
+            )
+
+        # Walk source order, including statements inside conditional blocks.
+        for node in sorted(
+            ast.walk(function), key=lambda item: getattr(item, "lineno", 0)
+        ):
+            if (
+                isinstance(node, (ast.Assign, ast.AnnAssign))
+                and node.value is not None
+            ):
+                targets = (
+                    node.targets
+                    if isinstance(node, ast.Assign)
+                    else [node.target]
+                )
+                for target in targets:
+                    if isinstance(target, ast.Name):
+                        if legacy(node.value):
+                            aliases.add(target.id)
+                        else:
+                            aliases.discard(target.id)
+            if not isinstance(node, ast.Call):
+                continue
+            name = ast.unparse(node.func).split(".")[-1]
+            if name in {
+                "write_text",
+                "write_bytes",
+                "mkdir",
+                "makedirs",
+                "touch",
+                "unlink",
+                "rmdir",
+                "rename",
+                "replace",
+                "remove",
+                "rmtree",
+                "move",
+                "copy",
+                "copy2",
+                "copyfile",
+            }:
+                if legacy(node):
+                    found.add((function.name, name))
+            elif name == "open" and legacy(node):
+                mode = next(
+                    (
+                        item.value
+                        for item in node.keywords
+                        if item.arg == "mode"
+                    ),
+                    None,
+                )
+                index = (
+                    0
+                    if isinstance(node.func, ast.Attribute)
+                    and legacy(node.func.value)
+                    else 1
+                )
+                if mode is None and len(node.args) > index:
+                    mode = node.args[index]
+                if (
+                    isinstance(mode, ast.Constant)
+                    and isinstance(mode.value, str)
+                    and any(flag in mode.value for flag in "wax+")
+                ):
+                    found.add((function.name, name))
+    return found
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        '(layout.legacy_state / "new.json").write_text("data")',
+        'path = layout.legacy_state / "new.json"\npath.write_bytes(b"data")',
+        'path = layout.legacy_host\nopen(path, "w")',
+        'path = layout.legacy_host\npath.open("w")',
+        "layout.legacy_state.mkdir()",
+        "os.makedirs(layout.legacy_state)",
+        "os.replace(layout.legacy_state, layout.canonical_state)",
+    ],
+)
+def test_legacy_layout_mutation_is_not_a_selector(statement: str) -> None:
+    """Using a shared legacy path property must not hide a new mutation."""
+    text = "def new_writer():\n" + "\n".join(
+        "    " + line for line in statement.splitlines()
+    )
+    assert _derived_legacy_writes(text)
+    assert not _derived_legacy_writes(
+        "def read_only():\n    return layout.legacy_state.exists()\n"
+    )
+
+
+def _shell_legacy_lines(
+    text: str,
+    *,
+    pattern: str = (
+        r"(?:\.bh|\.baton-harness)/|/etc/bh-daemon/"
+        r"|baton-harness/host.env"
+    ),
+) -> set[str]:
+    """Identify active legacy paths, preserving echo redirection sinks."""
+    found = set()
+    for line in _shell_code(text):
+        line = line.strip()
+        if line.startswith("echo "):
+            lexer = shlex.shlex(line, posix=False, punctuation_chars=">;&")
+            lexer.whitespace_split = True
+            try:
+                tokens = list(lexer)
+            except ValueError:
+                continue
+            destinations = [
+                tokens[index + 1]
+                for index, token in enumerate(tokens[:-1])
+                if token in {">", ">>"}
+            ]
+            if not any(re.search(pattern, target) for target in destinations):
+                continue
+        if re.search(pattern, line):
+            lexer = shlex.shlex(line, posix=False)
+            lexer.whitespace_split = True
+            found.add(" ".join(lexer))
+    return found
+
+
+def test_derived_legacy_mutations_have_exact_owners() -> None:
+    """Shared layout properties cannot introduce an unreviewed writer."""
+    actual = {
+        (path.relative_to(ROOT).as_posix(), owner, operation)
+        for path in _production_files()
+        if path.suffix == ".py"
+        for owner, operation in _derived_legacy_writes(
+            path.read_text(encoding="utf-8")
+        )
+    }
+    assert not actual, sorted(actual)
+
+
+def test_echo_redirection_is_a_legacy_write() -> None:
+    """Echoing guidance and redirecting bytes to state are distinct."""
+    write = 'echo data > "${BH_PROJECT_ROOT}/.bh/new.json"'
+    assert _shell_legacy_lines(write) == {write}
+    assert not _shell_legacy_lines(
+        'echo "use .bh/config.env for compatibility"'
+    )
+    assert not _shell_legacy_lines('echo "use .bh/config.env" >&2')
+
+
+def _execution_text(path: Path) -> str:
+    """Select actual workflow commands, excluding YAML descriptive prose."""
+    if path.suffix not in {".yml", ".yaml"}:
+        return _interface_text(path)
+    commands: list[str] = []
+    pending = [
+        yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    ]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, dict):
+            if isinstance(node.get("run"), str):
+                commands.append(node["run"])
+            pending.extend(node.values())
+        elif isinstance(node, list):
+            pending.extend(node)
+    return "\n".join(commands)
+
+
+def test_workflow_execution_excludes_descriptive_prose(tmp_path: Path) -> None:
+    """A description's punctuation cannot become a Bash command boundary."""
+    path = tmp_path / "action.yml"
+    path.write_text(
+        "description: (test) . Each\nsteps:\n  - run: source config.env\n",
+        encoding="utf-8",
+    )
+    assert _execution_targets(_execution_text(path)) == {
+        ("source", "config.env")
+    }
+
+
+def _assert_symphony_state_writer(text: str) -> None:
+    """Pin the active daemon state expression and Orchestrator argument."""
+    (function,) = [
+        node
+        for node in ast.walk(ast.parse(text))
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_run_work_unit"
+    ]
+    expressions = [
+        node.value
+        for node in ast.walk(function)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "state_path"
+            for target in node.targets
+        )
+    ]
+    assert len(expressions) == 1
+    expected = ast.parse(
+        'str(repo_root / ".symphony" / "state.json")', mode="eval"
+    ).body
+    assert ast.dump(expressions[0]) == ast.dump(expected)
+    (constructor,) = [
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "Orchestrator"
+    ]
+    (state_argument,) = [
+        item.value for item in constructor.keywords if item.arg == "state_path"
+    ]
+    assert (
+        isinstance(state_argument, ast.Name)
+        and state_argument.id == "state_path"
+    )
+
+
+def test_symphony_contract_checks_actual_writer() -> None:
+    """Changing or diverting the real daemon destination fails the guard."""
+    source = (ROOT / "src/codereeve/chain/daemon/work_unit.py").read_text(
+        encoding="utf-8"
+    )
+    _assert_symphony_state_writer(source)
+    for mutation in (
+        source.replace(
+            'repo_root / ".symphony" / "state.json"',
+            'repo_root / ".codereeve" / "state.json"',
+        ),
+        source.replace("state_path=state_path,", 'state_path="other.json",'),
+    ):
+        assert mutation != source
+        with pytest.raises(AssertionError):
+            _assert_symphony_state_writer(mutation)
+
+
+def _symphony_literals(text: str) -> set[tuple[str, str]]:
+    """Inventory active Symphony path literals by exact function owner."""
+    tree = ast.parse(text)
+    parents = {
+        child: node
+        for node in ast.walk(tree)
+        for child in ast.iter_child_nodes(node)
+    }
+    found = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Constant) or not isinstance(
+            node.value, str
+        ):
+            continue
+        if not re.match(r"\.symphony(?:/|$)", node.value) or any(
+            c.isspace() for c in node.value
+        ):
+            continue
+        owner: ast.AST = node
+        while owner in parents and not isinstance(
+            owner, (ast.FunctionDef, ast.AsyncFunctionDef)
+        ):
+            owner = parents[owner]
+        found.add((getattr(owner, "name", "<module>"), node.value))
+    return found
+
+
+def test_symphony_path_inventory_rejects_new_moves() -> None:
+    """New Symphony destinations and renames cannot hide in another module."""
+    assert _symphony_literals(
+        'def move():\n    (root / ".symphony").rename(root / ".codereeve")\n'
+    ) == {("move", ".symphony")}
+
+
+def test_symphony_paths_have_exact_active_owners() -> None:
+    """Keep all production Symphony literals under their reviewed owners."""
+    expected = {
+        ("src/codereeve/paths.py", "for_environment", ".symphony"),
+        (
+            "src/codereeve/chain/doctor.py",
+            "_check_gitignore_symphony",
+            ".symphony/",
+        ),
+        (
+            "src/codereeve/vendor/symphony/workspace.py",
+            "__init__",
+            ".symphony",
+        ),
+        (
+            "src/codereeve/chain/daemon/work_unit.py",
+            "_run_work_unit",
+            ".symphony",
+        ),
+    }
+    actual = {
+        (path.relative_to(ROOT).as_posix(), owner, literal)
+        for path in _production_files()
+        if path.suffix == ".py"
+        for owner, literal in _symphony_literals(
+            path.read_text(encoding="utf-8")
+        )
+    }
+    assert actual == expected, sorted(actual ^ expected)
+
+
+def test_symphony_property_mutation_is_rejected() -> None:
+    """Shared layout paths cannot be used to move Symphony into CodeReeve."""
+    assert _derived_legacy_writes(
+        "def move():\n    layout.symphony_state.rename(other)\n",
+        attribute_prefix="symphony_",
+    ) == {("move", "rename")}
+
+
+def test_symphony_operations_have_no_new_mutation_sinks() -> None:
+    """New move/rename/write calls on Symphony layout properties fail."""
+    actual = {
+        (path.relative_to(ROOT).as_posix(), owner, operation)
+        for path in _production_files()
+        if path.suffix == ".py"
+        for owner, operation in _derived_legacy_writes(
+            path.read_text(encoding="utf-8"), attribute_prefix="symphony_"
+        )
+    }
+    assert not actual, sorted(actual)
+
+
+def test_symphony_shell_operations_are_the_existing_gitignore_contract() -> (
+    None
+):
+    """Shell/config/template surfaces may only inspect or seed gitignore."""
+    expected = {
+        (
+            "bin/init-sandbox.sh",
+            "printf '.symphony/\\n' > \"${GITIGNORE_FILE}\"",
+        ),
+        (
+            "bin/init-sandbox.sh",
+            "elif grep -qxF '.symphony/' \"${GITIGNORE_FILE}\" ; then",
+        ),
+        (
+            "bin/init-sandbox.sh",
+            "printf '%s\\n' '.symphony/' >> \"${GITIGNORE_FILE}\"",
+        ),
+        (
+            "bin/init-sandbox.sh",
+            'git -C "${CODEREEVE_PROJECT_ROOT}" commit -m "chore: '
+            'gitignore .symphony/ daemon state" -- .gitignore',
+        ),
+        (
+            "bin/run-daemon.sh",
+            'if [[ ! -f "${CODEREEVE_PROJECT_ROOT}/.gitignore" ]] '
+            "|| ! grep -qxF '.symphony/' "
+            '"${CODEREEVE_PROJECT_ROOT}/.gitignore" ; then',
+        ),
+    }
+    actual = {
+        (path.relative_to(ROOT).as_posix(), line)
+        for path in _production_files()
+        if path.suffix != ".py"
+        for line in _shell_legacy_lines(
+            _execution_text(path), pattern=r"\.symphony(?=/|$|[\s\"'])"
+        )
+    }
+    assert actual == expected, sorted(actual ^ expected)

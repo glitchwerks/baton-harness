@@ -15,6 +15,57 @@ from codereeve.config_env import (
 )
 
 
+@pytest.mark.parametrize("mode", ["unset", "canonical", "legacy", "identical"])
+@pytest.mark.parametrize("value", ["", "/private/credentials.env"])
+def test_daemon_secrets_alias_resolution(mode: str, value: str) -> None:
+    """Service configuration has the same exact alias contract as all keys."""
+    canonical = "CODEREEVE_DAEMON_SECRETS_PATH"
+    legacy = "BH_DAEMON_SECRETS_PATH"
+    values = {}
+    if mode in {"canonical", "identical"}:
+        values[canonical] = value
+    if mode in {"legacy", "identical"}:
+        values[legacy] = value
+    resolved = resolve_environment([EnvLayer("operator", values)])
+    if mode == "unset":
+        assert canonical not in resolved.values
+        assert legacy not in resolved.values
+    else:
+        assert resolved.values[canonical] == value
+        assert resolved.values[legacy] == value
+        without_legacy = resolve_environment(
+            [EnvLayer("operator", values)], export_legacy=False
+        )
+        assert legacy not in without_legacy.values
+
+
+@pytest.mark.parametrize("old", ["", "/private/old.env"])
+def test_daemon_secrets_alias_conflict_is_redacted(old: str) -> None:
+    """Divergent paths fail before consumers can use either spelling."""
+    with pytest.raises(AliasConflictError) as caught:
+        resolve_environment(
+            [
+                EnvLayer("operator", {"BH_DAEMON_SECRETS_PATH": old}),
+                EnvLayer(
+                    "file",
+                    {"CODEREEVE_DAEMON_SECRETS_PATH": "/private/new.env"},
+                ),
+            ]
+        )
+    assert "BH_DAEMON_SECRETS_PATH" in str(caught.value)
+    assert "/private/" not in str(caught.value)
+
+
+def test_daemon_secrets_assignment_rewrite_preserves_custom_path() -> None:
+    """Canonicalizing a legacy key does not change an arbitrary path."""
+    assignments = parse_env_text(
+        'BH_DAEMON_SECRETS_PATH="/private/custom.env"\n', source="config"
+    )
+    assert rewrite_assignments(assignments, path_values={}) == (
+        "CODEREEVE_DAEMON_SECRETS_PATH=/private/custom.env\n"
+    )
+
+
 def test_parse_env_text_accepts_literals_quotes_export_and_comments() -> None:
     """The accepted grammar preserves literal values and line locations."""
     parsed = parse_env_text(

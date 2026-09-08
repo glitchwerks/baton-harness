@@ -332,6 +332,13 @@ remain unchanged (#393; `src/codereeve/config_env.py:L158-L193`,
 `src/codereeve/config_env.py:L280-L318`). `.symphony/` remains unchanged (#393;
 `src/codereeve/paths.py:L59-L135`).
 
+The secrets path override is `CODEREEVE_DAEMON_SECRETS_PATH`;
+`BH_DAEMON_SECRETS_PATH` remains its temporary alias. Migration rewrites only
+the exact old default `/etc/bh-daemon/secrets.env` to
+`/etc/codereeve/secrets.env` and preserves custom paths. Installer and service
+cutover remain in #394 (#393; `src/codereeve/config_env.py:L137-L142`,
+`src/codereeve/migration/transaction.py:L289-L338`).
+
 Run the read-only inventory before scheduling an apply:
 
 ```bash
