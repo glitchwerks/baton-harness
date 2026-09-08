@@ -78,8 +78,7 @@ def test_parse_env_text_accepts_unquoted_windows_path_literals() -> None:
     ]
 
 
-def test_parse_env_text_accepts_unquoted_windows_path_with_final_separator(
-) -> None:
+def test_parse_env_text_accepts_windows_path_with_final_separator() -> None:
     """A literal directory path may end in a Windows path separator."""
     parsed = parse_env_text(
         "PRIVATE_KEY_DIRECTORY=C:\\Users\\operator\\CodeReeve\\",
@@ -101,8 +100,7 @@ def test_parse_env_text_rejects_trailing_backslash_continuation() -> None:
 def test_parse_env_text_unescapes_only_matching_quote_mode() -> None:
     """Matching quote and backslash escapes remain literal otherwise."""
     parsed = parse_env_text(
-        "SINGLE='it\\'s\\\\literal'\n"
-        'DOUBLE="a\\"quote\\\\slash"\n',
+        "SINGLE='it\\'s\\\\literal'\nDOUBLE=\"a\\\"quote\\\\slash\"\n",
         source="config.env",
     )
     assert [(item.key, item.value) for item in parsed] == [
@@ -111,8 +109,7 @@ def test_parse_env_text_unescapes_only_matching_quote_mode() -> None:
     ]
 
 
-def test_parse_env_text_preserves_duplicate_assignments_for_last_precedence(
-) -> None:
+def test_parse_env_text_preserves_duplicates_for_last_precedence() -> None:
     """Repeated spellings retain their physical order for later precedence."""
     parsed = parse_env_text("VALUE=first\nVALUE=last\n", source="config.env")
     assert [(item.value, item.line) for item in parsed] == [
@@ -244,8 +241,9 @@ def test_resolve_environment_distinguishes_unset_from_empty() -> None:
     assert "CODEREEVE_PROJECT_ROOT" not in unset.values
 
 
-def test_resolve_environment_preserves_precedence_and_third_party_keys(
-) -> None:
+def test_resolve_environment_preserves_precedence_and_third_party_keys() -> (
+    None
+):
     """Higher layers override same spellings and pass through other keys."""
     result = resolve_environment(
         [
@@ -270,8 +268,9 @@ def test_resolve_environment_preserves_precedence_and_third_party_keys(
     assert result.values["GH_TOKEN"] == "managed-token"
 
 
-def test_resolve_environment_records_one_legacy_use_and_exports_alias(
-) -> None:
+def test_resolve_environment_records_one_legacy_use_and_exports_alias() -> (
+    None
+):
     """A selected legacy spelling records once and supports export."""
     result = resolve_environment(
         [EnvLayer("managed", {"BH_PROJECT_ROOT": "/old"})]
@@ -291,8 +290,7 @@ def test_resolve_environment_can_omit_materialized_legacy_aliases() -> None:
     assert result.values == {"CODEREEVE_PROJECT_ROOT": "/old"}
 
 
-def test_rewrite_assignments_canonicalizes_product_keys_and_preserves_others(
-) -> None:
+def test_rewrite_assignments_preserves_nonproduct_keys() -> None:
     """Rewriting retains third-party assignments, comments, and ordering."""
     assignments = parse_env_text(
         "BWS_PEM_SECRET_ID=uuid # keep\n"
@@ -345,8 +343,7 @@ def test_rewrite_assignments_preserves_empty_file() -> None:
     assert rewrite_assignments(assignments, path_values={}) == ""
 
 
-def test_rewrite_assignments_rewrites_equal_pair_and_default_path(
-) -> None:
+def test_rewrite_assignments_rewrites_equal_pair_and_default_path() -> None:
     """Equal aliases collapse while custom path values remain exact."""
     assignments = parse_env_text(
         "BH_PROJECT_ROOT=/legacy/root\n"
@@ -370,8 +367,7 @@ def test_rewrite_assignments_rewrites_equal_pair_and_default_path(
     )
 
 
-def test_rewrite_assignments_rejects_conflicting_alias_values_without_values(
-) -> None:
+def test_rewrite_assignments_rejects_conflicts_without_values() -> None:
     """Config migration does not rewrite an ambiguous alias pair."""
     assignments = parse_env_text(
         "BH_REPO_NAME=old\nCODEREEVE_REPO_NAME=new\n",

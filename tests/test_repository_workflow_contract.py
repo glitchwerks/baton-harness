@@ -14,7 +14,12 @@ import yaml
 
 from codereeve.migration.cli import HELP as MIGRATION_HELP
 from codereeve.migration.journal import Manifest
-from codereeve.migration.model import MigrationReport, MigrationStatus
+from codereeve.migration.model import (
+    MigrationAction,
+    MigrationFinding,
+    MigrationReport,
+    MigrationStatus,
+)
 
 HARNESS = Path(__file__).resolve().parents[1]
 ISSUE_TEMPLATE_DIRECTORY = ".github/ISSUE_TEMPLATE"
@@ -393,6 +398,34 @@ def test_migration_docs_match_status_and_manifest_contracts() -> None:
             assert f"`{field}`" in document
         assert "reverse order" in document
         assert "`journal.jsonl`" in document
+
+
+def test_migration_schema_one_has_documented_exact_public_fields() -> None:
+    """Schema-one fields cannot drift without a contract and runbook change."""
+    report = MigrationReport(MigrationStatus.CURRENT).as_dict()
+    assert report == {
+        "schema_version": 1,
+        "status": "current",
+        "exit_code": 0,
+        "actions": [],
+        "findings": [],
+    }
+    action = MigrationAction("move", "state", Path("old"), Path("new"))
+    assert set(action.as_dict()) == {"code", "scope", "source", "destination"}
+    finding = MigrationFinding("missing", "state")
+    assert set(finding.as_dict()) == {
+        "code",
+        "scope",
+        "paths",
+        "detail",
+        "blocking",
+    }
+    runbook = " ".join(
+        (HARNESS / "docs/codereeve-migration.md")
+        .read_text(encoding="utf-8")
+        .split()
+    )
+    assert f"JSON uses schema version {report['schema_version']}." in runbook
 
 
 def test_migration_docs_explain_already_restored_evidence() -> None:

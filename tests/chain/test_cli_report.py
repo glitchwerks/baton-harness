@@ -80,6 +80,7 @@ def test_report_absolute_path_forwarded_to_run_daemon(tmp_path: Path) -> None:
     report_path_arg = tmp_path / "reports" / "out.json"
     fake_repo_cfg = MagicMock()
     fake_repo_cfg.project_root = tmp_path / "project_root"
+    fake_repo_cfg.project_root.mkdir()
 
     run_daemon_kwargs: dict[str, object] = {}
 
@@ -288,6 +289,7 @@ def test_report_forwarded_alongside_existing_run_daemon_kwargs(
     report_path_arg = tmp_path / "combo-report.json"
     fake_repo_cfg = MagicMock()
     fake_repo_cfg.project_root = tmp_path / "project_root"
+    fake_repo_cfg.project_root.mkdir()
 
     run_daemon_kwargs: dict[str, object] = {}
 

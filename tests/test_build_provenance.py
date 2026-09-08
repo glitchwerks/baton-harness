@@ -117,11 +117,14 @@ def test_hook_loads_helper_without_importing_project_package(
 
     spec.loader.exec_module(module)
 
-    assert module.resolve_alias_pair(
-        {"CODEREEVE_BUILD_VERSION": "0.2.0"},
-        "CODEREEVE_BUILD_VERSION",
-        "BH_BUILD_VERSION",
-    ) == "0.2.0"
+    assert (
+        module.resolve_alias_pair(
+            {"CODEREEVE_BUILD_VERSION": "0.2.0"},
+            "CODEREEVE_BUILD_VERSION",
+            "BH_BUILD_VERSION",
+        )
+        == "0.2.0"
+    )
 
 
 def test_standard_identity_requires_and_preserves_assertions(
