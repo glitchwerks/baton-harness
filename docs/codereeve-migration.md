@@ -96,11 +96,16 @@ backups through the 0.3 release line (#393;
 ## Failure and manual restoration
 
 A caught apply failure attempts automatic restoration in reverse order. Output
-distinguishes `complete`, `incomplete`, and unavailable restoration evidence.
-Only `complete` proves that this rollback invocation restored and revalidated
-the current filesystem. `incomplete` or unavailable evidence remains blocked,
-must retain every artifact, and must never authorize a daemon restart (#393,
-#394; `src/codereeve/migration/transaction.py:L820-L920`).
+distinguishes `complete`, `not_needed`, `incomplete`, and unavailable
+restoration evidence. `complete` means this invocation performed rollback and
+freshly revalidated the current filesystem. `not_needed` means an
+already-restored journal received fresh coordinator authorization and the
+filesystem was freshly revalidated without another rollback. Both are
+successful restoration evidence, but the enclosing apply still failed and
+remains `blocked`/1 rather than becoming an applied migration. `incomplete` or
+unavailable evidence must retain every artifact and must never authorize a
+daemon restart (#393, #394;
+`src/codereeve/migration/transaction.py:L820-L920`).
 
 If automatic restoration is incomplete, keep all writers stopped and use the
 exact absolute paths in the manifest rather than reconstructing names:

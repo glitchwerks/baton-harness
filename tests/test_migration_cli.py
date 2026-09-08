@@ -332,6 +332,14 @@ def test_successful_apply_reports_all_recovery_evidence_paths(
             ),
             "incomplete",
         ),
+        (
+            RestorationResult(
+                RestorationStatus.NOT_NEEDED,
+                Path("safe/manifest.json"),
+                "already-restored state freshly revalidated",
+            ),
+            "not_needed",
+        ),
         (None, None),
     ],
 )
@@ -380,8 +388,10 @@ def test_apply_failure_reports_only_accurate_safe_recovery_evidence(
                 restoration.manifest_path
             )
     elif restoration is None:
+        assert "status: blocked" in output
         assert "restoration_status: unavailable" in output
     else:
+        assert "status: blocked" in output
         assert f"restoration_status: {expected_status}" in output
 
 
@@ -422,6 +432,111 @@ def test_default_context_uses_exact_operator_project_pair(
     context = cli.default_context()
     assert context.layout.canonical_state == tmp_path / ".codereeve"
     assert context.layers[0].source == "environment"
+
+
+@pytest.mark.parametrize(
+    ("canonical", "source"),
+    [
+        ("CODEREEVE_REPO_OWNER", "managed"),
+        ("CODEREEVE_REPO_OWNER", "host"),
+        ("CODEREEVE_PROJECT_ROOT", "managed"),
+        ("CODEREEVE_PROJECT_ROOT", "host"),
+    ],
+)
+def test_operator_legacy_conflict_with_lower_canonical_blocks_before_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    canonical: str,
+    source: str,
+) -> None:
+    """Raw operator spellings survive bootstrap for layered comparison."""
+    project = tmp_path / "operator-project"
+    lower_project = tmp_path / "lower-project"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    for key in (
+        "CODEREEVE_PROJECT_ROOT",
+        "BH_PROJECT_ROOT",
+        "CODEREEVE_REPO_OWNER",
+        "BH_REPO_OWNER",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    if canonical == "CODEREEVE_PROJECT_ROOT":
+        monkeypatch.setenv("BH_PROJECT_ROOT", str(project))
+        lower_value = str(lower_project)
+    else:
+        monkeypatch.setenv("CODEREEVE_PROJECT_ROOT", str(project))
+        monkeypatch.setenv("BH_REPO_OWNER", "operator-private")
+        lower_value = "lower-private"
+    layout = PathLayout.for_environment(
+        project,
+        {"XDG_CONFIG_HOME": str(tmp_path / "config")},
+    )
+    target = (
+        layout.legacy_config if source == "managed" else layout.canonical_host
+    )
+    put(target, f"{canonical}={lower_value}\n")
+    before = snapshot(tmp_path)
+
+    assert cli.main(["--check", "--format", "json"]) == 1
+    check_payload = json.loads(capsys.readouterr().out)
+    assert check_payload["status"] == "blocked"
+    assert cli.main(["--apply", "--format", "json"]) == 1
+    apply_payload = json.loads(capsys.readouterr().out)
+
+    assert apply_payload["status"] == "blocked"
+    assert apply_payload["exit_code"] == 1
+    rendered = json.dumps((check_payload, apply_payload))
+    assert "operator-private" not in rendered
+    assert "lower-private" not in rendered
+    assert snapshot(tmp_path) == before
+
+
+def test_identical_operator_legacy_and_host_canonical_pair_is_current(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An identical cross-source project pair remains valid and raw."""
+    project = tmp_path / "project"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.delenv("CODEREEVE_PROJECT_ROOT", raising=False)
+    monkeypatch.setenv("BH_PROJECT_ROOT", str(project))
+    host = tmp_path / "config" / "codereeve" / "host.env"
+    put(host, f"CODEREEVE_PROJECT_ROOT={project}\n")
+
+    context = cli.default_context()
+
+    assert "BH_PROJECT_ROOT" in context.layers[0].values
+    assert "CODEREEVE_PROJECT_ROOT" not in context.layers[0].values
+    assert cli.main(["--check", "--format", "json"]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "current"
+
+
+def test_operator_legacy_spelling_retains_precedence_over_managed_legacy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Preserving raw spellings does not change within-spelling precedence."""
+    project = tmp_path / "project"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("CODEREEVE_PROJECT_ROOT", str(project))
+    monkeypatch.delenv("CODEREEVE_REPO_OWNER", raising=False)
+    monkeypatch.setenv("BH_REPO_OWNER", "operator-private")
+    layout = PathLayout.for_environment(project, {})
+    put(layout.legacy_config, "BH_REPO_OWNER=managed-private\n")
+
+    assert cli.main(["--check", "--format", "json"]) == 2
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["status"] == "ready"
+    assert not any(
+        finding["code"] == "environment_conflict"
+        for finding in payload["findings"]
+    )
+    assert "operator-private" not in json.dumps(payload)
+    assert "managed-private" not in json.dumps(payload)
 
 
 def test_default_context_bootstraps_project_from_selected_host_config(

@@ -65,8 +65,8 @@ def default_context() -> MigrationContext:
     Raises:
         AliasConflictError: If an operator alias pair differs exactly.
     """
-    resolved = runtime_environment(os.environ)
-    operator = EnvLayer("environment", resolved.values)
+    operator = EnvLayer("environment", dict(os.environ))
+    resolved = runtime_environment(operator.values)
     initial_layout = PathLayout.for_environment(Path.cwd(), resolved.values)
     host_path = select_compatible_file(
         initial_layout.canonical_host,

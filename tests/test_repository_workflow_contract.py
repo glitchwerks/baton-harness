@@ -395,6 +395,20 @@ def test_migration_docs_match_status_and_manifest_contracts() -> None:
         assert "`journal.jsonl`" in document
 
 
+def test_migration_docs_explain_already_restored_evidence() -> None:
+    """Docs distinguish freshly revalidated already-restored evidence."""
+    documents = [
+        Path("README.md").read_text(encoding="utf-8"),
+        Path("docs/codereeve-migration.md").read_text(encoding="utf-8"),
+    ]
+    for document in documents:
+        normalized = " ".join(document.split())
+        assert "`not_needed`" in document
+        assert "already-restored" in normalized
+        assert "freshly revalidated" in normalized
+        assert "`blocked`/1" in normalized
+
+
 @pytest.mark.parametrize(
     "text",
     [

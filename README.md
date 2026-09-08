@@ -366,12 +366,16 @@ journal, backups, and private stages through 0.3.x (#393;
 `src/codereeve/migration/transaction.py:L588-L743`,
 `src/codereeve/migration/journal.py:L150-L186`).
 
-Caught failures attempt restoration in reverse order. A complete result has
-revalidated every original and absent canonical publication; incomplete or
-unavailable evidence stays blocked and cannot authorize restart. Manual
-restoration must use the exact manifest paths, reverse completed publications,
-then reverse completed backups while verifying the manifest `entries` against
-each `actions` source. Keep all evidence and writers stopped (#393, #394;
+Caught failures attempt restoration in reverse order. `complete` means this
+invocation performed rollback and freshly revalidated every original and absent
+canonical publication. `not_needed` means an already-restored journal received
+fresh coordinator authorization and its filesystem was freshly revalidated.
+Both are successful restoration evidence, but the enclosing apply still failed
+and remains `blocked`/1. `incomplete` or unavailable evidence cannot authorize
+restart. Manual restoration must use the exact manifest paths, reverse
+completed publications, then reverse completed backups while verifying the
+manifest `entries` against each `actions` source. Keep all evidence and writers
+stopped (#393, #394;
 `src/codereeve/migration/transaction.py:L768-L920`).
 
 There is no standalone restore command. #394 calls the restoration API with the
