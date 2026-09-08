@@ -46,7 +46,7 @@ HARNESS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 _codereeve_load_config="${SCRIPT_DIR}/lib/load-config.sh"
 if [[ -f "${_codereeve_load_config}" ]]; then
     # shellcheck disable=SC1090,SC1091
-    source "${_codereeve_load_config}"
+    source "${_codereeve_load_config}" || exit 1
 fi
 unset _codereeve_load_config
 

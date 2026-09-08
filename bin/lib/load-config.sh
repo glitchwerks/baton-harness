@@ -2,6 +2,11 @@
 # Read literal configuration through the installed CodeReeve parser.
 # Source this library; host.env and config.env are never shell programs.
 _codereeve_load_config() {
+    # Bootstrap must reject conflicting spellings before choosing code to run.
+    if [[ ${CODEREEVE_VENV+x} && ${BH_VENV+x} && "${CODEREEVE_VENV-}" != "${BH_VENV-}" ]]; then
+        echo "codereeve: conflicting environment variables: CODEREEVE_VENV and BH_VENV" >&2
+        return 1
+    fi
     local _codereeve_root _codereeve_venv _codereeve_python
     _codereeve_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)" || return 1
     _codereeve_venv="${CODEREEVE_VENV-${BH_VENV-${_codereeve_root}/.venv}}"
@@ -23,17 +28,56 @@ _codereeve_load_config() {
         rm -f -- "${_codereeve_records}"
         return 1
     fi
-    while IFS= read -r -d '' _codereeve_key; do
-        if ! IFS= read -r -d '' _codereeve_value; then
-            rm -f -- "${_codereeve_records}"
-            return 1
+    # Keep the open descriptor, then unlink while the operator environment
+    # is still intact. No external commands may run after config exports.
+    local _codereeve_fd
+    if ! exec {_codereeve_fd}< "${_codereeve_records}"; then
+        rm -f -- "${_codereeve_records}"
+        return 1
+    fi
+    if ! rm -f -- "${_codereeve_records}"; then
+        exec {_codereeve_fd}<&-
+        return 1
+    fi
+    local -a _codereeve_keys=() _codereeve_values=()
+    local _codereeve_valid=1 _codereeve_index
+    while true; do
+        _codereeve_key=""
+        if ! IFS= read -r -d '' _codereeve_key <&"${_codereeve_fd}"; then
+            [[ -z "${_codereeve_key}" ]] || _codereeve_valid=0
+            break
         fi
-        if ! export "${_codereeve_key}=${_codereeve_value}"; then
-            rm -f -- "${_codereeve_records}"
-            return 1
+        if ! IFS= read -r -d '' _codereeve_value <&"${_codereeve_fd}"; then
+            _codereeve_valid=0
+            break
         fi
-    done < "${_codereeve_records}"
-    rm -f -- "${_codereeve_records}"
+        if [[ ! "${_codereeve_key}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] ||
+           [[ "${_codereeve_key}" == _codereeve_* && "${_codereeve_key}" != _codereeve_state_directory ]]; then
+            _codereeve_valid=0
+            break
+        fi
+        _codereeve_keys+=("${_codereeve_key}")
+        _codereeve_values+=("${_codereeve_value}")
+    done
+    exec {_codereeve_fd}<&-
+    if [[ "${_codereeve_valid}" != 1 ]]; then
+        echo "codereeve: invalid configuration bridge protocol" >&2
+        return 1
+    fi
+    # Preflight readonly/special shell variables in an isolated subshell so
+    # an unexportable record cannot leave half the caller's config applied.
+    if ! (
+        for _codereeve_index in "${!_codereeve_keys[@]}"; do
+            export "${_codereeve_keys[_codereeve_index]}=${_codereeve_values[_codereeve_index]}" || exit 1
+        done
+    ) 2>/dev/null; then
+        echo "codereeve: configuration contains an unexportable variable" >&2
+        return 1
+    fi
+    for _codereeve_index in "${!_codereeve_keys[@]}"; do
+        export "${_codereeve_keys[_codereeve_index]}=${_codereeve_values[_codereeve_index]}" || return 1
+    done
+    return 0
 }
 
 _bh_resolve_config_with_reuse_prompt() {

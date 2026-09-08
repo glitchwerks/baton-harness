@@ -12,6 +12,274 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _shell_path(path: Path) -> str:
+    """Represent a fixture path for Bash on Windows or POSIX."""
+    value = path.as_posix()
+    if sys.platform == "win32":
+        return "/" + value[0].lower() + value[2:]
+    return value
+
+
+def _security_env(tmp_path: Path) -> dict[str, str]:
+    """Isolate loader inputs and use the working Git Bash toolchain."""
+    from tests.test_load_config_export_visibility import _BASH_BIN_DIR
+
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("BH_", "CODEREEVE_"))
+    }
+    env.pop("BATON_HARNESS_DIR", None)
+    env["XDG_CONFIG_HOME"] = (tmp_path / "xdg").as_posix()
+    env["PATH"] = os.pathsep.join([_BASH_BIN_DIR, env.get("PATH", "")])
+    return env
+
+
+def test_conflicting_venv_aliases_never_execute_interpreter(
+    tmp_path: Path,
+) -> None:
+    """Reject divergent bootstrap aliases before invoking either venv."""
+    from tests.test_load_config_export_visibility import _BASH
+
+    sentinel = tmp_path / "executed"
+    interpreter = tmp_path / "venv" / "bin" / "python"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_text(
+        f'#!/bin/bash\n: > "{_shell_path(sentinel)}"\nexit 1\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    interpreter.chmod(0o755)
+    env = _security_env(tmp_path)
+    env["CODEREEVE_VENV"] = interpreter.parent.parent.as_posix()
+    env["BH_VENV"] = "different-private-value"
+    proc = subprocess.run(
+        [
+            _BASH,
+            "-c",
+            'source "$1"',
+            "bash",
+            (ROOT / "bin/lib/load-config.sh").as_posix(),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 1
+    assert not sentinel.exists()
+    assert "CODEREEVE_VENV" in proc.stderr and "BH_VENV" in proc.stderr
+    assert "different-private-value" not in proc.stderr
+
+
+def test_cleanup_precedes_exporting_configured_path(tmp_path: Path) -> None:
+    """A configured PATH cannot replace the loader's rm cleanup command."""
+    from tests.test_load_config_export_visibility import _BASH
+
+    sentinel = tmp_path / "executed"
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    fake_rm = fakebin / "rm"
+    fake_rm.write_text(
+        f'#!/bin/bash\n: > "{_shell_path(sentinel)}"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    fake_rm.chmod(0o755)
+    env = _security_env(tmp_path)
+    host = tmp_path / "xdg" / "codereeve" / "host.env"
+    host.parent.mkdir(parents=True)
+    host.write_text(f"PATH={_shell_path(fakebin)}\n", encoding="utf-8")
+    # Windows synthesizes PATH for a native child even after Bash unexports
+    # it. Remove that operator layer so the real parser selects file PATH.
+    interpreter = tmp_path / "venv" / "bin" / "python"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_text(
+        "#!/bin/bash\n"
+        f'exec "{Path(sys.executable).as_posix()}" -c '
+        "'import os,sys; from codereeve.config_bridge import main; "
+        'os.environ.pop("PATH",None); '
+        'raise SystemExit(main(sys.argv[3:]))\' "$@"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    interpreter.chmod(0o755)
+    env["CODEREEVE_VENV"] = interpreter.parent.parent.as_posix()
+    records = tmp_path / "records"
+    records.mkdir()
+    proc = subprocess.run(
+        [
+            _BASH,
+            "-c",
+            'export -n PATH; export TMPDIR="$2"; source "$1"',
+            "bash",
+            (ROOT / "bin/lib/load-config.sh").as_posix(),
+            _shell_path(records),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert not sentinel.exists()
+    assert list(records.iterdir()) == []
+
+
+def test_truncated_protocol_never_exports_partial_config(
+    tmp_path: Path,
+) -> None:
+    """Even a broken bridge process cannot publish an incomplete record set."""
+    from tests.test_load_config_export_visibility import _BASH
+
+    interpreter = tmp_path / "venv" / "bin" / "python"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_text(
+        "#!/bin/bash\nprintf 'NEW_VALUE\\0changed\\0INCOMPLETE'\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    interpreter.chmod(0o755)
+    env = _security_env(tmp_path)
+    env["CODEREEVE_VENV"] = interpreter.parent.parent.as_posix()
+    records = tmp_path / "records"
+    records.mkdir()
+    proc = subprocess.run(
+        [
+            _BASH,
+            "-c",
+            'export TMPDIR="$2"; source "$1"; '
+            'status=$?; printf "%s" "${NEW_VALUE-unset}"; exit "$status"',
+            "bash",
+            (ROOT / "bin/lib/load-config.sh").as_posix(),
+            _shell_path(records),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 1
+    assert proc.stdout == "unset"
+    assert list(records.iterdir()) == []
+
+
+def test_readonly_destination_never_leaves_partial_exports(
+    tmp_path: Path,
+) -> None:
+    """Readonly destinations fail before changing any other variable."""
+    from tests.test_load_config_export_visibility import _BASH
+
+    env = _security_env(tmp_path)
+    host = tmp_path / "xdg" / "codereeve" / "host.env"
+    host.parent.mkdir(parents=True)
+    host.write_text("AAA_NEW=changed\nZZZ_READONLY=new\n", encoding="utf-8")
+    records = tmp_path / "records"
+    records.mkdir()
+    proc = subprocess.run(
+        [
+            _BASH,
+            "-c",
+            'export TMPDIR="$2"; readonly ZZZ_READONLY=old; '
+            'source "$1"; status=$?; '
+            'printf "%s:%s" "${AAA_NEW-unset}" "$ZZZ_READONLY"; '
+            'exit "$status"',
+            "bash",
+            (ROOT / "bin/lib/load-config.sh").as_posix(),
+            _shell_path(records),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 1
+    assert proc.stdout == "unset:old"
+    assert list(records.iterdir()) == []
+
+
+def test_cleanup_never_receives_configured_loader_environment(
+    tmp_path: Path,
+) -> None:
+    """No cleanup command runs with a newly configured LD_PRELOAD."""
+    from tests.test_load_config_export_visibility import _BASH
+
+    env = _security_env(tmp_path)
+    env.pop("LD_PRELOAD", None)
+    host = tmp_path / "xdg" / "codereeve" / "host.env"
+    host.parent.mkdir(parents=True)
+    host.write_text("LD_PRELOAD=untrusted-library\n", encoding="utf-8")
+    sentinel = tmp_path / "executed"
+    records = tmp_path / "records"
+    records.mkdir()
+    proc = subprocess.run(
+        [
+            _BASH,
+            "-c",
+            'export TMPDIR="$2"; '
+            'rm() { if [[ ${LD_PRELOAD+x} ]]; then : > "$sentinel"; fi; '
+            '(unset LD_PRELOAD; command rm "$@"); }; '
+            'sentinel="$3"; source "$1"',
+            "bash",
+            (ROOT / "bin/lib/load-config.sh").as_posix(),
+            _shell_path(records),
+            _shell_path(sentinel),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert not sentinel.exists()
+    assert list(records.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "config,diagnostic",
+    [
+        ("INVALID=$(touch sentinel)\n", "host.env:1"),
+        ("CODEREEVE_REPO_OWNER=one\nBH_REPO_OWNER=two\n", "conflicting"),
+    ],
+)
+def test_probe_stops_before_commands_on_invalid_configuration(
+    tmp_path: Path,
+    config: str,
+    diagnostic: str,
+) -> None:
+    """The probe must propagate loader failure despite not using errexit."""
+    from tests.test_load_config_export_visibility import _BASH
+
+    env = _security_env(tmp_path)
+    host = tmp_path / "xdg" / "codereeve" / "host.env"
+    host.parent.mkdir(parents=True)
+    host.write_text(config, encoding="utf-8")
+    sentinel = tmp_path / "first-command"
+    fakebin = tmp_path / "bin"
+    fakebin.mkdir()
+    first_command = fakebin / "wc"
+    first_command.write_text(
+        f'#!/bin/bash\n: > "{_shell_path(sentinel)}"\nprintf "12\\n"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    first_command.chmod(0o755)
+    env["PATH"] = os.pathsep.join([fakebin.as_posix(), env["PATH"]])
+    token = tmp_path / "token"
+    token.write_text("fixture-token", encoding="utf-8")
+    env.update(
+        CODEREEVE_PROBE_SANDBOX_REPO="owner/repo",
+        CODEREEVE_PROBE_PR_NUMBER="1",
+        CODEREEVE_PROBE_WORKER_TOKEN_PATH=token.as_posix(),
+        CODEREEVE_PROBE_DRY_RUN="1",
+    )
+    proc = subprocess.run(
+        [_BASH, (ROOT / "bin/probe-merge-denial.sh").as_posix()],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 1
+    assert proc.stdout == ""
+    assert not sentinel.exists()
+    assert diagnostic in proc.stderr
+
+
 def _bridge(
     tmp_path: Path, text: str, **values: str
 ) -> subprocess.CompletedProcess[bytes]:
