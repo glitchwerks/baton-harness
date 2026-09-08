@@ -46,7 +46,7 @@ def _raw_scalar_path(value: str, *, reject_glob: bool = False) -> str:
     """
     if value[-1].isspace() or value.endswith("\\"):
         raise CutoverError("service path cannot be rendered")
-    if reject_glob and any(character in value for character in "*?["):
+    if reject_glob and any(character in value for character in "\\*?["):
         raise CutoverError("service path cannot be rendered")
     return value.replace("%", "%%")
 

@@ -84,7 +84,7 @@ def test_render_unit_uses_directive_specific_systemd_escaping() -> None:
         project_root=_path('/srv/managed "root" 100% $cash'),
         environment=_path('/opt/env "quoted" 25% $money'),
         workflow=_path('/srv/flow \\ file 50% "$draft".md'),
-        secrets=_path('/etc/secret \\ file 75% "$token".env'),
+        secrets=_path('/etc/secret file 75% "$token".env'),
         home=_path('/home/back \\ "quoted" 10% $owner'),
     )
     gate = _path('/run/gate \\ "receipt" 5% $pid.json')
@@ -95,7 +95,7 @@ def test_render_unit_uses_directive_specific_systemd_escaping() -> None:
     assert (
         'Environment="HOME=/home/back \\\\ \\"quoted\\" 10%% $owner"' in text
     )
-    assert 'EnvironmentFile=/etc/secret \\ file 75%% "$token".env' in text
+    assert 'EnvironmentFile=/etc/secret file 75%% "$token".env' in text
     assert (
         'ExecStart=":/opt/env \\"quoted\\" 25%% $money/bin/codereeve" '
         '"daemon" "--workflow" '
@@ -189,6 +189,7 @@ def test_render_unit_rejects_windows_target_path() -> None:
     [
         ("project_root", "/srv/trailing-space "),
         ("project_root", "/srv/trailing-backslash\\"),
+        ("secrets", "/etc/codereeve/secret\\x.env"),
         ("secrets", "/etc/codereeve/*.env"),
         ("secrets", "/etc/codereeve/secret?.env"),
         ("secrets", "/etc/codereeve/secret[12].env"),
