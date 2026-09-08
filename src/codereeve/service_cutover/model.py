@@ -143,3 +143,16 @@ class UnitState:
     sub_state: str = ""
     job: str = ""
     exec_start_argv: str = ""
+
+
+@dataclass(frozen=True)
+class ServiceSnapshot:
+    """Original manager states and explicitly owned files to retain privately.
+
+    Raw command fields are never serialized by the recovery journal.
+    Files must include selected units, owned drop-ins and environment inputs.
+    """
+
+    old: UnitState
+    new: UnitState
+    files: tuple[Path, ...] = ()
