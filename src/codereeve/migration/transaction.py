@@ -593,12 +593,14 @@ def apply_migration(
     context: MigrationContext,
     *,
     operations: FileOperations = REAL_FILE_OPERATIONS,
+    lease: WriterLease | None = None,
 ) -> AppliedMigration:
     """Stage, verify, back up, and atomically publish under verified shutdown.
 
     Args:
         context: Explicit layout, environment, and advisory inventory evidence.
         operations: Durable storage and authoritative shutdown coordinator.
+        lease: Optional caller-owned project lease, never released here.
 
     Returns:
         Completed manifest and timestamped backups retained through 0.3.x.
@@ -614,8 +616,10 @@ def apply_migration(
         operations.sync_directory(
             project
         )  # Reject unsupported OS pre-mutation.
-        with WriterLease.acquire(
-            project / ".codereeve-migration.lock", purpose="migration"
+        with WriterLease.hold(
+            project / ".codereeve-migration.lock",
+            purpose="migration",
+            lease=lease,
         ) as lease:
             evidence = _quiescent(operations, project, lease)
             report = _report(
@@ -927,12 +931,14 @@ def restore_migration(
     manifest_path: Path,
     *,
     operations: FileOperations = REAL_FILE_OPERATIONS,
+    lease: WriterLease | None = None,
 ) -> RestorationResult:
     """Restore persisted operations in reverse using fresh shutdown authority.
 
     Args:
         manifest_path: Manifest inside project/.codereeve-migration/ID.
         operations: Storage and coordinator boundary, defaulting to refusal.
+        lease: Optional caller-owned project lease, never released here.
 
     Returns:
         COMPLETE, NOT_NEEDED, or INCOMPLETE coordinator evidence.
@@ -949,8 +955,10 @@ def restore_migration(
             raise MigrationError("invalid transaction location")
         project = path.parent.parent.parent
         operations.sync_directory(project)
-        with WriterLease.acquire(
-            project / ".codereeve-migration.lock", purpose="restoration"
+        with WriterLease.hold(
+            project / ".codereeve-migration.lock",
+            purpose="restoration",
+            lease=lease,
         ) as lease:
             _quiescent(operations, project, lease)
             return _restore_locked(path, operations)

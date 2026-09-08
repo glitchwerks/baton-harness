@@ -95,6 +95,7 @@ from codereeve.chain.session_report import SessionReport
 from codereeve.config_env import runtime_environment
 from codereeve.migration.lease import WriterLease
 from codereeve.paths import RuntimePaths, select_runtime_paths
+from codereeve.service_cutover.readiness import wait_for_commit
 from codereeve.vendor.symphony.config import WorkflowConfig
 from codereeve.vendor.symphony.workspace import WorkspaceManager
 
@@ -318,13 +319,15 @@ async def run_daemon(
         # that propagates out of run_daemon intentionally (the daemon cannot
         # operate without valid credentials). Other failures are
         # suppressed inside reconcile_startup itself.
-        await reconcile_startup(
-            registry,
-            obs,
-            runlog,
-            installation_token=installation_token,
-            report=report,
-        )
+        gate = values.get("CODEREEVE_CUTOVER_GATE")
+        if gate is None:
+            await reconcile_startup(
+                registry,
+                obs,
+                runlog,
+                installation_token=installation_token,
+                report=report,
+            )
 
         # SIGTERM (Fix 3 / PR #107): graceful shutdown clears marker.
         # Build the marker path once so both the handler and the finally block
@@ -390,6 +393,18 @@ async def run_daemon(
                 monitor_thread = None
 
         try:
+            if gate is not None:
+                # Only the heartbeat may run before durable cutover commit.
+                # Reconciliation can issue remote writes, so defer it too.
+                # Empty/invalid controls reach validation, never bypass it.
+                await wait_for_commit(Path(gate))
+                await reconcile_startup(
+                    registry,
+                    obs,
+                    runlog,
+                    installation_token=installation_token,
+                    report=report,
+                )
             while True:
                 # Advance the re-dispatch tally tick once per outer poll cycle
                 # (before iterating repos so the tick is shared across all

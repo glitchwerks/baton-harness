@@ -11572,3 +11572,118 @@ def test_shutdown_interrupts_wait_for_writer_acknowledgement(
             real_thread.join(thread, timeout=10)
         signal.signal(signal.SIGTERM, sigterm_handler)
         signal.signal(signal.SIGINT, sigint_handler)
+
+
+@pytest.mark.parametrize(
+    "outcome", ["release", "cancel", "reconcile_failure", "invalid_receipt"]
+)
+def test_cutover_gate_holds_reconciliation_and_polling_until_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    """Gated startup beats locally and owns its lease until writer shutdown."""
+    import threading
+    from dataclasses import replace
+
+    import codereeve.chain.daemon.poll as poll_module
+    from codereeve.chain.heartbeat import _write_heartbeat
+    from codereeve.service_cutover.readiness import ReadinessError
+
+    lock = tmp_path / ".codereeve-migration.lock"
+    beat = tmp_path / "heartbeat"
+    trace: list[str] = []
+    beat_written = threading.Event()
+    monkeypatch.setenv(
+        "CODEREEVE_CUTOVER_GATE",
+        "/run/codereeve/cutover/" + "a" * 32 + "/committed.json",
+    )
+    monkeypatch.setenv("INVOCATION_ID", "b" * 32)
+
+    def heartbeat(
+        obs: ObsConfig,
+        state: LivenessState,
+        stop: threading.Event,
+        **kwargs: object,
+    ) -> None:
+        _write_heartbeat(obs.heartbeat_file, "2026-09-08T12:00:00+00:00")
+        beat_written.set()
+        stop.wait()
+        assert probe_writer_lease(lock) is EvidenceState.BLOCKED
+        trace.append("heartbeat_stopped")
+
+    async def reconcile(*args: object, **kwargs: object) -> None:
+        trace.append("reconcile")
+        if outcome == "reconcile_failure":
+            raise RuntimeError("reconciliation failed")
+
+    async def poll(*args: object, **kwargs: object) -> set[int]:
+        trace.append("poll")
+        return set()
+
+    async def exercise() -> None:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def wait(path: Path) -> None:
+            assert str(path).replace("\\", "/").endswith("/committed.json")
+            while not beat_written.is_set():
+                await asyncio.sleep(0.001)
+            entered.set()
+            await release.wait()
+            if outcome == "invalid_receipt":
+                raise ReadinessError("invalid receipt")
+
+        monkeypatch.setattr(
+            poll_module, "wait_for_commit", wait, raising=False
+        )
+        task = asyncio.create_task(
+            run_daemon(
+                _minimal_wf_config(),
+                [RepoConfig("o", "r", tmp_path)],
+                once=True,
+            )
+        )
+        try:
+            await asyncio.wait_for(entered.wait(), 1)
+            assert trace == []
+            assert beat.read_text() == "2026-09-08T12:00:00+00:00"
+            assert Path(str(beat) + ".identity.json").exists()
+            assert probe_writer_lease(lock) is EvidenceState.BLOCKED
+            if outcome == "cancel":
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            else:
+                release.set()
+                if outcome in {"reconcile_failure", "invalid_receipt"}:
+                    with pytest.raises((RuntimeError, ReadinessError)):
+                        await task
+                else:
+                    await task
+        finally:
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+    with (
+        patch.object(
+            daemon_mod,
+            "load_obs_config",
+            return_value=replace(_make_obs(tmp_path), heartbeat_ping_url=None),
+        ),
+        patch.object(daemon_mod, "RunLog"),
+        patch.object(daemon_mod, "_poll_and_run", side_effect=poll),
+        patch.object(poll_module, "reconcile_startup", side_effect=reconcile),
+        patch.object(poll_module, "run_heartbeat_loop", side_effect=heartbeat),
+    ):
+        asyncio.run(exercise())
+    expected = {
+        "release": ["reconcile", "poll", "heartbeat_stopped"],
+        "reconcile_failure": ["reconcile", "heartbeat_stopped"],
+        "cancel": ["heartbeat_stopped"],
+        "invalid_receipt": ["heartbeat_stopped"],
+    }
+    assert trace == expected[outcome]
+    assert probe_writer_lease(lock) is EvidenceState.CLEAR
