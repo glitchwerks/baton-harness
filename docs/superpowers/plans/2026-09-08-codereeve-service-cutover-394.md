@@ -120,7 +120,7 @@ def test_borrowed_lease_stays_owned(context, operations, project):
 
 ### Task 5: Full forward/recovery coordinator
 
-**Files:** Create `coordinator.py`, `test_coordinator.py`, `test_recovery.py`; integrate backend, journal and migration APIs.
+**Files:** Create `coordinator.py` for forward/public API, `selection.py` for original/effective selection and publication/attestation, `recovery.py` for rollback/finalization, `test_coordinator.py`, `test_recovery.py`; integrate backend, journal and migration APIs (#394 full transaction scope).
 
 **Interfaces:** `cutover(spec, *, backend, storage) -> CutoverResult`; `recover(journal_path, *, backend, storage) -> CutoverResult`; `render_only(spec) -> str`; `install_only(spec, *, backend, storage) -> CutoverResult`. Production defaults use real backend/storage; no public test bypass. Dedicated `.codereeve-cutover.lock` serializes the complete operation independently of daemon lifetime lease.
 
@@ -177,3 +177,10 @@ Preflight interruption rule (#394): persist exact transient verification-job int
 - Add a closed-schema no-action migration event from guarded to migrated, recording a validated inventory digest and exact zero action count without inventing a migration manifest. The coordinator supplies fresh inventory and shutdown/lease proof (#394; Task5 service-only path).
 - Journal verification jobs in post-migration/pre-start, activated health, and committed recovery phases as well as initial preflight. Outstanding jobs must remain cleanup obligations before successful commit or terminal completion (#394 bounded health checks and interruption recovery).
 - Treat original virtualenv entrypoint/pyvenv snapshots as read-only attestation. Never include old environment paths in selection-restoration writes; external drift blocks original restart (#394 preservation of the original environment).
+
+- Preserve the selected service account HOME/.local/bin in the shared daemon/probe PATH definition; the current installer supplies that path for BWS (`bin/install-daemon-service.sh:L241`, `bin/install-daemon-service.sh:L393`; #213).
+- Keep coordinator-owned unit publication outside any earlier immutable runtime-publication snapshot. Validate recorded unit/guard selection before runtime quarantine, then restore original units after generic migration restoration. Generic inventory checks units but only non-service legacy resources become migration actions (`src/codereeve/migration/inventory.py:L159-L184`; #394).
+- Fresh prompted/environment secrets require a private, journal-owned preflight selection and a typed ephemeral handoff from the installer; canonical publication remains a transactional effect. No plaintext secret values enter serialized ServiceSpec or journal metadata (#394 strict pre-stop checks and reversible secret publication).
+
+- Task5 exposes a public backend logical-to-target path mapping for real filesystem operations, retaining Linux ServiceSpec/service-command paths. Portable tests map those operations and gate paths into disposable roots without implementing separate transaction policy (#394 injected-failure validation; Task2 filesystem_root and Task3 create(root,spec) contracts).
+- FreshSecrets is a frozen, repr-hidden, bounded and literal-validated bytes input to cutover/install_only. A typed stage_secrets path/digest effect precedes private preflight creation; the installer resolves inputs and performs no independent publication (#394 secret-safe transactional verification).
