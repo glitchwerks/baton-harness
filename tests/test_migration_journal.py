@@ -360,3 +360,21 @@ def test_readonly_probe_never_proves_writer_shutdown(
     assert evidence.writers is EvidenceState.UNKNOWN
     assert evidence.service is EvidenceState.UNKNOWN
     assert evidence.lease is EvidenceState.UNKNOWN
+
+
+def test_created_only_recovery_can_finish_without_inventing_operations(
+    tmp_path: Path, report: MigrationReport, portable_fsync: None
+) -> None:
+    """A crash before planning restores as a terminal, mutation-free no-op."""
+    root = tmp_path / "transactions"
+    journal = MigrationJournal.create(root, report, datetime.now(timezone.utc))
+    reopened = MigrationJournal.open(journal.path)
+    with pytest.raises(JournalError):
+        reopened.record(JournalEvent("", "complete"))
+    reopened.record(JournalEvent("", "restored"))
+    state = load_incomplete_journal(journal.path)
+    assert state.terminal and not state.manual_recovery
+    assert [event.phase for event in state.events] == ["created", "restored"]
+    evidence = probe_journals(root)
+    assert evidence.journals is EvidenceState.CLEAR
+    assert evidence.verified_transactions == (journal.path.parent,)

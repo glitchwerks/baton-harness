@@ -338,7 +338,7 @@ def _validate_transitions(events: tuple[JournalEvent, ...]) -> None:
                 else {"planned", "rollback_after"}
             )
             if (
-                not states
+                (phase == "complete" and not states)
                 or not set(states.values()) <= allowed
                 or (phase == "complete" and rollback)
             ):

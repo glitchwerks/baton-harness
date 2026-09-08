@@ -68,6 +68,7 @@ import asyncio
 import json
 import logging
 import signal
+import sys
 import threading
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -359,13 +360,23 @@ async def run_daemon(
         # while the loop is blocked inside the synchronous CI gate
         # (time.sleep in merge.py up to 1800 s).
         stop_event = threading.Event()
+        heartbeat_stopped = threading.Event()
+
+        def _tracked_heartbeat() -> None:
+            """Acknowledge termination only after all heartbeat writes end."""
+            try:
+                assert obs is not None
+                run_heartbeat_loop(
+                    obs, liveness_state, stop_event, runlog=runlog
+                )
+            finally:
+                heartbeat_stopped.set()
+
         monitor_thread: threading.Thread | None = None
         if obs is not None:
             try:
                 monitor_thread = threading.Thread(
-                    target=run_heartbeat_loop,
-                    args=(obs, liveness_state, stop_event),
-                    kwargs={"runlog": runlog},
+                    target=_tracked_heartbeat,
                     name="heartbeat-monitor",
                     daemon=True,
                 )
@@ -452,43 +463,79 @@ async def run_daemon(
             _exit_reason[0] = "keyboard_interrupt"
             raise
         finally:
-            # Signal the monitor thread and wait for it to exit cleanly.
-            stop_event.set()
-            if monitor_thread is not None:
-                monitor_thread.join()
-            # Clear the G2 ungraceful-exit marker on graceful shutdown so the
-            # next startup does not misread a clean stop as a crash.
-            try:
-                _daemon_marker.unlink(missing_ok=True)
-            except Exception:  # noqa: BLE001
-                pass  # best-effort; never raise in finally
-            if report is not None:
+            original_shutdown = sys.exc_info()[1]
+            deferred: list[BaseException] = []
+
+            def _defer_shutdown(signum: int, frame: object) -> None:
+                """Record signals until the writer acknowledges termination."""
+                deferred.append(
+                    SystemExit(0)
+                    if signum == signal.SIGTERM
+                    else KeyboardInterrupt()
+                )
+
+            previous_handlers = {}
+            for shutdown_signal in (signal.SIGTERM, signal.SIGINT):
                 try:
-                    report.set_exit_reason(
-                        _exit_reason[0],
-                        ended_at=datetime.now(timezone.utc).isoformat(),
+                    previous_handlers[shutdown_signal] = signal.signal(
+                        shutdown_signal, _defer_shutdown
                     )
-                    if report_path is not None:
-                        report.write(report_path)
-                except Exception as exc:  # noqa: BLE001
-                    _log.warning(
-                        "daemon: session report finalization failed: %s", exc
-                    )
-            if runlog is not None:
-                try:
-                    runlog.emit(
-                        {
-                            "ts": datetime.now(timezone.utc).isoformat(),
-                            "event": "daemon_stop",
-                            "issue": None,
-                            "outcome": None,
-                            "severity": "info",
-                            "detail": "daemon stopping",
-                            "tick_id": None,
-                        }
-                    )
-                except Exception:  # noqa: BLE001
+                except (ValueError, OSError):
+                    # Non-main callers cannot install handlers; direct
+                    # interruptions of their wait still defer below.
                     pass
+            try:
+                while True:
+                    try:
+                        stop_event.set()
+                        if monitor_thread is not None:
+                            monitor_thread.join()
+                            # Interrupted CPython joins may report stopped
+                            # while the target still runs. Only its finally
+                            # acknowledgement proves the writer has finished.
+                            heartbeat_stopped.wait()
+                        break
+                    except (KeyboardInterrupt, SystemExit) as exc:
+                        deferred.append(exc)
+                # Clear the G2 marker so the next startup does not misread
+                # a clean stop as a crash.
+                try:
+                    _daemon_marker.unlink(missing_ok=True)
+                except Exception:  # noqa: BLE001
+                    pass  # best-effort; never raise in finally
+                if report is not None:
+                    try:
+                        report.set_exit_reason(
+                            _exit_reason[0],
+                            ended_at=datetime.now(timezone.utc).isoformat(),
+                        )
+                        if report_path is not None:
+                            report.write(report_path)
+                    except Exception as exc:  # noqa: BLE001
+                        _log.warning(
+                            "daemon: session report finalization failed: %s",
+                            exc,
+                        )
+                if runlog is not None:
+                    try:
+                        runlog.emit(
+                            {
+                                "ts": datetime.now(timezone.utc).isoformat(),
+                                "event": "daemon_stop",
+                                "issue": None,
+                                "outcome": None,
+                                "severity": "info",
+                                "detail": "daemon stopping",
+                                "tick_id": None,
+                            }
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+            finally:
+                for shutdown_signal, previous in previous_handlers.items():
+                    signal.signal(shutdown_signal, previous)
+            if original_shutdown is None and deferred:
+                raise deferred[0]
 
         _log.info("daemon: stopped")
 
