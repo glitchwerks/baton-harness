@@ -1,5 +1,6 @@
 """Durable storage contract tests using genuine disposable files."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -45,6 +46,15 @@ def portable_storage(root: Path) -> module.Storage:
 
         def sync_directory(self, path: Path) -> None:
             self.flushes.append(path)
+
+        def sync_file(self, path: Path) -> None:
+            # Windows cannot fsync readonly descriptors. Keep actual file
+            # durability calls while injecting its POSIX descriptor access.
+            fd = os.open(path, os.O_RDWR)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
 
         def owner(self) -> tuple[int, int]:
             return (42, 43)
@@ -196,3 +206,53 @@ def test_posix_metadata_is_flushed_before_handoff(
     monkeypatch.setattr(os, "fsync", sync)
     module.Storage.set_metadata(store, path, 0o640, 9, 10)
     assert calls == ["fsync"]
+
+
+@pytest.mark.parametrize("drift", ["bytes", "inode"])
+def test_durability_reconciliation_refuses_drift_during_flush(
+    tmp_path: Path, drift: str
+) -> None:
+    """An identical replacement inode is not the verified file descriptor."""
+    store = portable_storage(tmp_path)
+    path = tmp_path / "runtime"
+    path.write_bytes(b"original")
+    snapshot = store.inspect(path)
+    sync = store.sync_file
+
+    def change(target: Path) -> None:
+        sync(target)
+        if drift == "bytes":
+            target.write_bytes(b"drift")
+        else:
+            replacement = tmp_path / "replacement"
+            replacement.write_bytes(b"original")
+            replacement.replace(target)
+
+    store.sync_file = change
+    with pytest.raises(CutoverError):
+        store.make_durable(path, snapshot)
+
+
+@pytest.mark.parametrize("drift", ["bytes", "ownership", "extra"])
+def test_resume_admission_preserves_unrecognized_partial_inputs(
+    tmp_path: Path, drift: str
+) -> None:
+    """Shared finalization must not weaken the resume-only admission checks."""
+    store = portable_storage(tmp_path)
+    path = tmp_path / "state"
+    path.mkdir()
+    child = path / "a"
+    child.write_bytes(b"original")
+    backup = tmp_path / "backup"
+    store.mkdir(backup)
+    snapshot = store.capture(path, backup)
+    if drift == "bytes":
+        child.write_bytes(b"operator")
+    elif drift == "ownership":
+        store.set_metadata(child, 0o600, 91, 92)
+    else:
+        (path / "extra").write_bytes(b"unexpected")
+    before = store.inspect(path)
+    with pytest.raises(CutoverError):
+        store.resume_restore(snapshot, backup)
+    assert store.matches(path, before)

@@ -611,3 +611,341 @@ def test_prior_selection_waits_for_generic_migration_restore(
     journal.record("filesystem_restored", {})
     with pytest.raises(CutoverError):
         journal.record("effect_intent", {"operation": "restore_selection"})
+
+
+@pytest.mark.parametrize("namespace", ["source", "destination"])
+def test_quarantine_retry_repeats_failed_namespace_flush(
+    tmp_path: Path, namespace: str
+) -> None:
+    """Visible renamed bytes must not bypass either failed namespace flush."""
+    journal = make_journal(tmp_path)
+    advance(journal)
+    runtime_parent = tmp_path / "outputs"
+    runtime_parent.mkdir()
+    source = runtime_parent / "runtime"
+    source.mkdir()
+    (source / "log").write_bytes(b"original")
+    journal.capture_publication({source: "runtime"})
+    (source / "log").write_bytes(b"new runtime")
+    rollback(journal)
+    target = (
+        source.parent
+        / ".codereeve-cutover"
+        / journal.path.parent.name
+        / "quarantine-0"
+    )
+    failed_parent = source.parent if namespace == "source" else target.parent
+    sync = journal.storage.sync_directory
+    failures: list[Path] = []
+
+    def fail(path: Path) -> None:
+        if not source.exists() and target.exists() and path == failed_parent:
+            failures.append(path)
+            raise OSError("interrupted namespace flush")
+        sync(path)
+
+    journal.storage.sync_directory = fail
+    with pytest.raises(CutoverError):
+        journal.restore_publication()
+    assert target.joinpath("log").read_bytes() == b"new runtime"
+    opened = module.CutoverJournal.open(journal.path, storage=journal.storage)
+    with pytest.raises(CutoverError):
+        opened.restore_publication()
+    assert len(failures) == 2
+    assert opened.pending is not None
+    assert opened.pending["operation"] == "quarantine"
+    journal.storage.sync_directory = sync
+    retried: list[Path] = []
+
+    def observe(path: Path) -> None:
+        if not source.exists() and target.exists():
+            retried.append(path)
+        sync(path)
+
+    journal.storage.sync_directory = observe
+    reopened = module.CutoverJournal.open(
+        journal.path, storage=journal.storage
+    )
+    reopened.restore_publication()
+    assert source.joinpath("log").read_bytes() == b"original"
+    assert source.parent in retried
+    assert target.parent in retried
+
+
+@pytest.mark.parametrize("tree", [False, True])
+def test_matching_and_partial_restore_retry_repeats_file_fsync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tree: bool
+) -> None:
+    """Reflush copied files after interruption, including partial trees."""
+    import os
+
+    journal = make_journal(tmp_path)
+    advance(journal)
+    source = tmp_path / "runtime"
+    if tree:
+        source.mkdir()
+        destination = source / "a"
+        destination.write_bytes(b"original")
+        (source / "b").write_bytes(b"second")
+    else:
+        destination = source
+        destination.write_bytes(b"original")
+    journal.capture_publication({source: "runtime"})
+    destination.write_bytes(b"new runtime")
+    rollback(journal)
+    sync = os.fsync
+    failures: list[int] = []
+
+    def fail(fd: int) -> None:
+        if (
+            destination.exists()
+            and destination.read_bytes() == b"original"
+            and os.fstat(fd).st_ino == destination.stat().st_ino
+        ):
+            failures.append(fd)
+            raise OSError("interrupted content flush")
+        sync(fd)
+
+    monkeypatch.setattr(os, "fsync", fail)
+    with pytest.raises(CutoverError):
+        journal.restore_publication()
+    assert destination.read_bytes() == b"original"
+    opened = module.CutoverJournal.open(journal.path, storage=journal.storage)
+    with pytest.raises(CutoverError):
+        opened.restore_publication()
+    assert len(failures) == 2
+    assert opened.pending is not None
+    assert opened.pending["operation"] == "restore_publication"
+    monkeypatch.setattr(os, "fsync", sync)
+    reopened = module.CutoverJournal.open(
+        journal.path, storage=journal.storage
+    )
+    reopened.restore_publication()
+    assert reopened.publication_restored
+    if tree:
+        assert (source / "b").read_bytes() == b"second"
+
+
+def test_matching_restore_retry_repeats_parent_flush(tmp_path: Path) -> None:
+    """A fully visible restored file still requires its namespace flush."""
+    journal = make_journal(tmp_path)
+    advance(journal)
+    source = tmp_path / "runtime"
+    source.write_bytes(b"original")
+    journal.capture_publication({source: "runtime"})
+    source.write_bytes(b"new runtime")
+    rollback(journal)
+    sync = journal.storage.sync_directory
+
+    def fail(path: Path) -> None:
+        if (
+            source.exists()
+            and source.read_bytes() == b"original"
+            and path == source.parent
+        ):
+            raise OSError("interrupted restored namespace")
+        sync(path)
+
+    journal.storage.sync_directory = fail
+    with pytest.raises(CutoverError):
+        journal.restore_publication()
+    opened = module.CutoverJournal.open(journal.path, storage=journal.storage)
+    with pytest.raises(CutoverError):
+        opened.restore_publication()
+    assert opened.pending is not None
+    assert opened.pending["operation"] == "restore_publication"
+    journal.storage.sync_directory = sync
+    module.CutoverJournal.open(
+        journal.path, storage=journal.storage
+    ).restore_publication()
+
+
+def advance_runtime_phase(journal: module.CutoverJournal, phase: str) -> None:
+    """Establish real journal prerequisites for later verification phases."""
+    advance(journal)
+    if phase == "migrated":
+        return
+    runtime = journal.path.parent.parent.parent / "runtime"
+    journal.capture_publication({runtime: "runtime"})
+    for operation in ("publish_unit", "reload"):
+        journal.record("effect_intent", {"operation": operation})
+        journal.record("effect_done", {"operation": operation})
+    journal.record("published", {})
+    if phase == "published":
+        return
+    journal.record("effect_intent", {"operation": "start_new"})
+    journal.record("effect_done", {"operation": "start_new"})
+    journal.record(
+        "activated", {"pid": 90, "invocation_id": "b" * 32, "started_ns": 10}
+    )
+    if phase == "activated":
+        return
+    journal.record("verified", {})
+    if phase == "verified":
+        return
+    for operation in ("enable_new", "disable_old"):
+        journal.record("effect_intent", {"operation": operation})
+        journal.record("effect_done", {"operation": operation})
+    journal.record("committed", {})
+
+
+@pytest.mark.parametrize(
+    "phase", ["migrated", "published", "activated", "verified", "committed"]
+)
+def test_verification_jobs_have_durable_lifecycles_in_runtime_phases(
+    tmp_path: Path, phase: str
+) -> None:
+    """Service context/live/recovery verification cannot bypass the journal."""
+    journal = make_journal(tmp_path)
+    advance_runtime_phase(journal, phase)
+    job = {"operation": "verify_job", "unit": "codereeve-verify-a.service"}
+    journal.record("effect_intent", job)
+    opened = module.CutoverJournal.open(journal.path, storage=journal.storage)
+    assert opened.phase == phase and opened.pending == job
+    assert opened.jobs == {job["unit"]}
+    opened.record("effect_done", job)
+    cleanup = {**job, "operation": "cleanup_job"}
+    opened.record("effect_intent", cleanup)
+    opened.record("effect_done", cleanup)
+    assert not opened.jobs and opened.pending is None
+
+
+@pytest.mark.parametrize(
+    "phase,terminal,effects",
+    [
+        ("verified", "committed", ("enable_new", "disable_old")),
+        ("committed", "finalized", ("release_gate", "publish_unit", "reload")),
+    ],
+)
+def test_commit_and_finalization_wait_for_verification_cleanup(
+    tmp_path: Path, phase: str, terminal: str, effects: tuple[str, ...]
+) -> None:
+    """Complete other prerequisites cannot conceal a verification job."""
+    journal = make_journal(tmp_path)
+    advance_runtime_phase(journal, phase)
+    for operation in effects:
+        journal.record("effect_intent", {"operation": operation})
+        journal.record("effect_done", {"operation": operation})
+    job = {"operation": "verify_job", "unit": "codereeve-verify-a.service"}
+    journal.record("effect_intent", job)
+    with pytest.raises(CutoverError, match="unresolved service effect"):
+        journal.record(terminal, {})
+    opened = module.CutoverJournal.open(journal.path, storage=journal.storage)
+    with pytest.raises(CutoverError):
+        opened.record(terminal, {})
+    opened.record("effect_done", job)
+    opened.record(terminal, {})
+    assert opened.phase == terminal
+
+
+def test_zero_action_inventory_advances_without_migration_manifest(
+    tmp_path: Path,
+) -> None:
+    """Record a no-action inventory without a migration manifest."""
+    journal = make_journal(tmp_path)
+    advance(journal, "guarded")
+    journal.record(
+        "migration_not_needed",
+        {"inventory_digest": "a" * 64, "action_count": 0},
+    )
+    opened = module.CutoverJournal.open(journal.path, storage=journal.storage)
+    assert opened.phase == "migrated"
+    assert opened.migration_attempted is False
+    assert all(
+        event["metadata"].get("operation") != "migrate"
+        for event in opened.events
+    )
+    rollback(opened)
+    opened.record("filesystem_restored", {})
+    opened.record("effect_intent", {"operation": "restore_selection"})
+    opened.record("effect_done", {"operation": "restore_selection"})
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"inventory_digest": "a" * 64, "action_count": False},
+        {"inventory_digest": "a" * 64, "action_count": 1},
+        {"inventory_digest": "a" * 64, "action_count": -1},
+        {"inventory_digest": "invalid", "action_count": 0},
+        {"inventory_digest": "a" * 64, "action_count": 0, "path": "/fake"},
+    ],
+)
+def test_no_action_inventory_metadata_is_closed(
+    tmp_path: Path, metadata: dict[str, object]
+) -> None:
+    """Only exact zero and a validated SHA256 inventory digest are accepted."""
+    journal = make_journal(tmp_path)
+    advance(journal, "guarded")
+    with pytest.raises(CutoverError):
+        journal.record("migration_not_needed", metadata)
+    assert journal.phase == "guarded"
+
+
+def test_no_action_cannot_conceal_an_attempted_migration(
+    tmp_path: Path,
+) -> None:
+    """A cancelled generic attempt still needs its original recovery route."""
+    journal = make_journal(tmp_path)
+    advance(journal, "guarded")
+    effect = {
+        "operation": "migrate",
+        "path": str(journal.path.parent / "migration.json"),
+    }
+    journal.record("effect_intent", effect)
+    journal.record("effect_cancelled", effect)
+    with pytest.raises(CutoverError):
+        journal.record(
+            "migration_not_needed",
+            {"inventory_digest": "a" * 64, "action_count": 0},
+        )
+
+
+def test_quarantine_flushes_runtime_files_and_tree_before_completion(
+    tmp_path: Path,
+) -> None:
+    """Require runtime file data and nested directories before completion."""
+    journal = make_journal(tmp_path)
+    advance(journal)
+    source = tmp_path / "runtime"
+    source.mkdir()
+    (source / "nested").mkdir()
+    (source / "log").write_bytes(b"original")
+    (source / "nested" / "state").write_bytes(b"original nested")
+    journal.capture_publication({source: "runtime"})
+    (source / "log").write_bytes(b"runtime writes")
+    rollback(journal)
+    target = journal.path.parent / "quarantine-0"
+    files: set[Path] = set()
+    directories: set[Path] = set()
+    file_sync = journal.storage.sync_file
+    directory_sync = journal.storage.sync_directory
+    record = journal.record
+
+    def flush_file(path: Path) -> None:
+        file_sync(path)
+        files.add(path)
+
+    def flush_directory(path: Path) -> None:
+        directory_sync(path)
+        directories.add(path)
+
+    def check_completion(event: str, metadata: dict[str, object]) -> None:
+        if (
+            event == "effect_done"
+            and metadata.get("operation") == "quarantine"
+        ):
+            assert {target / "log", target / "nested" / "state"} <= files
+            assert {
+                target,
+                target / "nested",
+                target.parent,
+                source.parent,
+            } <= directories
+        record(event, metadata)
+
+    journal.storage.sync_file = flush_file
+    journal.storage.sync_directory = flush_directory
+    journal.record = check_completion
+    journal.restore_publication()
+    assert (target / "log").read_bytes() == b"runtime writes"

@@ -109,6 +109,79 @@ class Storage:
             os.close(fd)
 
     @fixed_errors
+    def sync_file(self, path: Path) -> None:
+        """Flush regular file data without following a substituted file."""
+        self.owner()
+        self.safe(path)
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            opened = os.fstat(fd)
+            named = path.lstat()
+            if not stat.S_ISREG(opened.st_mode) or (
+                opened.st_dev,
+                opened.st_ino,
+            ) != (named.st_dev, named.st_ino):
+                raise CutoverError("filesystem changed before durability")
+            os.fsync(fd)
+            after = path.lstat()
+            if (opened.st_dev, opened.st_ino) != (after.st_dev, after.st_ino):
+                raise CutoverError("filesystem changed during durability")
+        finally:
+            os.close(fd)
+
+    @fixed_errors
+    def make_durable(
+        self,
+        path: Path,
+        snapshot: FileSnapshot,
+        *,
+        namespace_parents: tuple[Path, ...] = (),
+    ) -> None:
+        """Verify and flush an observed tree and its affected namespace.
+
+        Matching visible bytes alone do not establish durability. Both new
+        execution and replay flush every regular file, all tree directories,
+        and the source/destination namespace parents before completion.
+        """
+        self.owner()
+        if not self.matches(path, snapshot):
+            raise CutoverError("filesystem durability snapshot mismatch")
+        identities: dict[Path, tuple[int, int]] = {}
+        directories: set[Path] = set()
+        for node in snapshot.nodes:
+            target = path / node.name
+            info = target.lstat()
+            identities[target] = (info.st_dev, info.st_ino)
+            if node.kind == "directory":
+                directories.add(target)
+        for parent in (path.parent, *namespace_parents):
+            # An absent nested destination has no immediate parent to flush.
+            # Flush the existing ancestor which proves its absent namespace.
+            while not parent.exists() and not parent.is_symlink():
+                parent = parent.parent
+            self.safe(parent)
+            if not parent.is_dir():
+                raise CutoverError("filesystem namespace is not a directory")
+            directories.add(parent)
+        for directory in directories:
+            info = directory.lstat()
+            identities[directory] = (info.st_dev, info.st_ino)
+        for node in snapshot.nodes:
+            if node.kind == "file":
+                self.sync_file(path / node.name)
+        for directory in sorted(
+            directories, key=lambda item: (-len(item.parts), str(item))
+        ):
+            self.sync_directory(directory)
+        for target, identity in identities.items():
+            self.safe(target, leaf_link=True)
+            info = target.lstat()
+            if identity != (info.st_dev, info.st_ino):
+                raise CutoverError("filesystem identity changed during flush")
+        if not self.matches(path, snapshot):
+            raise CutoverError("filesystem changed during durability")
+
+    @fixed_errors
     def safe(self, path: Path, *, leaf_link: bool = False) -> None:
         """Reject traversal, unsafe parents, special files and hardlinks."""
         if not path.is_absolute() or ".." in path.parts:
@@ -262,9 +335,11 @@ class Storage:
             raise CutoverError("quarantine collision")
         if source.lstat().st_dev != destination.parent.stat().st_dev:
             raise CutoverError("quarantine crosses filesystems")
+        snapshot = self.inspect(source, mask=True)
         source.rename(destination)
-        self.sync_directory(source.parent)
-        self.sync_directory(destination.parent)
+        self.make_durable(
+            destination, snapshot, namespace_parents=(source.parent,)
+        )
 
     @fixed_errors
     def restore(self, snapshot: FileSnapshot, backup: Path) -> None:
@@ -275,20 +350,9 @@ class Storage:
         self.verify_backup(snapshot, backup)
         if path.exists() or path.is_symlink():
             raise CutoverError("restoration target is occupied")
-        for index, node in enumerate(snapshot.nodes):
-            target = path / node.name
-            if node.kind == "directory":
-                self.mkdir(target)
-            elif node.kind == "file":
-                self.write(target, self.read(backup / str(index)))
-            else:
-                target.symlink_to("/dev/null")
-                self.sync_directory(target.parent)
-        for node in reversed(snapshot.nodes):
-            self.set_metadata(path / node.name, node.mode, node.uid, node.gid)
-            self.sync_directory((path / node.name).parent)
-        if not self.matches(path, snapshot):
-            raise CutoverError("filesystem restoration incomplete")
+        self._restore_nodes(
+            snapshot, backup, set(), "filesystem restoration incomplete"
+        )
 
     @fixed_errors
     def replace_journal(self, source: Path, target: Path) -> None:
@@ -328,6 +392,19 @@ class Storage:
             )
             if (node.mode, node.uid, node.gid) not in {original, temporary}:
                 raise CutoverError("partial restoration metadata drift")
+        self._restore_nodes(
+            snapshot, backup, set(existing), "partial restoration incomplete"
+        )
+
+    def _restore_nodes(
+        self,
+        snapshot: FileSnapshot,
+        backup: Path,
+        existing: set[str],
+        failure: str,
+    ) -> None:
+        """Create missing nodes and finalize a verified restoration."""
+        path = Path(snapshot.path)
         for index, node in enumerate(snapshot.nodes):
             if node.name in existing:
                 continue
@@ -343,4 +420,5 @@ class Storage:
             self.set_metadata(path / node.name, node.mode, node.uid, node.gid)
             self.sync_directory((path / node.name).parent)
         if not self.matches(path, snapshot):
-            raise CutoverError("partial restoration incomplete")
+            raise CutoverError(failure)
+        self.make_durable(path, snapshot)

@@ -30,12 +30,20 @@ from codereeve.service_cutover.storage import (
 
 _TERMINAL = {"aborted", "rolled_back", "finalized", "installed"}
 # Effects are legal only in their explicitly declared transaction phases.
+_VERIFICATION_PHASES = {
+    "created",
+    "migrated",
+    "published",
+    "activated",
+    "verified",
+    "committed",
+}
 _OPERATIONS = {
     "capture_publication": {"migrated"},
     "quarantine": {"all_writers_stopped"},
     "restore_publication": {"all_writers_stopped"},
-    "verify_job": {"created"},
-    "cleanup_job": {"created", "aborting", "rolling_back"},
+    "verify_job": _VERIFICATION_PHASES,
+    "cleanup_job": _VERIFICATION_PHASES | {"aborting", "rolling_back"},
     "stop_old": {"preflight_passed"},
     "guard_old": {"stopped"},
     "stage_canonical": {"stopped", "guarded"},
@@ -600,6 +608,23 @@ class CutoverJournal:
             self.phase = "rolling_back"
             self.completed.clear()
             return
+        if event == "migration_not_needed":
+            if (
+                self.phase != "guarded"
+                or self.mode != "cutover"
+                or self.migration_attempted
+                or self.jobs
+                or self.interrupted
+                or set(metadata) != {"inventory_digest", "action_count"}
+                or type(metadata["action_count"]) is not int
+                or metadata["action_count"] != 0
+                or not isinstance(metadata["inventory_digest"], str)
+                or not _HEX.fullmatch(metadata["inventory_digest"])
+            ):
+                raise CutoverError("invalid no-action migration proof")
+            self.phase = "migrated"
+            self.completed.clear()
+            return
         if event == "publication_restored":
             if (
                 metadata
@@ -887,18 +912,20 @@ class CutoverJournal:
                 intent = dict(self.pending)
                 preserved = _snapshot(intent["snapshot"])
                 target = Path(intent["path"])
+                self._quarantine_directory(target.parent)
                 if source.exists() or source.is_symlink():
                     if (
                         not self.storage.matches(source, preserved)
                         or target.exists()
                     ):
                         raise CutoverError("quarantine source drift")
-                    self._quarantine_directory(target.parent)
                     self.storage.move(source, target)
-                if not self.storage.matches(target, preserved):
-                    raise CutoverError("quarantine recovery incomplete")
+                self.storage.make_durable(
+                    target, preserved, namespace_parents=(source.parent,)
+                )
                 self.record("effect_done", intent)
             if self.pending is None and self.storage.matches(source, snapshot):
+                self.storage.make_durable(source, snapshot)
                 continue
             if self.pending is None and (
                 source.exists() or source.is_symlink()
@@ -919,8 +946,9 @@ class CutoverJournal:
                 self.record("effect_intent", intent)
                 self._quarantine_directory(target.parent)
                 self.storage.move(source, target)
-                if not self.storage.matches(target, preserved):
-                    raise CutoverError("quarantine verification incomplete")
+                self.storage.make_durable(
+                    target, preserved, namespace_parents=(source.parent,)
+                )
                 self.record("effect_done", intent)
             effect = {"operation": "restore_publication", "index": index}
             if self.pending is None:
@@ -933,8 +961,7 @@ class CutoverJournal:
                     self.storage.resume_restore(snapshot, backup)
                 else:
                     self.storage.restore(snapshot, backup)
-            if not self.storage.matches(source, snapshot):
-                raise CutoverError("publication restoration incomplete")
+            self.storage.make_durable(source, snapshot)
             self.record("effect_done", effect)
         for entry in self.publication:
             snapshot = _snapshot(entry["snapshot"])
@@ -950,6 +977,8 @@ class CutoverJournal:
             if not path.exists():
                 self.storage.mkdir(path)
             self.storage.private(path, directory=True)
+            self.storage.sync_directory(path)
+            self.storage.sync_directory(path.parent)
 
     def _protected_matches(self, snapshot: FileSnapshot) -> bool:
         """Verify a protected child in place or in its recorded quarantine."""
