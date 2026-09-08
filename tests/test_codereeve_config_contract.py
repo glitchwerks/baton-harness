@@ -301,6 +301,9 @@ def _execution_targets(text: str) -> set[tuple[str, str]]:
                     ";",
                     "&&",
                     "||",
+                    "&",
+                    "|",
+                    "|&",
                     "(",
                     ")",
                     "{",
@@ -447,6 +450,9 @@ Environment=BH_SERVICE=value
         ('. "$config_file"', (".", "$config_file")),
         ('if value="$(eval "$contents")"; then', ("eval", "$contents")),
         ("true; source config.env", ("source", "config.env")),
+        ("true & source host.env", ("source", "host.env")),
+        ("printf x | source config.env", ("source", "config.env")),
+        ("printf x |& source config.env", ("source", "config.env")),
         ("load() { source host.env; }", ("source", "host.env")),
         ("while source config.env; do true; done", ("source", "config.env")),
         ("until . config.env; do true; done", (".", "config.env")),
@@ -550,6 +556,61 @@ def test_shell_code_preserves_new_write_outside_help() -> None:
     assert _shell_code(text) == ["cat <<'END'", "touch .bh/new.json"]
 
 
+def _open_is_read_only(
+    call: ast.Call, literals: dict[str, ast.Constant], *, path_method: bool
+) -> bool:
+    """Permit proven read modes; unknown modes may mutate legacy paths."""
+    low_level = ast.unparse(call.func) == "os.open"
+    if any(item.arg is None for item in call.keywords) or any(
+        isinstance(item, ast.Starred) for item in call.args
+    ):
+        return False
+    mode = next(
+        (
+            item.value
+            for item in call.keywords
+            if item.arg == ("flags" if low_level else "mode")
+        ),
+        None,
+    )
+    index = 0 if path_method else 1
+    if mode is None and len(call.args) > index:
+        mode = call.args[index]
+    if mode is None:
+        return not low_level  # Builtin and Path.open default to read mode.
+    if isinstance(mode, ast.Name):
+        mode = literals.get(mode.id)
+    if not low_level:
+        return isinstance(mode, ast.Constant) and mode.value in {
+            "r",
+            "rt",
+            "rb",
+            "tr",
+            "br",
+        }
+    # O_RDONLY is zero; these extra flags do not request filesystem writes.
+    pending = [mode]
+    while pending:
+        flag = pending.pop()
+        if isinstance(flag, ast.BinOp) and isinstance(flag.op, ast.BitOr):
+            pending.extend((flag.left, flag.right))
+        elif isinstance(flag, ast.Constant) and flag.value == 0:
+            continue
+        elif isinstance(flag, ast.Attribute) and ast.unparse(flag) in {
+            "os.O_RDONLY",
+            "os.O_CLOEXEC",
+            "os.O_NOFOLLOW",
+            "os.O_DIRECTORY",
+            "os.O_NONBLOCK",
+            "os.O_BINARY",
+            "os.O_TEXT",
+        }:
+            continue
+        else:
+            return False
+    return True
+
+
 def _derived_legacy_writes(
     text: str, *, attribute_prefix: str = "legacy_"
 ) -> set[tuple[str, str]]:
@@ -560,6 +621,7 @@ def _derived_legacy_writes(
         if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         aliases: set[str] = set()
+        literals: dict[str, ast.Constant] = {}
 
         def legacy(expression: ast.AST, known: set[str] = aliases) -> bool:
             """Recognize direct layout attributes and simple assigned paths."""
@@ -587,10 +649,21 @@ def _derived_legacy_writes(
                 )
                 for target in targets:
                     if isinstance(target, ast.Name):
+                        value = node.value
+                        if isinstance(value, ast.Name):
+                            value = literals.get(value.id)
+                        if isinstance(value, ast.Constant):
+                            literals[target.id] = value
+                        else:
+                            literals.pop(target.id, None)
                         if legacy(node.value):
                             aliases.add(target.id)
                         else:
                             aliases.discard(target.id)
+            if isinstance(node, ast.AugAssign) and isinstance(
+                node.target, ast.Name
+            ):
+                literals.pop(node.target.id, None)
             if not isinstance(node, ast.Call):
                 continue
             name = ast.unparse(node.func).split(".")[-1]
@@ -614,26 +687,11 @@ def _derived_legacy_writes(
                 if legacy(node):
                     found.add((function.name, name))
             elif name == "open" and legacy(node):
-                mode = next(
-                    (
-                        item.value
-                        for item in node.keywords
-                        if item.arg == "mode"
-                    ),
-                    None,
-                )
-                index = (
-                    0
-                    if isinstance(node.func, ast.Attribute)
-                    and legacy(node.func.value)
-                    else 1
-                )
-                if mode is None and len(node.args) > index:
-                    mode = node.args[index]
-                if (
-                    isinstance(mode, ast.Constant)
-                    and isinstance(mode.value, str)
-                    and any(flag in mode.value for flag in "wax+")
+                if not _open_is_read_only(
+                    node,
+                    literals,
+                    path_method=isinstance(node.func, ast.Attribute)
+                    and legacy(node.func.value),
                 ):
                     found.add((function.name, name))
     return found
@@ -660,6 +718,41 @@ def test_legacy_layout_mutation_is_not_a_selector(statement: str) -> None:
     assert not _derived_legacy_writes(
         "def read_only():\n    return layout.legacy_state.exists()\n"
     )
+
+
+@pytest.mark.parametrize(
+    "statement, writes",
+    [
+        ('mode = "w"\nopen(layout.legacy_host, mode)', True),
+        ('mode = "r"\nmode = input()\nopen(layout.legacy_host, mode)', True),
+        ('mode = "r"\nmode += "+"\nopen(layout.legacy_host, mode)', True),
+        ("open(layout.legacy_host, get_mode())", True),
+        ("layout.legacy_host.open(mode=unknown)", True),
+        ("open(layout.legacy_host, **options)", True),
+        ("os.open(layout.legacy_host, os.O_WRONLY)", True),
+        ("os.open(layout.legacy_host, os.O_RDWR)", True),
+        ("os.open(layout.legacy_host, os.O_RDONLY | os.O_CREAT)", True),
+        ("os.open(layout.legacy_host, flags=os.O_RDONLY | os.O_TRUNC)", True),
+        ("os.open(layout.legacy_host, os.O_RDONLY | os.O_APPEND)", True),
+        ("os.open(layout.legacy_host, unknown_flags)", True),
+        ("open(layout.legacy_host)", False),
+        ("layout.legacy_host.open()", False),
+        ('open(layout.legacy_host, "rb")', False),
+        ('mode = "r"\ncopy = mode\nopen(layout.legacy_host, copy)', False),
+        ('mode = "rb"\nlayout.legacy_host.open(mode=mode)', False),
+        ("os.open(layout.legacy_host, os.O_RDONLY)", False),
+        ("os.open(layout.legacy_host, os.O_RDONLY | os.O_CLOEXEC)", False),
+        ("os.open(layout.legacy_host, 0)", False),
+    ],
+)
+def test_legacy_open_modes_require_proven_read_only(
+    statement: str, writes: bool
+) -> None:
+    """Literal aliases and low-level flags cannot hide legacy file writes."""
+    text = "def access():\n" + "\n".join(
+        "    " + line for line in statement.splitlines()
+    )
+    assert bool(_derived_legacy_writes(text)) is writes
 
 
 def _shell_legacy_lines(
