@@ -612,9 +612,15 @@ def _resolve_config(
             selected_source = _selected_source_layer(
                 required_key, effective_layers
             )
+            diagnostic_layers = effective_layers
+            if selected_source is None:
+                selected_source = _selected_source_layer(
+                    required_key, all_layers
+                )
+                diagnostic_layers = all_layers
             if selected_source is not None:
                 raise SandboxConfigError(
-                    _value_message(required_key, "is empty", effective_layers)
+                    _value_message(required_key, "is empty", diagnostic_layers)
                 )
             raise SandboxConfigError(f"missing required key: {required_key}")
 

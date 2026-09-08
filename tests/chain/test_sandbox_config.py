@@ -2235,6 +2235,40 @@ class TestCanonicalConfigSourceSelection:
 
         assert resolved.config.repo_owner == _OWNER
 
+    @pytest.mark.parametrize(
+        "host_key", ["CODEREEVE_REPO_OWNER", "BH_REPO_OWNER"]
+    )
+    def test_empty_required_host_value_without_project_fallback_reports_source(
+        self, tmp_path: Path, host_key: str
+    ) -> None:
+        """An empty canonical or legacy host key retains source location."""
+        layout = PathLayout.for_environment(
+            tmp_path,
+            {"XDG_CONFIG_HOME": str(tmp_path / "xdg")},
+        )
+        layout.canonical_host.parent.mkdir(parents=True)
+        layout.canonical_host.write_text(f"{host_key}=\n", encoding="utf-8")
+        layout.canonical_state.mkdir()
+        layout.canonical_config.write_text(
+            _VALID_ENV_CONTENT.replace("BH_", "CODEREEVE_").replace(
+                f"CODEREEVE_REPO_OWNER={_OWNER}\n", ""
+            ),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(SandboxConfigError) as exc_info:
+            resolve_config_sources(
+                None,
+                {"CODEREEVE_PROJECT_ROOT": str(tmp_path)},
+                layout,
+            )
+
+        message = str(exc_info.value)
+        assert "CODEREEVE_REPO_OWNER" in message
+        assert f"{layout.canonical_host}:1" in message
+        assert "missing required key" not in message
+        assert _PEM_UUID not in message
+
     def test_reports_invalid_value_by_key_source_and_line_without_value(
         self, tmp_path: Path
     ) -> None:
