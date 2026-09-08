@@ -14,6 +14,7 @@ from codereeve import (
 )
 from codereeve.chain import cli as daemon_cli
 from codereeve.hooks import force_pr_not_merge
+from codereeve.migration import cli as migration_cli
 
 Handler = Callable[[list[str]], int]
 
@@ -56,6 +57,7 @@ HELP = """usage: codereeve [--version] COMMAND [ARGS]
 commands:
   daemon
   doctor
+  migrate
   provenance
   hook after-create
   hook before-run
@@ -67,6 +69,7 @@ commands:
 HANDLERS: dict[str, Handler] = {
     "daemon": _daemon,
     "doctor": _doctor,
+    "migrate": lambda argv: migration_cli.main(argv),
     "provenance": _provenance,
     "verify": lambda argv: verify_foundation.main(argv),
     "hook_after_create": lambda argv: after_create.main(argv),
@@ -111,6 +114,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         if key is None:
             return _usage_error(f"unknown hook command: {hook}")
         return HANDLERS[key](args)
-    if command not in {"daemon", "doctor", "provenance", "verify"}:
+    if command not in {"daemon", "doctor", "migrate", "provenance", "verify"}:
         return _usage_error(f"unknown command: {command}")
     return HANDLERS[command](args)

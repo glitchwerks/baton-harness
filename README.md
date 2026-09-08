@@ -307,6 +307,87 @@ compatibility command and exits 0 only on PASS. See
 [operator preflight and JSON schema](docs/repository-onboarding.md#5-bh-daemon---doctor--strict--preflight-before-the-first-real-run)
 for report fields and startup ordering.
 
+### Filesystem migration
+
+CodeReeve 0.2 inventories and migrates these configuration and state locations.
+Managed config, baseline, and runtime state become one verified `.codereeve/`
+publication; an existing canonical destination blocks rather than being merged
+(#393; `src/codereeve/migration/inventory.py:L114-L207`).
+
+| Scope | Temporary legacy source | Canonical destination |
+|---|---|---|
+| Managed config | `<project>/.bh/config.env` | `<project>/.codereeve/config.env` |
+| Ruleset baseline | `<project>/.bh/ruleset-baseline.json` | `<project>/.codereeve/ruleset-baseline.json` |
+| Runtime state | `<project>/.baton-harness/` | `<project>/.codereeve/` |
+| Host config | `~/.config/baton-harness/host.env` | `~/.config/codereeve/host.env` |
+| System secrets | `/etc/bh-daemon/secrets.env` | `/etc/codereeve/secrets.env` |
+| Service unit, inventory only | `/etc/systemd/system/bh-daemon.service` | `/etc/systemd/system/codereeve.service` |
+
+For each spelling, source precedence is operator environment, managed config,
+host config, then system secrets. Unset is absent and empty is explicitly set.
+Resolve both spellings independently, then compare the selected values exactly;
+different canonical and temporary legacy values block without printing either
+value. `BATON_HARNESS_DIR` pairs with `CODEREEVE_ROOT`, while third-party names
+remain unchanged (#393; `src/codereeve/config_env.py:L158-L193`,
+`src/codereeve/config_env.py:L280-L318`). `.symphony/` remains unchanged (#393;
+`src/codereeve/paths.py:L59-L135`).
+
+Run the read-only inventory before scheduling an apply:
+
+```bash
+codereeve migrate --check
+codereeve migrate --check --format json
+```
+
+Text and schema-version-1 JSON carry the same deterministic report (#393;
+`src/codereeve/migration/model.py:L148-L213`).
+
+| Status | Exit code | Meaning |
+|---|---:|---|
+| `current` | 0 | No legacy migration is needed. |
+| `ready` | 2 | A plan exists; apply still needs fresh quiescence authority. |
+| `blocked` | 1 | A conflict, unsafe path, active writer, or incomplete transaction blocks apply. |
+
+Apply accepts only ready data migrations and refuses current or blocked state.
+Every writer must be stopped and held stopped by the authoritative coordinator
+tracked in #394 before the transaction can proceed (#393, #394;
+`src/codereeve/migration/transaction.py:L82-L108`).
+
+```bash
+codereeve migrate --apply
+codereeve migrate --apply --format json
+```
+
+Apply creates verified private staging, unique backups, a checksummed manifest,
+and `journal.jsonl` before publishing canonical state. Successful output names
+the manifest, journal, each backup, and all manual-restoration paths. The
+manifest carries `transaction_id`, `actions`, and `entries`; retain it, the
+journal, backups, and private stages through 0.3.x (#393;
+`src/codereeve/migration/transaction.py:L588-L743`,
+`src/codereeve/migration/journal.py:L150-L186`).
+
+Caught failures attempt restoration in reverse order. A complete result has
+revalidated every original and absent canonical publication; incomplete or
+unavailable evidence stays blocked and cannot authorize restart. Manual
+restoration must use the exact manifest paths, reverse completed publications,
+then reverse completed backups while verifying the manifest `entries` against
+each `actions` source. Keep all evidence and writers stopped (#393, #394;
+`src/codereeve/migration/transaction.py:L768-L920`).
+
+There is no standalone restore command. #394 calls the restoration API with the
+returned manifest path and owns service activation and rollback. Roll back
+configuration and state before that coordinator activates the canonical
+service; this migration never changes either service unit (#393, #394;
+`src/codereeve/migration/transaction.py:L922-L958`).
+
+Standalone apply currently refuses because its default operation cannot prove
+authoritative coordinator quiescence. Real Windows apply is also blocked before
+mutation because directory durability is unsupported; tests use a portable
+injected storage capability rather than a public bypass flag (#393, #394;
+`src/codereeve/migration/journal.py:L44-L65`). See the
+[migration runbook](docs/codereeve-migration.md) for recovery evidence and the
+manual reverse procedure.
+
 ### Unified command convention
 
 The `codereeve` executable is the canonical command surface installed by
@@ -316,6 +397,8 @@ The `codereeve` executable is the canonical command surface installed by
 |---|---|
 | `codereeve daemon` | Run the always-on daemon; accepts the existing daemon options |
 | `codereeve doctor` | Run installation, configuration, or live preflight checks |
+| `codereeve migrate --check` | Inventory legacy and canonical migration state without mutation |
+| `codereeve migrate --apply` | Apply only a ready migration under coordinator authority |
 | `codereeve provenance` | Print validated packaged build provenance |
 | `codereeve hook after-create` | Run the post-worktree-creation lifecycle hook |
 | `codereeve hook before-run` | Run the pre-agent-turn lifecycle hook |

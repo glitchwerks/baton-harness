@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import re
 import subprocess
+from collections.abc import Callable
+from dataclasses import fields
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
+
+from codereeve.migration.cli import HELP as MIGRATION_HELP
+from codereeve.migration.journal import Manifest
+from codereeve.migration.model import MigrationReport, MigrationStatus
 
 HARNESS = Path(__file__).resolve().parents[1]
 ISSUE_TEMPLATE_DIRECTORY = ".github/ISSUE_TEMPLATE"
@@ -247,6 +253,8 @@ def test_readme_presents_codereeve_as_canonical_cli() -> None:
         "codereeve daemon",
         "codereeve doctor",
         "codereeve provenance",
+        "codereeve migrate --check",
+        "codereeve migrate --apply",
         "codereeve hook after-create",
         "codereeve hook before-run",
         "codereeve hook after-run",
@@ -323,6 +331,7 @@ def test_readme_presents_codereeve_as_canonical_cli() -> None:
     "document",
     [
         Path("README.md"),
+        Path("docs/codereeve-migration.md"),
         Path("docs/superpowers/specs/2026-09-07-codereeve-rename-design.md"),
     ],
 )
@@ -353,6 +362,66 @@ def test_package_docs_reference_persisted_repo_paths(document: Path) -> None:
         )
     )
     assert not missing, f"{document} references uncommitted paths: {missing}"
+
+
+def test_migration_help_exposes_exact_public_contract() -> None:
+    """Help names the closed grammar and all check statuses."""
+    assert MIGRATION_HELP.startswith(
+        "usage: codereeve migrate (--check | --apply) [--format text|json]"
+    )
+    for mode in ("--check", "--apply"):
+        assert mode in MIGRATION_HELP
+    for status in MigrationStatus:
+        exit_code = MigrationReport(status).exit_code
+        assert f"{status.value} ({exit_code})" in MIGRATION_HELP
+    assert "restore" not in MIGRATION_HELP
+
+
+def test_migration_docs_match_status_and_manifest_contracts() -> None:
+    """Operator docs match model exits and persisted manifest fields."""
+    documents = [
+        Path("README.md").read_text(encoding="utf-8"),
+        Path("docs/codereeve-migration.md").read_text(encoding="utf-8"),
+    ]
+    manifest_fields = {field.name for field in fields(Manifest)}
+    assert {"transaction_id", "actions", "entries"} <= manifest_fields
+    for document in documents:
+        for status in MigrationStatus:
+            exit_code = MigrationReport(status).exit_code
+            assert f"| `{status.value}` | {exit_code} |" in document
+        for field in ("transaction_id", "actions", "entries"):
+            assert f"`{field}`" in document
+        assert "reverse order" in document
+        assert "`journal.jsonl`" in document
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        lambda: (
+            Path("README.md")
+            .read_text(encoding="utf-8")
+            .split("### Filesystem migration", 1)[1]
+            .split("### Unified command convention", 1)[0]
+        ),
+        lambda: Path("docs/codereeve-migration.md").read_text(
+            encoding="utf-8"
+        ),
+    ],
+    ids=["readme-migration", "operator-runbook"],
+)
+def test_migration_examples_use_only_canonical_cli(
+    text: Callable[[], str],
+) -> None:
+    """Migration examples never invoke a temporary legacy executable."""
+    fenced_examples = re.findall(r"```[^\n]*\n(.*?)```", text(), re.DOTALL)
+    legacy = re.compile(r"(?m)^[^#\n]*(?:^|\s)bh-[a-z-]+(?=\s|$)")
+    assert not [
+        line
+        for example in fenced_examples
+        for line in example.splitlines()
+        if legacy.search(line)
+    ]
 
 
 @pytest.mark.parametrize(
