@@ -151,7 +151,11 @@ def _should_launch_worker(
     """
     try:
         result = _daemon_mod.check_ruleset_signals(
-            owner, repo, app_id=app_id, runner=runner
+            owner,
+            repo,
+            app_id=app_id,
+            runner=runner,
+            baseline_path=obs.ruleset_baseline_path,
         )
     except subprocess.TimeoutExpired as exc:
         # CodeRabbit PR #253 round 2, finding #5: even with a bound

@@ -12,6 +12,23 @@ from pathlib import Path
 class PathConflictError(RuntimeError):
     """Raised when compatibility paths are ambiguous or unsafe."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        resource: str = "configuration",
+        category: str = "invalid",
+    ) -> None:
+        """Retain internal detail and a value-free public diagnostic.
+
+        Args:
+            message: Internal failure detail, potentially containing paths.
+            resource: Static resource label, never a configured value.
+            category: Static failure category, never exception text.
+        """
+        super().__init__(message)
+        self.safe_diagnostic = f"{category} {resource} path selection"
+
 
 @dataclass(frozen=True)
 class SelectedPath:
@@ -24,6 +41,19 @@ class SelectedPath:
 
     path: Path
     uses_legacy: bool
+
+
+@dataclass(frozen=True)
+class RuntimePaths:
+    """Validated startup locations carried unchanged to runtime consumers.
+
+    Attributes:
+        state_directory: Selected canonical or legacy runtime state.
+        ruleset_baseline: Selected canonical or legacy ruleset baseline.
+    """
+
+    state_directory: Path
+    ruleset_baseline: Path
 
 
 @dataclass(frozen=True)
@@ -147,6 +177,31 @@ def select_compatible_file(
     )
 
 
+def select_runtime_paths(
+    project_root: Path, env: Mapping[str, str]
+) -> RuntimePaths:
+    """Validate all runtime compatibility locations before startup effects.
+
+    Args:
+        project_root: Managed repository root.
+        env: Validated environment snapshot.
+
+    Returns:
+        Selected state and baseline paths, without reading or creating files.
+
+    Raises:
+        PathConflictError: If runtime directories or baseline files conflict.
+    """
+    state = runtime_state_directory(project_root, env)
+    layout = PathLayout.for_environment(project_root, env)
+    baseline = select_compatible_file(
+        state / "ruleset-baseline.json",
+        layout.legacy_config.parent / "ruleset-baseline.json",
+        label="ruleset baseline",
+    ).path
+    return RuntimePaths(state, baseline)
+
+
 def validate_safe_file_path(path: Path, *, label: str) -> bool:
     """Validate a file path and its existing ancestors without following links.
 
@@ -196,7 +251,9 @@ def _select_compatible_path(
     legacy_exists = _is_safe_path(legacy, label, expected_mode)
     if canonical_exists and legacy_exists:
         raise PathConflictError(
-            f"ambiguous {label}: both {canonical} and {legacy} exist"
+            f"ambiguous {label}: both {canonical} and {legacy} exist",
+            resource=label,
+            category="ambiguous",
         )
     if legacy_exists:
         return SelectedPath(legacy, uses_legacy=True)
@@ -212,10 +269,14 @@ def _is_safe_path(path: Path, label: str, expected_mode: int) -> bool:
         return False
     except OSError as exc:
         raise PathConflictError(
-            f"unable to inspect {label} path {path}: {type(exc).__name__}"
+            f"unable to inspect {label} path {path}: {type(exc).__name__}",
+            resource=label,
+            category="unable to inspect",
         ) from exc
     if stat.S_IFMT(mode) != expected_mode:
-        raise PathConflictError(f"unsafe {label} path: {path}")
+        raise PathConflictError(
+            f"unsafe {label} path: {path}", resource=label, category="unsafe"
+        )
     return True
 
 
@@ -229,7 +290,13 @@ def _validate_existing_ancestors(path: Path, label: str) -> None:
         except OSError as exc:
             raise PathConflictError(
                 "unable to inspect "
-                f"{label} ancestor {ancestor}: {type(exc).__name__}"
+                f"{label} ancestor {ancestor}: {type(exc).__name__}",
+                resource=label,
+                category="unable to inspect",
             ) from exc
         if not stat.S_ISDIR(mode):
-            raise PathConflictError(f"unsafe {label} ancestor: {ancestor}")
+            raise PathConflictError(
+                f"unsafe {label} ancestor: {ancestor}",
+                resource=label,
+                category="unsafe",
+            )

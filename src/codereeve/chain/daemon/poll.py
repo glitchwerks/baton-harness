@@ -69,6 +69,7 @@ import json
 import logging
 import signal
 import threading
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -91,7 +92,7 @@ from codereeve.chain.registry import RepoConfig
 from codereeve.chain.runlog import RunLog
 from codereeve.chain.session_report import SessionReport
 from codereeve.config_env import runtime_environment
-from codereeve.paths import runtime_state_directory
+from codereeve.paths import RuntimePaths, select_runtime_paths
 from codereeve.vendor.symphony.config import WorkflowConfig
 from codereeve.vendor.symphony.workspace import WorkspaceManager
 
@@ -183,6 +184,7 @@ async def run_daemon(
     worker_gh_pat: str = "",
     report_path: Path | None = None,
     failure_tally: FailureTally | None = None,
+    runtime_paths: RuntimePaths | None = None,
 ) -> None:
     """Run the always-on serial daemon outer loop.
 
@@ -208,9 +210,14 @@ async def run_daemon(
         report_path: Optional destination for the daemon session report.
         failure_tally: Optional durable issue-failure tally.  When omitted,
             one is constructed from observability configuration.
+        runtime_paths: CLI-validated locations; direct callers select them
+            before any startup effects when omitted.
     """
     values = runtime_environment().values
-    state = runtime_state_directory(Path(registry[0].project_root), values)
+    selected = runtime_paths or select_runtime_paths(
+        Path(registry[0].project_root), values
+    )
+    state = selected.state_directory
     if poll_interval_s is None:
         poll_interval_s = config.poll_interval_ms / 1000
 
@@ -234,7 +241,10 @@ async def run_daemon(
     obs: ObsConfig | None = None
     tally: RedispatchTally | None = None
     try:
-        obs = _daemon_mod.load_obs_config()
+        obs = replace(
+            _daemon_mod.load_obs_config(),
+            ruleset_baseline_path=selected.ruleset_baseline,
+        )
         warn_if_async_escalation_unconfigured(obs)  # risk R2 — never raises
         # Constructed via _daemon_mod.RunLog (a live attribute lookup, not
         # the bare `RunLog` name imported above for typing only) so that

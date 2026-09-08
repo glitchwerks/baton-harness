@@ -29,6 +29,7 @@ from codereeve.config_env import (
 from codereeve.paths import (
     PathConflictError,
     PathLayout,
+    RuntimePaths,
     select_compatible_file,
 )
 from codereeve.provenance import load_provenance
@@ -105,6 +106,7 @@ class DoctorContext:
         config: Purely resolved sandbox config, when valid.
         config_error: Safe local resolution error, when invalid.
         path_conflict: Path failure that aborts daemon startup before gates.
+        runtime_paths: CLI-validated runtime locations handed to the daemon.
     """
 
     project_root: str
@@ -119,6 +121,7 @@ class DoctorContext:
     config: sandbox_config.SandboxConfig | None = None
     config_error: str = ""
     path_conflict: PathConflictError | None = None
+    runtime_paths: RuntimePaths | None = None
 
 
 class DoctorGateError(RuntimeError):

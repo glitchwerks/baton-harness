@@ -54,7 +54,11 @@ from codereeve.config_env import (
     apply_resolved_environment,
     runtime_environment,
 )
-from codereeve.paths import PathConflictError, runtime_state_directory
+from codereeve.paths import (
+    PathConflictError,
+    runtime_state_directory,
+    select_runtime_paths,
+)
 from codereeve.provenance import (
     Provenance,
     ProvenanceError,
@@ -103,7 +107,9 @@ def _doctor_context(config_path: Path | None) -> doctor.DoctorContext:
     if ctx.path_conflict is not None:
         raise ctx.path_conflict
     if ctx.project_root:
-        runtime_state_directory(Path(ctx.project_root), ctx.env)
+        ctx.runtime_paths = select_runtime_paths(
+            Path(ctx.project_root), ctx.env
+        )
     return ctx
 
 
@@ -391,7 +397,12 @@ def main(
         try:
             ctx = _doctor_context(args.config)
         except (AliasConflictError, PathConflictError) as exc:
-            print(f"{prog}: configuration error: {exc}", file=sys.stderr)
+            detail = (
+                exc.safe_diagnostic
+                if isinstance(exc, PathConflictError)
+                else str(exc)
+            )
+            print(f"{prog}: configuration error: {detail}", file=sys.stderr)
             return 1
         phases = (
             (doctor.Phase.LIVE,)
@@ -462,7 +473,12 @@ def main(
     try:
         gate_ctx = _doctor_context(args.config)
     except (AliasConflictError, PathConflictError) as exc:
-        print(f"{prog}: configuration error: {exc}", file=sys.stderr)
+        detail = (
+            exc.safe_diagnostic
+            if isinstance(exc, PathConflictError)
+            else str(exc)
+        )
+        print(f"{prog}: configuration error: {detail}", file=sys.stderr)
         return 1
     if not _doctor_gate(
         gate_ctx,
@@ -604,6 +620,7 @@ def main(
                 installation_token=installation_token,
                 worker_gh_pat=worker_gh_pat,
                 report_path=report_path,
+                runtime_paths=gate_ctx.runtime_paths,
             )
         )
     except KeyboardInterrupt:

@@ -61,11 +61,7 @@ from typing import cast
 from codereeve.chain.identity import Identity, env_for
 from codereeve.chain.subproc import run_cmd
 from codereeve.config_env import runtime_environment
-from codereeve.paths import (
-    PathLayout,
-    runtime_state_directory,
-    select_compatible_file,
-)
+from codereeve.paths import select_runtime_paths
 from codereeve.resources import PackageResource, resource
 
 _log = logging.getLogger(__name__)
@@ -957,13 +953,9 @@ def check_ruleset_signals(
     values = runtime_environment().values
     if baseline_path is None:
         project_root = Path(values["CODEREEVE_PROJECT_ROOT"])
-        state = runtime_state_directory(project_root, values)
-        layout = PathLayout.for_environment(project_root, values)
-        baseline_path = select_compatible_file(
-            state / "ruleset-baseline.json",
-            layout.legacy_config.parent / "ruleset-baseline.json",
-            label="ruleset baseline",
-        ).path
+        baseline_path = select_runtime_paths(
+            project_root, values
+        ).ruleset_baseline
 
     baseline_entries = _load_baseline_entries(baseline_path, owner, repo)
     if baseline_entries is None:

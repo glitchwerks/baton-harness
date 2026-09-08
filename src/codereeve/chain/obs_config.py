@@ -129,6 +129,7 @@ class ObsConfig:
         max_issue_failures: Maximum consecutive charged failures per issue.
         failure_counts_path: Path to the durable issue-failure tally JSON
             file.
+        ruleset_baseline_path: Startup-selected baseline for worker preflight.
         worktree_gc: Worktree orphan-GC mode.  ``"detect"`` (default)
             logs orphans only; ``"reclaim"`` enables opt-in cleanup.
         worker_progress_stall_s: Seconds without a turn-progress signal
@@ -153,6 +154,7 @@ class ObsConfig:
             / _DEFAULT_FAILURE_COUNTS_NAME
         )
     )
+    ruleset_baseline_path: Path | None = None
 
 
 # ---------------------------------------------------------------------------

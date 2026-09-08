@@ -343,6 +343,9 @@ def test_codereeve_env_config_snapshot_reaches_daemon(tmp_path: Path) -> None:
         assert daemon.call_args.kwargs["report_path"] == (
             tmp_path / ".codereeve" / "session-report.json"
         )
+        assert daemon.call_args.kwargs["runtime_paths"].ruleset_baseline == (
+            tmp_path / ".codereeve" / "ruleset-baseline.json"
+        )
 
 
 @pytest.mark.parametrize("mode", (*_MODES, "empty", "unset"))
@@ -653,3 +656,178 @@ def test_alias_conflict_still_scrubs_bootstrap_authority(entry: str) -> None:
             assert app_auth.main(["token"]) == 1
         assert "BWS_ACCESS_TOKEN" not in os.environ
         fetch.assert_not_called()
+
+
+@pytest.mark.parametrize("entry", ["--once", "--doctor"])
+@pytest.mark.parametrize(
+    "failure", ["root-file", "ancestor-file", "state", "baseline"]
+)
+def test_canonical_state_path_failure_is_redacted_before_effects(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+    entry: str,
+    failure: str,
+) -> None:
+    """Every startup path failure is value-free and precedes all effects."""
+    config = _write_config(tmp_path / "config-source")
+    private_parent = tmp_path / "credential-one" / "credential-two"
+    private_parent.parent.mkdir()
+    root = private_parent / "repo"
+    if failure == "ancestor-file":
+        private_parent.write_text("sentinel", encoding="utf-8")
+    elif failure == "root-file":
+        private_parent.mkdir()
+        root.write_text("sentinel", encoding="utf-8")
+    else:
+        (root / ".codereeve").mkdir(parents=True)
+        if failure == "state":
+            (root / ".baton-harness").mkdir()
+        else:
+            (root / ".bh").mkdir()
+            for directory in (".codereeve", ".bh"):
+                (root / directory / "ruleset-baseline.json").write_text(
+                    "{}", encoding="utf-8"
+                )
+    with (
+        patch.dict(
+            os.environ, {"CODEREEVE_PROJECT_ROOT": str(root)}, clear=True
+        ),
+        patch.object(
+            cli.doctor, "run_gate", side_effect=SystemExit("unexpected gate")
+        ) as gate,
+        patch.object(
+            cli.doctor,
+            "run_report",
+            side_effect=SystemExit("unexpected report"),
+        ) as doctor_run,
+        patch.object(cli, "bootstrap_secrets") as bootstrap,
+        patch.object(cli, "validate_daemon_token") as token,
+        patch.object(cli, "load_registry") as registry,
+        patch.object(cli.os, "chdir") as chdir,
+        patch.object(cli, "run_daemon", new_callable=AsyncMock) as daemon,
+        patch.object(Path, "mkdir") as mkdir,
+        patch.object(Path, "write_text") as write,
+    ):
+        assert cli.main([entry, "--config", str(config)]) == 1
+        for effect in (
+            gate,
+            doctor_run,
+            bootstrap,
+            token,
+            registry,
+            chdir,
+            daemon,
+            mkdir,
+            write,
+        ):
+            effect.assert_not_called()
+    captured = capsys.readouterr()
+    output = captured.out + captured.err + caplog.text
+    assert "credential-one" not in output
+    assert "credential-two" not in output
+    assert str(root) not in output
+    assert (
+        "ruleset baseline" if failure == "baseline" else "runtime state"
+    ) in output
+    assert (
+        "ambiguous" if failure in {"state", "baseline"} else "unsafe"
+    ) in output
+
+
+def test_canonical_state_baseline_conflict_before_direct_daemon_effects(
+    tmp_path: Path,
+) -> None:
+    """Direct daemon entry must reject ambiguous baselines before startup."""
+    from codereeve.paths import PathConflictError
+
+    for directory in (".codereeve", ".bh"):
+        (tmp_path / directory).mkdir()
+        (tmp_path / directory / "ruleset-baseline.json").write_text(
+            "{}", encoding="utf-8"
+        )
+    with (
+        patch.dict(
+            os.environ, {"CODEREEVE_PROJECT_ROOT": str(tmp_path)}, clear=True
+        ),
+        patch.object(
+            poll._daemon_mod,
+            "load_obs_config",
+            side_effect=SystemExit("unexpected startup"),
+        ) as obs,
+        patch.object(poll._daemon_mod, "RunLog") as runlog,
+        patch.object(
+            poll, "reconcile_startup", new_callable=AsyncMock
+        ) as reconcile,
+        patch.object(
+            poll._daemon_mod, "_poll_and_run", new_callable=AsyncMock
+        ) as launch,
+        patch.object(Path, "mkdir") as mkdir,
+        patch.object(Path, "write_text") as write,
+        pytest.raises(PathConflictError, match="ruleset baseline"),
+    ):
+        try:
+            asyncio.run(
+                poll.run_daemon(
+                    WorkflowConfig(),
+                    [RepoConfig("o", "r", tmp_path)],
+                    once=True,
+                )
+            )
+        finally:
+            for effect in (obs, runlog, reconcile, launch, mkdir, write):
+                effect.assert_not_called()
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_canonical_state_startup_preserves_baseline_for_comparator(
+    tmp_path: Path, legacy: bool
+) -> None:
+    """The startup-selected baseline survives environment changes at launch."""
+    from codereeve.chain.daemon.launch_gate import _should_launch_worker
+    from codereeve.chain.ruleset_status import (
+        RulesetCheckResult,
+        RulesetStatus,
+    )
+
+    baseline = (
+        tmp_path
+        / (".bh" if legacy else ".codereeve")
+        / "ruleset-baseline.json"
+    )
+    baseline.parent.mkdir()
+    baseline.write_text('{"o/r": {}}', encoding="utf-8")
+    with (
+        patch.dict(
+            os.environ, {"CODEREEVE_PROJECT_ROOT": str(tmp_path)}, clear=True
+        ),
+        patch.object(
+            poll,
+            "warn_if_async_escalation_unconfigured",
+            side_effect=SystemExit("capture config"),
+        ) as capture,
+        pytest.raises(SystemExit, match="capture config"),
+    ):
+        asyncio.run(
+            poll.run_daemon(
+                WorkflowConfig(), [RepoConfig("o", "r", tmp_path)], once=True
+            )
+        )
+    obs = capture.call_args.args[0]
+    assert obs.ruleset_baseline_path == baseline
+    with (
+        patch.dict(
+            os.environ,
+            {"CODEREEVE_PROJECT_ROOT": str(tmp_path / "changed")},
+            clear=True,
+        ),
+        patch.object(
+            poll._daemon_mod,
+            "check_ruleset_signals",
+            return_value=RulesetCheckResult(RulesetStatus.MATCH, "matched"),
+        ) as comparator,
+    ):
+        assert _should_launch_worker(
+            1, "o", "r", app_id="123", runner=MagicMock(), obs=obs
+        )
+    assert comparator.call_args.kwargs["baseline_path"] == baseline
