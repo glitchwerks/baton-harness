@@ -11,9 +11,11 @@ import stat
 import subprocess
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
+from codereeve.chain import bws_client
 from codereeve.config_env import EnvLayer
 from codereeve.migration import (
     EvidenceState,
@@ -333,6 +335,20 @@ def test_report_paths_order_is_independent_of_caller_order() -> None:
     ) == MigrationReport(MigrationStatus.BLOCKED, findings=(b,))
 
 
+def test_findings_have_total_order_including_blocking() -> None:
+    """A severity difference cannot make JSON depend on caller order."""
+    blocking = MigrationFinding("evidence", "state", blocking=True)
+    advisory = replace(blocking, blocking=False)
+    forward = MigrationReport(
+        MigrationStatus.BLOCKED, findings=(blocking, advisory)
+    )
+    reverse = MigrationReport(
+        MigrationStatus.BLOCKED, findings=(advisory, blocking)
+    )
+    assert forward == reverse
+    assert forward.as_dict() == reverse.as_dict()
+
+
 @pytest.mark.parametrize("kind", ["current", "ready", "blocked"])
 def test_no_mutations_or_external_effects(
     context: MigrationContext, monkeypatch: pytest.MonkeyPatch, kind: str
@@ -371,7 +387,15 @@ def test_no_mutations_or_external_effects(
         monkeypatch.setattr(os, name, forbidden)
     monkeypatch.setattr(subprocess, "Popen", forbidden)
     monkeypatch.setattr(socket, "socket", forbidden)
+    secret_fetch = Mock(side_effect=forbidden)
+    service_command = Mock(side_effect=forbidden)
+    monkeypatch.setattr(bws_client, "fetch_secret", secret_fetch)
+    # Services are managed by the shell installer; Python must never
+    # invoke systemctl (or its installer) through the subprocess seam.
+    monkeypatch.setattr(subprocess, "run", service_command)
     assert inventory_migration(context).status.value == kind
+    secret_fetch.assert_not_called()
+    service_command.assert_not_called()
 
 
 def test_context_snapshots_layers(context: MigrationContext) -> None:

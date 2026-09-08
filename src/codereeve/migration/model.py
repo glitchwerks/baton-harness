@@ -187,6 +187,7 @@ class MigrationReport:
                         tuple(map(str, f.paths)),
                         f.code,
                         f.detail,
+                        f.blocking,
                     ),
                 )
             ),
