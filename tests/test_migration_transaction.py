@@ -13,7 +13,12 @@ import pytest
 from codereeve.config_env import EnvLayer
 from codereeve.migration import transaction as transaction_mod
 from codereeve.migration.inventory import inventory_migration
-from codereeve.migration.journal import load_incomplete_journal
+from codereeve.migration.journal import (
+    JournalEvent,
+    MigrationJournal,
+    load_incomplete_journal,
+    verify_manifest,
+)
 from codereeve.migration.lease import WriterLease, probe_writer_lease
 from codereeve.migration.model import (
     EvidenceState,
@@ -26,6 +31,7 @@ from codereeve.migration.transaction import (
     RestorationStatus,
     apply_migration,
     restore_migration,
+    verify_staged_migration,
 )
 from codereeve.paths import PathLayout
 
@@ -556,6 +562,40 @@ def test_state_copy_streams_instead_of_reading_whole_runtime_log(
 ) -> None:
     """Unbounded runlog size must not determine copy memory usage."""
     original_read = transaction_mod._read
+    original_fdopen = os.fdopen
+    original_info = (context.layout.legacy_state / "runlog.jsonl").stat()
+
+    class BoundedReader:
+        """Assert bounded runtime reads at the actual descriptor boundary."""
+
+        def __init__(self, stream: object) -> None:
+            """Retain the actual open input stream."""
+            self.stream = stream
+
+        def __enter__(self) -> BoundedReader:
+            """Enter the wrapped stream."""
+            self.stream.__enter__()
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            """Close the actual stream through its context protocol."""
+            self.stream.__exit__(*args)
+
+        def read(self, size: int = -1) -> bytes:
+            """Reject any unbounded read including manifest snapshots."""
+            assert 0 <= size <= 1024 * 1024
+            return self.stream.read(size)
+
+    def bounded_fdopen(fd: int, *args: object, **kwargs: object) -> object:
+        """Keep real descriptor reads and enforce the runtime-log limit."""
+        info = os.fstat(fd)
+        stream = original_fdopen(fd, *args, **kwargs)
+        if (info.st_dev, info.st_ino) == (
+            original_info.st_dev,
+            original_info.st_ino,
+        ):
+            return BoundedReader(stream)
+        return stream
 
     def config_only(path: Path) -> bytes:
         """Reject whole-file reads of arbitrary runtime data."""
@@ -564,6 +604,7 @@ def test_state_copy_streams_instead_of_reading_whole_runtime_log(
         return original_read(path)
 
     monkeypatch.setattr(transaction_mod, "_read", config_only)
+    monkeypatch.setattr(os, "fdopen", bounded_fdopen)
     apply_migration(context, operations=PortableOperations())
     assert (
         context.layout.canonical_state / "runlog.jsonl"
@@ -711,3 +752,159 @@ def test_external_scope_failure_reverses_all_prior_publications(
     assert not layout.canonical_state.exists()
     assert not layout.canonical_host.exists()
     assert not layout.canonical_secrets.exists()
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+@pytest.mark.parametrize(
+    "drift", ["missing", "changed", "canonical", "backup"]
+)
+def test_completed_reverse_outcomes_are_revalidated_before_success(
+    context: MigrationContext,
+    terminal: bool,
+    drift: str,
+) -> None:
+    """Durable rollback records never substitute for current restored bytes."""
+    result = apply_migration(context, operations=PortableOperations())
+    state_source = context.layout.legacy_state
+
+    class InterruptedRecovery(PortableOperations):
+        """Stop after persisting the state input's reverse completion."""
+
+        def record(
+            self, journal: MigrationJournal, event: JournalEvent
+        ) -> None:
+            """Interrupt only after the requested operation really persists."""
+            super().record(journal, event)
+            state = load_incomplete_journal(journal.path)
+            plan = next(
+                (
+                    row
+                    for row in state.events
+                    if row.phase == "planned"
+                    and row.operation_id == event.operation_id
+                ),
+                None,
+            )
+            if (
+                event.phase == "rollback_after"
+                and plan is not None
+                and plan.operation == "backup"
+                and plan.source == state_source
+            ):
+                raise OSError("interrupted after restored state")
+
+    initial = restore_migration(
+        result.manifest_path,
+        operations=PortableOperations() if terminal else InterruptedRecovery(),
+    )
+    assert initial.status is (
+        RestorationStatus.COMPLETE
+        if terminal
+        else RestorationStatus.INCOMPLETE
+    )
+    state_backup = next(
+        path
+        for path in result.backups
+        if path.name.startswith(".baton-harness.")
+    )
+    if drift == "missing":
+        state_source.rename(state_source.with_name("externally-moved-state"))
+    elif drift == "changed":
+        (state_source / "heartbeat").write_bytes(b"external bytes")
+    elif drift == "canonical":
+        put(context.layout.canonical_state / "external", b"external bytes")
+    else:
+        (state_backup / "heartbeat").write_bytes(b"external backup bytes")
+    journal_path = result.manifest_path.with_name("journal.jsonl")
+    before = journal_path.read_bytes()
+    resumed = restore_migration(
+        result.manifest_path, operations=PortableOperations()
+    )
+    assert resumed.status is RestorationStatus.INCOMPLETE
+    assert journal_path.read_bytes() == before
+    if drift == "missing":
+        assert not state_source.exists()
+    elif drift == "changed":
+        assert (state_source / "heartbeat").read_bytes() == b"external bytes"
+    elif drift == "canonical":
+        assert (
+            context.layout.canonical_state / "external"
+        ).read_bytes() == b"external bytes"
+    else:
+        assert (
+            state_backup / "heartbeat"
+        ).read_bytes() == b"external backup bytes"
+
+
+def test_public_staged_verifier_accepts_nested_only_config(
+    tmp_path: Path,
+) -> None:
+    """A nested config basename must not imply a managed-root config exists."""
+    layout = PathLayout.for_environment(
+        tmp_path / "project",
+        {},
+        home=tmp_path / "home",
+        etc_root=tmp_path / "etc",
+    )
+    put(
+        layout.legacy_state / "nested" / "config.env", b"BH_CUSTOM=preserved\n"
+    )
+
+    class PublicVerifier(PortableOperations):
+        """Use the exported verifier before original inputs are moved."""
+
+        def boundary(self, name: str, phase: str, path: Path) -> None:
+            """Verify the same real stage apply just verified internally."""
+            super().boundary(name, phase, path)
+            if (name, phase) == ("verify", "after"):
+                manifest = next(
+                    (
+                        layout.canonical_state.parent / ".codereeve-migration"
+                    ).glob("*/manifest.json")
+                )
+                verify_staged_migration(path, verify_manifest(manifest))
+
+    apply_migration(
+        MigrationContext(layout),
+        operations=PublicVerifier(check_managed=False),
+    )
+    assert (
+        layout.canonical_state / "nested" / "config.env"
+    ).read_bytes() == b"BH_CUSTOM=preserved\n"
+    assert not layout.canonical_config.exists()
+
+
+def test_public_staged_verifier_sanitizes_source_read_errors(
+    context: MigrationContext,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The exported verifier reports storage faults as safe domain errors."""
+
+    class PublicVerifier(PortableOperations):
+        """Inject an unavailable original while the public helper reads it."""
+
+        def boundary(self, name: str, phase: str, path: Path) -> None:
+            """Invoke public verification against real staged output."""
+            super().boundary(name, phase, path)
+            if (name, phase) != ("verify", "after"):
+                return
+            manifest = next(
+                (
+                    context.layout.canonical_state.parent
+                    / ".codereeve-migration"
+                ).glob("*/manifest.json")
+            )
+            validated = verify_manifest(manifest)
+
+            def unavailable(source: Path) -> bytes:
+                """Return an OS error that must never cross the public API."""
+                raise OSError("TOP_SECRET")
+
+            with monkeypatch.context() as patcher:
+                patcher.setattr(transaction_mod, "_read", unavailable)
+                with pytest.raises(MigrationError) as failure:
+                    verify_staged_migration(path, validated)
+                assert "TOP_SECRET" not in str(failure.value)
+
+    apply_migration(context, operations=PublicVerifier())
+    assert context.layout.canonical_config.exists()

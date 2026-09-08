@@ -406,3 +406,57 @@ def test_explicit_durability_callbacks_cover_create_and_reopen(
     before = len(flushed)
     reopened.record(JournalEvent("", "restored"))
     assert len(flushed) == before + 1
+
+
+def test_manifest_snapshot_rejects_source_changed_during_hash(
+    tmp_path: Path,
+    report: MigrationReport,
+    portable_fsync: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A source edit during hashing cannot become a verified manifest."""
+    import os
+    from collections.abc import Iterator
+    from contextlib import contextmanager
+
+    source = report.actions[0].source
+    info = source.stat()
+    original_fdopen = os.fdopen
+
+    class ChangedReader:
+        """Edit the real source immediately after reading its old bytes."""
+
+        changed = False
+
+        def __init__(self, stream: object) -> None:
+            """Retain the actual source descriptor stream."""
+            self.stream = stream
+
+        def read(self, size: int = -1) -> bytes:
+            """Mutate once after an actual source read."""
+            data = self.stream.read(size)
+            if not self.changed:
+                self.changed = True
+                source.write_bytes(b"EXTERNAL_CHANGED_CONTENT\n")
+            return data
+
+    @contextmanager
+    def changing_fdopen(
+        fd: int, *args: object, **kwargs: object
+    ) -> Iterator[object]:
+        """Inject drift only for the original source descriptor."""
+        opened = os.fstat(fd)
+        with original_fdopen(fd, *args, **kwargs) as stream:
+            yield (
+                ChangedReader(stream)
+                if (opened.st_dev, opened.st_ino) == (info.st_dev, info.st_ino)
+                else stream
+            )
+
+    monkeypatch.setattr(os, "fdopen", changing_fdopen)
+    with pytest.raises(JournalError):
+        MigrationJournal.create(
+            tmp_path / "transactions", report, datetime.now(timezone.utc)
+        )
+    assert source.read_bytes() == b"EXTERNAL_CHANGED_CONTENT\n"
+    assert not (tmp_path / "transactions").exists()

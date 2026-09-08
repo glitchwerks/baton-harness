@@ -502,22 +502,30 @@ def verify_staged_migration(stage: Path, manifest: Manifest) -> None:
     Raises:
         MigrationError: Missing, changed, unsafe, or alias-dependent output.
     """
-    project = _project_from_manifest(manifest)
-    group = next(
-        (
-            group
-            for group in _groups(manifest, project)
-            if group.destination == project / ".codereeve"
-        ),
-        None,
-    )
-    if group is None:
-        raise MigrationError("manifest has no managed stage")
-    entries = tuple(output.metadata for output in group.outputs)
-    _verify(stage, _relocate(entries, group.destination, stage))
-    config = stage / "config.env"
-    if any(entry.path.name == "config.env" for entry in entries):
-        _verify_config(_read(config))
+    try:
+        project = _project_from_manifest(manifest)
+        group = next(
+            (
+                group
+                for group in _groups(manifest, project)
+                if group.destination == project / ".codereeve"
+            ),
+            None,
+        )
+        if group is None:
+            raise MigrationError("manifest has no managed stage")
+        entries = tuple(output.metadata for output in group.outputs)
+        _verify(stage, _relocate(entries, group.destination, stage))
+        if any(
+            entry.path == group.destination / "config.env" for entry in entries
+        ):
+            _verify_config(_read(stage / "config.env"))
+    except MigrationError:
+        raise
+    except Exception:
+        raise MigrationError(
+            "staged verification failed; inspect migration inputs"
+        ) from None
 
 
 def _project_from_manifest(manifest: Manifest) -> Path:
@@ -819,17 +827,24 @@ def _restore_locked(
             raise MigrationError(
                 "recovery metadata requires manual intervention"
             )
-        if state.events[-1].phase == "restored":
-            return RestorationResult(RestorationStatus.NOT_NEEDED, path)
-        journal = MigrationJournal.open(
-            path.with_name("journal.jsonl"), file_sync=operations.sync_file
-        )
         plans = [event for event in state.events if event.phase == "planned"]
         phases = {
             event.operation_id: event.phase
             for event in state.events
             if event.operation_id
         }
+        forward_completed = {
+            event.operation_id
+            for event in state.events
+            if event.phase == "after"
+        }
+        _verify_completed_reversals(plans, phases, forward_completed)
+        if state.events[-1].phase == "restored":
+            _verify_restored_inputs(state.manifest)
+            return RestorationResult(RestorationStatus.NOT_NEEDED, path)
+        journal = MigrationJournal.open(
+            path.with_name("journal.jsonl"), file_sync=operations.sync_file
+        )
         for event in reversed(plans):
             phase = phases[event.operation_id]
             if phase in {"planned", "rollback_after"}:
@@ -843,6 +858,9 @@ def _restore_locked(
             operations.record(
                 journal, JournalEvent(event.operation_id, "rollback_after")
             )
+            phases[event.operation_id] = "rollback_after"
+        _verify_completed_reversals(plans, phases, forward_completed)
+        _verify_restored_inputs(state.manifest)
         operations.record(journal, JournalEvent("", "restored"))
         return RestorationResult(RestorationStatus.COMPLETE, path)
     except Exception:
@@ -852,6 +870,53 @@ def _restore_locked(
             "restoration incomplete; retain artifacts and block restart; "
             "manual recovery required",
         )
+
+
+def _verify_completed_reversals(
+    plans: list[JournalEvent],
+    phases: dict[str, str],
+    forward_completed: set[str],
+) -> None:
+    """Check recorded reverse outcomes without repairing any external drift."""
+    for event in plans:
+        if (
+            phases[event.operation_id] != "rollback_after"
+            or event.operation == "stage"
+        ):
+            continue
+        source, destination = event.source, event.destination
+        if source is None or destination is None or not event.entries:
+            raise MigrationError("invalid completed recovery operation")
+        _verify(source, event.entries)
+        if event.operation == "publish":
+            _absent(destination)
+        elif event.operation == "backup":
+            if _safe(destination) is not None:
+                _verify(
+                    destination, _relocate(event.entries, source, destination)
+                )
+            elif event.operation_id in forward_completed:
+                raise MigrationError("retained backup missing")
+        else:
+            raise MigrationError("unsupported completed recovery operation")
+
+
+def _verify_restored_inputs(manifest: Manifest) -> None:
+    """Prove all originals exist and canonical publication remains absent."""
+    for action in manifest.actions:
+        entries = tuple(
+            entry
+            for entry in manifest.entries
+            if entry.path == action.source
+            or action.source in entry.path.parents
+        )
+        _verify(action.source, entries)
+        canonical = (
+            action.destination.parent
+            if action.scope in {"config", "baseline"}
+            else action.destination
+        )
+        _absent(canonical)
 
 
 def restore_migration(
@@ -868,6 +933,8 @@ def restore_migration(
     Returns:
         COMPLETE, NOT_NEEDED, or INCOMPLETE coordinator evidence.
         Backups and private stages remain available; no service is controlled.
+        Both success statuses revalidate current restoration invariants;
+        a terminal journal alone is never evidence that restart is safe.
     """
     path = manifest_path.absolute()
     try:

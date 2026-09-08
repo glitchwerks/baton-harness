@@ -378,7 +378,7 @@ def _snapshot(path: Path) -> tuple[FileMetadata, ...]:
                 path,
                 "file",
                 mode,
-                hashlib.sha256(_read_file(path)).hexdigest(),
+                _hash_file(path, info),
             ),
         )
     if stat.S_ISDIR(info.st_mode):
@@ -387,6 +387,50 @@ def _snapshot(path: Path) -> tuple[FileMetadata, ...]:
             result.extend(_snapshot(child))
         return tuple(result)
     raise JournalError("unsafe migration input")
+
+
+def _hash_file(path: Path, expected: os.stat_result) -> str:
+    """Stream SHA-256 with no-follow identity and concurrent-change guards."""
+    validate_safe_file_path(path, label="migration input")
+    fd = os.open(
+        path,
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0),
+    )
+    try:
+        opened = os.fstat(fd)
+        signature = (
+            opened.st_dev,
+            opened.st_ino,
+            opened.st_mode,
+            opened.st_size,
+            opened.st_mtime_ns,
+        )
+        if not stat.S_ISREG(opened.st_mode) or signature != (
+            expected.st_dev,
+            expected.st_ino,
+            expected.st_mode,
+            expected.st_size,
+            expected.st_mtime_ns,
+        ):
+            raise JournalError("migration input changed during snapshot")
+        digest = hashlib.sha256()
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
+        for current in (os.fstat(fd), path.lstat()):
+            if signature != (
+                current.st_dev,
+                current.st_ino,
+                current.st_mode,
+                current.st_size,
+                current.st_mtime_ns,
+            ):
+                raise JournalError("migration input changed during snapshot")
+        return digest.hexdigest()
+    finally:
+        os.close(fd)
 
 
 def verify_manifest(path: Path) -> Manifest:
