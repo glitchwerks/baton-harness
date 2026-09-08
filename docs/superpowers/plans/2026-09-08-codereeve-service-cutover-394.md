@@ -170,3 +170,10 @@ Ownership integration: WriterLease creates .codereeve-migration.lock mode0600 as
 Ruling: A pre-existing masked old deployment requires validated prior snapshot metadata to prove its former UID/environment before automatic cutover/recovery. Do not infer these from the candidate account or unit name. Why: effective masked units do not expose original User/ExecStart, leaving #394 worker/environment verification unknown. Observation and exact mask restoration remain supported; our own journal supplies prior metadata for recovery. Cost if wrong: an opaque manually masked deployment needs operator remediation before first automatic cutover.
 
 Preflight interruption rule (#394): persist exact transient verification-job intent before invocation; abort after failed preflight only when job cleanup is proved. The old service remains running if no old-stop intent occurred. Runtime-state publication snapshots still wait for verified writer shutdown.
+
+## Task review integration refinements
+
+- Recovery retries must re-establish file and namespace durability before completing an interrupted quarantine or restoration, even when visible bytes already match. Preserve pending status on a retry flush failure (#394 durable recovery requirement; Task3 review of commit3db2193).
+- Add a closed-schema no-action migration event from guarded to migrated, recording a validated inventory digest and exact zero action count without inventing a migration manifest. The coordinator supplies fresh inventory and shutdown/lease proof (#394; Task5 service-only path).
+- Journal verification jobs in post-migration/pre-start, activated health, and committed recovery phases as well as initial preflight. Outstanding jobs must remain cleanup obligations before successful commit or terminal completion (#394 bounded health checks and interruption recovery).
+- Treat original virtualenv entrypoint/pyvenv snapshots as read-only attestation. Never include old environment paths in selection-restoration writes; external drift blocks original restart (#394 preservation of the original environment).
