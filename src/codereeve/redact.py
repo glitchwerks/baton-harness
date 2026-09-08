@@ -9,7 +9,9 @@ _REDACTION_MARKER = "«redacted»"
 _TOKEN_PATTERN = re.compile(
     r"(?:github_pat_|ghs_|ghp_|gho_|ghu_|ghr_)[A-Za-z0-9_]+"
 )
-_URL_USERINFO_PATTERN = re.compile(r"(?<=://)[^\s/@?#]+@")
+_URL_USERINFO_PATTERN = re.compile(
+    r"(\b[A-Za-z][A-Za-z0-9+.-]*:[/\\]+)[^\s/@?#\\]+@"
+)
 _PEM_PATTERN = re.compile(
     r"-----BEGIN ([A-Z0-9 ]+)-----.*?-----END \1-----", re.DOTALL
 )
@@ -57,7 +59,7 @@ def redact_secrets(
     try:
         for pattern, preserve_prefix in (
             (_PEM_PATTERN, False),
-            (_URL_USERINFO_PATTERN, False),
+            (_URL_USERINFO_PATTERN, True),
             (_AUTHORIZATION_PATTERN, True),
             (_QUERY_PATTERN, True),
             (_FIELD_PATTERN, True),
