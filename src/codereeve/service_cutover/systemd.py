@@ -1,0 +1,911 @@
+"""Bounded Linux system-service observation, shutdown, and verification.
+
+Filesystem publication and restart guards belong to the durable coordinator.
+This adapter never treats a process scan or an idle main PID as shutdown proof.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+import uuid
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path, PurePosixPath
+from typing import Protocol
+
+from codereeve.chain.doctor import Phase
+from codereeve.provenance import Provenance, validate_provenance
+
+from .health import evidence_document, validate_doctor, validate_heartbeat
+from .model import CutoverError, ServiceSpec, UnitState
+from .render import render_unit
+
+OLD_UNIT = "bh-daemon.service"
+NEW_UNIT = "codereeve.service"
+_PROPERTIES = (
+    "Id",
+    "LoadState",
+    "ActiveState",
+    "SubState",
+    "UnitFileState",
+    "MainPID",
+    "InvocationID",
+    "ControlGroup",
+    "FragmentPath",
+    "DropInPaths",
+    "KillMode",
+    "User",
+    "Job",
+    "ExecStart",
+)
+_ENABLED = {"enabled", "disabled", "masked", "masked-runtime"}
+
+
+def _wall_clock() -> datetime:
+    """Return timezone-aware UTC for heartbeat freshness comparisons."""
+    return datetime.now(timezone.utc)
+
+
+def _quote_transient_environment(value: str) -> str:
+    """C-escape a D-Bus environment token without unit specifier expansion."""
+    if any(ord(c) < 32 or ord(c) == 127 for c in value):
+        raise CutoverError("transient environment is invalid")
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _read_heartbeat(path: Path) -> str:
+    """Read bounded regular-file evidence after rejecting unsafe ancestors."""
+    from codereeve.paths import validate_safe_file_path
+
+    if not validate_safe_file_path(path, label="process heartbeat"):
+        raise CutoverError("process heartbeat is unavailable")
+    with path.open(encoding="utf-8") as stream:
+        return stream.read(65_536)
+
+
+@dataclass(frozen=True)
+class PreflightEvidence:
+    """Verified prior service metadata and separate installed provenance."""
+
+    old: UnitState
+    new: UnitState
+    provenance: Provenance
+    service_uids: frozenset[int]
+
+
+class Runner(Protocol):
+    """Inject only the bounded argv subprocess boundary."""
+
+    def __call__(
+        self, argv: tuple[str, ...], *, timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        """Return captured output without performing shell interpretation."""
+        ...
+
+
+def run_command(
+    argv: tuple[str, ...], *, timeout: float
+) -> subprocess.CompletedProcess[str]:
+    """Run a bounded command with a minimal caller environment.
+
+    Args:
+        argv: Literal command vector.
+        timeout: Positive deadline for the child process.
+
+    Returns:
+        Captured exit status and UTF-8 output.
+    """
+    return subprocess.run(
+        argv,
+        timeout=timeout,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+            "LANG": "C.UTF-8",
+            "SYSTEMD_COLORS": "0",
+            "SYSTEMD_PAGER": "cat",
+        },
+    )
+
+
+def _uid_for_user(user: str) -> int:
+    """Resolve the target account on Linux, refusing a root service."""
+    if sys.platform == "win32":
+        raise CutoverError("Linux service identity required")
+    import pwd
+
+    try:
+        uid = int(pwd.getpwnam(user).pw_uid)
+        if uid <= 0:
+            raise ValueError
+        return uid
+    except (KeyError, ValueError):
+        raise CutoverError(
+            "dedicated non-root service account required"
+        ) from None
+
+
+def _platform_check() -> None:
+    """Require root authority and full host proc/cgroup v2 mount visibility."""
+    try:
+        if not hasattr(os, "geteuid") or os.geteuid() != 0:
+            raise ValueError
+        mounts = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
+        records = [line.split() for line in mounts.splitlines()]
+        for target, kind in (("/proc", "proc"), ("/sys/fs/cgroup", "cgroup2")):
+            matches = [
+                r
+                for r in records
+                if r[4] == target and r[r.index("-") + 1] == kind
+            ]
+            if len(matches) != 1 or matches[0][3] != "/":
+                raise ValueError
+            if any(
+                x.startswith("hidepid=") and x != "hidepid=0"
+                for field in matches[0]
+                for x in field.split(",")
+            ):
+                raise ValueError
+        if not Path("/sys/fs/cgroup/cgroup.controllers").is_file():
+            raise ValueError
+        if not Path("/run/systemd/system").is_dir():
+            raise ValueError
+    except (OSError, ValueError, IndexError):
+        raise CutoverError(
+            "complete root systemd visibility required"
+        ) from None
+
+
+def _trusted_unit(state: UnitState) -> None:
+    """Require an administrator-owned fragment without foreign drop-ins."""
+    if state.dropin_paths:
+        raise CutoverError("unexpected service drop-ins")
+    if state.load_state in {"not-found", "masked"}:
+        return
+    if state.fragment_path != f"/etc/systemd/system/{state.name}":
+        raise CutoverError("unexpected service fragment")
+    try:
+        path = Path(state.fragment_path)
+        for item in (path, *path.parents):
+            info = item.lstat()
+            if (
+                info.st_uid != 0
+                or info.st_mode & 0o022
+                or stat.S_ISLNK(info.st_mode)
+            ):
+                raise ValueError
+        if not stat.S_ISREG(path.lstat().st_mode):
+            raise ValueError
+    except (OSError, ValueError):
+        raise CutoverError("service fragment ownership is unproven") from None
+
+
+class SystemdBackend:
+    """Observe and control explicit units through injected boundaries."""
+
+    def __init__(
+        self,
+        *,
+        runner: Runner = run_command,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+        proc_root: Path = Path("/proc"),
+        cgroup_root: Path = Path("/sys/fs/cgroup"),
+        platform_check: Callable[[], None] = _platform_check,
+        uid_for_user: Callable[[str], int] = _uid_for_user,
+        trusted_unit: Callable[[UnitState], None] = _trusted_unit,
+        timeout_s: float = 120.0,
+        temporary_root: Path | None = None,
+        wall_clock: Callable[[], datetime] = _wall_clock,
+        read_heartbeat: Callable[[Path], str] = _read_heartbeat,
+    ) -> None:
+        """Bind bounded commands and explicit host-observation seams.
+
+        Args:
+            runner: Captured argv command executor.
+            clock: Monotonic deadline clock.
+            sleep: Bounded poll delay.
+            proc_root: Complete procfs root.
+            cgroup_root: Complete cgroup v2 mount root.
+            platform_check: Root and supported-platform validator.
+            uid_for_user: Dedicated non-root account resolver.
+            trusted_unit: Fragment ownership validator.
+            timeout_s: Per-operation command and observation deadline.
+            temporary_root: Optional private verification staging parent.
+            wall_clock: UTC heartbeat clock.
+            read_heartbeat: Bounded regular-file heartbeat reader.
+        """
+        self.runner = runner
+        self.clock = clock
+        self.sleep = sleep
+        self.proc_root = proc_root
+        self.cgroup_root = cgroup_root
+        self.platform_check = platform_check
+        self.uid_for_user = uid_for_user
+        self.trusted_unit = trusted_unit
+        self.timeout_s = timeout_s
+        self.temporary_root = temporary_root
+        self.wall_clock = wall_clock
+        self.read_heartbeat = read_heartbeat
+        self._known_groups: dict[str, str] = {}
+        self._starts: dict[tuple[int, str], datetime] = {}
+        self._owned_jobs: set[str] = set()
+
+    def _command(
+        self, argv: tuple[str, ...], *, timeout: float | None = None
+    ) -> str:
+        """Capture a bounded successful command without echoing its payload."""
+        try:
+            result = self.runner(
+                argv, timeout=self.timeout_s if timeout is None else timeout
+            )
+            if result.returncode != 0:
+                raise ValueError
+            return result.stdout
+        except (OSError, subprocess.SubprocessError, UnicodeError, ValueError):
+            raise CutoverError("bounded service command failed") from None
+
+    @property
+    def pending_verification_units(self) -> tuple[str, ...]:
+        """Return exact owned jobs whose shutdown has not yet been proven."""
+        return tuple(sorted(self._owned_jobs))
+
+    def inspect(self, name: str) -> UnitState:
+        """Read complete manager properties, refusing omissions and ambiguity.
+
+        Args:
+            name: Known service name or an owned verification job name.
+
+        Returns:
+            Immutable exact state, including explicit absence.
+
+        Raises:
+            CutoverError: If command, schema, or state cannot be verified.
+        """
+        self.platform_check()
+        if name not in {OLD_UNIT, NEW_UNIT} and name not in self._owned_jobs:
+            raise CutoverError("unsupported service name")
+        text = self._command(
+            (
+                "systemctl",
+                "--system",
+                "--no-pager",
+                "show",
+                "--all",
+                "--property=" + ",".join(_PROPERTIES),
+                "--",
+                name,
+            )
+        )
+        try:
+            values: dict[str, str] = {}
+            for line in text.splitlines():
+                key, sep, value = line.partition("=")
+                if not sep or key in values:
+                    raise ValueError
+                values[key] = value
+            if set(values) != set(_PROPERTIES) or values["Id"] != name:
+                raise ValueError
+            load = values["LoadState"]
+            active = values["ActiveState"]
+            enabled = values["UnitFileState"]
+            if load not in {"loaded", "not-found", "masked"} or active not in {
+                "active",
+                "inactive",
+                "failed",
+                "activating",
+                "deactivating",
+            }:
+                raise ValueError
+            if (
+                enabled not in _ENABLED
+                and not (load == "not-found" and enabled == "")
+                and not (name in self._owned_jobs and enabled == "transient")
+            ):
+                raise ValueError
+            if not re.fullmatch(r"[0-9]+", values["MainPID"]):
+                raise ValueError
+            pid = int(values["MainPID"])
+            invocation = values["InvocationID"]
+            if invocation and not re.fullmatch(r"[0-9a-f]{32}", invocation):
+                raise ValueError
+            group = values["ControlGroup"]
+            if group and (
+                not group.startswith("/")
+                or group == "/"
+                or ".." in PurePosixPath(group).parts
+                or "\\" in group
+            ):
+                raise ValueError
+            if active == "active" and (
+                pid <= 0 or not invocation or not group
+            ):
+                raise ValueError
+            if load == "not-found" and (
+                active != "inactive" or pid or group or values["FragmentPath"]
+            ):
+                raise ValueError
+            executable = ""
+            if values["ExecStart"]:
+                match = re.fullmatch(
+                    r"\{ path=(/[^;\\\n]+) ; argv\[\]=[^\n]* \}",
+                    values["ExecStart"],
+                )
+                if not match or " ; path=" in values["ExecStart"]:
+                    raise ValueError
+                executable = match[1]
+            state = UnitState(
+                name,
+                load,
+                active,
+                enabled,
+                pid,
+                invocation,
+                group,
+                values["FragmentPath"],
+                tuple(values["DropInPaths"].split()),
+                values["KillMode"],
+                values["User"],
+                executable,
+                values["SubState"],
+                values["Job"],
+            )
+            if group:
+                expected = f"/system.slice/{name}"
+                if group != expected:
+                    raise ValueError
+                self._known_groups[name] = group
+            return state
+        except (ValueError, KeyError):
+            raise CutoverError(
+                "systemd state is incomplete or unsupported"
+            ) from None
+
+    def cgroup_pids(
+        self, group: str, *, allow_absent: bool = False
+    ) -> frozenset[int]:
+        """Read every domain in a complete cgroup subtree.
+
+        Args:
+            group: Previously observed absolute cgroup path.
+            allow_absent: Permit manager removal after proven stop.
+
+        Returns:
+            All processes in the subtree.
+
+        Raises:
+            CutoverError: If any directory or required evidence is unreadable.
+        """
+        try:
+            if not self.cgroup_root.is_dir():
+                raise ValueError
+            relative = PurePosixPath(group)
+            if (
+                not relative.is_absolute()
+                or group == "/"
+                or ".." in relative.parts
+            ):
+                raise ValueError
+            path = self.cgroup_root.joinpath(*relative.parts[1:])
+            if allow_absent and not path.exists():
+                return frozenset()
+            pending = [path]
+            pids: set[int] = set()
+            populated = False
+            while pending:
+                current = pending.pop()
+                if current.is_symlink():
+                    raise ValueError
+                if (current / "cgroup.type").read_text(
+                    encoding="utf-8"
+                ).strip() != "domain":
+                    raise ValueError
+                events = dict(
+                    line.split()
+                    for line in (current / "cgroup.events")
+                    .read_text(encoding="utf-8")
+                    .splitlines()
+                )
+                if events.get("populated") not in {"0", "1"}:
+                    raise ValueError
+                populated |= events["populated"] == "1"
+                for raw in (
+                    (current / "cgroup.procs")
+                    .read_text(encoding="utf-8")
+                    .splitlines()
+                ):
+                    if not raw.isdecimal() or int(raw) <= 0:
+                        raise ValueError
+                    pids.add(int(raw))
+                with os.scandir(current) as entries:
+                    for entry in entries:
+                        if entry.is_symlink():
+                            raise ValueError
+                        if entry.is_dir(follow_symlinks=False):
+                            pending.append(Path(entry.path))
+            if populated and not pids:
+                raise ValueError
+            return frozenset(pids)
+        except (OSError, UnicodeError, ValueError):
+            raise CutoverError(
+                "complete cgroup visibility is unproven"
+            ) from None
+
+    def stop_and_verify(self, name: str) -> None:
+        """Stop a service and verify inactive state and empty descendants.
+
+        Args:
+            name: Explicitly controlled service or verification unit.
+
+        Raises:
+            CutoverError: If kill mode or final quiescence is unknown.
+        """
+        before = self.inspect(name)
+        if before.load_state in {"not-found", "masked"}:
+            if (
+                before.active_state != "inactive"
+                or before.main_pid
+                or before.job
+            ):
+                raise CutoverError("masked or absent service is not stopped")
+            self._verify_group_empty(f"/system.slice/{name}")
+            return
+        if before.kill_mode != "control-group":
+            raise CutoverError("whole-cgroup shutdown required")
+        group = before.control_group or self._known_groups.get(
+            name, f"/system.slice/{name}"
+        )
+        self.cgroup_pids(group, allow_absent=before.active_state == "inactive")
+        deadline = self.clock() + self.timeout_s
+        self._command(
+            ("systemctl", "--system", "--no-pager", "stop", "--", name)
+        )
+        while self.clock() < deadline:
+            state = self.inspect(name)
+            if (
+                state.active_state == "inactive"
+                and state.main_pid == 0
+                and not state.job
+            ):
+                self._verify_group_empty(group)
+                return
+            self.sleep(min(0.1, max(0.0, deadline - self.clock())))
+        raise CutoverError("service shutdown deadline expired")
+
+    def _verify_group_empty(self, group: str) -> None:
+        """Cross-check cgroup emptiness against the complete proc view."""
+        if self.cgroup_pids(group, allow_absent=True):
+            raise CutoverError("service descendants remain active")
+        try:
+            for process in self.proc_root.iterdir():
+                if not process.name.isdecimal():
+                    continue
+                text = (process / "cgroup").read_text(encoding="utf-8")
+                lines = text.splitlines()
+                if len(lines) != 1 or not lines[0].startswith("0::/"):
+                    raise ValueError
+                member = lines[0][3:]
+                if member == group or member.startswith(group + "/"):
+                    raise ValueError
+        except (OSError, UnicodeError, ValueError):
+            raise CutoverError(
+                "service process quiescence is unproven"
+            ) from None
+
+    def verify_process_ownership(
+        self,
+        spec: ServiceSpec,
+        service_uids: frozenset[int],
+        *,
+        allowed_groups: tuple[str, ...] = (
+            "/system.slice/bh-daemon.service",
+            "/system.slice/codereeve.service",
+        ),
+    ) -> None:
+        """Reject unmanaged writers; never use this scan as shutdown authority.
+
+        Args:
+            spec: Explicit managed-repository selection.
+            service_uids: Both old and candidate dedicated account IDs.
+            allowed_groups: Exact owned subtrees, empty for quiescent checks.
+
+        Raises:
+            CutoverError: If a relevant process is uncontained or hidden.
+        """
+        self.platform_check()
+        if not service_uids or any(uid <= 0 for uid in service_uids):
+            raise CutoverError("dedicated non-root service account required")
+        try:
+            for process in self.proc_root.iterdir():
+                if not process.name.isdecimal():
+                    continue
+                status = dict(
+                    line.split(":", 1)
+                    for line in (process / "status")
+                    .read_text(encoding="utf-8")
+                    .splitlines()
+                    if ":" in line
+                )
+                uids = {int(uid) for uid in status["Uid"].split()}
+                if len(status["Uid"].split()) != 4:
+                    raise ValueError
+                if int(process.name) == os.getpid() and uids == {0}:
+                    continue
+                fields = (
+                    (process / "stat")
+                    .read_text(encoding="utf-8")
+                    .rsplit(") ", 1)[1]
+                    .split()
+                )
+                if fields[0] == "Z" or int(fields[6]) & 0x00200000:
+                    continue  # Zombies and kernel threads cannot write state.
+                cgroups = (
+                    (process / "cgroup")
+                    .read_text(encoding="utf-8")
+                    .splitlines()
+                )
+                if len(cgroups) != 1 or not cgroups[0].startswith("0::/"):
+                    raise ValueError
+                group = cgroups[0][3:]
+                contained = any(
+                    group == g or group.startswith(g + "/")
+                    for g in allowed_groups
+                )
+                if uids & service_uids and not contained:
+                    raise ValueError
+                environment = (process / "environ").read_bytes()
+                root = spec.project_root.as_posix().encode()
+                relevant_env = any(
+                    part
+                    in {
+                        b"CODEREEVE_PROJECT_ROOT=" + root,
+                        b"BH_PROJECT_ROOT=" + root,
+                    }
+                    for part in environment.split(b"\0")
+                )
+                cwd = (process / "cwd").readlink().as_posix()
+                relevant_cwd = cwd == root.decode() or cwd.startswith(
+                    root.decode() + "/"
+                )
+                if (relevant_env or relevant_cwd) and not contained:
+                    raise ValueError
+        except (OSError, ValueError, KeyError, IndexError, UnicodeError):
+            raise CutoverError(
+                "process ownership or visibility is unproven"
+            ) from None
+
+    def _verification_job(
+        self, spec: ServiceSpec, command: tuple[str, ...]
+    ) -> str:
+        """Run one bounded job and verify cleanup after client failure."""
+        name = "codereeve-verify-" + uuid.uuid4().hex + ".service"
+        self._owned_jobs.add(name)
+        group = f"/system.slice/{name}"
+        timeout = min(spec.timeout_s, self.timeout_s)
+        argv = [
+            "systemd-run",
+            "--system",
+            "--quiet",
+            "--wait",
+            "--pipe",
+            "--collect",
+            "--expand-environment=no",
+            "--unit=" + name,
+            "--description=CodeReeve cutover verification",
+            "--property=Type=exec",
+            "--property=KillMode=control-group",
+            "--property=RuntimeMaxSec=" + str(timeout),
+            "--property=TimeoutStopSec=" + str(timeout),
+            "--property=User=" + spec.run_user,
+            "--property=WorkingDirectory=" + spec.project_root.as_posix(),
+            "--property=Environment="
+            + " ".join(
+                _quote_transient_environment(v)
+                for v in (
+                    "HOME=" + spec.home.as_posix(),
+                    "CODEREEVE_PROJECT_ROOT=" + spec.project_root.as_posix(),
+                    "PATH="
+                    + spec.environment.as_posix()
+                    + "/bin:/usr/local/bin:/usr/bin:/bin",
+                )
+            ),
+        ]
+        if spec.secrets is not None:
+            argv.append(
+                "--property=EnvironmentFile=" + spec.secrets.as_posix()
+            )
+        argv.extend(("--", *command))
+        # Manager runtime limits bound the job even if this process is killed.
+        try:
+            output = self._command(tuple(argv), timeout=timeout)
+        except CutoverError:
+            try:
+                self.stop_and_verify(name)
+            except CutoverError:
+                raise CutoverError(
+                    "verification cleanup is unproven"
+                ) from None
+            self._owned_jobs.remove(name)
+            raise
+        self.stop_and_verify(name)
+        self._verify_group_empty(group)
+        self._owned_jobs.remove(name)
+        return output
+
+    def preflight(self, spec: ServiceSpec) -> PreflightEvidence:
+        """Verify supported containment and candidate installation before stop.
+
+        Args:
+            spec: Candidate context, selecting compatible source secrets.
+
+        Returns:
+            Immutable old/new state, artifact identity, and account IDs.
+
+        Raises:
+            CutoverError: If any required installation evidence is missing.
+        """
+        old, new = self.inspect(OLD_UNIT), self.inspect(NEW_UNIT)
+        if old.load_state == "masked":
+            raise CutoverError(
+                "masked old service identity requires recovery metadata"
+            )
+        if new.load_state != "not-found":
+            raise CutoverError("canonical service already exists")
+        uids = {self.uid_for_user(spec.run_user)}
+        for state in (old, new):
+            if state.dropin_paths:
+                raise CutoverError("unexpected service drop-ins")
+            self.trusted_unit(state)
+            if state.active_state not in {"active", "inactive"} or state.job:
+                raise CutoverError("service activation is unstable")
+        if old.load_state == "loaded":
+            if old.kill_mode != "control-group" or not old.exec_start:
+                raise CutoverError("old service containment is unsupported")
+            uids.add(self.uid_for_user(old.user))
+            candidate = Path(spec.environment.as_posix()).resolve()
+            old_environment = Path(old.exec_start).parent.parent.resolve()
+            if candidate == old_environment:
+                raise CutoverError("separate candidate environment required")
+            if old.control_group:
+                if old.main_pid not in self.cgroup_pids(old.control_group):
+                    raise CutoverError(
+                        "old main process containment is unproven"
+                    )
+        self.verify_process_ownership(spec, frozenset(uids))
+        with tempfile.TemporaryDirectory(
+            prefix="codereeve-verify-", dir=self.temporary_root
+        ) as temporary:
+            unit = Path(temporary) / NEW_UNIT
+            unit.write_text(render_unit(spec), encoding="utf-8", newline="\n")
+            self._command(
+                (
+                    "systemd-analyze",
+                    "verify",
+                    "--man=no",
+                    "--recursive-errors=no",
+                    str(unit),
+                )
+            )
+        executable = spec.environment.as_posix() + "/bin/codereeve"
+        self._verification_job(spec, (executable, "verify", "--installed"))
+        raw = evidence_document(
+            self._verification_job(spec, (executable, "provenance"))
+        )
+        try:
+            version = raw["package_version"]
+            if not isinstance(version, str):
+                raise ValueError
+            provenance = validate_provenance(raw, version)
+            if provenance.development:
+                raise ValueError
+        except (KeyError, TypeError, ValueError):
+            raise CutoverError("candidate provenance is unproven") from None
+        phases = (Phase.INSTALLATION, Phase.CONFIGURATION)
+        report = self._verification_job(
+            spec,
+            (
+                executable,
+                "doctor",
+                "--strict",
+                "--phase",
+                "installation",
+                "--phase",
+                "configuration",
+                "--format",
+                "json",
+            ),
+        )
+        if validate_doctor(report, phases) != provenance:
+            raise CutoverError("candidate artifact identity changed")
+        self.service_context(spec, canonical=False)
+        self.verify_process_ownership(spec, frozenset(uids))
+        return PreflightEvidence(old, new, provenance, frozenset(uids))
+
+    def service_context(
+        self, spec: ServiceSpec, *, canonical: bool
+    ) -> dict[str, object]:
+        """Check service-account access and resolve the heartbeat path.
+
+        Args:
+            spec: Exact service selection.
+            canonical: Require canonical post-migration state/config paths.
+
+        Returns:
+            Schema-checked non-secret access evidence.
+
+        Raises:
+            CutoverError: If context or access cannot be verified.
+        """
+        command = (
+            spec.environment.as_posix() + "/bin/python",
+            "-I",
+            "-c",
+            "import json,sys; "
+            "from codereeve.service_cutover.health import "
+            "probe_service_context; "
+            "print(json.dumps(probe_service_context(*sys.argv[1:])))",
+            spec.project_root.as_posix(),
+            spec.environment.as_posix(),
+            spec.run_user,
+            spec.home.as_posix(),
+            "canonical" if canonical else "compatible",
+            spec.workflow.as_posix() if spec.workflow else "",
+        )
+        raw = evidence_document(self._verification_job(spec, command))
+        if (
+            set(raw)
+            != {
+                "schema_version",
+                "uid",
+                "heartbeat_path",
+                "state_path",
+                "config_path",
+            }
+            or type(raw.get("schema_version")) is not int
+            or raw.get("schema_version") != 1
+            or type(raw.get("uid")) is not int
+            or raw["uid"] != self.uid_for_user(spec.run_user)
+        ):
+            raise CutoverError("service context is unproven")
+        for key in ("heartbeat_path", "state_path", "config_path"):
+            value = raw.get(key)
+            if (
+                not isinstance(value, str)
+                or not PurePosixPath(value).is_absolute()
+            ):
+                raise CutoverError("service context is unproven")
+        return raw
+
+    def start(self, spec: ServiceSpec) -> UnitState:
+        """Start the published candidate only after old restart is guarded.
+
+        Args:
+            spec: Exact service context already published by the coordinator.
+
+        Returns:
+            New systemd process and invocation identity.
+
+        Raises:
+            CutoverError: If either old isolation or candidate identity fails.
+        """
+        old = self.inspect(OLD_UNIT)
+        if (
+            old.load_state not in {"masked", "not-found"}
+            or old.active_state != "inactive"
+            or old.main_pid
+            or old.job
+        ):
+            raise CutoverError("effective old restart guard required")
+        self._verify_group_empty(f"/system.slice/{OLD_UNIT}")
+        candidate = self.inspect(NEW_UNIT)
+        self.trusted_unit(candidate)
+        expected_executable = spec.environment.as_posix() + "/bin/codereeve"
+        if (
+            candidate.load_state != "loaded"
+            or candidate.active_state != "inactive"
+            or candidate.kill_mode != "control-group"
+            or candidate.dropin_paths
+            or candidate.user != spec.run_user
+            or candidate.exec_start != expected_executable
+        ):
+            raise CutoverError("published candidate identity is unproven")
+        self._verify_group_empty(f"/system.slice/{NEW_UNIT}")
+        started_at = self.wall_clock()
+        self._command(
+            ("systemctl", "--system", "--no-pager", "start", "--", NEW_UNIT),
+            timeout=spec.timeout_s,
+        )
+        started = self.inspect(NEW_UNIT)
+        if (
+            started.active_state != "active"
+            or started.sub_state != "running"
+            or started.user != spec.run_user
+            or started.exec_start != expected_executable
+            or started.main_pid not in self.cgroup_pids(started.control_group)
+        ):
+            raise CutoverError(
+                "candidate did not start with verified identity"
+            )
+        self._starts[(started.main_pid, started.invocation_id)] = started_at
+        return started
+
+    def verify_health(self, spec: ServiceSpec, started: UnitState) -> None:
+        """Require strict live doctor and a fresh stable invocation heartbeat.
+
+        Args:
+            spec: Canonical service configuration after migration.
+            started: Identity returned by this backend's start operation.
+
+        Raises:
+            CutoverError: If live checks, deadline, or process evidence fails.
+        """
+        started_at = self._starts.get(
+            (started.main_pid, started.invocation_id)
+        )
+        if started_at is None or started.name != NEW_UNIT:
+            raise CutoverError("candidate start evidence is unavailable")
+        executable = spec.environment.as_posix() + "/bin/codereeve"
+        report = self._verification_job(
+            spec,
+            (
+                executable,
+                "doctor",
+                "--strict",
+                "--phase",
+                "live",
+                "--format",
+                "json",
+            ),
+        )
+        validate_doctor(report, (Phase.LIVE,))
+        context = self.service_context(spec, canonical=True)
+        heartbeat_path = context["heartbeat_path"]
+        if not isinstance(heartbeat_path, str):
+            raise CutoverError("heartbeat path is unproven")
+        deadline = self.clock() + spec.timeout_s
+        while self.clock() < deadline:
+            before = self.inspect(NEW_UNIT)
+            if (
+                before.main_pid != started.main_pid
+                or before.invocation_id != started.invocation_id
+                or before.active_state != "active"
+            ):
+                raise CutoverError(
+                    "candidate invocation changed during health check"
+                )
+            try:
+                text = self.read_heartbeat(Path(heartbeat_path))
+                validate_heartbeat(
+                    text,
+                    pid=started.main_pid,
+                    invocation_id=started.invocation_id,
+                    started_at=started_at,
+                    now=self.wall_clock(),
+                )
+            except (CutoverError, OSError, UnicodeError):
+                self.sleep(min(0.1, max(0.0, deadline - self.clock())))
+                continue
+            after = self.inspect(NEW_UNIT)
+            if (
+                after.main_pid != started.main_pid
+                or after.invocation_id != started.invocation_id
+                or after.active_state != "active"
+                or after.control_group != started.control_group
+            ):
+                raise CutoverError(
+                    "candidate invocation changed during health check"
+                )
+            if self.clock() >= deadline:
+                break
+            return
+        raise CutoverError("candidate health deadline expired")

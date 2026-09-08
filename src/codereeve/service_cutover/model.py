@@ -104,3 +104,40 @@ class CutoverResult:
     status: str
     journal_path: Path | None
     recovery: str | None
+
+
+@dataclass(frozen=True)
+class UnitState:
+    """Exact observed system-service identity and activation metadata.
+
+    Attributes:
+        name: Manager-resolved unit name.
+        load_state: Loaded, absent, or masked state.
+        active_state: Observed runtime state.
+        enabled_state: Persistent or runtime enablement/mask state.
+        main_pid: Current main process, zero when absent.
+        invocation_id: Runtime-cycle identity, empty when never started.
+        control_group: Absolute cgroup v2 subtree, empty when inactive.
+        fragment_path: Manager-selected unit file or mask target.
+        dropin_paths: Complete manager-selected drop-in list.
+        kill_mode: Effective service kill mode, including defaults.
+        user: Effective configured service account.
+        exec_start: Absolute executable selected by ExecStart.
+        sub_state: Exact runtime substate.
+        job: Pending manager job description, empty when none.
+    """
+
+    name: str
+    load_state: str
+    active_state: str
+    enabled_state: str
+    main_pid: int
+    invocation_id: str
+    control_group: str
+    fragment_path: str
+    dropin_paths: tuple[str, ...]
+    kill_mode: str = ""
+    user: str = ""
+    exec_start: str = ""
+    sub_state: str = ""
+    job: str = ""
