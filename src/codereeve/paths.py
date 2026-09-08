@@ -105,6 +105,27 @@ class PathLayout:
         )
 
 
+def runtime_state_directory(
+    project_root: Path, env: Mapping[str, str]
+) -> Path:
+    """Select the sole safe runtime state directory without creating it.
+
+    Args:
+        project_root: Managed repository root.
+        env: Resolved environment used to build the shared layout.
+
+    Returns:
+        Canonical state for a fresh run, or existing legacy state.
+
+    Raises:
+        PathConflictError: If state directories coexist or are unsafe.
+    """
+    layout = PathLayout.for_environment(project_root, env)
+    return select_compatible_directory(
+        layout.canonical_state, layout.legacy_state, label="runtime state"
+    ).path
+
+
 def select_compatible_file(
     canonical: Path, legacy: Path, *, label: str
 ) -> SelectedPath:

@@ -21,6 +21,11 @@ from codereeve.chain.app_private_key import (
     load_app_private_key,
     requires_bws,
 )
+from codereeve.config_env import (
+    AliasConflictError,
+    apply_resolved_environment,
+    runtime_environment,
+)
 from codereeve.paths import (
     PathConflictError,
     PathLayout,
@@ -99,6 +104,7 @@ class DoctorContext:
         config_path: Selected sandbox config path, when available.
         config: Purely resolved sandbox config, when valid.
         config_error: Safe local resolution error, when invalid.
+        path_conflict: Path failure that aborts daemon startup before gates.
     """
 
     project_root: str
@@ -112,6 +118,7 @@ class DoctorContext:
     config_path: Path | None = None
     config: sandbox_config.SandboxConfig | None = None
     config_error: str = ""
+    path_conflict: PathConflictError | None = None
 
 
 class DoctorGateError(RuntimeError):
@@ -221,10 +228,12 @@ def create_context(
     Returns:
         A context with a copied environment and pure config resolution.
     """
-    environment = dict(env)
+    environment: dict[str, str] = {}
+    apply_resolved_environment(runtime_environment(env), environment)
     selected_path: Path | None = None
     resolved_config: sandbox_config.SandboxConfig | None = None
     config_error = ""
+    path_conflict: PathConflictError | None = None
     effective_home = Path(
         home_dir if home_dir is not None else os.path.expanduser("~")
     )
@@ -236,16 +245,22 @@ def create_context(
     )
     try:
         resolved_source = sandbox_config.resolve_config_sources(
-            config_path, environment, layout
+            config_path, env, layout
         )
         selected_path = resolved_source.path
         resolved_config = resolved_source.config
+        environment = {}
+        apply_resolved_environment(resolved_source.environment, environment)
     except (
         sandbox_config.SandboxConfigError,
         PathConflictError,
         OSError,
         UnicodeError,
     ) as exc:
+        if isinstance(exc.__cause__, AliasConflictError):
+            raise exc.__cause__ from exc
+        if isinstance(exc, PathConflictError):
+            path_conflict = exc
         config_error = _config_error_detail(exc)
         if config_path is not None:
             selected_path = config_path
@@ -256,6 +271,10 @@ def create_context(
     if not project_root and selected_path is not None:
         if selected_path.parent.name in {".bh", ".codereeve"}:
             project_root = str(selected_path.parent.parent)
+    if project_root:
+        values = dict(runtime_environment(environment).values)
+        values["CODEREEVE_PROJECT_ROOT"] = project_root
+        apply_resolved_environment(runtime_environment(values), environment)
 
     return DoctorContext(
         project_root=project_root,
@@ -269,6 +288,7 @@ def create_context(
         config_path=selected_path,
         config=resolved_config,
         config_error=config_error,
+        path_conflict=path_conflict,
     )
 
 

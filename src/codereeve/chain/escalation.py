@@ -4,7 +4,7 @@ The GitHub issue comment is the **durable record** and is always attempted
 first.  Slack is a best-effort notification channel only — a failure there
 never prevents the durable record from landing.
 
-Slack is only attempted when the ``BH_SLACK_WEBHOOK_URL`` environment
+Slack is only attempted when the ``CODEREEVE_SLACK_WEBHOOK_URL`` environment
 variable is set.  When unset, Slack is silently skipped.  Any Slack
 failure is logged at WARNING and does NOT affect the return value.
 
@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import subprocess
 import urllib.request
 from datetime import datetime, timezone
@@ -29,6 +28,7 @@ from codereeve.chain.app_auth import (
 )
 from codereeve.chain.runlog import RunLog
 from codereeve.chain.subproc import run_cmd
+from codereeve.config_env import runtime_environment
 
 _log = logging.getLogger(__name__)
 
@@ -97,7 +97,7 @@ def escalate(
         no durable record was written.
 
     Slack semantics:
-        If ``BH_SLACK_WEBHOOK_URL`` is set in the environment, POSTs a
+        If ``CODEREEVE_SLACK_WEBHOOK_URL`` is set in the environment, POSTs a
         small JSON body ``{"text": summary}`` via ``urllib.request`` (stdlib
         only — no new dependencies).  Any failure (HTTP error, network
         error, etc.) is logged at WARNING and does NOT affect the return
@@ -131,6 +131,7 @@ def escalate(
         skipped (no valid issue target).  Slack success or failure has no
         bearing on the return value.
     """
+    values = runtime_environment().values
     gh_call_env = gh_env(installation_token) if installation_token else None
 
     # ------------------------------------------------------------------
@@ -196,7 +197,7 @@ def escalate(
     # ------------------------------------------------------------------
     # Attempted even when there is no valid issue target — Slack is the
     # fallback notification when the durable GitHub record cannot land.
-    webhook_url = os.environ.get("BH_SLACK_WEBHOOK_URL", "")
+    webhook_url = values.get("CODEREEVE_SLACK_WEBHOOK_URL", "")
     if webhook_url:
         _post_slack(
             webhook_url,

@@ -2599,7 +2599,7 @@ class TestRunlogObservabilityWiring:
 
         # The .baton-harness/ directory must exist under tmp_path
         # (mkdir-before-emit requirement).
-        baton_dir = tmp_path / ".baton-harness"
+        baton_dir = tmp_path / ".codereeve"
         assert baton_dir.exists(), (
             f"Expected {baton_dir} to exist after daemon startup "
             f"(RunLog must mkdir parents)"

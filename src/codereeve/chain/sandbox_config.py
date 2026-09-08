@@ -52,8 +52,10 @@ from codereeve.config_env import (
     EnvLayer,
     LegacyUse,
     ResolvedEnvironment,
+    apply_resolved_environment,
     parse_env_file,
     resolve_environment,
+    runtime_environment,
 )
 from codereeve.paths import (
     PathLayout,
@@ -111,9 +113,9 @@ _ALIASES_BY_KEY = {
     for key in (alias.canonical, alias.legacy)
 }
 _PRIVATE_KEY_PROVIDER_KEYS = (
-    "BH_GITHUB_APP_KEY_PROVIDER",
+    "CODEREEVE_GITHUB_APP_KEY_PROVIDER",
     "BWS_PEM_SECRET_ID",
-    "BH_GITHUB_APP_PRIVATE_KEY_FILE",
+    "CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE",
 )
 
 
@@ -150,6 +152,7 @@ class ResolvedSandboxConfig:
         uses_legacy: Whether the project configuration path is legacy.
         legacy_paths: Compatibility paths selected while resolving sources.
         legacy_uses: Legacy environment spellings selected by Task 1.
+        environment: Complete resolved runtime snapshot, including host values.
     """
 
     path: Path
@@ -157,6 +160,7 @@ class ResolvedSandboxConfig:
     uses_legacy: bool
     legacy_paths: tuple[Path, ...]
     legacy_uses: tuple[LegacyUse, ...]
+    environment: ResolvedEnvironment
 
 
 @dataclass(frozen=True)
@@ -457,14 +461,14 @@ def resolve_config_sources(
     """
     if explicit is not None:
         _validate_explicit_config_path(explicit)
-        config = resolve_config(explicit, env)
         resolution = _resolve_config(explicit, env)
         return ResolvedSandboxConfig(
             path=explicit,
-            config=config,
+            config=resolution.config,
             uses_legacy=False,
             legacy_paths=(),
             legacy_uses=resolution.environment.legacy_uses,
+            environment=resolution.environment,
         )
 
     host_selection = select_compatible_file(
@@ -512,6 +516,7 @@ def resolve_config_sources(
         uses_legacy=config_selection.uses_legacy,
         legacy_paths=legacy_paths,
         legacy_uses=resolution.environment.legacy_uses,
+        environment=resolution.environment,
     )
 
 
@@ -601,7 +606,8 @@ def _resolve_config(
     )
     try:
         resolved_environment = resolve_environment(
-            tuple(layer.as_environment_layer() for layer in effective_layers)
+            tuple(layer.as_environment_layer() for layer in effective_layers),
+            export_legacy=False,
         )
     except AliasConflictError as exc:
         raise SandboxConfigError(str(exc)) from exc
@@ -707,27 +713,35 @@ def apply_config(
         config: Fully resolved sandbox configuration.
         env: Target environment to populate with selected configuration.
     """
-    env["BH_REPO_OWNER"] = config.repo_owner
-    env["BH_REPO_NAME"] = config.repo_name
-    env["BH_GITHUB_APP_ID"] = config.github_app_id
-    env["BH_GITHUB_APP_INSTALLATION_ID"] = config.github_app_installation_id
-    env["BH_GITHUB_APP_KEY_PROVIDER"] = config.github_app_key_provider.value
+    values = dict(runtime_environment(env).values)
+    values["CODEREEVE_REPO_OWNER"] = config.repo_owner
+    values["CODEREEVE_REPO_NAME"] = config.repo_name
+    values["CODEREEVE_GITHUB_APP_ID"] = config.github_app_id
+    values["CODEREEVE_GITHUB_APP_INSTALLATION_ID"] = (
+        config.github_app_installation_id
+    )
+    values["CODEREEVE_GITHUB_APP_KEY_PROVIDER"] = (
+        config.github_app_key_provider.value
+    )
     if config.github_app_key_provider is AppPrivateKeyProvider.BWS:
         assert config.bws_pem_secret_id is not None
-        env["BWS_PEM_SECRET_ID"] = config.bws_pem_secret_id
-        env.pop("BH_GITHUB_APP_PRIVATE_KEY_FILE", None)
+        values["BWS_PEM_SECRET_ID"] = config.bws_pem_secret_id
+        values.pop("CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE", None)
     else:
         assert config.github_app_private_key_file is not None
-        env["BH_GITHUB_APP_PRIVATE_KEY_FILE"] = str(
+        values["CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE"] = str(
             config.github_app_private_key_file
         )
-        env.pop("BWS_PEM_SECRET_ID", None)
-    env["BWS_GH_TOKEN_SECRET_ID"] = config.bws_gh_token_secret_id
-    env["BWS_HEARTBEAT_PING_URL_SECRET_ID"] = (
+        values.pop("BWS_PEM_SECRET_ID", None)
+    values["BWS_GH_TOKEN_SECRET_ID"] = config.bws_gh_token_secret_id
+    values["BWS_HEARTBEAT_PING_URL_SECRET_ID"] = (
         config.bws_heartbeat_ping_url_secret_id
     )
-    env["BWS_APP_ID"] = config.github_app_id
-    env["BWS_INSTALLATION_ID"] = config.github_app_installation_id
+    values["BWS_APP_ID"] = config.github_app_id
+    values["BWS_INSTALLATION_ID"] = config.github_app_installation_id
+    apply_resolved_environment(runtime_environment(values), env)
+    if config.github_app_key_provider is AppPrivateKeyProvider.FILE:
+        env.pop("BWS_PEM_SECRET_ID", None)
 
 
 def read_and_validate(

@@ -1,72 +1,72 @@
 """Observability configuration for the baton-harness daemon.
 
-Reads ``BH_*`` environment variables and constructs an ``ObsConfig``
-frozen dataclass.  This module reads ``BH_*`` env vars directly and does
+Reads ``CODEREEVE_*`` environment variables and constructs an ``ObsConfig``
+frozen dataclass.  This module reads ``CODEREEVE_*`` env vars directly and does
 NOT touch the vendored ``WorkflowConfig``
 (``src/codereeve/vendor/symphony/config.py``) — putting obs config
 there would be clobbered on re-vendor.
 
 Environment variables
 ---------------------
-BH_PROJECT_ROOT : str, optional
+CODEREEVE_PROJECT_ROOT : str, optional
     Absolute path to the project root.  Used to derive default values
-    for ``BH_RUNLOG_PATH`` and ``BH_HEARTBEAT_FILE`` when those
+    for ``CODEREEVE_RUNLOG_PATH`` and ``CODEREEVE_HEARTBEAT_FILE`` when those
     variables are unset.  When unset AND the corresponding path
     variable is also unset, the path defaults are CWD-relative (e.g.
-    ``Path(".baton-harness/runlog.jsonl")``).
+    ``Path(".codereeve/runlog.jsonl")``).
 
-BH_RUNLOG_PATH : str, optional
+CODEREEVE_RUNLOG_PATH : str, optional
     Absolute path for the JSONL run-record log file.
-    Default: ``${BH_PROJECT_ROOT}/.baton-harness/runlog.jsonl``
-    (or CWD-relative ``.baton-harness/runlog.jsonl`` when
-    ``BH_PROJECT_ROOT`` is unset).
+    Default: ``${CODEREEVE_PROJECT_ROOT}/.codereeve/runlog.jsonl``
+    (or CWD-relative ``.codereeve/runlog.jsonl`` when
+    ``CODEREEVE_PROJECT_ROOT`` is unset).
 
-BH_HEARTBEAT_FILE : str, optional
+CODEREEVE_HEARTBEAT_FILE : str, optional
     Absolute path for the heartbeat file.
-    Default: ``${BH_PROJECT_ROOT}/.baton-harness/heartbeat``
-    (or CWD-relative ``.baton-harness/heartbeat`` when
-    ``BH_PROJECT_ROOT`` is unset).
+    Default: ``${CODEREEVE_PROJECT_ROOT}/.codereeve/heartbeat``
+    (or CWD-relative ``.codereeve/heartbeat`` when
+    ``CODEREEVE_PROJECT_ROOT`` is unset).
 
-BH_REDISPATCH_WINDOW_TICKS : int, optional
+CODEREEVE_REDISPATCH_WINDOW_TICKS : int, optional
     Number of poll ticks that form the re-dispatch eligibility window.
     Default: ``10``.
 
-BH_REDISPATCH_MAX : int, optional
+CODEREEVE_REDISPATCH_MAX : int, optional
     Maximum number of re-dispatches allowed per issue within the window.
     Default: ``3``.
 
-BH_HEARTBEAT_STALL_S : float, optional
+CODEREEVE_HEARTBEAT_STALL_S : float, optional
     Seconds after which the absence of a heartbeat update is treated as
     a stall condition.  Default: ``7200.0`` (two hours).
 
-BH_HEARTBEAT_PING_URL : str, optional
+CODEREEVE_HEARTBEAT_PING_URL : str, optional
     URL to ping on each heartbeat write (e.g. an uptime-monitor
     webhook).  Default: ``None`` (pinging disabled).
 
-BH_REDISPATCH_COUNTS_PATH : str, optional
+CODEREEVE_REDISPATCH_COUNTS_PATH : str, optional
     Absolute path for the durable re-dispatch tally JSON file.
-    Default: ``${BH_PROJECT_ROOT}/.baton-harness/dispatch-counts.json``
-    (or CWD-relative ``.baton-harness/dispatch-counts.json`` when
-    ``BH_PROJECT_ROOT`` is unset).
+    Default: ``${CODEREEVE_PROJECT_ROOT}/.codereeve/dispatch-counts.json``
+    (or CWD-relative ``.codereeve/dispatch-counts.json`` when
+    ``CODEREEVE_PROJECT_ROOT`` is unset).
 
-BH_MAX_ISSUE_FAILURES : int, optional
+CODEREEVE_MAX_ISSUE_FAILURES : int, optional
     Maximum number of consecutive charged failures allowed per issue.
     Default: ``2``.
 
-BH_FAILURE_COUNTS_PATH : str, optional
+CODEREEVE_FAILURE_COUNTS_PATH : str, optional
     Absolute path for the durable issue-failure tally JSON file.
-    Default: ``${BH_PROJECT_ROOT}/.baton-harness/failure-counts.json``
-    (or CWD-relative ``.baton-harness/failure-counts.json`` when
-    ``BH_PROJECT_ROOT`` is unset).
+    Default: ``${CODEREEVE_PROJECT_ROOT}/.codereeve/failure-counts.json``
+    (or CWD-relative ``.codereeve/failure-counts.json`` when
+    ``CODEREEVE_PROJECT_ROOT`` is unset).
 
-BH_WORKTREE_GC : str, optional
+CODEREEVE_WORKTREE_GC : str, optional
     Worktree orphan-GC mode.  Accepted values: ``detect`` (default),
     ``reclaim``.  ``detect`` logs orphans but never removes them (safe
     default, IS-5 detect-first).  ``reclaim`` additionally calls
     ``cleanup_worktree`` for confirmed orphans.  Any unrecognised value
     logs a WARNING and falls back to ``detect``.
 
-BH_WORKER_PROGRESS_STALL_S : float, optional
+CODEREEVE_WORKER_PROGRESS_STALL_S : float, optional
     Seconds without a turn-progress signal during the worker-active
     phase before a progress-stall alert is fired.  Default: ``1800.0``
     (6× the 300 s per-turn timeout at ``config.py:L31``; see
@@ -78,9 +78,11 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-import os
 from pathlib import Path
 from typing import Literal
+
+from codereeve.config_env import runtime_environment
+from codereeve.paths import runtime_state_directory
 
 _log = logging.getLogger(__name__)
 
@@ -88,7 +90,6 @@ _log = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-_BH_HARNESS_DIR = ".baton-harness"
 _DEFAULT_RUNLOG_NAME = "runlog.jsonl"
 _DEFAULT_HEARTBEAT_NAME = "heartbeat"
 _DEFAULT_DISPATCH_COUNTS_NAME = "dispatch-counts.json"
@@ -148,7 +149,8 @@ class ObsConfig:
     max_issue_failures: int = _DEFAULT_MAX_ISSUE_FAILURES
     failure_counts_path: Path = dataclasses.field(
         default_factory=lambda: (
-            Path(_BH_HARNESS_DIR) / _DEFAULT_FAILURE_COUNTS_NAME
+            runtime_state_directory(Path("."), {})
+            / _DEFAULT_FAILURE_COUNTS_NAME
         )
     )
 
@@ -161,47 +163,34 @@ class ObsConfig:
 def load_obs_config() -> ObsConfig:
     """Load observability configuration from environment variables.
 
-    Reads ``BH_*`` environment variables and returns an ``ObsConfig``
-    instance populated with resolved values.  This function NEVER raises
-    — when ``BH_PROJECT_ROOT`` is unset and no path-specific override is
+    Reads ``CODEREEVE_*`` environment variables and returns an ``ObsConfig``
+    instance populated with resolved values. Conflicting aliases or state
+    directories raise before defaults are consumed. When
+    ``CODEREEVE_PROJECT_ROOT`` is unset and no path-specific override is
     provided, path fields fall back to CWD-relative defaults.
 
     An explicitly-set path variable always wins over the
-    ``BH_PROJECT_ROOT``-derived default.
+    ``CODEREEVE_PROJECT_ROOT``-derived default.
 
     Returns:
         A fully-populated ``ObsConfig`` instance.
     """
-    project_root_raw = os.environ.get("BH_PROJECT_ROOT")
-
-    # Derive CWD-relative or project-root-relative defaults.
-    if project_root_raw is not None:
-        _root = Path(project_root_raw)
-        _default_runlog = _root / _BH_HARNESS_DIR / _DEFAULT_RUNLOG_NAME
-        _default_heartbeat = _root / _BH_HARNESS_DIR / _DEFAULT_HEARTBEAT_NAME
-        _default_dispatch_counts = (
-            _root / _BH_HARNESS_DIR / _DEFAULT_DISPATCH_COUNTS_NAME
-        )
-        _default_failure_counts = (
-            _root / _BH_HARNESS_DIR / _DEFAULT_FAILURE_COUNTS_NAME
-        )
-    else:
-        _default_runlog = Path(_BH_HARNESS_DIR) / _DEFAULT_RUNLOG_NAME
-        _default_heartbeat = Path(_BH_HARNESS_DIR) / _DEFAULT_HEARTBEAT_NAME
-        _default_dispatch_counts = (
-            Path(_BH_HARNESS_DIR) / _DEFAULT_DISPATCH_COUNTS_NAME
-        )
-        _default_failure_counts = (
-            Path(_BH_HARNESS_DIR) / _DEFAULT_FAILURE_COUNTS_NAME
-        )
+    values = runtime_environment().values
+    state = runtime_state_directory(
+        Path(values.get("CODEREEVE_PROJECT_ROOT", ".")), values
+    )
+    _default_runlog = state / _DEFAULT_RUNLOG_NAME
+    _default_heartbeat = state / _DEFAULT_HEARTBEAT_NAME
+    _default_dispatch_counts = state / _DEFAULT_DISPATCH_COUNTS_NAME
+    _default_failure_counts = state / _DEFAULT_FAILURE_COUNTS_NAME
 
     # Explicit path overrides always win over derived defaults.
-    runlog_raw = os.environ.get("BH_RUNLOG_PATH")
+    runlog_raw = values.get("CODEREEVE_RUNLOG_PATH")
     runlog_path = (
         Path(runlog_raw) if runlog_raw is not None else _default_runlog
     )
 
-    heartbeat_raw = os.environ.get("BH_HEARTBEAT_FILE")
+    heartbeat_raw = values.get("CODEREEVE_HEARTBEAT_FILE")
     heartbeat_file = (
         Path(heartbeat_raw)
         if heartbeat_raw is not None
@@ -211,60 +200,56 @@ def load_obs_config() -> ObsConfig:
     # Numeric fields: parse from env or use defaults.
     # Each parse is guarded: a non-numeric value logs a WARNING and falls
     # back to the documented default so this function NEVER raises.
-    _rdw_raw = os.environ.get("BH_REDISPATCH_WINDOW_TICKS")
+    _rdw_raw = values.get("CODEREEVE_REDISPATCH_WINDOW_TICKS")
     if _rdw_raw is not None:
         try:
             redispatch_window_ticks = int(_rdw_raw)
         except ValueError:
             _log.warning(
-                "load_obs_config: BH_REDISPATCH_WINDOW_TICKS=%r is not a "
+                "load_obs_config: CODEREEVE_REDISPATCH_WINDOW_TICKS is not a "
                 "valid integer; using default %d",
-                _rdw_raw,
                 _DEFAULT_REDISPATCH_WINDOW_TICKS,
             )
             redispatch_window_ticks = _DEFAULT_REDISPATCH_WINDOW_TICKS
     else:
         redispatch_window_ticks = _DEFAULT_REDISPATCH_WINDOW_TICKS
 
-    _rdm_raw = os.environ.get("BH_REDISPATCH_MAX")
+    _rdm_raw = values.get("CODEREEVE_REDISPATCH_MAX")
     if _rdm_raw is not None:
         try:
             redispatch_max = int(_rdm_raw)
         except ValueError:
             _log.warning(
-                "load_obs_config: BH_REDISPATCH_MAX=%r is not a valid "
+                "load_obs_config: CODEREEVE_REDISPATCH_MAX is not a valid "
                 "integer; using default %d",
-                _rdm_raw,
                 _DEFAULT_REDISPATCH_MAX,
             )
             redispatch_max = _DEFAULT_REDISPATCH_MAX
     else:
         redispatch_max = _DEFAULT_REDISPATCH_MAX
 
-    _mif_raw = os.environ.get("BH_MAX_ISSUE_FAILURES")
+    _mif_raw = values.get("CODEREEVE_MAX_ISSUE_FAILURES")
     if _mif_raw is not None:
         try:
             max_issue_failures = int(_mif_raw)
         except ValueError:
             _log.warning(
-                "load_obs_config: BH_MAX_ISSUE_FAILURES=%r is not a valid "
+                "load_obs_config: CODEREEVE_MAX_ISSUE_FAILURES is not a valid "
                 "integer; using default %d",
-                _mif_raw,
                 _DEFAULT_MAX_ISSUE_FAILURES,
             )
             max_issue_failures = _DEFAULT_MAX_ISSUE_FAILURES
     else:
         max_issue_failures = _DEFAULT_MAX_ISSUE_FAILURES
 
-    _hbs_raw = os.environ.get("BH_HEARTBEAT_STALL_S")
+    _hbs_raw = values.get("CODEREEVE_HEARTBEAT_STALL_S")
     if _hbs_raw is not None:
         try:
             heartbeat_stall_s = float(_hbs_raw)
         except ValueError:
             _log.warning(
-                "load_obs_config: BH_HEARTBEAT_STALL_S=%r is not a valid "
+                "load_obs_config: CODEREEVE_HEARTBEAT_STALL_S is not a valid "
                 "float; using default %.1f",
-                _hbs_raw,
                 _DEFAULT_HEARTBEAT_STALL_S,
             )
             heartbeat_stall_s = _DEFAULT_HEARTBEAT_STALL_S
@@ -272,16 +257,16 @@ def load_obs_config() -> ObsConfig:
         heartbeat_stall_s = _DEFAULT_HEARTBEAT_STALL_S
 
     # Optional string field.
-    heartbeat_ping_url = os.environ.get("BH_HEARTBEAT_PING_URL") or None
+    heartbeat_ping_url = values.get("CODEREEVE_HEARTBEAT_PING_URL") or None
 
     # Durable re-dispatch tally path (env override wins; else derived).
-    _rdc_raw = os.environ.get("BH_REDISPATCH_COUNTS_PATH")
+    _rdc_raw = values.get("CODEREEVE_REDISPATCH_COUNTS_PATH")
     redispatch_counts_path = (
         Path(_rdc_raw) if _rdc_raw is not None else _default_dispatch_counts
     )
 
     # Durable issue-failure tally path (env override wins; else derived).
-    _fc_raw = os.environ.get("BH_FAILURE_COUNTS_PATH")
+    _fc_raw = values.get("CODEREEVE_FAILURE_COUNTS_PATH")
     failure_counts_path = (
         Path(_fc_raw) if _fc_raw is not None else _default_failure_counts
     )
@@ -289,32 +274,30 @@ def load_obs_config() -> ObsConfig:
     # Worktree orphan-GC mode (detect | reclaim).  Unrecognised values log
     # a WARNING and fall back to "detect" (consistent with the never-raise
     # contract and the guarded-parse pattern used for numeric fields above).
-    _wgc_raw = os.environ.get("BH_WORKTREE_GC")
+    _wgc_raw = values.get("CODEREEVE_WORKTREE_GC")
     if _wgc_raw is not None:
         if _wgc_raw in _VALID_WORKTREE_GC:
             worktree_gc: Literal["detect", "reclaim"] = _wgc_raw  # type: ignore[assignment]
         else:
             _log.warning(
-                "load_obs_config: BH_WORKTREE_GC=%r is not a valid value"
+                "load_obs_config: CODEREEVE_WORKTREE_GC is not a valid value"
                 " (expected 'detect' or 'reclaim'); using default 'detect'",
-                _wgc_raw,
             )
             worktree_gc = _DEFAULT_WORKTREE_GC
     else:
         worktree_gc = _DEFAULT_WORKTREE_GC
 
-    # Worker-active progress-stall threshold.  Env: BH_WORKER_PROGRESS_STALL_S.
+    # Worker-active threshold: CODEREEVE_WORKER_PROGRESS_STALL_S.
     # Default 1800.0 s = 6× the 300 s per-turn timeout (max_retry_backoff_ms /
     # config.py:L31).  Guarded parse: never raises; malformed value → WARNING.
-    _wps_raw = os.environ.get("BH_WORKER_PROGRESS_STALL_S")
+    _wps_raw = values.get("CODEREEVE_WORKER_PROGRESS_STALL_S")
     if _wps_raw is not None:
         try:
             worker_progress_stall_s = float(_wps_raw)
         except ValueError:
             _log.warning(
-                "load_obs_config: BH_WORKER_PROGRESS_STALL_S=%r is not a"
+                "load_obs_config: CODEREEVE_WORKER_PROGRESS_STALL_S is not a"
                 " valid float; using default %.1f",
-                _wps_raw,
                 _DEFAULT_WORKER_PROGRESS_STALL_S,
             )
             worker_progress_stall_s = _DEFAULT_WORKER_PROGRESS_STALL_S

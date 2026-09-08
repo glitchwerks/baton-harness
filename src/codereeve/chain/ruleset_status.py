@@ -51,7 +51,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -61,6 +60,12 @@ from typing import cast
 
 from codereeve.chain.identity import Identity, env_for
 from codereeve.chain.subproc import run_cmd
+from codereeve.config_env import runtime_environment
+from codereeve.paths import (
+    PathLayout,
+    runtime_state_directory,
+    select_compatible_file,
+)
 from codereeve.resources import PackageResource, resource
 
 _log = logging.getLogger(__name__)
@@ -934,7 +939,8 @@ def check_ruleset_signals(
             Defaults to a thin ``subprocess.run(["gh", *args], …)``
             wrapper.
         baseline_path: Path to the pinned ruleset baseline JSON.
-            Defaults to ``$BH_PROJECT_ROOT/.bh/ruleset-baseline.json``.
+            Defaults to ``$CODEREEVE_PROJECT_ROOT/.codereeve/``
+            ``ruleset-baseline.json``; existing legacy baselines remain usable.
         admin_role_id: Numeric RepositoryRole id used only to render the
             main ruleset's desired config for comparison (mirrors
             ``ruleset_is_provisioned``'s default; irrelevant to the
@@ -948,12 +954,16 @@ def check_ruleset_signals(
         baseline is pinned for this repo; ``ABSENT``/``ERROR`` on a
         ruleset-not-found or failed gh call for a pinned id.
     """
+    values = runtime_environment().values
     if baseline_path is None:
-        baseline_path = (
-            Path(os.environ["BH_PROJECT_ROOT"])
-            / ".bh"
-            / "ruleset-baseline.json"
-        )
+        project_root = Path(values["CODEREEVE_PROJECT_ROOT"])
+        state = runtime_state_directory(project_root, values)
+        layout = PathLayout.for_environment(project_root, values)
+        baseline_path = select_compatible_file(
+            state / "ruleset-baseline.json",
+            layout.legacy_config.parent / "ruleset-baseline.json",
+            label="ruleset baseline",
+        ).path
 
     baseline_entries = _load_baseline_entries(baseline_path, owner, repo)
     if baseline_entries is None:

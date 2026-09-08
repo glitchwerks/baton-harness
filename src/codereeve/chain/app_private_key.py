@@ -12,6 +12,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Protocol
 
+from codereeve.config_env import AliasConflictError, runtime_environment
+
 _UUID_RE = re.compile(
     r"^[0-9A-Fa-f]{8}-"
     r"[0-9A-Fa-f]{4}-"
@@ -87,26 +89,28 @@ def resolve_app_private_key_config(
         AppPrivateKeyConfigError: If the provider is missing, unsupported,
             malformed, incomplete, or conflicts with the unselected source.
     """
-    provider_value = values.get("BH_GITHUB_APP_KEY_PROVIDER", "")
+    values = runtime_environment(values).values
+    provider_value = values.get("CODEREEVE_GITHUB_APP_KEY_PROVIDER", "")
     if not provider_value:
         raise AppPrivateKeyConfigError(
-            "BH_GITHUB_APP_KEY_PROVIDER is required"
+            "CODEREEVE_GITHUB_APP_KEY_PROVIDER is required"
         )
 
     try:
         provider = AppPrivateKeyProvider(provider_value)
     except ValueError:
         raise AppPrivateKeyConfigError(
-            "BH_GITHUB_APP_KEY_PROVIDER is unsupported"
+            "CODEREEVE_GITHUB_APP_KEY_PROVIDER is unsupported"
         ) from None
 
     bws_secret_id = values.get("BWS_PEM_SECRET_ID", "")
-    file_value = values.get("BH_GITHUB_APP_PRIVATE_KEY_FILE", "")
+    file_value = values.get("CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE", "")
 
     if provider is AppPrivateKeyProvider.BWS:
         if file_value:
             raise AppPrivateKeyConfigError(
-                "conflicting BH_GITHUB_APP_PRIVATE_KEY_FILE for bws provider"
+                "conflicting CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE "
+                "for bws provider"
             )
         if not bws_secret_id or _UUID_RE.fullmatch(bws_secret_id) is None:
             raise AppPrivateKeyConfigError(
@@ -123,12 +127,13 @@ def resolve_app_private_key_config(
         )
     if not file_value:
         raise AppPrivateKeyConfigError(
-            "BH_GITHUB_APP_PRIVATE_KEY_FILE is required for file provider"
+            "CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE is required "
+            "for file provider"
         )
     file_path = Path(file_value)
     if not file_path.is_absolute():
         raise AppPrivateKeyConfigError(
-            "BH_GITHUB_APP_PRIVATE_KEY_FILE must be absolute"
+            "CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE must be absolute"
         )
     return AppPrivateKeyConfig(
         provider=provider,
@@ -337,6 +342,9 @@ def main(argv: list[str]) -> int:
 
     try:
         config = resolve_app_private_key_config(os.environ)
+    except AliasConflictError as exc:
+        print(f"app_private_key: {exc}", file=sys.stderr)
+        return 1
     except AppPrivateKeyConfigError as exc:
         print(f"app_private_key: {exc}", file=sys.stderr)
         return 2

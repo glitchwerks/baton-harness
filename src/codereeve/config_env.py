@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -61,9 +62,7 @@ class _TriviaOnlyAssignments(tuple[Assignment, ...]):
 
     file_trivia: tuple[str, ...]
 
-    def __new__(
-        cls, file_trivia: Sequence[str]
-    ) -> _TriviaOnlyAssignments:
+    def __new__(cls, file_trivia: Sequence[str]) -> _TriviaOnlyAssignments:
         """Create an empty assignment tuple with its source trivia.
 
         Args:
@@ -136,9 +135,7 @@ PRODUCT_ALIASES = (
     AliasSpec("CODEREEVE_APP_AUTH_JWT_CMD", "BH_APP_AUTH_JWT_CMD"),
     AliasSpec("CODEREEVE_APP_AUTH_TOKEN_CMD", "BH_APP_AUTH_TOKEN_CMD"),
     AliasSpec("CODEREEVE_BUILD_DEVELOPMENT", "BH_BUILD_DEVELOPMENT"),
-    AliasSpec(
-        "CODEREEVE_BUILD_SOURCE_REVISION", "BH_BUILD_SOURCE_REVISION"
-    ),
+    AliasSpec("CODEREEVE_BUILD_SOURCE_REVISION", "BH_BUILD_SOURCE_REVISION"),
     AliasSpec("CODEREEVE_BUILD_VERSION", "BH_BUILD_VERSION"),
     AliasSpec("CODEREEVE_DEBUG_CONFIG", "BH_DEBUG_CONFIG"),
     AliasSpec("CODEREEVE_FAILURE_COUNTS_PATH", "BH_FAILURE_COUNTS_PATH"),
@@ -169,9 +166,7 @@ PRODUCT_ALIASES = (
         "BH_PROBE_WORKER_TOKEN_PATH",
     ),
     AliasSpec("CODEREEVE_PROJECT_ROOT", "BH_PROJECT_ROOT"),
-    AliasSpec(
-        "CODEREEVE_REDISPATCH_COUNTS_PATH", "BH_REDISPATCH_COUNTS_PATH"
-    ),
+    AliasSpec("CODEREEVE_REDISPATCH_COUNTS_PATH", "BH_REDISPATCH_COUNTS_PATH"),
     AliasSpec("CODEREEVE_REDISPATCH_MAX", "BH_REDISPATCH_MAX"),
     AliasSpec(
         "CODEREEVE_REDISPATCH_WINDOW_TICKS",
@@ -323,6 +318,52 @@ def resolve_environment(
     return ResolvedEnvironment(resolved, tuple(legacy_uses))
 
 
+def runtime_environment(
+    values: Mapping[str, str] | None = None,
+) -> ResolvedEnvironment:
+    """Capture a conflict-free canonical runtime environment.
+
+    Args:
+        values: Explicit environment, or the current process environment.
+
+    Returns:
+        A canonical snapshot without mutating the source.
+
+    Raises:
+        AliasConflictError: If any product alias pair disagrees.
+    """
+    return resolve_environment(
+        (
+            EnvLayer(
+                "environment", dict(os.environ if values is None else values)
+            ),
+        ),
+        export_legacy=False,
+    )
+
+
+def apply_resolved_environment(
+    resolved: ResolvedEnvironment, target: MutableMapping[str, str]
+) -> None:
+    """Materialize a verified snapshot and temporary aliases at one boundary.
+
+    Args:
+        resolved: Complete conflict-free snapshot produced by the resolver.
+        target: Environment receiving canonical and compatibility values.
+
+    Product aliases absent from the snapshot are removed from the target.
+    Unrelated target keys are retained.
+    """
+    materialized = dict(resolved.values)
+    for alias in PRODUCT_ALIASES:
+        if alias.canonical in materialized:
+            materialized[alias.legacy] = materialized[alias.canonical]
+        else:
+            target.pop(alias.canonical, None)
+            target.pop(alias.legacy, None)
+    target.update(materialized)
+
+
 def rewrite_assignments(
     assignments: Sequence[Assignment],
     *,
@@ -370,9 +411,7 @@ def rewrite_assignments(
         if chosen is None:
             continue
         lines.extend(assignment.leading_trivia)
-        value = _rewrite_path_value(
-            alias.canonical, chosen.value, path_values
-        )
+        value = _rewrite_path_value(alias.canonical, chosen.value, path_values)
         lines.append(
             f"{alias.canonical}={_format_value(value)}{assignment.comment}"
         )
@@ -381,9 +420,7 @@ def rewrite_assignments(
     return "" if not lines else "\n".join(lines) + "\n"
 
 
-def _parse_line(
-    raw: str, source: str, line_number: int
-) -> Assignment | None:
+def _parse_line(raw: str, source: str, line_number: int) -> Assignment | None:
     """Parse one physical line as a blank, comment, or literal assignment."""
     index = _skip_space(raw, 0)
     if index == len(raw) or raw[index] == "#":
@@ -512,9 +549,10 @@ def _reject_unsafe(value: str, source: str, line_number: int) -> None:
 
 def _contains_following_assignment(value: str) -> bool:
     """Return whether an unquoted value embeds a second shell assignment."""
-    return re.search(
-        r"\s+(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=", value
-    ) is not None
+    return (
+        re.search(r"\s+(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=", value)
+        is not None
+    )
 
 
 def _resolve_layer_values(layers: Sequence[EnvLayer]) -> dict[str, str]:

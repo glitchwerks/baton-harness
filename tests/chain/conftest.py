@@ -5,9 +5,18 @@ Autouse fixtures here apply to all tests in tests/chain/.
 
 from __future__ import annotations
 
+import os
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _restore_runtime_environment() -> Iterator[None]:
+    """Restore aliases materialized by runtime entry points between tests."""
+    with patch.dict(os.environ):
+        yield
 
 
 @pytest.fixture(autouse=True)

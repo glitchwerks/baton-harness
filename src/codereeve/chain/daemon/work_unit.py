@@ -75,6 +75,10 @@ from codereeve.chain.registry import RepoConfig
 from codereeve.chain.runlog import RunLog
 from codereeve.chain.scheduler import IssueScheduler
 from codereeve.chain.session_report import SessionReport
+from codereeve.config_env import (
+    apply_resolved_environment,
+    runtime_environment,
+)
 from codereeve.vendor.symphony.config import WorkflowConfig
 from codereeve.vendor.symphony.orchestrator import Orchestrator
 
@@ -330,6 +334,7 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
             only. It is never written to ``os.environ``.
         report: Optional session report receiving work-unit activity.
     """
+    runtime_values = dict(runtime_environment().values)
     owner = repo_cfg.owner
     repo = repo_cfg.repo
     repo_root = repo_cfg.project_root
@@ -438,16 +443,19 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
 
             orch.progress_cb = _progress_cb  # type: ignore[assignment]
 
-        # FIX 4: set BH_VENV once before the loop.  If it is already set by
+        # Set CODEREEVE_VENV before the loop. If it is already set by
         # the launcher, leave it; if unset, derive from the running interpreter
         # so hooks can self-activate the venv.
-        if not os.environ.get("BH_VENV"):
+        if not runtime_values.get("CODEREEVE_VENV"):
             # sys.executable is e.g. /path/to/.venv/Scripts/python.exe;
             # the venv root is one level above the bin/Scripts dir.
             venv_root = str(
                 __import__("pathlib").Path(sys.executable).parent.parent
             )
-            os.environ["BH_VENV"] = venv_root
+            runtime_values["CODEREEVE_VENV"] = venv_root
+        apply_resolved_environment(
+            runtime_environment(runtime_values), os.environ
+        )
 
         while sched.is_active():
             for n in sched.get_ready():
@@ -826,10 +834,13 @@ async def _run_work_unit(  # noqa: C901 (acceptable complexity)
                 )
 
             # Thread cut-point base to hooks via env (VP-1 wiring).
-            os.environ["CHAIN_BASE_BRANCH"] = cut_point
+            runtime_values["CHAIN_BASE_BRANCH"] = cut_point
             # Thread feature branch name to agent env so WORKFLOW.md step 4 can
-            # use --base "$BH_FEATURE_BRANCH" in gh pr create (issue #67).
-            os.environ["BH_FEATURE_BRANCH"] = branch_name
+            # use --base "$CODEREEVE_FEATURE_BRANCH" (issue #67).
+            runtime_values["CODEREEVE_FEATURE_BRANCH"] = branch_name
+            apply_resolved_environment(
+                runtime_environment(runtime_values), os.environ
+            )
 
             # Fetch the Issue object.
             issue_obj = _daemon_mod._fetch_issue_obj(

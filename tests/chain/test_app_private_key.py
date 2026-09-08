@@ -31,7 +31,7 @@ _OPTIONAL_ID = "11111111-2222-3333-4444-555555555555"
 @pytest.mark.parametrize(
     ("values", "match"),
     [
-        ({}, "BH_GITHUB_APP_KEY_PROVIDER"),
+        ({}, "CODEREEVE_GITHUB_APP_KEY_PROVIDER"),
         ({"BH_GITHUB_APP_KEY_PROVIDER": "vault"}, "unsupported"),
         ({"BH_GITHUB_APP_KEY_PROVIDER": "bws"}, "BWS_PEM_SECRET_ID"),
         (

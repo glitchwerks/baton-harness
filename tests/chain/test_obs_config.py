@@ -68,6 +68,14 @@ def _clear_all_obs_vars(monkeypatch: pytest.MonkeyPatch) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _isolated_state_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Keep CWD-relative default tests independent of local runtime state."""
+    monkeypatch.chdir(tmp_path)
+
+
 def test_load_obs_config_defaults_from_project_root(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -77,8 +85,8 @@ def test_load_obs_config_defaults_from_project_root(
 
     cfg = load_obs_config()
 
-    assert cfg.runlog_path == Path("/some/root/.baton-harness/runlog.jsonl")
-    assert cfg.heartbeat_file == Path("/some/root/.baton-harness/heartbeat")
+    assert cfg.runlog_path == Path("/some/root/.codereeve/runlog.jsonl")
+    assert cfg.heartbeat_file == Path("/some/root/.codereeve/heartbeat")
     assert cfg.redispatch_window_ticks == 10
     assert cfg.redispatch_max == 3
     assert cfg.heartbeat_stall_s == 7200.0
@@ -218,8 +226,8 @@ def test_load_obs_config_cwd_relative_defaults_without_project_root(
 
     cfg = load_obs_config()
 
-    assert cfg.runlog_path == Path(".baton-harness/runlog.jsonl")
-    assert cfg.heartbeat_file == Path(".baton-harness/heartbeat")
+    assert cfg.runlog_path == Path(".codereeve/runlog.jsonl")
+    assert cfg.heartbeat_file == Path(".codereeve/heartbeat")
 
 
 def test_load_obs_config_numeric_defaults_without_project_root(
@@ -312,10 +320,10 @@ def test_load_obs_config_malformed_int_uses_default(
     )
     # A WARNING must have been logged for each malformed var.
     warning_text = caplog.text
-    assert "BH_REDISPATCH_MAX" in warning_text, (
+    assert "CODEREEVE_REDISPATCH_MAX" in warning_text, (
         "Expected a WARNING mentioning BH_REDISPATCH_MAX in the log output"
     )
-    assert "BH_REDISPATCH_WINDOW_TICKS" in warning_text, (
+    assert "CODEREEVE_REDISPATCH_WINDOW_TICKS" in warning_text, (
         "Expected a WARNING mentioning BH_REDISPATCH_WINDOW_TICKS in the "
         "log output"
     )
@@ -347,7 +355,7 @@ def test_load_obs_config_malformed_float_uses_default(
         f"got {cfg.heartbeat_stall_s!r}"
     )
     # A WARNING must have been logged for the malformed var.
-    assert "BH_HEARTBEAT_STALL_S" in caplog.text, (
+    assert "CODEREEVE_HEARTBEAT_STALL_S" in caplog.text, (
         "Expected a WARNING mentioning BH_HEARTBEAT_STALL_S in the log output"
     )
 
@@ -363,7 +371,7 @@ def test_load_obs_config_redispatch_counts_path_default_from_root(
     """Default redispatch_counts_path is derived from BH_PROJECT_ROOT.
 
     The path must be
-    ``${BH_PROJECT_ROOT}/.baton-harness/dispatch-counts.json``
+    ``${BH_PROJECT_ROOT}/.codereeve/dispatch-counts.json``
     when BH_REDISPATCH_COUNTS_PATH is unset.
 
     Args:
@@ -375,7 +383,7 @@ def test_load_obs_config_redispatch_counts_path_default_from_root(
     cfg = load_obs_config()
 
     assert cfg.redispatch_counts_path == Path(
-        "/some/root/.baton-harness/dispatch-counts.json"
+        "/some/root/.codereeve/dispatch-counts.json"
     )
 
 
@@ -384,7 +392,7 @@ def test_load_obs_config_redispatch_counts_path_cwd_relative(
 ) -> None:
     """Without BH_PROJECT_ROOT, redispatch_counts_path is CWD-relative.
 
-    Must be ``.baton-harness/dispatch-counts.json`` (mirrors runlog_path
+    Must be ``.codereeve/dispatch-counts.json`` (mirrors runlog_path
     behaviour when BH_PROJECT_ROOT is unset).
 
     Args:
@@ -395,7 +403,7 @@ def test_load_obs_config_redispatch_counts_path_cwd_relative(
     cfg = load_obs_config()
 
     assert cfg.redispatch_counts_path == Path(
-        ".baton-harness/dispatch-counts.json"
+        ".codereeve/dispatch-counts.json"
     )
 
 
@@ -552,7 +560,7 @@ def test_load_obs_config_worktree_gc_garbage_warns_and_falls_back(
         f"Expected fallback worktree_gc='detect' for invalid "
         f"BH_WORKTREE_GC; got {cfg.worktree_gc!r}"
     )
-    assert "BH_WORKTREE_GC" in caplog.text, (
+    assert "CODEREEVE_WORKTREE_GC" in caplog.text, (
         "Expected a WARNING mentioning BH_WORKTREE_GC for the invalid value"
     )
 
@@ -649,7 +657,7 @@ def test_load_obs_config_worker_progress_stall_s_garbage_warns_and_falls_back(
         f"Expected fallback 1800.0 for garbage BH_WORKER_PROGRESS_STALL_S; "
         f"got {cfg.worker_progress_stall_s!r}"  # type: ignore[attr-defined]
     )
-    assert "BH_WORKER_PROGRESS_STALL_S" in caplog.text, (
+    assert "CODEREEVE_WORKER_PROGRESS_STALL_S" in caplog.text, (
         "Expected a WARNING mentioning BH_WORKER_PROGRESS_STALL_S for the "
         "garbage value"
     )

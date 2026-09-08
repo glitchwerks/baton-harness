@@ -67,7 +67,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import signal
 import threading
 from datetime import datetime, timezone
@@ -91,6 +90,8 @@ from codereeve.chain.redispatch import RedispatchTally
 from codereeve.chain.registry import RepoConfig
 from codereeve.chain.runlog import RunLog
 from codereeve.chain.session_report import SessionReport
+from codereeve.config_env import runtime_environment
+from codereeve.paths import runtime_state_directory
 from codereeve.vendor.symphony.config import WorkflowConfig
 from codereeve.vendor.symphony.workspace import WorkspaceManager
 
@@ -151,12 +152,15 @@ def warn_if_async_escalation_unconfigured(obs: ObsConfig) -> None:
     Args:
         obs: Loaded observability config (used to read ``heartbeat_ping_url``).
     """
-    slack_configured = bool(os.environ.get("BH_SLACK_WEBHOOK_URL"))
+    slack_configured = bool(
+        runtime_environment().values.get("CODEREEVE_SLACK_WEBHOOK_URL")
+    )
     ping_configured = obs.heartbeat_ping_url is not None
     if not slack_configured and not ping_configured:
         _log.warning(
             "async failure-signal escalation is unconfigured: neither"
-            " BH_SLACK_WEBHOOK_URL nor BH_HEARTBEAT_PING_URL is set;"
+            " CODEREEVE_SLACK_WEBHOOK_URL nor CODEREEVE_HEARTBEAT_PING_URL"
+            " is set;"
             " an overnight stall will only surface as a GitHub comment."
             " Set one to get a push signal."
         )
@@ -205,6 +209,8 @@ async def run_daemon(
         failure_tally: Optional durable issue-failure tally.  When omitted,
             one is constructed from observability configuration.
     """
+    values = runtime_environment().values
+    state = runtime_state_directory(Path(registry[0].project_root), values)
     if poll_interval_s is None:
         poll_interval_s = config.poll_interval_ms / 1000
 
@@ -298,9 +304,7 @@ async def run_daemon(
     # --- SIGTERM handler (Fix 3 / PR #107): graceful shutdown clears marker.
     # Build the marker path once so both the handler and the finally block
     # reference the same path (single source of truth).
-    _daemon_marker = (
-        Path(registry[0].project_root) / ".baton-harness" / "daemon.alive"
-    )
+    _daemon_marker = state / "daemon.alive"
     _exit_reason: list[str] = ["exception"]
 
     def _sigterm_handler(signum: int, frame: object) -> None:  # noqa: ARG001

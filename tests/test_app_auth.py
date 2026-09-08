@@ -1307,7 +1307,7 @@ class TestCliMissingEnvVars:
 
         captured = capsys.readouterr()
         assert exit_code != 0, "expected a non-zero exit code"
-        assert "BH_GITHUB_APP_ID" in captured.err, (
+        assert "CODEREEVE_GITHUB_APP_ID" in captured.err, (
             f"expected stderr to name the missing var, got {captured.err!r}"
         )
         fetch_mock.assert_not_called()
@@ -1402,7 +1402,7 @@ class TestCliMissingEnvVars:
             jwt_captured = capsys.readouterr()
 
         assert token_exit != 0, "expected token mode to fail: no exit code"
-        assert "BH_GITHUB_APP_INSTALLATION_ID" in token_captured.err
+        assert "CODEREEVE_GITHUB_APP_INSTALLATION_ID" in token_captured.err
         assert jwt_exit == 0, (
             "jwt mode does not require BH_GITHUB_APP_INSTALLATION_ID and "
             f"should have succeeded; stderr={jwt_captured.err!r}"
@@ -1429,7 +1429,7 @@ class TestCliMissingEnvVars:
 
         captured = capsys.readouterr()
         assert exit_code != 0, "expected a non-zero exit for malformed id"
-        assert "BH_GITHUB_APP_INSTALLATION_ID" in captured.err, (
+        assert "CODEREEVE_GITHUB_APP_INSTALLATION_ID" in captured.err, (
             f"expected stderr to name the malformed var, got {captured.err!r}"
         )
         assert _CLI_ACCESS_TOKEN_SENTINEL not in captured.err, (

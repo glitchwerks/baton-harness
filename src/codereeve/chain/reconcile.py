@@ -16,7 +16,7 @@ then raise ``SystemExit(1)``.
 
 The marker file path is::
 
-    <project_root>/.baton-harness/daemon.alive
+    <project_root>/.codereeve/daemon.alive
 
 It is **written** at startup and **cleared** on graceful shutdown by the
 caller (``run_daemon`` finally-block).
@@ -46,6 +46,8 @@ from codereeve.chain.app_auth import (
     resolve_installation_token,
 )
 from codereeve.chain.escalation import alert
+from codereeve.config_env import runtime_environment
+from codereeve.paths import runtime_state_directory
 
 if TYPE_CHECKING:
     from codereeve.chain.obs_config import ObsConfig  # noqa: F401
@@ -177,10 +179,11 @@ async def reconcile_startup(
             ``GITHUB_TOKEN`` env var (legacy / test path).
         report: Optional session report receiving startup findings.
     """
+    values = runtime_environment().values
     owner = repo_cfgs[0].owner
     repo = repo_cfgs[0].repo
     project_root = Path(repo_cfgs[0].project_root)
-    marker = project_root / ".baton-harness" / _ALIVE_MARKER
+    marker = runtime_state_directory(project_root, values) / _ALIVE_MARKER
 
     # ------------------------------------------------------------------
     # G3a: GitHub token validation — FATAL.

@@ -1132,7 +1132,7 @@ def test_expected_config_read_errors_do_not_block_installation(
     if failure_kind == "permission":
         config_path.write_text(_VALID_CONFIG_ENV, encoding="utf-8")
         resolver_patch = patch(
-            "codereeve.chain.doctor.sandbox_config.resolve_config",
+            "codereeve.chain.doctor.sandbox_config.resolve_config_sources",
             side_effect=PermissionError("config access denied"),
         )
     elif failure_kind == "directory":
@@ -1235,7 +1235,8 @@ def test_live_repository_checks_use_explicit_resolved_config_only(
         for command in runner_commands
     )
     assert caller_env == {}
-    assert ctx.env == {}
+    assert ctx.env["CODEREEVE_REPO_OWNER"] == "my-org"
+    assert ctx.env["CODEREEVE_REPO_NAME"] == "my-sandbox"
     assert all(key not in os.environ for key in config_keys)
 
 

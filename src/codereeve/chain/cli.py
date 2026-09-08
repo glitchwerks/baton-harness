@@ -49,6 +49,12 @@ from codereeve.chain.app_private_key import (
 from codereeve.chain.daemon import run_daemon
 from codereeve.chain.identity import Identity, env_for
 from codereeve.chain.registry import load_registry
+from codereeve.config_env import (
+    AliasConflictError,
+    apply_resolved_environment,
+    runtime_environment,
+)
+from codereeve.paths import PathConflictError, runtime_state_directory
 from codereeve.provenance import (
     Provenance,
     ProvenanceError,
@@ -94,6 +100,10 @@ def _doctor_context(config_path: Path | None) -> doctor.DoctorContext:
         run=run_command,
         fetch_secret=bws_client.fetch_secret,
     )
+    if ctx.path_conflict is not None:
+        raise ctx.path_conflict
+    if ctx.project_root:
+        runtime_state_directory(Path(ctx.project_root), ctx.env)
     return ctx
 
 
@@ -169,10 +179,10 @@ def bootstrap_secrets(
 
     global _BOOTSTRAPPED_GH_TOKEN
 
-    access_token = os.environ.get("BWS_ACCESS_TOKEN", "")
     _BOOTSTRAPPED_GH_TOKEN = ""
     try:
-        values = dict(os.environ)
+        values = dict(runtime_environment().values)
+        access_token = values.get("BWS_ACCESS_TOKEN", "")
         if app_private_key_bws_id:
             values["BWS_PEM_SECRET_ID"] = app_private_key_bws_id
         try:
@@ -188,14 +198,19 @@ def bootstrap_secrets(
                 "configuration"
             )
 
-        resolved_app_id = app_id or os.environ.get("BWS_APP_ID", "")
+        resolved_app_id = app_id or values.get(
+            "CODEREEVE_GITHUB_APP_ID", values.get("BWS_APP_ID", "")
+        )
         try:
             resolved_installation_id = installation_id or int(
-                os.environ.get("BWS_INSTALLATION_ID", "0")
+                values.get(
+                    "CODEREEVE_GITHUB_APP_INSTALLATION_ID",
+                    values.get("BWS_INSTALLATION_ID", "0"),
+                )
             )
         except ValueError:
             raise AppAuthError(
-                "BWS_INSTALLATION_ID must be an integer"
+                "CODEREEVE_GITHUB_APP_INSTALLATION_ID must be an integer"
             ) from None
 
         gh_secret_id = os.environ.get("BWS_GH_TOKEN_SECRET_ID", "")
@@ -209,10 +224,13 @@ def bootstrap_secrets(
         heartbeat_secret_id = os.environ.get(
             "BWS_HEARTBEAT_PING_URL_SECRET_ID", ""
         )
-        if heartbeat_secret_id and not os.environ.get("BH_HEARTBEAT_PING_URL"):
-            os.environ["BH_HEARTBEAT_PING_URL"] = bws_client.fetch_secret(
+        if heartbeat_secret_id and not values.get(
+            "CODEREEVE_HEARTBEAT_PING_URL"
+        ):
+            values["CODEREEVE_HEARTBEAT_PING_URL"] = bws_client.fetch_secret(
                 heartbeat_secret_id, access_token=access_token
             )
+            apply_resolved_environment(runtime_environment(values), os.environ)
 
         return build_installation_token_provider(
             app_id=resolved_app_id,
@@ -321,7 +339,7 @@ def main(
         default=None,
         help=(
             "Path to the session report JSON file. Defaults to"
-            " .baton-harness/session-report.json in the managed repo."
+            " .codereeve/session-report.json in the managed repo."
         ),
     )
     parser.add_argument(
@@ -370,7 +388,11 @@ def main(
         return 0
 
     if args.doctor or args.check_vault:
-        ctx = _doctor_context(args.config)
+        try:
+            ctx = _doctor_context(args.config)
+        except (AliasConflictError, PathConflictError) as exc:
+            print(f"{prog}: configuration error: {exc}", file=sys.stderr)
+            return 1
         phases = (
             (doctor.Phase.LIVE,)
             if args.check_vault
@@ -437,17 +459,20 @@ def main(
     from codereeve.chain import sandbox_config as _sandbox_cfg
 
     # One snapshot owns config and pre-bootstrap BWS authority for both gates.
-    gate_ctx = _doctor_context(args.config)
+    try:
+        gate_ctx = _doctor_context(args.config)
+    except (AliasConflictError, PathConflictError) as exc:
+        print(f"{prog}: configuration error: {exc}", file=sys.stderr)
+        return 1
     if not _doctor_gate(
         gate_ctx,
         (doctor.Phase.INSTALLATION, doctor.Phase.CONFIGURATION),
         prog=prog,
     ):
         return 1
+    apply_resolved_environment(runtime_environment(gate_ctx.env), os.environ)
     if gate_ctx.config is not None:
         _sandbox_cfg.apply_config(gate_ctx.config, os.environ)
-        if gate_ctx.project_root:
-            os.environ["BH_PROJECT_ROOT"] = gate_ctx.project_root
 
     # Load registry.
     try:
@@ -458,7 +483,8 @@ def main(
             file=sys.stderr,
         )
         print(
-            "  Set BH_REPO_OWNER, BH_REPO_NAME, and BH_PROJECT_ROOT"
+            "  Set CODEREEVE_REPO_OWNER, CODEREEVE_REPO_NAME,"
+            " and CODEREEVE_PROJECT_ROOT"
             " environment variables before running the daemon.",
             file=sys.stderr,
         )
@@ -477,31 +503,31 @@ def main(
         Path(args.report).resolve()
         if args.report
         else (
-            Path(project_root) / ".baton-harness" / "session-report.json"
+            runtime_state_directory(Path(project_root), gate_ctx.env)
+            / "session-report.json"
         ).resolve()
     )
 
-    # Validate BH_PROJECT_ROOT before attempting to chdir.
+    # Validate CODEREEVE_PROJECT_ROOT before attempting to chdir.
     if not os.path.isdir(project_root):
         print(
-            f"{prog}: error: BH_PROJECT_ROOT does not exist or is not a"
-            f" directory: {project_root}",
+            f"{prog}: error: CODEREEVE_PROJECT_ROOT does not exist"
+            " or is not a directory",
             file=sys.stderr,
         )
         print(
-            "  Set BH_PROJECT_ROOT to the absolute path of the local clone"
+            "  Set CODEREEVE_PROJECT_ROOT to the absolute path of the clone"
             " of the managed repository.",
             file=sys.stderr,
         )
         return 1
 
-    _log.info("%s: chdir to managed repo root: %s", prog, project_root)
+    _log.info("%s: chdir to configured managed repo root", prog)
     try:
         os.chdir(project_root)
-    except (FileNotFoundError, NotADirectoryError, OSError) as exc:
+    except (FileNotFoundError, NotADirectoryError, OSError):
         print(
-            f"{prog}: error: BH_PROJECT_ROOT does not exist or is not a"
-            f" directory: {project_root}: {exc}",
+            f"{prog}: error: unable to enter CODEREEVE_PROJECT_ROOT",
             file=sys.stderr,
         )
         return 1
