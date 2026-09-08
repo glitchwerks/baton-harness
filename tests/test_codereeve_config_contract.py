@@ -614,7 +614,13 @@ def _open_is_read_only(
 def _derived_legacy_writes(
     text: str, *, attribute_prefix: str = "legacy_"
 ) -> set[tuple[str, str]]:
-    """Find common mutations of paths derived from legacy layout fields."""
+    """Find common mutations, retaining uncertainty across nested assignments.
+
+    Only direct function-body assignments establish known modes or clear
+    legacy aliases. Nested blocks may never run, so they invalidate known
+    modes and can add legacy aliases but cannot remove them. This deliberately
+    avoids attempting branch merges or proving all control-flow paths safe.
+    """
     found: set[tuple[str, str]] = set()
     tree = ast.parse(text)
     for function in ast.walk(tree):
@@ -634,7 +640,7 @@ def _derived_legacy_writes(
                 for node in ast.walk(expression)
             )
 
-        # Walk source order, including statements inside conditional blocks.
+        # Source order is used only with conservative nested-block updates.
         for node in sorted(
             ast.walk(function), key=lambda item: getattr(item, "lineno", 0)
         ):
@@ -652,13 +658,15 @@ def _derived_legacy_writes(
                         value = node.value
                         if isinstance(value, ast.Name):
                             value = literals.get(value.id)
-                        if isinstance(value, ast.Constant):
+                        if node in function.body and isinstance(
+                            value, ast.Constant
+                        ):
                             literals[target.id] = value
                         else:
                             literals.pop(target.id, None)
                         if legacy(node.value):
                             aliases.add(target.id)
-                        else:
+                        elif node in function.body:
                             aliases.discard(target.id)
             if isinstance(node, ast.AugAssign) and isinstance(
                 node.target, ast.Name
@@ -753,6 +761,53 @@ def test_legacy_open_modes_require_proven_read_only(
         "    " + line for line in statement.splitlines()
     )
     assert bool(_derived_legacy_writes(text)) is writes
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        "if condition:\n    {assignment}",
+        "for item in items:\n    {assignment}",
+        "while condition:\n    {assignment}",
+        "try:\n    check()\nexcept Exception:\n    {assignment}",
+    ],
+)
+@pytest.mark.parametrize("variable", ["mode", "path"])
+def test_conditional_assignments_keep_possible_legacy_writes(
+    block: str, variable: str
+) -> None:
+    """An optional safe assignment cannot erase the unsafe earlier state."""
+    if variable == "mode":
+        before = 'mode = "w"'
+        assignment = 'mode = "r"'
+        call = "open(layout.legacy_host, mode)"
+    else:
+        before = "path = layout.legacy_host"
+        assignment = "path = layout.canonical_host"
+        call = 'open(path, "w")'
+    statements = "\n".join((before, block.format(assignment=assignment), call))
+    text = "def access():\n" + "\n".join(
+        "    " + line for line in statements.splitlines()
+    )
+    assert _derived_legacy_writes(text) == {("access", "open")}
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        'mode = "w"\nmode = "r"\nopen(layout.legacy_host, mode)',
+        "path = layout.legacy_host\npath = layout.canonical_host\n"
+        'open(path, "w")',
+    ],
+)
+def test_straight_line_safe_assignment_can_clear_legacy_write(
+    statement: str,
+) -> None:
+    """A direct body assignment before the call establishes its safe state."""
+    text = "def access():\n" + "\n".join(
+        "    " + line for line in statement.splitlines()
+    )
+    assert not _derived_legacy_writes(text)
 
 
 def _shell_legacy_lines(
