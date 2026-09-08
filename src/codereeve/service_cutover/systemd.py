@@ -6,6 +6,7 @@ This adapter never treats a process scan or an idle main PID as shutdown proof.
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 import stat
@@ -46,6 +47,65 @@ _PROPERTIES = (
     "ExecStart",
 )
 _ENABLED = {"enabled", "disabled", "masked", "masked-runtime"}
+
+
+def _console_script_is_supported(source: str) -> bool:
+    """Accept only AST-equivalent pip/uv stubs for the two legacy entry points.
+
+    Args:
+        source: Bounded UTF-8 console-script source, never executed.
+
+    Returns:
+        Whether the entire script matches a supported generated stub.
+    """
+    observed = ast.dump(ast.parse(source), include_attributes=False)
+    for module, function in (
+        ("baton_harness.chain.cli", "main"),
+        ("codereeve.legacy_cli", "daemon_main"),
+    ):
+        import_line = f"from {module} import {function}\n"
+        exit_line = f"    sys.exit({function}())\n"
+        guard = "if __name__ == '__main__':\n"
+        pip_cleanup = (
+            "    sys.argv[0] = re.sub(r'(-script\\.pyw|\\.exe)?$', "
+            "'', sys.argv[0])\n"
+        )
+        uv_cleanup = (
+            "    if sys.argv[0].endswith('-script.pyw'):\n"
+            "        sys.argv[0] = sys.argv[0][:-11]\n"
+            "    elif sys.argv[0].endswith('.exe'):\n"
+            "        sys.argv[0] = sys.argv[0][:-4]\n"
+        )
+        for template in (
+            "import re\nimport sys\n"
+            + import_line
+            + guard
+            + pip_cleanup
+            + exit_line,
+            "import re\nimport sys\n"
+            + guard
+            + "    "
+            + import_line
+            + pip_cleanup
+            + exit_line,
+            "import sys\n" + import_line + guard + uv_cleanup + exit_line,
+        ):
+            if observed == ast.dump(
+                ast.parse(template), include_attributes=False
+            ):
+                return True
+    return False
+
+
+def _read_regular_file(path: Path, limit: int) -> bytes:
+    """Read bounded regular-file evidence without executing a launcher."""
+    if not stat.S_ISREG(path.stat().st_mode):
+        raise ValueError
+    with path.open("rb") as stream:
+        content = stream.read(limit + 1)
+    if len(content) > limit:
+        raise ValueError
+    return content
 
 
 def _wall_clock() -> datetime:
@@ -208,6 +268,7 @@ class SystemdBackend:
         temporary_root: Path | None = None,
         wall_clock: Callable[[], datetime] = _wall_clock,
         read_heartbeat: Callable[[Path], str] = _read_heartbeat,
+        filesystem_root: Path = Path("/"),
     ) -> None:
         """Bind bounded commands and explicit host-observation seams.
 
@@ -224,6 +285,7 @@ class SystemdBackend:
             temporary_root: Optional private verification staging parent.
             wall_clock: UTC heartbeat clock.
             read_heartbeat: Bounded regular-file heartbeat reader.
+            filesystem_root: Target root mapping for installed file evidence.
         """
         self.runner = runner
         self.clock = clock
@@ -237,6 +299,7 @@ class SystemdBackend:
         self.temporary_root = temporary_root
         self.wall_clock = wall_clock
         self.read_heartbeat = read_heartbeat
+        self.filesystem_root = filesystem_root
         self._known_groups: dict[str, str] = {}
         self._starts: dict[tuple[int, str], datetime] = {}
         self._owned_jobs: set[str] = set()
@@ -336,14 +399,17 @@ class SystemdBackend:
             ):
                 raise ValueError
             executable = ""
+            executable_argv = ""
             if values["ExecStart"]:
                 match = re.fullmatch(
-                    r"\{ path=(/[^;\\\n]+) ; argv\[\]=[^\n]* \}",
+                    r"\{ path=(/[^;\\\n]+) ; argv\[\]=(.*?)"
+                    r" ; ignore_errors=(?:yes|no) ; [^\n]* \}",
                     values["ExecStart"],
                 )
                 if not match or " ; path=" in values["ExecStart"]:
                     raise ValueError
                 executable = match[1]
+                executable_argv = match[2]
             state = UnitState(
                 name,
                 load,
@@ -359,6 +425,7 @@ class SystemdBackend:
                 executable,
                 values["SubState"],
                 values["Job"],
+                executable_argv,
             )
             if group:
                 expected = f"/system.slice/{name}"
@@ -654,6 +721,11 @@ class SystemdBackend:
         Raises:
             CutoverError: If any required installation evidence is missing.
         """
+        # These paths are ambiguous in the manager's ExecStart text format.
+        if any(
+            character in spec.environment.as_posix() for character in ";\\"
+        ):
+            raise CutoverError("candidate executable path is unsupported")
         old, new = self.inspect(OLD_UNIT), self.inspect(NEW_UNIT)
         if old.load_state == "masked":
             raise CutoverError(
@@ -672,8 +744,10 @@ class SystemdBackend:
             if old.kill_mode != "control-group" or not old.exec_start:
                 raise CutoverError("old service containment is unsupported")
             uids.add(self.uid_for_user(old.user))
-            candidate = Path(spec.environment.as_posix()).resolve()
-            old_environment = Path(old.exec_start).parent.parent.resolve()
+            candidate = self._target_path(
+                spec.environment.as_posix()
+            ).resolve()
+            old_environment = self._legacy_environment(old)
             if candidate == old_environment:
                 raise CutoverError("separate candidate environment required")
             if old.control_group:
@@ -730,6 +804,85 @@ class SystemdBackend:
         self.service_context(spec, canonical=False)
         self.verify_process_ownership(spec, frozenset(uids))
         return PreflightEvidence(old, new, provenance, frozenset(uids))
+
+    def _target_path(self, value: str) -> Path:
+        """Map an absolute target path onto the supplied filesystem root."""
+        path = PurePosixPath(value)
+        if not path.is_absolute() or ".." in path.parts:
+            raise CutoverError("installed executable path is unsupported")
+        return self.filesystem_root.joinpath(*path.parts[1:])
+
+    def _legacy_environment(self, state: UnitState) -> Path:
+        """Prove the direct legacy entry point and interpreter environment.
+
+        Args:
+            state: Complete observed old executable and argument selection.
+
+        Returns:
+            Resolved virtualenv root selected by the script's own shebang.
+
+        Raises:
+            CutoverError: If the launcher or environment is unsupported.
+        """
+        try:
+            selected = PurePosixPath(state.exec_start)
+            argv = state.exec_start_argv.split()
+            if (
+                selected.name != "bh-daemon"
+                or selected.parent.name != "bin"
+                or not argv
+                or argv[0] != state.exec_start
+                or (
+                    len(argv) != 1
+                    and not (
+                        len(argv) == 3
+                        and argv[1] == "--workflow"
+                        and PurePosixPath(argv[2]).is_absolute()
+                    )
+                )
+            ):
+                raise ValueError
+            script = self._target_path(state.exec_start).resolve(strict=True)
+            if script.name != "bh-daemon" or script.parent.name != "bin":
+                raise ValueError
+            source = _read_regular_file(script, 16_384).decode("utf-8")
+            first_line = source.partition("\n")[0]
+            match = re.fullmatch(
+                r"#!(/[^\s;\\]+/bin/python(?:[0-9]+(?:\.[0-9]+)?)?)",
+                first_line,
+            )
+            if not match or not _console_script_is_supported(source):
+                raise ValueError
+            interpreter = self._target_path(match[1])
+            # Keep the invocation path: different venvs may symlink the same
+            # Python binary; their own pyvenv.cfg selects sys.prefix.
+            if (
+                interpreter.parent.resolve(strict=True) != script.parent
+                or not interpreter.is_file()
+            ):
+                raise ValueError
+            # A nested script launcher would invalidate the shebang evidence.
+            # This is a binary-format check, not interpreter attestation.
+            binary = interpreter.resolve(strict=True)
+            if not stat.S_ISREG(binary.stat().st_mode):
+                raise ValueError
+            with binary.open("rb") as stream:
+                if stream.read(4) != b"\x7fELF":
+                    raise ValueError
+            marker = script.parent.parent / "pyvenv.cfg"
+            if marker.is_symlink():
+                raise ValueError
+            config = _read_regular_file(marker, 16_384).decode("utf-8")
+            if not any(
+                line.strip().startswith("home = ")
+                for line in config.splitlines()
+            ):
+                raise ValueError
+            return script.parent.parent
+        except (OSError, ValueError, SyntaxError, UnicodeError, RuntimeError):
+            raise CutoverError(
+                "old executable environment is unproven"
+            ) from None
 
     def service_context(
         self, spec: ServiceSpec, *, canonical: bool

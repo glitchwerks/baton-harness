@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+from conftest import legacy_installation
 
 from codereeve.service_cutover.model import CutoverError, ServiceSpec
 
@@ -34,6 +35,7 @@ def test_inspect_complete_unit_state(backend: SystemdBackend) -> None:
     )
     assert state.enabled_state == "enabled"
     assert state.exec_start == "/opt/old/bin/bh-daemon"
+    assert state.exec_start_argv == "/opt/old/bin/bh-daemon"
     assert backend.inspect("codereeve.service").load_state == "not-found"
 
 
@@ -552,3 +554,286 @@ def test_context_report_schema_is_strict(
     runner.transient_outputs = [json.dumps(raw)]
     with pytest.raises(CutoverError):
         backend.service_context(spec, canonical=False)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "env-wrapper",
+        "python-wrapper",
+        "wrong-argv0",
+        "shebang-candidate",
+        "shebang-other",
+        "shebang-env",
+        "missing-script",
+        "missing-pyvenv",
+        "disguised-wrapper",
+    ],
+)
+def test_old_environment_requires_direct_entrypoint_evidence(
+    backend: SystemdBackend,
+    runner: FakeRunner,
+    spec: ServiceSpec,
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    """Reject wrappers and scripts selecting unverified environments."""
+    root = tmp_path / "host"
+    script = legacy_installation(root)
+    backend.filesystem_root = root
+    group(backend.cgroup_root, "bh-daemon.service", "51\n")
+    runner.transient_outputs = verification_outputs()
+    values = runner.units["bh-daemon.service"]
+    if mutation in {"env-wrapper", "python-wrapper"}:
+        path = (
+            "/usr/bin/env"
+            if mutation == "env-wrapper"
+            else "/opt/new/bin/python"
+        )
+        args = (
+            "/usr/bin/env /opt/new/bin/python -m codereeve daemon"
+            if mutation == "env-wrapper"
+            else "/opt/new/bin/python -m codereeve daemon"
+        )
+        values["ExecStart"] = (
+            f"{{ path={path} ; argv[]={args} ; ignore_errors=no ; "
+            "start_time=[n/a] ; stop_time=[n/a] ; pid=51 ; "
+            "code=(null) ; status=0/0 }"
+        )
+    elif mutation == "wrong-argv0":
+        values["ExecStart"] = values["ExecStart"].replace(
+            "argv[]=/opt/old/bin/bh-daemon", "argv[]=/opt/new/bin/codereeve"
+        )
+    elif mutation.startswith("shebang-"):
+        interpreter = {
+            "shebang-candidate": "/opt/new/bin/python",
+            "shebang-other": "/opt/third/bin/python",
+            "shebang-env": "/usr/bin/env python",
+        }[mutation]
+        script.write_text(
+            script.read_text(encoding="utf-8").replace(
+                "#!/opt/old/bin/python", f"#!{interpreter}"
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
+    elif mutation == "disguised-wrapper":
+        script.write_text(
+            "#!/opt/old/bin/python\nimport os\n"
+            "os.execv('/opt/new/bin/python', ['python', '-m', 'codereeve'])\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+    elif mutation == "missing-script":
+        script.unlink()
+    else:
+        (script.parent.parent / "pyvenv.cfg").unlink()
+    with pytest.raises(CutoverError):
+        backend.preflight(spec)
+    assert not any(
+        call[0] == "systemd-run" or "stop" in call for call in runner.calls
+    )
+
+
+@pytest.mark.parametrize(
+    "value", ["/opt/new;candidate", "/opt/new\\candidate"]
+)
+def test_unobservable_rendered_candidate_refuses_before_mutation(
+    backend: SystemdBackend,
+    runner: FakeRunner,
+    spec: ServiceSpec,
+    value: str,
+) -> None:
+    """Reject renderer-legal paths that observation cannot preserve."""
+    from dataclasses import replace
+    from pathlib import PurePosixPath
+    from typing import cast
+
+    from codereeve.service_cutover.render import render_unit
+
+    candidate = replace(spec, environment=cast(Path, PurePosixPath(value)))
+    assert "ExecStart=" in render_unit(candidate)
+    group(backend.cgroup_root, "bh-daemon.service", "51\n")
+    runner.transient_outputs = verification_outputs()
+    with pytest.raises(CutoverError):
+        backend.preflight(candidate)
+    assert not any(
+        call[0] in {"systemd-run", "systemd-analyze"} or "stop" in call
+        for call in runner.calls
+    )
+
+
+def test_entrypoint_symlink_to_candidate_does_not_hide_environment(
+    backend: SystemdBackend,
+    runner: FakeRunner,
+    spec: ServiceSpec,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Follow the executable alias before interpreting its environment."""
+    root = tmp_path / "host"
+    original = legacy_installation(root)
+    target = root / "opt/new/bin/bh-daemon"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        original.read_text(encoding="utf-8").replace(
+            "/opt/old/bin/python", "/opt/new/bin/python"
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    (target.parent / "python").write_bytes(b"\x7fELFdisposable interpreter")
+    (target.parent.parent / "pyvenv.cfg").write_text(
+        "home = /usr/bin\n", encoding="utf-8"
+    )
+    real_resolve = Path.resolve
+
+    def resolve(path: Path, strict: bool = False) -> Path:
+        return real_resolve(
+            target if path == original else path, strict=strict
+        )
+
+    monkeypatch.setattr(Path, "resolve", resolve)
+    backend.filesystem_root = root
+    group(backend.cgroup_root, "bh-daemon.service", "51\n")
+    runner.transient_outputs = verification_outputs()
+    with pytest.raises(
+        CutoverError, match="separate candidate environment required"
+    ):
+        backend.preflight(spec)
+    assert not any(call[0] == "systemd-run" for call in runner.calls)
+
+
+@pytest.mark.parametrize("template", ["pip", "pip-current", "uv"])
+@pytest.mark.parametrize("entrypoint", ["legacy", "compatibility"])
+def test_standard_installed_console_scripts_are_supported(
+    backend: SystemdBackend,
+    runner: FakeRunner,
+    spec: ServiceSpec,
+    template: str,
+    entrypoint: str,
+) -> None:
+    """Retain source-verified distlib and uv entry points without wrappers."""
+    script = backend.filesystem_root / "opt/old/bin/bh-daemon"
+    source = script.read_text(encoding="utf-8")
+    if template.startswith("pip"):
+        source = (
+            "#!/opt/old/bin/python\nimport re\nimport sys\n"
+            "from baton_harness.chain.cli import main\n"
+            "if __name__ == '__main__':\n"
+            "    sys.argv[0] = re.sub(r'(-script\\.pyw|\\.exe)?$', "
+            "'', sys.argv[0])\n"
+            "    sys.exit(main())\n"
+        )
+        if template == "pip-current":
+            source = source.replace(
+                "from baton_harness.chain.cli import main\n"
+                "if __name__ == '__main__':\n",
+                "if __name__ == '__main__':\n"
+                "    from baton_harness.chain.cli import main\n",
+            )
+    if entrypoint == "compatibility":
+        source = source.replace(
+            "baton_harness.chain.cli import main",
+            "codereeve.legacy_cli import daemon_main",
+        ).replace("sys.exit(main())", "sys.exit(daemon_main())")
+    script.write_text(source, encoding="utf-8", newline="\n")
+    group(backend.cgroup_root, "bh-daemon.service", "51\n")
+    runner.transient_outputs = verification_outputs()
+    assert backend.preflight(spec).old.exec_start == "/opt/old/bin/bh-daemon"
+
+
+def test_legacy_workflow_argument_is_preserved(
+    backend: SystemdBackend,
+    runner: FakeRunner,
+    spec: ServiceSpec,
+) -> None:
+    """Retain the normal legacy installer workflow selection in evidence."""
+    values = runner.units["bh-daemon.service"]
+    values["ExecStart"] = values["ExecStart"].replace(
+        "argv[]=/opt/old/bin/bh-daemon ;",
+        "argv[]=/opt/old/bin/bh-daemon "
+        "--workflow /srv/project/config/WORKFLOW.md ;",
+    )
+    group(backend.cgroup_root, "bh-daemon.service", "51\n")
+    runner.transient_outputs = verification_outputs()
+    evidence = backend.preflight(spec)
+    assert evidence.old.exec_start_argv.endswith(
+        "--workflow /srv/project/config/WORKFLOW.md"
+    )
+
+
+def test_shared_base_python_does_not_merge_virtualenv_identity(
+    backend: SystemdBackend,
+    runner: FakeRunner,
+    spec: ServiceSpec,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Resolve venv roots without equating their shared base interpreter."""
+    root = backend.filesystem_root
+    global_python = root / "usr/bin/python3"
+    global_python.parent.mkdir(parents=True)
+    global_python.write_bytes(b"\x7fELFdisposable base interpreter")
+    interpreters = {root / "opt/old/bin/python", root / "opt/new/bin/python"}
+    real_resolve = Path.resolve
+
+    def resolve(path: Path, strict: bool = False) -> Path:
+        return real_resolve(
+            global_python if path in interpreters else path, strict=strict
+        )
+
+    monkeypatch.setattr(Path, "resolve", resolve)
+    group(backend.cgroup_root, "bh-daemon.service", "51\n")
+    runner.transient_outputs = verification_outputs()
+    assert backend.preflight(spec).old.exec_start == "/opt/old/bin/bh-daemon"
+
+
+def test_nested_interpreter_launcher_is_rejected(
+    backend: SystemdBackend,
+    runner: FakeRunner,
+    spec: ServiceSpec,
+) -> None:
+    """Reject a script named Python that forwards execution to candidate."""
+    interpreter = backend.filesystem_root / "opt/old/bin/python"
+    interpreter.write_bytes(b'#!/bin/sh\nexec /opt/new/bin/python "$@"\n')
+    group(backend.cgroup_root, "bh-daemon.service", "51\n")
+    runner.transient_outputs = verification_outputs()
+    with pytest.raises(
+        CutoverError, match="old executable environment is unproven"
+    ):
+        backend.preflight(spec)
+    assert not any(call[0] == "systemd-run" for call in runner.calls)
+
+
+@pytest.mark.parametrize(
+    "mutation", ["oversized", "syntax", "wrong-import", "extra-code", "crlf"]
+)
+def test_unsupported_console_script_evidence_fails_closed(
+    backend: SystemdBackend,
+    runner: FakeRunner,
+    spec: ServiceSpec,
+    mutation: str,
+) -> None:
+    """Reject unsupported source without executing it."""
+    script = backend.filesystem_root / "opt/old/bin/bh-daemon"
+    source = script.read_text(encoding="utf-8")
+    if mutation == "oversized":
+        source += "#" * 16_384
+    elif mutation == "syntax":
+        source += "("
+    elif mutation == "wrong-import":
+        source = source.replace("baton_harness.chain.cli", "untrusted.wrapper")
+    elif mutation == "extra-code":
+        source += "import subprocess\n"
+    script.write_text(
+        source,
+        encoding="utf-8",
+        newline="\r\n" if mutation == "crlf" else "\n",
+    )
+    group(backend.cgroup_root, "bh-daemon.service", "51\n")
+    runner.transient_outputs = verification_outputs()
+    with pytest.raises(
+        CutoverError, match="old executable environment is unproven"
+    ):
+        backend.preflight(spec)
+    assert not any(call[0] == "systemd-run" for call in runner.calls)

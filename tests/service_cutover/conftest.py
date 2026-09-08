@@ -144,6 +144,7 @@ def backend(tmp_path: Path, runner: FakeRunner) -> object:
     module = importlib.import_module("codereeve.service_cutover.systemd")
     (tmp_path / "cgroup").mkdir()
     (tmp_path / "proc").mkdir()
+    legacy_installation(tmp_path / "host")
     return module.SystemdBackend(
         runner=runner,
         cgroup_root=tmp_path / "cgroup",
@@ -153,4 +154,32 @@ def backend(tmp_path: Path, runner: FakeRunner) -> object:
         trusted_unit=lambda _: None,
         timeout_s=2,
         temporary_root=tmp_path,
+        filesystem_root=tmp_path / "host",
     )
+
+
+def legacy_installation(
+    root: Path, *, shebang: str = "/opt/old/bin/python"
+) -> Path:
+    """Write a disposable legacy console-script and virtualenv marker."""
+    environment = root / "opt/old"
+    (environment / "bin").mkdir(parents=True, exist_ok=True)
+    script = environment / "bin/bh-daemon"
+    script.write_text(
+        f"#!{shebang}\nimport sys\n"
+        "from baton_harness.chain.cli import main\n"
+        "if __name__ == '__main__':\n"
+        "    if sys.argv[0].endswith('-script.pyw'):\n"
+        "        sys.argv[0] = sys.argv[0][:-11]\n"
+        "    elif sys.argv[0].endswith('.exe'):\n"
+        "        sys.argv[0] = sys.argv[0][:-4]\n"
+        "    sys.exit(main())\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (environment / "bin/python").write_bytes(b"\x7fELFdisposable interpreter")
+    (environment / "pyvenv.cfg").write_text(
+        "home = /usr/bin\ninclude-system-site-packages = false\n",
+        encoding="utf-8",
+    )
+    return script

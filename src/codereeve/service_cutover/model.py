@@ -125,6 +125,7 @@ class UnitState:
         exec_start: Absolute executable selected by ExecStart.
         sub_state: Exact runtime substate.
         job: Pending manager job description, empty when none.
+        exec_start_argv: Manager-rendered complete ExecStart argument string.
     """
 
     name: str
@@ -141,3 +142,4 @@ class UnitState:
     exec_start: str = ""
     sub_state: str = ""
     job: str = ""
+    exec_start_argv: str = ""
