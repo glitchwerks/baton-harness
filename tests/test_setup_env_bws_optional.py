@@ -92,6 +92,10 @@ def _make_harness_fixture(tmp_path: Path) -> Path:
     load_config.parent.mkdir(parents=True)
     shutil.copy2(SETUP_ENV, setup)
     shutil.copy2(LOAD_CONFIG, load_config)
+    shutil.copy2(
+        LOAD_CONFIG.with_name("bootstrap-alias.sh"),
+        load_config.with_name("bootstrap-alias.sh"),
+    )
     daemon = harness / ".venv" / "Scripts" / "codereeve"
     daemon.parent.mkdir(parents=True)
     daemon.write_text("test console entry point\n", encoding="utf-8")

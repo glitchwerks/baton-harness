@@ -88,6 +88,10 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CODEREEVE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+# shellcheck source=bin/lib/bootstrap-alias.sh
+source "${SCRIPT_DIR}/lib/bootstrap-alias.sh"
+_codereeve_bootstrap_alias CODEREEVE_SETUP_NO_PROMPT BH_SETUP_NO_PROMPT
+
 # ---------------------------------------------------------------------------
 # Preflight: uv must be on PATH
 # ---------------------------------------------------------------------------

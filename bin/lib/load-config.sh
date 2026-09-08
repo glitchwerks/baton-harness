@@ -1,6 +1,8 @@
 # shellcheck shell=bash
 # Read literal configuration through the installed CodeReeve parser.
 # Source this library; host.env and config.env are never shell programs.
+# Optional arguments are supplied by callers sourcing this library directly.
+# shellcheck disable=SC2120
 _codereeve_load_config() {
     # Bootstrap must reject conflicting spellings before choosing code to run.
     if [[ ${CODEREEVE_VENV+x} && ${BH_VENV+x} && "${CODEREEVE_VENV-}" != "${BH_VENV-}" ]]; then
@@ -109,4 +111,6 @@ _bh_resolve_config_with_reuse_prompt() {
 }
 
 
+# Entrypoint arguments belong to the caller, not to the config bridge.
+# shellcheck disable=SC2119
 _codereeve_load_config

@@ -374,10 +374,14 @@ def _provider_error_message(
 
 
 def _without_empty_values(layer: _SourceLayer) -> _SourceLayer:
-    """Return a layer with empty values removed for fallback selection only."""
+    """Allow empty fallback only for the historical sandbox field set."""
     return _SourceLayer(
         layer.source,
-        {key: value for key, value in layer.values.items() if value},
+        {
+            key: value
+            for key, value in layer.values.items()
+            if value or _canonical_key(key) not in _ENV_OVERRIDABLE_KEYS
+        },
         layer.line_numbers,
         is_environment=layer.is_environment,
     )
@@ -480,6 +484,11 @@ def resolve_config_sources(
             (
                 EnvLayer("operator environment", env),
                 host_layer.as_environment_layer(),
+            ),
+            aliases=tuple(
+                alias
+                for alias in PRODUCT_ALIASES
+                if alias.canonical == "CODEREEVE_PROJECT_ROOT"
             ),
             export_legacy=False,
         )
@@ -588,11 +597,11 @@ def _resolve_config(
 
     all_layers = (
         environment_layer,
-        *additional_layers,
         file_layer,
+        *additional_layers,
     )
     try:
-        resolve_environment(
+        resolved_environment = resolve_environment(
             tuple(layer.as_environment_layer() for layer in all_layers),
             export_legacy=False,
         )
@@ -601,17 +610,19 @@ def _resolve_config(
 
     effective_layers = (
         _without_empty_values(environment_layer),
-        *(_without_empty_values(layer) for layer in additional_layers),
         file_layer,
+        *(_without_empty_values(layer) for layer in additional_layers),
     )
     try:
-        resolved_environment = resolve_environment(
+        # Historical fallback applies only to SandboxConfig construction.
+        # The complete runtime snapshot above retains explicit empty values.
+        sandbox_environment = resolve_environment(
             tuple(layer.as_environment_layer() for layer in effective_layers),
             export_legacy=False,
         )
     except AliasConflictError as exc:
         raise SandboxConfigError(str(exc)) from exc
-    resolved = resolved_environment.values
+    resolved = sandbox_environment.values
 
     for required_key in _REQUIRED_KEYS:
         if not resolved.get(required_key):

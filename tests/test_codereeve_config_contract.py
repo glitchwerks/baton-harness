@@ -160,10 +160,12 @@ def test_all_product_environment_interfaces_are_registered() -> None:
 
 
 def test_shell_configuration_has_only_reviewed_execution_targets() -> None:
-    """Only the loader and explicit authentication hooks execute."""
+    """Only reviewed bootstrap/load helpers and auth hooks execute."""
     allowed = {
         ("source", "${_codereeve_load_config}"),
         ("source", "${_BH_LOAD_CONFIG}"),
+        ("source", "$(dirname ${BASH_SOURCE[0]})/lib/bootstrap-alias.sh"),
+        ("source", "${SCRIPT_DIR}/lib/bootstrap-alias.sh"),
         ("eval", "${CODEREEVE_APP_AUTH_JWT_CMD}"),
         ("eval", "${CODEREEVE_APP_AUTH_TOKEN_CMD}"),
         (".", "$CODEREEVE_VENV/bin/activate"),

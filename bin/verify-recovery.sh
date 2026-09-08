@@ -189,6 +189,8 @@ if [[ ! -f "${WORKFLOW_FILE}" ]]; then
     exit 1
 fi
 
+# The validated NUL bridge exports this internal path during load-config.
+# shellcheck disable=SC2154
 MARKER_PATH="${_codereeve_state_directory}/daemon.alive"
 
 # ---------------------------------------------------------------------------

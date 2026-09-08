@@ -70,7 +70,7 @@ _log = logging.getLogger(__name__)
 
 def publish_baseline(
     project_root: Path, owner_repo: str, entries: dict[str, object]
-) -> None:
+) -> Path:
     """Publish the provisioner's local baseline under the project lease.
 
     Args:
@@ -78,15 +78,21 @@ def publish_baseline(
         owner_repo: Repository slug whose baseline entries are replaced.
         entries: Ruleset IDs and timestamps fetched by the provisioner.
 
+    Returns:
+        The actual canonical or compatibility path published under the lease.
+
     Raises:
         LeaseError: Another cooperative writer owns this project.
         PathConflictError: The destination or an ancestor is unsafe.
         OSError: Reading or publishing the baseline fails.
     """
+    select_runtime_paths(project_root, runtime_environment().values)
     with WriterLease.acquire(
         project_root / ".codereeve-migration.lock", purpose="ruleset baseline"
     ):
-        path = project_root / ".codereeve" / "ruleset-baseline.json"
+        path = select_runtime_paths(
+            project_root, runtime_environment().values
+        ).ruleset_baseline
         validate_safe_file_path(path, label="ruleset baseline")
         try:
             baseline = json.loads(path.read_text(encoding="utf-8"))
@@ -97,6 +103,7 @@ def publish_baseline(
         path.write_text(
             json.dumps(baseline, indent=2) + "\n", encoding="utf-8"
         )
+        return path
 
 
 # ---------------------------------------------------------------------------

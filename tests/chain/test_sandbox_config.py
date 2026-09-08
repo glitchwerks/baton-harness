@@ -1964,7 +1964,8 @@ class TestCanonicalConfigSourceSelection:
         )
         layout.canonical_state.mkdir()
         layout.canonical_config.write_text(
-            _VALID_ENV_CONTENT, encoding="utf-8"
+            _VALID_ENV_CONTENT.replace(f"BH_REPO_OWNER={_OWNER}\n", ""),
+            encoding="utf-8",
         )
 
         with pytest.raises(SandboxConfigError) as exc_info:

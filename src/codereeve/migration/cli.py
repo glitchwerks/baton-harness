@@ -6,6 +6,7 @@ import json
 import os
 import sys
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from pathlib import Path
 
 from codereeve.config_env import (
@@ -18,6 +19,7 @@ from codereeve.config_env import (
     runtime_environment,
 )
 from codereeve.migration.inventory import inventory_migration
+from codereeve.migration.journal import probe_journals
 from codereeve.migration.model import MigrationContext, MigrationReport
 from codereeve.migration.transaction import (
     AppliedMigration,
@@ -254,6 +256,17 @@ def main(
     try:
         context = context_factory()
         if mode == "--check":
+            journals = probe_journals(
+                context.layout.canonical_state.parent / ".codereeve-migration"
+            )
+            context = replace(
+                context,
+                evidence=replace(
+                    context.evidence,
+                    journals=journals.journals,
+                    verified_transactions=journals.verified_transactions,
+                ),
+            )
             report = inventory_migration(context)
             _write(_report_payload(report), output_format)
             return report.exit_code

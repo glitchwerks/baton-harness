@@ -101,6 +101,9 @@ EOF
     print_safety_banner
 }
 
+# shellcheck source=bin/lib/bootstrap-alias.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/bootstrap-alias.sh"
+_codereeve_bootstrap_alias CODEREEVE_SCENARIO BH_SCENARIO
 SCENARIO="${CODEREEVE_SCENARIO:-hello}"
 while [[ $# -gt 0 ]]; do
     case "$1" in

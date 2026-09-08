@@ -213,19 +213,21 @@ async def run_daemon(
         report_path: Optional destination for the daemon session report.
         failure_tally: Optional durable issue-failure tally.  When omitted,
             one is constructed from observability configuration.
-        runtime_paths: CLI-validated locations; direct callers select them
-            before any startup effects when omitted.
+        runtime_paths: Prior CLI selection, retained for call compatibility.
+            Locations are freshly validated before and under the lease.
         writer_lease: Optional live CLI-owned lease, retained by its caller.
     """
+    project = Path(registry[0].project_root)
+    # Reject invalid direct-entry inputs before creating even the lease file.
+    select_runtime_paths(project, runtime_environment().values)
     with WriterLease.hold(
         Path(registry[0].project_root) / ".codereeve-migration.lock",
         purpose="daemon",
         lease=writer_lease,
     ):
         values = runtime_environment().values
-        selected = runtime_paths or select_runtime_paths(
-            Path(registry[0].project_root), values
-        )
+        # Revalidate under the lease instead of trusting a stale CLI snapshot.
+        selected = select_runtime_paths(project, values)
         state = selected.state_directory
         if poll_interval_s is None:
             poll_interval_s = config.poll_interval_ms / 1000

@@ -482,8 +482,7 @@ _capture_baseline() {
         return 0
     fi
 
-    local baseline_dir="${CODEREEVE_PROJECT_ROOT}/.codereeve"
-    local baseline_path="${baseline_dir}/ruleset-baseline.json"
+    local baseline_path
 
     local main_id feat_id
     if ! main_id="$(_lookup_id "harness-main-no-merge")"; then
@@ -509,12 +508,12 @@ _capture_baseline() {
         return 0
     fi
 
-    if ! "${_PYTHON}" -c '
+    if ! baseline_path="$("${_PYTHON}" -c '
 import json, sys
 from pathlib import Path
 from codereeve.chain.ruleset_status import publish_baseline
 
-owner_repo, main_id, main_body, feat_id, feat_body, baseline_path, project_root = sys.argv[1:8]
+owner_repo, main_id, main_body, feat_id, feat_body, project_root = sys.argv[1:7]
 
 
 def _entry(ruleset_id, body):
@@ -522,12 +521,13 @@ def _entry(ruleset_id, body):
     return {"ruleset_id": int(ruleset_id), "updated_at": parsed["updated_at"]}
 
 
-publish_baseline(Path(project_root), owner_repo, {
+path = publish_baseline(Path(project_root), owner_repo, {
     "harness-main-no-merge": _entry(main_id, main_body),
     "harness-feature-daemon-only": _entry(feat_id, feat_body),
 })
+print(path.as_posix())
 
-' "${REPO_SLUG}" "${main_id}" "${main_body}" "${feat_id}" "${feat_body}" "${baseline_path}" "${CODEREEVE_PROJECT_ROOT}"; then
+' "${REPO_SLUG}" "${main_id}" "${main_body}" "${feat_id}" "${feat_body}" "${CODEREEVE_PROJECT_ROOT}")"; then
         echo "provision-ruleset: WARNING — failed to write ruleset baseline (parse/write error); skipping." >&2
         return 0
     fi

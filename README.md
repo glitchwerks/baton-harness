@@ -332,6 +332,14 @@ remain unchanged (#393; `src/codereeve/config_env.py:L158-L193`,
 `src/codereeve/config_env.py:L280-L318`). `.symphony/` remains unchanged (#393;
 `src/codereeve/paths.py:L59-L135`).
 
+Runtime settings retain explicit empty values, including disabled webhooks and
+the safe default for an empty worktree-GC setting. Historical empty fallback
+is limited to validated sandbox identity and secret-locator fields. Baseline
+refreshes preserve the selected legacy state/baseline location until migration,
+and report the actual published path. Setup and sandbox bootstrap accept the
+legacy no-prompt and scenario flags before package Python is available; an
+explicit `--scenario` still takes precedence (#393).
+
 The secrets path override is `CODEREEVE_DAEMON_SECRETS_PATH`;
 `BH_DAEMON_SECRETS_PATH` remains its temporary alias. Migration rewrites only
 the exact old default `/etc/bh-daemon/secrets.env` to
