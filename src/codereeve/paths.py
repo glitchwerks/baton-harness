@@ -126,6 +126,22 @@ def select_compatible_file(
     )
 
 
+def validate_safe_file_path(path: Path, *, label: str) -> bool:
+    """Validate a file path and its existing ancestors without following links.
+
+    Args:
+        path: File path to inspect without opening it.
+        label: Safe human-readable resource type for diagnostics.
+
+    Returns:
+        Whether the final path exists as a regular file.
+
+    Raises:
+        PathConflictError: If the final path or an existing ancestor is unsafe.
+    """
+    return _is_safe_path(path, label, stat.S_IFREG)
+
+
 def select_compatible_directory(
     canonical: Path, legacy: Path, *, label: str
 ) -> SelectedPath:
@@ -168,6 +184,7 @@ def _select_compatible_path(
 
 def _is_safe_path(path: Path, label: str, expected_mode: int) -> bool:
     """Return whether a path exists and is a safe expected filesystem type."""
+    _validate_existing_ancestors(path, label)
     try:
         mode = path.lstat().st_mode
     except FileNotFoundError:
@@ -179,3 +196,19 @@ def _is_safe_path(path: Path, label: str, expected_mode: int) -> bool:
     if stat.S_IFMT(mode) != expected_mode:
         raise PathConflictError(f"unsafe {label} path: {path}")
     return True
+
+
+def _validate_existing_ancestors(path: Path, label: str) -> None:
+    """Reject linked or non-directory ancestors without resolving ``path``."""
+    for ancestor in path.parents:
+        try:
+            mode = ancestor.lstat().st_mode
+        except FileNotFoundError:
+            break
+        except OSError as exc:
+            raise PathConflictError(
+                "unable to inspect "
+                f"{label} ancestor {ancestor}: {type(exc).__name__}"
+            ) from exc
+        if not stat.S_ISDIR(mode):
+            raise PathConflictError(f"unsafe {label} ancestor: {ancestor}")

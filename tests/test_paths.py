@@ -138,6 +138,43 @@ def test_file_selection_rejects_symlink_without_following_it(
         )
 
 
+def test_file_selection_rejects_symlinked_parent_directory(
+    tmp_path: Path,
+) -> None:
+    """A final file is unsafe when its state-directory parent is linked."""
+    target_state = tmp_path / "target-state"
+    target_state.mkdir()
+    (target_state / "config.env").write_text("KEY=value\n", encoding="utf-8")
+    canonical = tmp_path / ".codereeve" / "config.env"
+    try:
+        canonical.parent.symlink_to(target_state, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlinks are unavailable: {exc}")
+
+    with pytest.raises(PathConflictError, match="config"):
+        select_compatible_file(
+            canonical, tmp_path / ".bh" / "config.env", label="config"
+        )
+
+
+def test_file_selection_rejects_linked_parent_without_final_file(
+    tmp_path: Path,
+) -> None:
+    """A missing final file cannot hide an unsafe linked state directory."""
+    target_state = tmp_path / "target-state"
+    target_state.mkdir()
+    canonical = tmp_path / ".codereeve" / "config.env"
+    try:
+        canonical.parent.symlink_to(target_state, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlinks are unavailable: {exc}")
+
+    with pytest.raises(PathConflictError, match="config"):
+        select_compatible_file(
+            canonical, tmp_path / ".bh" / "config.env", label="config"
+        )
+
+
 def test_directory_selection_does_not_consider_symphony_state(
     tmp_path: Path,
 ) -> None:

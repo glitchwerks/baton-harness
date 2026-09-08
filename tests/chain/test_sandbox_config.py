@@ -1847,6 +1847,177 @@ class TestPureConfigResolution:
 class TestCanonicalConfigSourceSelection:
     """Select the 0.2 canonical config with a fail-closed fallback."""
 
+    @pytest.mark.parametrize(
+        ("operator_key", "file_key"),
+        [
+            ("CODEREEVE_REPO_OWNER", "BH_REPO_OWNER"),
+            ("BH_REPO_OWNER", "CODEREEVE_REPO_OWNER"),
+        ],
+    )
+    @pytest.mark.parametrize("is_explicit", [False, True])
+    def test_source_selection_rejects_cross_layer_alias_conflicts(
+        self,
+        tmp_path: Path,
+        operator_key: str,
+        file_key: str,
+        is_explicit: bool,
+    ) -> None:
+        """Explicit and default selection reject either alias direction."""
+        layout = PathLayout.for_environment(tmp_path, {})
+        layout.canonical_state.mkdir()
+        content = _VALID_ENV_CONTENT
+        if file_key.startswith("CODEREEVE_"):
+            content = content.replace("BH_", "CODEREEVE_")
+        layout.canonical_config.write_text(
+            content.replace(f"{file_key}={_OWNER}", f"{file_key}=file-owner"),
+            encoding="utf-8",
+        )
+        environment = {
+            "CODEREEVE_PROJECT_ROOT": str(tmp_path),
+            operator_key: "operator-owner",
+        }
+
+        with pytest.raises(SandboxConfigError) as exc_info:
+            resolve_config_sources(
+                layout.canonical_config if is_explicit else None,
+                environment,
+                layout,
+            )
+
+        message = str(exc_info.value)
+        assert "CODEREEVE_REPO_OWNER" in message
+        assert "BH_REPO_OWNER" in message
+        assert "operator-owner" not in message
+        assert "file-owner" not in message
+
+    @pytest.mark.parametrize(
+        ("environment_key", "file_key"),
+        [
+            ("CODEREEVE_REPO_OWNER", "BH_REPO_OWNER"),
+            ("BH_REPO_OWNER", "CODEREEVE_REPO_OWNER"),
+        ],
+    )
+    def test_explicit_selection_rejects_empty_alias_against_file_alias(
+        self,
+        tmp_path: Path,
+        environment_key: str,
+        file_key: str,
+    ) -> None:
+        """An explicit empty environment alias remains conflict-significant."""
+        explicit = tmp_path / "operator.env"
+        content = _VALID_ENV_CONTENT
+        if file_key.startswith("CODEREEVE_"):
+            content = content.replace("BH_", "CODEREEVE_")
+        explicit.write_text(
+            content.replace(f"{file_key}={_OWNER}", f"{file_key}=file-owner"),
+            encoding="utf-8",
+        )
+        layout = PathLayout.for_environment(tmp_path, {})
+
+        with pytest.raises(SandboxConfigError) as exc_info:
+            resolve_config_sources(explicit, {environment_key: ""}, layout)
+
+        message = str(exc_info.value)
+        assert "CODEREEVE_REPO_OWNER" in message
+        assert "BH_REPO_OWNER" in message
+        assert "file-owner" not in message
+
+    @pytest.mark.parametrize("is_explicit", [False, True])
+    def test_source_selection_reports_legacy_file_key_use(
+        self, tmp_path: Path, is_explicit: bool
+    ) -> None:
+        """Final compatibility records retain legacy keys from config files."""
+        layout = PathLayout.for_environment(tmp_path, {})
+        layout.canonical_state.mkdir()
+        layout.canonical_config.write_text(
+            _VALID_ENV_CONTENT, encoding="utf-8"
+        )
+
+        resolved = resolve_config_sources(
+            layout.canonical_config if is_explicit else None,
+            {"CODEREEVE_PROJECT_ROOT": str(tmp_path)},
+            layout,
+        )
+
+        assert any(
+            use.canonical == "CODEREEVE_REPO_OWNER"
+            and use.legacy == "BH_REPO_OWNER"
+            and use.source == str(layout.canonical_config)
+            for use in resolved.legacy_uses
+        )
+
+    def test_invalid_host_value_reports_canonical_key_source_and_line(
+        self, tmp_path: Path
+    ) -> None:
+        """A selected host value reports its actual source location safely."""
+        layout = PathLayout.for_environment(
+            tmp_path,
+            {"XDG_CONFIG_HOME": str(tmp_path / "xdg")},
+        )
+        layout.canonical_host.parent.mkdir(parents=True)
+        layout.canonical_host.write_text(
+            "BH_REPO_OWNER=invalid owner\n", encoding="utf-8"
+        )
+        layout.canonical_state.mkdir()
+        layout.canonical_config.write_text(
+            _VALID_ENV_CONTENT, encoding="utf-8"
+        )
+
+        with pytest.raises(SandboxConfigError) as exc_info:
+            resolve_config_sources(
+                None,
+                {"CODEREEVE_PROJECT_ROOT": str(tmp_path)},
+                layout,
+            )
+
+        message = str(exc_info.value)
+        assert "CODEREEVE_REPO_OWNER" in message
+        assert f"{layout.canonical_host}:1" in message
+        assert "invalid owner" not in message
+
+    def test_invalid_legacy_environment_override_reports_environment_source(
+        self, tmp_path: Path
+    ) -> None:
+        """A legacy override reports canonical key and environment source."""
+        explicit = tmp_path / "operator.env"
+        explicit.write_text(_VALID_ENV_CONTENT, encoding="utf-8")
+        layout = PathLayout.for_environment(tmp_path, {})
+
+        with pytest.raises(SandboxConfigError) as exc_info:
+            resolve_config_sources(
+                explicit,
+                {"BH_GITHUB_APP_ID": "not-a-number"},
+                layout,
+            )
+
+        message = str(exc_info.value)
+        assert "CODEREEVE_GITHUB_APP_ID" in message
+        assert "environment variable" in message
+        assert "not-a-number" not in message
+        assert str(explicit) not in message
+
+    def test_invalid_canonical_provider_reports_source_and_line(
+        self, tmp_path: Path
+    ) -> None:
+        """Provider validation retains canonical file provenance safely."""
+        explicit = tmp_path / "operator.env"
+        explicit.write_text(
+            _VALID_ENV_CONTENT.replace("BH_", "CODEREEVE_").replace(
+                "CODEREEVE_GITHUB_APP_KEY_PROVIDER=bws",
+                "CODEREEVE_GITHUB_APP_KEY_PROVIDER=unsupported",
+            ),
+            encoding="utf-8",
+        )
+        layout = PathLayout.for_environment(tmp_path, {})
+
+        with pytest.raises(SandboxConfigError) as exc_info:
+            resolve_config_sources(explicit, {}, layout)
+
+        message = str(exc_info.value)
+        assert "CODEREEVE_GITHUB_APP_KEY_PROVIDER" in message
+        assert f"{explicit}:5" in message
+        assert "unsupported" not in message
+
     def test_selects_canonical_config_and_canonical_product_keys(
         self, tmp_path: Path
     ) -> None:
@@ -1920,6 +2091,53 @@ class TestCanonicalConfigSourceSelection:
 
         with pytest.raises(PathConflictError, match="sandbox config"):
             resolve_config_sources(explicit, {}, layout)
+
+    def test_explicit_config_with_symlinked_parent_is_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        """Explicit selection rejects a linked directory before file reads."""
+        target_directory = tmp_path / "target"
+        target_directory.mkdir()
+        (target_directory / "operator.env").write_text(
+            _VALID_ENV_CONTENT, encoding="utf-8"
+        )
+        explicit = tmp_path / "linked" / "operator.env"
+        try:
+            explicit.parent.symlink_to(
+                target_directory, target_is_directory=True
+            )
+        except OSError as exc:
+            pytest.skip(f"symlinks are unavailable: {exc}")
+        layout = PathLayout.for_environment(tmp_path, {})
+
+        with pytest.raises(PathConflictError, match="sandbox config"):
+            resolve_config_sources(explicit, {}, layout)
+
+    def test_default_host_config_with_symlinked_parent_is_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        """Host selection rejects a linked config directory before reads."""
+        xdg_home = tmp_path / "xdg"
+        layout = PathLayout.for_environment(
+            tmp_path,
+            {"XDG_CONFIG_HOME": str(xdg_home)},
+        )
+        target_directory = tmp_path / "target-host"
+        target_directory.mkdir()
+        (target_directory / "host.env").write_text(
+            f"CODEREEVE_PROJECT_ROOT={tmp_path}\n",
+            encoding="utf-8",
+        )
+        xdg_home.mkdir()
+        try:
+            layout.canonical_host.parent.symlink_to(
+                target_directory, target_is_directory=True
+            )
+        except OSError as exc:
+            pytest.skip(f"symlinks are unavailable: {exc}")
+
+        with pytest.raises(PathConflictError, match="host config"):
+            resolve_config_sources(None, {}, layout)
 
     def test_reports_invalid_value_by_key_source_and_line_without_value(
         self, tmp_path: Path
