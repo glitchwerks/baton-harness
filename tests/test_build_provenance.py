@@ -4,7 +4,9 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 import tarfile
+import types
 from hashlib import sha256
 from pathlib import Path
 
@@ -92,6 +94,37 @@ def test_hook_module_loads_without_a_registered_module() -> None:
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+
+
+def test_hook_loads_helper_without_importing_project_package(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The hook works when no installed CodeReeve package is importable."""
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "clean_build_hook", root / "hatch_build.py"
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(
+        sys.modules, "codereeve", types.ModuleType("codereeve")
+    )
+    monkeypatch.delitem(sys.modules, "codereeve.config_env", raising=False)
+    monkeypatch.delitem(
+        sys.modules, "_codereeve_hatch_config_env", raising=False
+    )
+
+    spec.loader.exec_module(module)
+
+    assert (
+        module.resolve_alias_pair(
+            {"CODEREEVE_BUILD_VERSION": "0.2.0"},
+            "CODEREEVE_BUILD_VERSION",
+            "BH_BUILD_VERSION",
+        )
+        == "0.2.0"
+    )
 
 
 def test_standard_identity_requires_and_preserves_assertions(
@@ -406,3 +439,38 @@ def test_legacy_build_variables_remain_compatible(tmp_path: Path) -> None:
         read_head=lambda _root: REVISION,
     )
     assert identity.package_version == "0.2.0"
+
+
+@pytest.mark.parametrize(
+    ("canonical", "legacy", "value", "other"),
+    [
+        (
+            "CODEREEVE_BUILD_VERSION",
+            "BH_BUILD_VERSION",
+            "0.2.0",
+            {"CODEREEVE_BUILD_SOURCE_REVISION": REVISION},
+        ),
+        (
+            "CODEREEVE_BUILD_SOURCE_REVISION",
+            "BH_BUILD_SOURCE_REVISION",
+            REVISION,
+            {"CODEREEVE_BUILD_VERSION": "0.2.0"},
+        ),
+        ("CODEREEVE_BUILD_DEVELOPMENT", "BH_BUILD_DEVELOPMENT", "1", {}),
+    ],
+)
+def test_shared_build_alias_helper_accepts_exact_equal_values(
+    tmp_path: Path,
+    canonical: str,
+    legacy: str,
+    value: str,
+    other: dict[str, str],
+) -> None:
+    """Build aliases share exact, value-safe canonical resolution."""
+    (tmp_path / "uv.lock").write_bytes(LOCK_CONTENT)
+    identity = resolve_build_provenance(
+        tmp_path,
+        {canonical: value, legacy: value, **other},
+        read_head=lambda _root: REVISION,
+    )
+    assert identity.development is (canonical == "CODEREEVE_BUILD_DEVELOPMENT")

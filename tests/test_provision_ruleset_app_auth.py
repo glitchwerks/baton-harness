@@ -8,11 +8,11 @@ router as the seam for this suite, replacing a direct
 ``python -m codereeve.chain.app_auth {jwt|token}`` subprocess call
 so tests do not need real BWS_*/PEM credentials):
 
-  BH_APP_AUTH_JWT_CMD    — if non-empty, run this value as a shell
+  CODEREEVE_APP_AUTH_JWT_CMD    — if non-empty, run this value as a shell
                             command to obtain the App JWT (captured
                             stdout), INSTEAD OF invoking
                             "$_PYTHON" -m codereeve.chain.app_auth jwt.
-  BH_APP_AUTH_TOKEN_CMD  — same, for the installation token, replacing
+  CODEREEVE_APP_AUTH_TOKEN_CMD  — same, for the installation token, replacing
                             "$_PYTHON" -m codereeve.chain.app_auth token.
 
 When either override is unset, the script must fall back to the real
@@ -37,13 +37,13 @@ Coverage:
    credential.
 
 2. Fail-fast — JWT (``test_jwt_cmd_failure_aborts_before_any_gh_call``):
-   ``BH_APP_AUTH_JWT_CMD`` exits non-zero -> script aborts (non-zero
+   ``CODEREEVE_APP_AUTH_JWT_CMD`` exits non-zero -> script aborts (non-zero
    exit) before invoking ``gh`` at all — zero calls in the fake-gh log,
    proving no fallback to ambient auth for the preflight call.
 
 3. Fail-fast — installation token
    (``test_token_cmd_failure_aborts_before_any_repo_scoped_gh_call``):
-   ``BH_APP_AUTH_TOKEN_CMD`` exits non-zero (JWT succeeds) -> script
+   ``CODEREEVE_APP_AUTH_TOKEN_CMD`` exits non-zero (JWT succeeds) -> script
    aborts, zero writes, and zero calls to any ``repos/...``-scoped
    endpoint — regardless of whether the (JWT-only) preflight call had
    already run, proving no fallback to ambient auth for the
@@ -139,11 +139,11 @@ def _invoke(
     Args:
         tmp_path: Pytest-provided temp directory for this test.
         canned_state_dir: Directory containing canned fake-gh responses.
-        jwt_cmd: Value for BH_APP_AUTH_JWT_CMD, or None to leave unset
+        jwt_cmd: Value for CODEREEVE_APP_AUTH_JWT_CMD, or None to leave unset
             (exercising the real-module fallback path).
-        token_cmd: Value for BH_APP_AUTH_TOKEN_CMD, or None to leave
+        token_cmd: Value for CODEREEVE_APP_AUTH_TOKEN_CMD, or None to leave
             unset.
-        admin_role_id: Value of BH_ADMIN_ROLE_ID; a non-default value
+        admin_role_id: Value of CODEREEVE_ADMIN_ROLE_ID; a non-default value
             exercises the custom-repository-roles call.
         custom_roles_body: Optional canned body for
             GET /orgs/.../custom-repository-roles.
@@ -183,14 +183,15 @@ def _invoke(
         not in (
             "GH_TOKEN",
             "GITHUB_TOKEN",
-            "BH_GITHUB_APP_KEY_PROVIDER",
-            "BH_GITHUB_APP_PRIVATE_KEY_FILE",
+            "CODEREEVE_GITHUB_APP_KEY_PROVIDER",
+            "CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE",
             "BWS_PEM_SECRET_ID",
             "BWS_ACCESS_TOKEN",
             "BWS_GH_TOKEN_SECRET_ID",
             "BWS_HEARTBEAT_PING_URL_SECRET_ID",
         )
     }
+    env["XDG_CONFIG_HOME"] = str(tmp_path / "xdg")
     env["PATH"] = os.pathsep.join(
         part
         for part in [
@@ -201,31 +202,31 @@ def _invoke(
         ]
         if part
     )
-    env["BH_REPO_OWNER"] = "fake-owner"
-    env["BH_REPO_NAME"] = "fake-repo"
-    env["BH_GITHUB_APP_ID"] = "111"
-    env["BH_GITHUB_APP_INSTALLATION_ID"] = "999999"
-    env["BH_GITHUB_APP_KEY_PROVIDER"] = "bws"
-    env["BH_ADMIN_ROLE_ID"] = admin_role_id
+    env["CODEREEVE_REPO_OWNER"] = "fake-owner"
+    env["CODEREEVE_REPO_NAME"] = "fake-repo"
+    env["CODEREEVE_GITHUB_APP_ID"] = "111"
+    env["CODEREEVE_GITHUB_APP_INSTALLATION_ID"] = "999999"
+    env["CODEREEVE_GITHUB_APP_KEY_PROVIDER"] = "bws"
+    env["CODEREEVE_ADMIN_ROLE_ID"] = admin_role_id
     env["BH_FAKE_GH_LOG"] = str(log_path)
     env["BH_FAKE_GH_CANNED_DIR"] = str(canned_state_dir)
-    # BH_PROJECT_ROOT deliberately left unset so the optional baseline
+    # CODEREEVE_PROJECT_ROOT deliberately left unset so the optional baseline
     # capture step (unrelated to this suite) is skipped, keeping the
     # expected call set small and deterministic.
-    env.pop("BH_PROJECT_ROOT", None)
+    env.pop("CODEREEVE_PROJECT_ROOT", None)
     env["HOME"] = tmp_path.as_posix()
     env["XDG_CONFIG_HOME"] = (tmp_path / "xdg").as_posix()
     if extra_env:
         env.update(extra_env)
 
     if jwt_cmd is not None:
-        env["BH_APP_AUTH_JWT_CMD"] = jwt_cmd
+        env["CODEREEVE_APP_AUTH_JWT_CMD"] = jwt_cmd
     else:
-        env.pop("BH_APP_AUTH_JWT_CMD", None)
+        env.pop("CODEREEVE_APP_AUTH_JWT_CMD", None)
     if token_cmd is not None:
-        env["BH_APP_AUTH_TOKEN_CMD"] = token_cmd
+        env["CODEREEVE_APP_AUTH_TOKEN_CMD"] = token_cmd
     else:
-        env.pop("BH_APP_AUTH_TOKEN_CMD", None)
+        env.pop("CODEREEVE_APP_AUTH_TOKEN_CMD", None)
 
     try:
         proc = subprocess.run(
@@ -423,7 +424,7 @@ def test_jwt_used_for_app_preflight_and_token_used_for_repo_calls(
 
 
 def test_jwt_cmd_failure_aborts_before_any_gh_call(tmp_path: Path) -> None:
-    """BH_APP_AUTH_JWT_CMD failing must abort before any gh call is made.
+    """A failing JWT command aborts before any gh call.
 
     Proves there is no fallback to ambient gh auth for the preflight
     App-ID check: if the script tolerated the JWT failure and proceeded
@@ -441,7 +442,7 @@ def test_jwt_cmd_failure_aborts_before_any_gh_call(tmp_path: Path) -> None:
     )
 
     assert rc != 0, (
-        f"a failing BH_APP_AUTH_JWT_CMD must abort the script (non-zero "
+        f"a failing JWT command must abort the script (non-zero "
         f"exit), not proceed; rc={rc}\nstdout:\n{stdout}\nstderr:\n{stderr}"
     )
     calls = _calls(log)
@@ -459,7 +460,7 @@ def test_jwt_cmd_failure_aborts_before_any_gh_call(tmp_path: Path) -> None:
 def test_token_cmd_failure_aborts_before_any_repo_scoped_gh_call(
     tmp_path: Path,
 ) -> None:
-    """BH_APP_AUTH_TOKEN_CMD failing must abort before any repos/... call.
+    """A failing token command aborts before repository calls.
 
     The (JWT-only) GET /app preflight call may or may not have already
     run depending on the implementation's internal ordering of the two
@@ -479,7 +480,7 @@ def test_token_cmd_failure_aborts_before_any_repo_scoped_gh_call(
     )
 
     assert rc != 0, (
-        f"a failing BH_APP_AUTH_TOKEN_CMD must abort the script (non-zero "
+        f"a failing token command must abort the script (non-zero "
         f"exit), not proceed; rc={rc}\nstdout:\n{stdout}\nstderr:\n{stderr}"
     )
     calls = _calls(log)
@@ -598,7 +599,7 @@ def test_unset_overrides_fall_back_to_real_app_auth_module(
     )
 
     assert rc != 0, (
-        f"with BH_APP_AUTH_JWT_CMD/BH_APP_AUTH_TOKEN_CMD unset and no "
+        f"with credential commands unset and no "
         f"BWS_* credentials available, the script must fail closed "
         f"(via the real app_auth module's missing-env path), not "
         f"succeed; rc={rc}\nstdout:\n{stdout}\nstderr:\n{stderr}"
@@ -733,14 +734,14 @@ def test_real_app_auth_provider_fallback_precedes_ruleset_mutations(
     key_path.write_bytes(pem)
     key_path.chmod(0o600)
     env = {
-        "BH_GITHUB_APP_KEY_PROVIDER": provider,
+        "CODEREEVE_GITHUB_APP_KEY_PROVIDER": provider,
         "TEST_KEY_PATH": key_path.as_posix(),
     }
     if provider == "bws":
         env["BWS_PEM_SECRET_ID"] = "11111111-1111-1111-1111-111111111111"
         env["BWS_ACCESS_TOKEN"] = "task-six-bws-sentinel"
     else:
-        env["BH_GITHUB_APP_PRIVATE_KEY_FILE"] = key_path.as_posix()
+        env["CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE"] = key_path.as_posix()
     canned = tmp_path / "canned"
     canned.mkdir()
     rc, stdout, stderr, log = _invoke(

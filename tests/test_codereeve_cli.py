@@ -12,6 +12,7 @@ from codereeve import cli
         (["daemon", "--once"], "daemon", ["--once"]),
         (["doctor", "--strict"], "doctor", ["--strict"]),
         (["provenance"], "provenance", []),
+        (["migrate", "--check"], "migrate", ["--check"]),
         (["verify", "--python", "3.13"], "verify", ["--python", "3.13"]),
         (["hook", "after-create"], "hook_after_create", []),
         (["hook", "before-run"], "hook_before_run", []),
@@ -47,6 +48,21 @@ def test_unknown_command_is_usage_error(
     """An unknown top-level command exits with a usage error."""
     assert cli.main(["unknown"]) == 2
     assert "usage: codereeve" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["migrate"],
+        ["migrate", "--check", "--apply"],
+        ["migrate", "--check", "--format=json"],
+        ["migrate", "--apply", "--format", "yaml"],
+        ["migrate", "--checks"],
+    ],
+)
+def test_migrate_rejects_noncanonical_grammar(argv: list[str]) -> None:
+    """The unified router preserves the migration command's closed grammar."""
+    assert cli.main(argv) == 2
 
 
 @pytest.mark.parametrize(
@@ -123,6 +139,7 @@ def test_help_lists_every_command(
         "daemon",
         "doctor",
         "provenance",
+        "migrate",
         "hook after-create",
         "hook before-run",
         "hook after-run",

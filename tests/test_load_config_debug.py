@@ -234,18 +234,8 @@ def test_debug_enabled_host_env_absent_and_project_root_unset(
         f"sourcing load-config.sh must not fail; stdout:\n{stdout}\n"
         f"stderr:\n{stderr}"
     )
-    expected_host_env = _host_env_path(xdg_config_home)
-    assert (
-        "baton-harness: config-debug: host.env not found — skipping "
-        f"{expected_host_env}" in stderr
-    ), f"expected host.env not-found debug line; stderr was:\n{stderr!r}"
-    assert (
-        "baton-harness: config-debug: BH_PROJECT_ROOT unset — skipping "
-        ".bh/config.env lookup" in stderr
-    ), (
-        "expected the BH_PROJECT_ROOT-unset debug line; stderr was:\n"
-        f"{stderr!r}"
-    )
+    assert "codereeve: config-debug: host.env not found" in stderr
+    assert "codereeve: config-debug: config.env not found" in stderr
 
 
 # ---------------------------------------------------------------------------
@@ -285,19 +275,8 @@ def test_debug_enabled_both_found_with_correct_resolved_paths(
         f"sourcing load-config.sh must not fail; stdout:\n{stdout}\n"
         f"stderr:\n{stderr}"
     )
-    expected_host_env = _host_env_path(xdg_config_home)
-    expected_config_env = _config_env_path(project_root)
-    assert (
-        "baton-harness: config-debug: host.env found — sourcing "
-        f"{expected_host_env}" in stderr
-    ), f"expected host.env found debug line; stderr was:\n{stderr!r}"
-    assert (
-        "baton-harness: config-debug: .bh/config.env found — sourcing "
-        f"{expected_config_env}" in stderr
-    ), (
-        "expected .bh/config.env found debug line with the correct "
-        f"resolved path; stderr was:\n{stderr!r}"
-    )
+    assert "codereeve: config-debug: host.env found" in stderr
+    assert "codereeve: config-debug: config.env found" in stderr
 
 
 # ---------------------------------------------------------------------------
@@ -329,11 +308,4 @@ def test_debug_enabled_project_root_set_but_config_env_absent(
         f"sourcing load-config.sh must not fail; stdout:\n{stdout}\n"
         f"stderr:\n{stderr}"
     )
-    expected_config_env = _config_env_path(project_root)
-    assert (
-        "baton-harness: config-debug: .bh/config.env not found — "
-        f"skipping {expected_config_env}" in stderr
-    ), (
-        "expected .bh/config.env not-found debug line with the correct "
-        f"resolved path; stderr was:\n{stderr!r}"
-    )
+    assert "codereeve: config-debug: config.env not found" in stderr

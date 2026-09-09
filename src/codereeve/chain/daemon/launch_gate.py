@@ -40,7 +40,6 @@ lookup rather than a bare local call.
 from __future__ import annotations
 
 import logging
-import os
 import subprocess
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -57,6 +56,7 @@ from codereeve.chain.ruleset_status import (
     RulesetStatus,
 )
 from codereeve.chain.session_report import SessionReport
+from codereeve.config_env import runtime_environment
 from codereeve.vendor.symphony.orchestrator import Orchestrator
 
 from .push_probe import ProbeDenialReason, ProbeResult
@@ -151,7 +151,11 @@ def _should_launch_worker(
     """
     try:
         result = _daemon_mod.check_ruleset_signals(
-            owner, repo, app_id=app_id, runner=runner
+            owner,
+            repo,
+            app_id=app_id,
+            runner=runner,
+            baseline_path=obs.ruleset_baseline_path,
         )
     except subprocess.TimeoutExpired as exc:
         # CodeRabbit PR #253 round 2, finding #5: even with a bound
@@ -376,7 +380,7 @@ def _build_preflight_runner(
 def _resolve_app_id() -> str | None:
     """Resolve the GitHub App ID from the environment.
 
-    Reads ``BH_GITHUB_APP_ID`` from the environment.  Returns ``None``
+    Reads ``CODEREEVE_GITHUB_APP_ID`` from the environment.  Returns ``None``
     (fail-closed) if the variable is absent or empty, logging a critical
     message so operators are informed.
 
@@ -384,16 +388,16 @@ def _resolve_app_id() -> str | None:
         The App ID string if available; ``None`` otherwise.
     """
     try:
-        app_id = os.environ["BH_GITHUB_APP_ID"]
+        app_id = runtime_environment().values["CODEREEVE_GITHUB_APP_ID"]
     except KeyError:
         _log.critical(
-            "daemon: BH_GITHUB_APP_ID is not set; "
+            "daemon: CODEREEVE_GITHUB_APP_ID is not set; "
             "refusing to launch worker (fail-closed)"
         )
         return None
     if not app_id:
         _log.critical(
-            "daemon: BH_GITHUB_APP_ID is empty; "
+            "daemon: CODEREEVE_GITHUB_APP_ID is empty; "
             "refusing to launch worker (fail-closed)"
         )
         return None

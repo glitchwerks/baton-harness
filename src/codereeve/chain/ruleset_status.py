@@ -51,7 +51,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -61,9 +60,51 @@ from typing import cast
 
 from codereeve.chain.identity import Identity, env_for
 from codereeve.chain.subproc import run_cmd
+from codereeve.config_env import runtime_environment
+from codereeve.migration.lease import WriterLease
+from codereeve.paths import select_runtime_paths, validate_safe_file_path
 from codereeve.resources import PackageResource, resource
 
 _log = logging.getLogger(__name__)
+
+
+def publish_baseline(
+    project_root: Path, owner_repo: str, entries: dict[str, object]
+) -> Path:
+    """Publish the provisioner's local baseline under the project lease.
+
+    Args:
+        project_root: Managed project root shared with daemon/migration.
+        owner_repo: Repository slug whose baseline entries are replaced.
+        entries: Ruleset IDs and timestamps fetched by the provisioner.
+
+    Returns:
+        The actual canonical or compatibility path published under the lease.
+
+    Raises:
+        LeaseError: Another cooperative writer owns this project.
+        PathConflictError: The destination or an ancestor is unsafe.
+        OSError: Reading or publishing the baseline fails.
+    """
+    select_runtime_paths(project_root, runtime_environment().values)
+    with WriterLease.acquire(
+        project_root / ".codereeve-migration.lock", purpose="ruleset baseline"
+    ):
+        path = select_runtime_paths(
+            project_root, runtime_environment().values
+        ).ruleset_baseline
+        validate_safe_file_path(path, label="ruleset baseline")
+        try:
+            baseline = json.loads(path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            baseline = {}
+        baseline[owner_repo] = entries
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(baseline, indent=2) + "\n", encoding="utf-8"
+        )
+        return path
+
 
 # ---------------------------------------------------------------------------
 # Packaged defaults remain replaceable with Paths in focused tests.
@@ -934,7 +975,8 @@ def check_ruleset_signals(
             Defaults to a thin ``subprocess.run(["gh", *args], …)``
             wrapper.
         baseline_path: Path to the pinned ruleset baseline JSON.
-            Defaults to ``$BH_PROJECT_ROOT/.bh/ruleset-baseline.json``.
+            Defaults to ``$CODEREEVE_PROJECT_ROOT/.codereeve/``
+            ``ruleset-baseline.json``; existing legacy baselines remain usable.
         admin_role_id: Numeric RepositoryRole id used only to render the
             main ruleset's desired config for comparison (mirrors
             ``ruleset_is_provisioned``'s default; irrelevant to the
@@ -948,12 +990,12 @@ def check_ruleset_signals(
         baseline is pinned for this repo; ``ABSENT``/``ERROR`` on a
         ruleset-not-found or failed gh call for a pinned id.
     """
+    values = runtime_environment().values
     if baseline_path is None:
-        baseline_path = (
-            Path(os.environ["BH_PROJECT_ROOT"])
-            / ".bh"
-            / "ruleset-baseline.json"
-        )
+        project_root = Path(values["CODEREEVE_PROJECT_ROOT"])
+        baseline_path = select_runtime_paths(
+            project_root, values
+        ).ruleset_baseline
 
     baseline_entries = _load_baseline_entries(baseline_path, owner, repo)
     if baseline_entries is None:

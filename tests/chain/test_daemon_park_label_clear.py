@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -35,7 +36,6 @@ from codereeve.vendor.symphony.config import WorkflowConfig
 # Shared helpers — copied from test_daemon.py conventions
 # ---------------------------------------------------------------------------
 
-_REPO_ROOT_FAKE = "/fake/repo"
 _OWNER = "glitchwerks"
 _REPO_NAME = "baton-harness"
 
@@ -65,14 +65,16 @@ def _minimal_wf_config() -> WorkflowConfig:
     )
 
 
-def _repo_cfg() -> RepoConfig:
-    """Return a minimal RepoConfig."""
-    from pathlib import Path
+def _repo_cfg(project_root: Path) -> RepoConfig:
+    """Return a config rooted in an existing temporary directory.
 
+    Args:
+        project_root: Test-owned directory supporting the real writer lease.
+    """
     return RepoConfig(
         owner=_OWNER,
         repo=_REPO_NAME,
-        project_root=Path(_REPO_ROOT_FAKE),
+        project_root=project_root,
     )
 
 
@@ -167,7 +169,9 @@ def _make_run_side_effect(
 # ---------------------------------------------------------------------------
 
 
-def test_parked_seed_clears_agent_in_progress_before_mark_parked() -> None:
+def test_parked_seed_clears_agent_in_progress_before_mark_parked(
+    tmp_path: Path,
+) -> None:
     """parked_seed branch removes agent-in-progress before mark_parked.
 
     Scenario: the daemon crashed after labelling issue #10 with
@@ -232,7 +236,7 @@ def test_parked_seed_clears_agent_in_progress_before_mark_parked() -> None:
         asyncio.run(
             run_daemon(
                 _minimal_wf_config(),
-                [_repo_cfg()],
+                [_repo_cfg(tmp_path)],
                 once=True,
                 poll_interval_s=0,
             )
@@ -264,7 +268,9 @@ def test_parked_seed_clears_agent_in_progress_before_mark_parked() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_ci_gate_reentry_no_pr_clears_agent_in_progress() -> None:
+def test_ci_gate_reentry_no_pr_clears_agent_in_progress(
+    tmp_path: Path,
+) -> None:
     """ci_gate_reentry no-PR branch removes agent-in-progress before park.
 
     Scenario: issue #10 is in ``ci_gate_reentry`` (the daemon was waiting
@@ -370,7 +376,7 @@ def test_ci_gate_reentry_no_pr_clears_agent_in_progress() -> None:
         asyncio.run(
             run_daemon(
                 _minimal_wf_config(),
-                [_repo_cfg()],
+                [_repo_cfg(tmp_path)],
                 once=True,
                 poll_interval_s=0,
             )

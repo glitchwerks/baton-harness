@@ -55,7 +55,89 @@ from codereeve.chain.merge import MergeOutcome
 from codereeve.chain.obs_config import ObsConfig
 from codereeve.chain.recovery import RecoveryResult
 from codereeve.chain.registry import RepoConfig
+from codereeve.migration.lease import (
+    LeaseError,
+    WriterLease,
+    probe_writer_lease,
+)
+from codereeve.migration.model import EvidenceState
 from codereeve.vendor.symphony.config import WorkflowConfig
+
+
+def test_daemon_contention_precedes_all_startup_effects(
+    tmp_path: Path,
+) -> None:
+    """Migration excludes direct daemon calls before writes and network."""
+    lock = tmp_path / ".codereeve-migration.lock"
+    with (
+        WriterLease.acquire(lock, purpose="migration"),
+        patch.object(daemon_mod, "RunLog") as runlog,
+        patch("codereeve.chain.daemon.poll.reconcile_startup") as reconcile,
+        pytest.raises(LeaseError),
+    ):
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [RepoConfig("o", "r", tmp_path)],
+                once=True,
+            )
+        )
+    runlog.assert_not_called()
+    reconcile.assert_not_called()
+    assert not (tmp_path / ".codereeve").exists()
+
+
+@pytest.mark.parametrize("exceptional", [False, True])
+def test_daemon_retains_lease_through_shutdown(
+    tmp_path: Path, exceptional: bool
+) -> None:
+    """Startup and final state writes occur under a lease released on exit."""
+    lock = tmp_path / ".codereeve-migration.lock"
+
+    async def startup(*args: object, **kwargs: object) -> None:
+        """Check ownership before the startup marker can be written."""
+        assert probe_writer_lease(lock) is EvidenceState.BLOCKED
+        if exceptional:
+            raise SystemExit(9)
+
+    def emit(*args: object, **kwargs: object) -> None:
+        """Check runlog writes, including final daemon_stop."""
+        assert probe_writer_lease(lock) is EvidenceState.BLOCKED
+
+    with (
+        patch.object(
+            daemon_mod, "load_obs_config", return_value=_make_obs(tmp_path)
+        ),
+        patch.object(daemon_mod, "RunLog") as runlog,
+        patch.object(
+            daemon_mod, "_poll_and_run", new=AsyncMock(return_value=set())
+        ),
+        patch(
+            "codereeve.chain.daemon.poll.reconcile_startup",
+            side_effect=startup,
+        ),
+        patch("codereeve.chain.daemon.poll.run_heartbeat_loop"),
+    ):
+        runlog.return_value.emit.side_effect = emit
+        if exceptional:
+            with pytest.raises(SystemExit):
+                asyncio.run(
+                    run_daemon(
+                        _minimal_wf_config(),
+                        [RepoConfig("o", "r", tmp_path)],
+                        once=True,
+                    )
+                )
+        else:
+            asyncio.run(
+                run_daemon(
+                    _minimal_wf_config(),
+                    [RepoConfig("o", "r", tmp_path)],
+                    once=True,
+                )
+            )
+    assert probe_writer_lease(lock) is EvidenceState.CLEAR
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -2599,7 +2681,7 @@ class TestRunlogObservabilityWiring:
 
         # The .baton-harness/ directory must exist under tmp_path
         # (mkdir-before-emit requirement).
-        baton_dir = tmp_path / ".baton-harness"
+        baton_dir = tmp_path / ".codereeve"
         assert baton_dir.exists(), (
             f"Expected {baton_dir} to exist after daemon startup "
             f"(RunLog must mkdir parents)"
@@ -11355,3 +11437,138 @@ def test_pre_dispatch_race_excludes_label_on_final_fetch() -> None:
         "fire for an issue excluded by the final pre-dispatch fetch; "
         f"label_edit_calls={label_edit_calls}"
     )
+
+
+def test_daemon_waits_for_tracked_writer_before_releasing_lease(
+    tmp_path: Path,
+) -> None:
+    """A timeout cannot let a still-writing heartbeat outlive the lease."""
+    lock = tmp_path / ".codereeve-migration.lock"
+
+    def joined(timeout: float | None = None) -> None:
+        """Represent the last heartbeat write performed during shutdown."""
+        assert timeout is None
+        assert probe_writer_lease(lock) is EvidenceState.BLOCKED
+        (tmp_path / "last-heartbeat").write_text("stopped")
+
+    with (
+        patch.object(
+            daemon_mod, "load_obs_config", return_value=_make_obs(tmp_path)
+        ),
+        patch.object(
+            daemon_mod, "_poll_and_run", new=AsyncMock(return_value=set())
+        ),
+        patch("codereeve.chain.daemon.poll.threading.Thread") as thread,
+        patch("codereeve.chain.daemon.poll.run_heartbeat_loop"),
+    ):
+        thread.return_value.start.side_effect = lambda: (
+            thread.call_args.kwargs["target"]()
+        )
+        thread.return_value.join.side_effect = joined
+        asyncio.run(
+            run_daemon(
+                _minimal_wf_config(),
+                [RepoConfig("o", "r", tmp_path)],
+                once=True,
+            )
+        )
+    assert (tmp_path / "last-heartbeat").read_text() == "stopped"
+    assert probe_writer_lease(lock) is EvidenceState.CLEAR
+
+
+@pytest.mark.parametrize("initial_interrupt", [False, True])
+@pytest.mark.parametrize("during_join", ["sigterm", "keyboard"])
+def test_shutdown_interrupts_wait_for_writer_acknowledgement(
+    tmp_path: Path, initial_interrupt: bool, during_join: str
+) -> None:
+    """Repeated cleanup interrupts never release a still-writing heartbeat."""
+    import signal
+    import threading
+
+    lock = tmp_path / ".codereeve-migration.lock"
+    finish = threading.Event()
+    observed: list[EvidenceState] = []
+    joins: list[int] = []
+    real_thread = threading.Thread
+    threads: list[threading.Thread] = []
+    original = KeyboardInterrupt("original shutdown")
+    sigterm_handler = signal.getsignal(signal.SIGTERM)
+    sigint_handler = signal.getsignal(signal.SIGINT)
+
+    def heartbeat(*args: object, **kwargs: object) -> None:
+        """Keep the real writer alive until cleanup has seen interruptions."""
+        finish.wait(timeout=10)
+        observed.append(probe_writer_lease(lock))
+        (tmp_path / "heartbeat-finished").write_text("done")
+
+    class InterruptedJoinThread(real_thread):
+        """Model interrupted join and a misleading stopped-thread result."""
+
+        def join(self, timeout: float | None = None) -> None:
+            """Interrupt twice, then return before the writer terminates."""
+            joins.append(1)
+            if len(joins) <= 2:
+                assert probe_writer_lease(lock) is EvidenceState.BLOCKED
+                if during_join == "sigterm":
+                    handler = signal.getsignal(signal.SIGTERM)
+                    assert callable(handler)
+                    handler(signal.SIGTERM, None)
+                    raise SystemExit(0)
+                else:
+                    raise KeyboardInterrupt("cleanup interruption")
+            else:
+                finish.set()
+                # CPython can mark a live thread stopped after an interrupted
+                # join. Returning here must not count as a termination ack.
+
+    def create_thread(*args: object, **kwargs: object) -> threading.Thread:
+        """Retain the real thread so the test can always clean it up."""
+        thread = InterruptedJoinThread(*args, **kwargs)
+        threads.append(thread)
+        return thread
+
+    async def poll(*args: object, **kwargs: object) -> set[int]:
+        """Optionally begin shutdown before cleanup interruptions."""
+        if initial_interrupt:
+            raise original
+        return set()
+
+    try:
+        with (
+            patch.object(
+                daemon_mod, "load_obs_config", return_value=_make_obs(tmp_path)
+            ),
+            patch.object(daemon_mod, "_poll_and_run", side_effect=poll),
+            patch(
+                "codereeve.chain.daemon.poll.run_heartbeat_loop",
+                side_effect=heartbeat,
+            ),
+            patch(
+                "codereeve.chain.daemon.poll.threading.Thread",
+                side_effect=create_thread,
+            ),
+            pytest.raises((KeyboardInterrupt, SystemExit)) as failure,
+        ):
+            asyncio.run(
+                run_daemon(
+                    _minimal_wf_config(),
+                    [RepoConfig("o", "r", tmp_path)],
+                    once=True,
+                )
+            )
+        assert (tmp_path / "heartbeat-finished").exists()
+        assert observed == [EvidenceState.BLOCKED]
+        if initial_interrupt:
+            assert failure.value is original
+        elif during_join == "sigterm":
+            assert isinstance(failure.value, SystemExit)
+            assert failure.value.code == 0
+        else:
+            assert isinstance(failure.value, KeyboardInterrupt)
+        assert probe_writer_lease(lock) is EvidenceState.CLEAR
+    finally:
+        finish.set()
+        for thread in threads:
+            real_thread.join(thread, timeout=10)
+        signal.signal(signal.SIGTERM, sigterm_handler)
+        signal.signal(signal.SIGINT, sigint_handler)

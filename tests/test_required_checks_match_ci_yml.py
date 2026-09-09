@@ -158,6 +158,6 @@ def test_host_setup_opts_into_editable_development_identity() -> None:
     script = (HARNESS / "bin/setup-env.sh").read_text(encoding="utf-8")
     sync_lines = [line for line in script.splitlines() if "uv sync --" in line]
     assert sync_lines == [
-        'BH_BUILD_DEVELOPMENT=1 uv sync --project "${BATON_HARNESS_DIR}" '
+        'CODEREEVE_BUILD_DEVELOPMENT=1 uv sync --project "${CODEREEVE_ROOT}" '
         "--locked --extra dev"
     ]

@@ -1,14 +1,16 @@
-"""Regression tests for provision-ruleset.sh's BH_PROJECT_ROOT prompt.
+"""Regression tests for provision-ruleset.sh's CODEREEVE_PROJECT_ROOT prompt.
 
-When the shared config loader cannot resolve ``BH_PROJECT_ROOT``, an
+When the shared config loader cannot resolve ``CODEREEVE_PROJECT_ROOT``, an
 interactive session prompts once for an absolute project-root path.
-Non-interactive sessions and runs with ``BH_SETUP_NO_PROMPT=1`` continue
+Non-interactive sessions and runs with ``CODEREEVE_SETUP_NO_PROMPT=1`` continue
 to fail closed through the script's missing-environment diagnostic.
 
 The interactive coverage verifies both that the prompted value reaches
-the diagnostic and that ``.bh/config.env`` is loaded from the newly known
+the diagnostic and that ``.codereeve/config.env`` is loaded from the newly
+known
 root before required variables are checked. The latter case supplies only
-``BH_REPO_OWNER`` in that file, proving the prompted-root config contributes
+``CODEREEVE_REPO_OWNER`` in that file, proving the prompted-root config
+contributes
 resolved values without allowing the script to reach live GitHub calls.
 
 The interactive cases use a real pty from ``tests/_bh_pty.py``. Python's
@@ -35,10 +37,10 @@ else:
 _BASH_BIN_DIR = str(Path(_BASH).parent) if Path(_BASH).exists() else ""
 
 _REQUIRED_VARS = (
-    "BH_REPO_OWNER",
-    "BH_REPO_NAME",
-    "BH_GITHUB_APP_ID",
-    "BH_GITHUB_APP_INSTALLATION_ID",
+    "CODEREEVE_REPO_OWNER",
+    "CODEREEVE_REPO_NAME",
+    "CODEREEVE_GITHUB_APP_ID",
+    "CODEREEVE_GITHUB_APP_INSTALLATION_ID",
 )
 
 
@@ -48,13 +50,13 @@ def _isolated_env(tmp_path: Path) -> dict[str, str]:
     Args:
         tmp_path: Pytest-provided temp directory for this test, used to
             build an isolated HOME/XDG_CONFIG_HOME so no real operator
-            host.env on this machine can supply BH_PROJECT_ROOT or the
+            host.env on this machine can supply CODEREEVE_PROJECT_ROOT or the
             required vars and mask the fatal path under test.
 
     Returns:
         A fresh environment dict with HOME/XDG_CONFIG_HOME isolated and
-        BH_PROJECT_ROOT / the required vars / BH_ADMIN_ROLE_ID /
-        BH_DEBUG_CONFIG removed.
+        CODEREEVE_PROJECT_ROOT / the required vars / CODEREEVE_ADMIN_ROLE_ID /
+        CODEREEVE_DEBUG_CONFIG removed.
     """
     home = tmp_path / "isolated_home"
     home.mkdir()
@@ -66,10 +68,10 @@ def _isolated_env(tmp_path: Path) -> dict[str, str]:
         if k
         not in (
             *_REQUIRED_VARS,
-            "BH_PROJECT_ROOT",
-            "BH_ADMIN_ROLE_ID",
-            "BH_DEBUG_CONFIG",
-            "BH_SETUP_NO_PROMPT",
+            "CODEREEVE_PROJECT_ROOT",
+            "CODEREEVE_ADMIN_ROLE_ID",
+            "CODEREEVE_DEBUG_CONFIG",
+            "CODEREEVE_SETUP_NO_PROMPT",
         )
     }
     env["PATH"] = os.pathsep.join(
@@ -81,12 +83,13 @@ def _isolated_env(tmp_path: Path) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Regression guard: non-interactive (BH_SETUP_NO_PROMPT=1) must fail as today
+# Regression guard: non-interactive (CODEREEVE_SETUP_NO_PROMPT=1) must fail
+# as today
 # ---------------------------------------------------------------------------
 
 
 def test_non_interactive_unresolved_root_regression(tmp_path: Path) -> None:
-    """BH_SETUP_NO_PROMPT=1 + unresolved root must keep failing as today.
+    """An unresolved root fails in non-interactive mode.
 
     A plain subprocess pipe already has no tty, so this is really
     confirming the explicit-opt-out flag doesn't change anything -- the
@@ -95,7 +98,7 @@ def test_non_interactive_unresolved_root_regression(tmp_path: Path) -> None:
     import subprocess
 
     env = _isolated_env(tmp_path)
-    env["BH_SETUP_NO_PROMPT"] = "1"
+    env["CODEREEVE_SETUP_NO_PROMPT"] = "1"
 
     proc = subprocess.run(
         [_BASH, str(SCRIPT)],
@@ -109,20 +112,20 @@ def test_non_interactive_unresolved_root_regression(tmp_path: Path) -> None:
 
     assert proc.returncode == 2, (
         f"expected exit 2 for missing required env vars with "
-        f"BH_SETUP_NO_PROMPT=1; got rc={proc.returncode}\n"
+        f"CODEREEVE_SETUP_NO_PROMPT=1; got rc={proc.returncode}\n"
         f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
     )
     assert "provision-ruleset: missing env vars:" in proc.stderr, proc.stderr
-    assert "detail: BH_PROJECT_ROOT=(unset)" in proc.stderr, (
-        "a non-interactive session (even with BH_SETUP_NO_PROMPT=1 "
-        "explicit) must never attempt to prompt for BH_PROJECT_ROOT -- "
+    assert "detail: CODEREEVE_PROJECT_ROOT=(unset)" in proc.stderr, (
+        "a non-interactive session (even with CODEREEVE_SETUP_NO_PROMPT=1 "
+        "explicit) must never attempt to prompt for CODEREEVE_PROJECT_ROOT -- "
         f"it must report (unset) exactly as today; stderr was:\n"
         f"{proc.stderr!r}"
     )
 
 
 # ---------------------------------------------------------------------------
-# RED: interactive session must prompt for and use BH_PROJECT_ROOT
+# RED: interactive session must prompt for and use CODEREEVE_PROJECT_ROOT
 # ---------------------------------------------------------------------------
 
 
@@ -137,12 +140,12 @@ def test_non_interactive_unresolved_root_regression(tmp_path: Path) -> None:
 def test_interactive_session_prompts_for_and_uses_project_root(
     tmp_path: Path,
 ) -> None:
-    """An interactive session must read BH_PROJECT_ROOT from the prompt.
+    """An interactive session must read CODEREEVE_PROJECT_ROOT from the prompt.
 
-    Feeds a fed-but-still-incomplete path (it has no ``.bh/config.env``
+    Feeds a fed-but-still-incomplete path (it has no ``.codereeve/config.env``
     of its own, so the run still ultimately hits the same generic
     missing-vars diagnostic) as the prompt answer. The diagnostic's
-    ``detail: BH_PROJECT_ROOT=`` line must then report that fed path --
+    ``detail: CODEREEVE_PROJECT_ROOT=`` line must then report that fed path --
     proof the value was actually read from the prompt and plumbed into
     the rest of the script's resolution chain, not merely that the run
     failed for the pre-existing reason.
@@ -152,10 +155,10 @@ def test_interactive_session_prompts_for_and_uses_project_root(
     env = _isolated_env(tmp_path)
     fed_root = tmp_path / "operator-entered-root"
     fed_root.mkdir()
-    # Deliberately no .bh/config.env under fed_root -- the required
-    # vars remain unresolved even after BH_PROJECT_ROOT is supplied, so
+    # Deliberately no .codereeve/config.env under fed_root -- the required
+    # vars remain unresolved even after CODEREEVE_PROJECT_ROOT is supplied, so
     # the run still reaches the same familiar fatal diagnostic, just
-    # with a populated BH_PROJECT_ROOT this time.
+    # with a populated CODEREEVE_PROJECT_ROOT this time.
 
     returncode, _pty_output, stderr = run_interactive(
         [_BASH, str(SCRIPT)],
@@ -165,18 +168,18 @@ def test_interactive_session_prompts_for_and_uses_project_root(
     )
 
     assert returncode == 2, (
-        f"expected the same exit 2 fatal diagnostic once BH_PROJECT_ROOT "
+        f"expected exit 2 fatal diagnostic once CODEREEVE_PROJECT_ROOT "
         f"is supplied via the prompt (the required vars are still "
         f"unresolved at that path); got rc={returncode}\nstderr:\n{stderr}"
     )
     expected_root = fed_root.as_posix()
-    assert f"detail: BH_PROJECT_ROOT={expected_root}" in stderr, (
-        "expected the interactively-prompted BH_PROJECT_ROOT value to "
+    assert f"detail: CODEREEVE_PROJECT_ROOT={expected_root}" in stderr, (
+        "expected the interactively-prompted CODEREEVE_PROJECT_ROOT value to "
         "be read and used -- today the script never prompts for it at "
         "all, so this detail line always reports (unset) regardless of "
         f"what is fed on stdin; stderr was:\n{stderr!r}"
     )
-    assert "detail: BH_PROJECT_ROOT=(unset)" not in stderr, (
+    assert "detail: CODEREEVE_PROJECT_ROOT=(unset)" not in stderr, (
         "the prompted value must replace the (unset) default; stderr "
         f"was:\n{stderr!r}"
     )
@@ -198,10 +201,10 @@ def test_interactive_session_loads_config_env_from_prompted_root(
 
     env = _isolated_env(tmp_path)
     fed_root = tmp_path / "operator-entered-root"
-    config_dir = fed_root / ".bh"
+    config_dir = fed_root / ".codereeve"
     config_dir.mkdir(parents=True)
     (config_dir / "config.env").write_text(
-        "BH_REPO_OWNER=some-test-owner\n",
+        "CODEREEVE_REPO_OWNER=some-test-owner\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -220,13 +223,15 @@ def test_interactive_session_loads_config_env_from_prompted_root(
     idx = stderr.find("provision-ruleset: missing env vars:")
     assert idx != -1, f"missing env vars line not found; stderr:\n{stderr!r}"
     missing_line = stderr[idx:].splitlines()[0]
-    assert "BH_REPO_NAME" in missing_line, missing_line
-    assert "BH_GITHUB_APP_ID" in missing_line, missing_line
-    assert "BH_GITHUB_APP_INSTALLATION_ID" in missing_line, missing_line
-    assert "BH_REPO_OWNER" not in missing_line, missing_line
+    assert "CODEREEVE_REPO_NAME" in missing_line, missing_line
+    assert "CODEREEVE_GITHUB_APP_ID" in missing_line, missing_line
+    assert "CODEREEVE_GITHUB_APP_INSTALLATION_ID" in missing_line, missing_line
+    assert "CODEREEVE_REPO_OWNER" not in missing_line, missing_line
 
-    expected_config = f"{fed_root.as_posix()}/.bh/config.env"
-    assert f"detail: .bh/config.env={expected_config} (exists)" in stderr, (
+    expected_config = f"{fed_root.as_posix()}/.codereeve/config.env"
+    assert (
+        f"detail: .codereeve/config.env={expected_config} (exists)" in stderr
+    ), (
         "the diagnostic must identify config.env under the prompted "
         f"root; stderr was:\n{stderr!r}"
     )

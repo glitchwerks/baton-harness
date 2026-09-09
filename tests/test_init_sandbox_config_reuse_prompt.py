@@ -1,23 +1,24 @@
 """Failing tests for bin/init-sandbox.sh config.env overwrite-vs-reuse (#352).
 
 Current bug: ``bin/init-sandbox.sh`` never checks whether
-``${BH_PROJECT_ROOT}/.bh/config.env`` already exists before writing it.
+``${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env`` already exists before
+writing it.
 Confirmed via a black-box run of the real script (pre-seeding
-``.bh/config.env`` with known content, no tty attached): execution
+``.codereeve/config.env`` with known content, no tty attached): execution
 reaches the exact same ``baton-harness: writing sandbox config to
-<path>/.bh/config.env ...`` stdout line whether or not the file was
+<path>/.codereeve/config.env ...`` stdout line whether or not the file was
 already present, and only then fails on the (pre-existing, unrelated)
 non-interactive-session guard. There is no existence check anywhere in
 the sequence.
 
 Target behavior (issue #352, item 1): before writing, the script must
-check for an existing ``.bh/config.env`` and, when interactive, ask
+check for an existing ``.codereeve/config.env`` and, when interactive, ask
 overwrite-vs-reuse; the fresh-init (file-absent) path must be
 unaffected. This suite pins the part of that contract observable
 without a real tty:
 
   - ``test_existing_config_env_write_marker_suppressed_before_overwrite``
-    (RED): with a pre-existing ``.bh/config.env``, the script must not
+    (RED): with a pre-existing ``.codereeve/config.env``, the script must not
     reach the unconditional "writing sandbox config to" step -- an
     existence check must intervene first, either by silently reusing
     (no need to reach the write branch) or by asking a question that
@@ -71,7 +72,7 @@ _VENV_BIN_DIR = str(
 _GH_STUB_SCRIPT = """#!/usr/bin/env bash
 # Minimal gh stub -- see test_init_sandbox_branch_guard.py for the full
 # rationale. Handles exactly the calls init-sandbox.sh issues before
-# the .bh/config.env write step under test.
+# the .codereeve/config.env write step under test.
 set -euo pipefail
 
 if [[ "$1" == "auth" && "$2" == "status" ]]; then
@@ -201,7 +202,7 @@ def _run_init_sandbox(
 
     Args:
         tmp_path: Pytest-provided temp directory for the test.
-        project_root: The local clone to point ``BH_PROJECT_ROOT`` at.
+        project_root: The local clone to point ``CODEREEVE_PROJECT_ROOT`` at.
         input_text: Optional answers for a real POSIX pseudo-terminal.
 
     Returns:
@@ -216,10 +217,10 @@ def _run_init_sandbox(
     xdg_config_home.mkdir(exist_ok=True)
 
     env = _git_env()
-    env.pop("BH_REPO_OWNER", None)
-    env.pop("BH_REPO_NAME", None)
-    env.pop("BH_PROJECT_ROOT", None)
-    env.pop("BH_SCENARIO", None)
+    env.pop("CODEREEVE_REPO_OWNER", None)
+    env.pop("CODEREEVE_REPO_NAME", None)
+    env.pop("CODEREEVE_PROJECT_ROOT", None)
+    env.pop("CODEREEVE_SCENARIO", None)
     env["PATH"] = os.pathsep.join(
         part
         for part in [
@@ -232,12 +233,12 @@ def _run_init_sandbox(
     )
     env["HOME"] = home.as_posix()
     env["XDG_CONFIG_HOME"] = xdg_config_home.as_posix()
-    env["BH_PROJECT_ROOT"] = project_root.as_posix()
-    env["BH_REPO_OWNER"] = "fake-owner"
-    env["BH_REPO_NAME"] = "fake-repo"
-    env["BH_SCENARIO"] = "recovery"
+    env["CODEREEVE_PROJECT_ROOT"] = project_root.as_posix()
+    env["CODEREEVE_REPO_OWNER"] = "fake-owner"
+    env["CODEREEVE_REPO_NAME"] = "fake-repo"
+    env["CODEREEVE_SCENARIO"] = "recovery"
     env["FAKE_GH_DEFAULT_BRANCH"] = "main"
-    env.pop("BH_SETUP_NO_PROMPT", None)
+    env.pop("CODEREEVE_SETUP_NO_PROMPT", None)
 
     if input_text is not None:
         from tests._bh_pty import run_interactive
@@ -270,7 +271,7 @@ def test_existing_config_env_write_marker_suppressed_before_overwrite(
 
     Black-box confirmed today: with no existence check at all, the
     script reaches "baton-harness: writing sandbox config to ..."
-    regardless of whether ``.bh/config.env`` already has content, and
+    regardless of whether ``.codereeve/config.env`` already has content, and
     only fails afterward because this subprocess has no tty. Once an
     existence check is added ahead of the write (issue #352 item 1),
     that exact marker must no longer appear on this path -- either
@@ -280,10 +281,12 @@ def test_existing_config_env_write_marker_suppressed_before_overwrite(
     marker must be gone.
     """
     _origin, project_root = _make_origin_and_clone(tmp_path)
-    bh_dir = project_root / ".bh"
+    bh_dir = project_root / ".codereeve"
     bh_dir.mkdir()
     (bh_dir / "config.env").write_text(
-        "BH_GITHUB_APP_ID=preexisting123\n", encoding="utf-8", newline="\n"
+        "CODEREEVE_GITHUB_APP_ID=preexisting123\n",
+        encoding="utf-8",
+        newline="\n",
     )
 
     proc = _run_init_sandbox(tmp_path, project_root)
@@ -297,7 +300,7 @@ def test_existing_config_env_write_marker_suppressed_before_overwrite(
         f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
     )
     assert "writing sandbox config to" not in proc.stdout, (
-        "the script must check for an existing .bh/config.env BEFORE "
+        "the script must check for an existing .codereeve/config.env BEFORE "
         "reaching the unconditional overwrite step -- issue #352 item "
         "1 requires this check to run ahead of the write regardless of "
         "the eventual choice (reuse or overwrite)\n"
@@ -316,9 +319,9 @@ def test_existing_config_env_bytes_unchanged_when_run_non_interactively(
     the new existence check lands.
     """
     _origin, project_root = _make_origin_and_clone(tmp_path)
-    bh_dir = project_root / ".bh"
+    bh_dir = project_root / ".codereeve"
     bh_dir.mkdir()
-    original_bytes = b"BH_GITHUB_APP_ID=preexisting123\n"
+    original_bytes = b"CODEREEVE_GITHUB_APP_ID=preexisting123\n"
     (bh_dir / "config.env").write_bytes(original_bytes)
 
     proc = _run_init_sandbox(tmp_path, project_root)
@@ -349,7 +352,7 @@ def test_absent_config_env_regression_reaches_write_step(
     existence-check refactor.
     """
     _origin, project_root = _make_origin_and_clone(tmp_path)
-    # Deliberately no .bh/config.env under project_root.
+    # Deliberately no .codereeve/config.env under project_root.
 
     proc = _run_init_sandbox(tmp_path, project_root)
 
@@ -382,7 +385,7 @@ def _new_provider_config(tmp_path: Path, answers: str) -> tuple[str, str]:
         tmp_path, project, input_text="111\n999999\n" + answers
     )
     assert result.returncode == 0, result.stderr
-    return (project / ".bh/config.env").read_text(), result.stderr
+    return (project / ".codereeve/config.env").read_text(), result.stderr
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX pty required")
@@ -393,12 +396,12 @@ def test_new_bws_config_writes_explicit_provider_and_only_bws_source(
     config, prompts = _new_provider_config(
         tmp_path, "bws\n11111111-1111-1111-1111-111111111111\n\n\n"
     )
-    assert "export BH_GITHUB_APP_KEY_PROVIDER=bws\n" in config
+    assert "export CODEREEVE_GITHUB_APP_KEY_PROVIDER=bws\n" in config
     assert (
         "export BWS_PEM_SECRET_ID='11111111-1111-1111-1111-111111111111'\n"
         in config
     )
-    assert "BH_GITHUB_APP_PRIVATE_KEY_FILE" not in config + prompts
+    assert "CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE" not in config + prompts
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX pty required")
@@ -443,7 +446,7 @@ def test_bws_config_sources_uuid_without_command_execution(
             "-c",
             'source "$1"; printf "%s" "$BWS_PEM_SECRET_ID"',
             "bash",
-            str(project / ".bh/config.env"),
+            str(project / ".codereeve/config.env"),
         ],
         capture_output=True,
         text=True,
@@ -468,7 +471,7 @@ def test_bws_provider_read_eof_fails_closed_without_config(
     )
     assert result.returncode != 0
     assert "could not read BWS PEM secret UUID" in result.stderr
-    assert not (project / ".bh/config.env").exists()
+    assert not (project / ".codereeve/config.env").exists()
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX pty required")
@@ -479,10 +482,10 @@ def test_new_file_config_writes_explicit_provider_and_only_absolute_file_source(
     config, prompts = _new_provider_config(
         tmp_path, "file\n/run/credentials/app.pem\n\n\n"
     )
-    assert "export BH_GITHUB_APP_KEY_PROVIDER=file\n" in config
+    assert "export CODEREEVE_GITHUB_APP_KEY_PROVIDER=file\n" in config
     assert (
-        "export BH_GITHUB_APP_PRIVATE_KEY_FILE='/run/credentials/app.pem'\n"
-        in config
+        "export CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE="
+        "'/run/credentials/app.pem'\n" in config
     )
     assert "BWS_PEM_SECRET_ID" not in config + prompts
 
@@ -496,7 +499,8 @@ def test_file_provider_reprompts_relative_path(tmp_path: Path) -> None:
     assert "absolute path" in prompts
     assert "relative.pem" not in config
     assert (
-        "BH_GITHUB_APP_PRIVATE_KEY_FILE='/run/credentials/app.pem'\n" in config
+        "CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE='/run/credentials/app.pem'\n"
+        in config
     )
 
 
@@ -513,7 +517,8 @@ def test_file_provider_reprompts_path_containing_single_quote(
     assert "single quote" in prompts
     assert "app'unsafe.pem" not in config
     assert (
-        "BH_GITHUB_APP_PRIVATE_KEY_FILE='/run/credentials/app.pem'\n" in config
+        "CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE='/run/credentials/app.pem'\n"
+        in config
     )
 
 
@@ -536,9 +541,10 @@ def test_file_config_sources_literal_path_without_command_execution(
         [
             _BASH,
             "-c",
-            'source "$1"; printf "%s" "$BH_GITHUB_APP_PRIVATE_KEY_FILE"',
+            'source "$1"; printf "%s" '
+            '"$CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE"',
             "bash",
-            str(project / ".bh/config.env"),
+            str(project / ".codereeve/config.env"),
         ],
         capture_output=True,
         text=True,
@@ -560,7 +566,7 @@ def test_unknown_provider_reprompts_without_writing_config(
     )
     assert "bws or file" in prompts
     assert "vault" not in config
-    assert "BH_GITHUB_APP_KEY_PROVIDER=file\n" in config
+    assert "CODEREEVE_GITHUB_APP_KEY_PROVIDER=file\n" in config
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX pty required")
@@ -570,5 +576,5 @@ def test_generated_config_never_contains_pem_contents(tmp_path: Path) -> None:
         tmp_path,
         "file\n/run/credentials/app.pem\n\n\n-----BEGIN PRIVATE KEY-----\n",
     )
-    assert "BH_GITHUB_APP_KEY_PROVIDER=file\n" in config
+    assert "CODEREEVE_GITHUB_APP_KEY_PROVIDER=file\n" in config
     assert "PRIVATE KEY" not in config

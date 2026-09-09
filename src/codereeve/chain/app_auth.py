@@ -48,6 +48,7 @@ from codereeve.chain.app_private_key import (
     load_app_private_key,
     resolve_app_private_key_config,
 )
+from codereeve.config_env import AliasConflictError, runtime_environment
 
 
 class AppAuthError(RuntimeError):
@@ -590,19 +591,21 @@ def main(argv: list[str]) -> int:
         Zero on success, two for usage/configuration errors, or one for
         load/sign/mint failures. Only successful credentials reach stdout.
     """
-    access_token = os.environ.get("BWS_ACCESS_TOKEN", "")
     try:
+        values = runtime_environment().values
+        access_token = values.get("BWS_ACCESS_TOKEN", "")
         if len(argv) != 1 or argv[0] not in {"jwt", "token"}:
             print("app_auth: usage: app_auth.py {jwt|token}", file=sys.stderr)
             return 2
 
         mode = argv[0]
-        required_vars = ["BH_GITHUB_APP_ID", "BH_GITHUB_APP_KEY_PROVIDER"]
-        if mode == "token":
-            required_vars.append("BH_GITHUB_APP_INSTALLATION_ID")
-        missing_vars = [
-            name for name in required_vars if not os.environ.get(name)
+        required_vars = [
+            "CODEREEVE_GITHUB_APP_ID",
+            "CODEREEVE_GITHUB_APP_KEY_PROVIDER",
         ]
+        if mode == "token":
+            required_vars.append("CODEREEVE_GITHUB_APP_INSTALLATION_ID")
+        missing_vars = [name for name in required_vars if not values.get(name)]
         if missing_vars:
             print(
                 "app_auth: missing required environment variable(s): "
@@ -612,7 +615,7 @@ def main(argv: list[str]) -> int:
             return 2
 
         try:
-            config = resolve_app_private_key_config(os.environ)
+            config = resolve_app_private_key_config(values)
         except AppPrivateKeyConfigError as exc:
             print(f"app_auth: {exc}", file=sys.stderr)
             return 2
@@ -629,17 +632,17 @@ def main(argv: list[str]) -> int:
         if mode == "token":
             try:
                 installation_id = int(
-                    os.environ["BH_GITHUB_APP_INSTALLATION_ID"]
+                    values["CODEREEVE_GITHUB_APP_INSTALLATION_ID"]
                 )
             except ValueError:
                 print(
-                    "app_auth: BH_GITHUB_APP_INSTALLATION_ID "
+                    "app_auth: CODEREEVE_GITHUB_APP_INSTALLATION_ID "
                     "must be an integer",
                     file=sys.stderr,
                 )
                 return 2
 
-        app_id = os.environ["BH_GITHUB_APP_ID"]
+        app_id = values["CODEREEVE_GITHUB_APP_ID"]
         try:
             provider = build_installation_token_provider(
                 app_id,
@@ -670,6 +673,9 @@ def main(argv: list[str]) -> int:
             return 1
         print(credential)
         return 0
+    except AliasConflictError as exc:
+        print(f"app_auth: {exc}", file=sys.stderr)
+        return 1
     finally:
         os.environ.pop("BWS_ACCESS_TOKEN", None)
 

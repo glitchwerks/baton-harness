@@ -21,6 +21,17 @@ from codereeve.chain.app_private_key import (
     load_app_private_key,
     requires_bws,
 )
+from codereeve.config_env import (
+    AliasConflictError,
+    apply_resolved_environment,
+    runtime_environment,
+)
+from codereeve.paths import (
+    PathConflictError,
+    PathLayout,
+    RuntimePaths,
+    select_compatible_file,
+)
 from codereeve.provenance import load_provenance
 from codereeve.vendor.symphony.config import load_workflow
 
@@ -94,6 +105,8 @@ class DoctorContext:
         config_path: Selected sandbox config path, when available.
         config: Purely resolved sandbox config, when valid.
         config_error: Safe local resolution error, when invalid.
+        path_conflict: Path failure that aborts daemon startup before gates.
+        runtime_paths: CLI-validated runtime locations handed to the daemon.
     """
 
     project_root: str
@@ -107,6 +120,8 @@ class DoctorContext:
     config_path: Path | None = None
     config: sandbox_config.SandboxConfig | None = None
     config_error: str = ""
+    path_conflict: PathConflictError | None = None
+    runtime_paths: RuntimePaths | None = None
 
 
 class DoctorGateError(RuntimeError):
@@ -216,31 +231,57 @@ def create_context(
     Returns:
         A context with a copied environment and pure config resolution.
     """
-    environment = dict(env)
+    environment: dict[str, str] = {}
+    apply_resolved_environment(runtime_environment(env), environment)
     selected_path: Path | None = None
     resolved_config: sandbox_config.SandboxConfig | None = None
     config_error = ""
+    path_conflict: PathConflictError | None = None
+    effective_home = Path(
+        home_dir if home_dir is not None else os.path.expanduser("~")
+    )
+    project_root_hint = environment.get(
+        "CODEREEVE_PROJECT_ROOT", environment.get("BH_PROJECT_ROOT", ".")
+    )
+    layout = PathLayout.for_environment(
+        Path(project_root_hint), environment, home=effective_home
+    )
     try:
-        selected_path = sandbox_config.select_config_path(
-            os.fspath(config_path) if config_path is not None else None,
-            environment,
+        resolved_source = sandbox_config.resolve_config_sources(
+            config_path, env, layout
         )
-        resolved_config = sandbox_config.resolve_config(
-            selected_path, environment
-        )
-    except (sandbox_config.SandboxConfigError, OSError, UnicodeError) as exc:
+        selected_path = resolved_source.path
+        resolved_config = resolved_source.config
+        environment = {}
+        apply_resolved_environment(resolved_source.environment, environment)
+    except (
+        sandbox_config.SandboxConfigError,
+        PathConflictError,
+        OSError,
+        UnicodeError,
+    ) as exc:
+        if isinstance(exc.__cause__, AliasConflictError):
+            raise exc.__cause__ from exc
+        if isinstance(exc, PathConflictError):
+            path_conflict = exc
         config_error = _config_error_detail(exc)
         if config_path is not None:
             selected_path = config_path
 
-    project_root = environment.get("BH_PROJECT_ROOT", "")
+    project_root = environment.get(
+        "CODEREEVE_PROJECT_ROOT", environment.get("BH_PROJECT_ROOT", "")
+    )
     if not project_root and selected_path is not None:
-        if selected_path.parent.name == ".bh":
+        if selected_path.parent.name in {".bh", ".codereeve"}:
             project_root = str(selected_path.parent.parent)
+    if project_root:
+        values = dict(runtime_environment(environment).values)
+        values["CODEREEVE_PROJECT_ROOT"] = project_root
+        apply_resolved_environment(runtime_environment(values), environment)
 
     return DoctorContext(
         project_root=project_root,
-        home_dir=home_dir if home_dir is not None else os.path.expanduser("~"),
+        home_dir=str(effective_home),
         env=environment,
         which=which,
         runner=runner,
@@ -250,6 +291,7 @@ def create_context(
         config_path=selected_path,
         config=resolved_config,
         config_error=config_error,
+        path_conflict=path_conflict,
     )
 
 
@@ -680,11 +722,31 @@ def _check_host_env(ctx: DoctorContext) -> CheckResult:
         Host environment file presence result.
     """
     title = "Host environment file present"
-    fix = "Create ~/.config/baton-harness/host.env if it is needed."
-    path = Path(ctx.home_dir) / ".config" / "baton-harness" / "host.env"
+    fix = "Create ~/.config/codereeve/host.env if it is needed."
+    layout = PathLayout.for_environment(
+        Path(ctx.project_root or "."), ctx.env, home=Path(ctx.home_dir)
+    )
+    try:
+        selected = select_compatible_file(
+            layout.canonical_host, layout.legacy_host, label="host config"
+        )
+    except PathConflictError as exc:
+        return _result(
+            "ENV_HOST_ENV",
+            title,
+            Severity.WARNING,
+            CheckStatus.WARN,
+            str(exc),
+            fix,
+        )
+    path = selected.path
     if path.exists():
         status = CheckStatus.PASS
-        detail = "The host environment file is present."
+        detail = (
+            "The legacy host environment file is present."
+            if selected.uses_legacy
+            else "The host environment file is present."
+        )
     else:
         status = CheckStatus.WARN
         detail = "The host environment file is absent."
@@ -703,14 +765,19 @@ def _check_config_env(ctx: DoctorContext) -> CheckResult:
         Config file presence result.
     """
     title = "Sandbox config file present"
-    fix = "Create .bh/config.env in BH_PROJECT_ROOT."
+    fix = "Create .codereeve/config.env in CODEREEVE_PROJECT_ROOT."
     path = _config_path(ctx)
     if path.is_file():
         status = CheckStatus.PASS
-        detail = ".bh/config.env is present."
+        detail = (
+            "Legacy .bh/config.env is present; migrate it to "
+            ".codereeve/config.env."
+            if path.parent.name == ".bh"
+            else ".codereeve/config.env is present."
+        )
     else:
         status = CheckStatus.FAIL
-        detail = ".bh/config.env is missing."
+        detail = ".codereeve/config.env is missing."
     return _result(
         "CFG_CONFIG_ENV", title, Severity.CRITICAL, status, detail, fix
     )

@@ -9,7 +9,7 @@ Coverage:
   pre-chdir resolution convention already pinned for ``--workflow`` by
   ``test_cli.py::test_main_workflow_path_resolved_absolute_before_chdir``.
 - ``--report`` omitted entirely defaults to
-  ``${BH_PROJECT_ROOT}/.baton-harness/session-report.json``, still
+  ``${BH_PROJECT_ROOT}/.codereeve/session-report.json``, still
   forwarded as an absolute ``report_path=``.
 - The new default ``report_path=`` kwarg coexists with the other
   kwargs ``run_daemon`` already receives (``once``, ``poll_interval_s``)
@@ -80,6 +80,7 @@ def test_report_absolute_path_forwarded_to_run_daemon(tmp_path: Path) -> None:
     report_path_arg = tmp_path / "reports" / "out.json"
     fake_repo_cfg = MagicMock()
     fake_repo_cfg.project_root = tmp_path / "project_root"
+    fake_repo_cfg.project_root.mkdir()
 
     run_daemon_kwargs: dict[str, object] = {}
 
@@ -217,7 +218,7 @@ def test_report_omitted_defaults_to_bh_project_root_session_report(
 ) -> None:
     """Omitting ``--report`` uses the ``BH_PROJECT_ROOT`` default path.
 
-    Defaults to ``${BH_PROJECT_ROOT}/.baton-harness/session-report.json``.
+    Defaults to ``${BH_PROJECT_ROOT}/.codereeve/session-report.json``.
     ``BH_PROJECT_ROOT`` is set to the same directory used as the
     registry's ``project_root`` so the assertion holds regardless of
     whether the implementer sources the default from the env var
@@ -259,7 +260,7 @@ def test_report_omitted_defaults_to_bh_project_root_session_report(
         result = _run_main("--once")
 
     assert result == 0, f"Expected exit 0, got {result}"
-    expected = project_root / ".baton-harness" / "session-report.json"
+    expected = project_root / ".codereeve" / "session-report.json"
     forwarded = run_daemon_kwargs.get("report_path")
     assert forwarded == expected, (
         f"Expected default report_path={expected!r}, got {forwarded!r}"
@@ -288,6 +289,7 @@ def test_report_forwarded_alongside_existing_run_daemon_kwargs(
     report_path_arg = tmp_path / "combo-report.json"
     fake_repo_cfg = MagicMock()
     fake_repo_cfg.project_root = tmp_path / "project_root"
+    fake_repo_cfg.project_root.mkdir()
 
     run_daemon_kwargs: dict[str, object] = {}
 

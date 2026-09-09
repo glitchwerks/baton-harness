@@ -1,4 +1,4 @@
-"""Sandbox config reader and validator for ``.bh/config.env`` files.
+"""Sandbox config reader and validator for CodeReeve configuration files.
 
 Provides pure configuration resolution and explicit effect boundaries for
 ``.bh/config.env``. ``read_and_validate`` retains the legacy composition:
@@ -26,7 +26,7 @@ partial or empty result:
 
 - Missing config file raises before any parsing or subprocess call.
 - Missing required keys raise after env-override resolution completes.
-- Invalid values raise with the line number and offending value.
+- Invalid values name the source key and line without exposing the value.
 - Non-zero ``gh api`` validation raises with the target repo slug.
 """
 
@@ -45,6 +45,23 @@ from codereeve.chain.app_private_key import (
     resolve_app_private_key_config,
 )
 from codereeve.chain.identity import Identity, env_for
+from codereeve.config_env import (
+    PRODUCT_ALIASES,
+    AliasConflictError,
+    ConfigSyntaxError,
+    EnvLayer,
+    LegacyUse,
+    ResolvedEnvironment,
+    apply_resolved_environment,
+    parse_env_file,
+    resolve_environment,
+    runtime_environment,
+)
+from codereeve.paths import (
+    PathLayout,
+    select_compatible_file,
+    validate_safe_file_path,
+)
 
 # ---------------------------------------------------------------------------
 # Type alias for the injectable run callable
@@ -53,7 +70,6 @@ from codereeve.chain.identity import Identity, env_for
 #: Type of the injected subprocess runner. Signature: ``(args, **kwargs)``.
 RunFn = Callable[..., subprocess.CompletedProcess[str]]
 
-_LINE_RE = re.compile(r"^(?:export\s+)?([A-Z_][A-Z0-9_]*)=(.*)$")
 _REPO_PART_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _UUID_RE = re.compile(
     r"^[0-9A-Fa-f]{8}-"
@@ -64,32 +80,42 @@ _UUID_RE = re.compile(
 )
 _IGNORED_KEYS = {"BWS_APP_ID", "BWS_INSTALLATION_ID"}
 _REQUIRED_KEYS = (
-    "BH_REPO_OWNER",
-    "BH_REPO_NAME",
-    "BH_GITHUB_APP_ID",
-    "BH_GITHUB_APP_INSTALLATION_ID",
-    "BH_GITHUB_APP_KEY_PROVIDER",
+    "CODEREEVE_REPO_OWNER",
+    "CODEREEVE_REPO_NAME",
+    "CODEREEVE_GITHUB_APP_ID",
+    "CODEREEVE_GITHUB_APP_INSTALLATION_ID",
+    "CODEREEVE_GITHUB_APP_KEY_PROVIDER",
 )
 #: Config keys eligible for an ``os.environ`` override. A non-empty
 #: pre-existing env var wins over the file's value for each of these.
 _ENV_OVERRIDABLE_KEYS = (
-    "BH_REPO_OWNER",
-    "BH_REPO_NAME",
-    "BH_GITHUB_APP_ID",
-    "BH_GITHUB_APP_INSTALLATION_ID",
-    "BH_GITHUB_APP_KEY_PROVIDER",
+    "CODEREEVE_REPO_OWNER",
+    "CODEREEVE_REPO_NAME",
+    "CODEREEVE_GITHUB_APP_ID",
+    "CODEREEVE_GITHUB_APP_INSTALLATION_ID",
+    "CODEREEVE_GITHUB_APP_KEY_PROVIDER",
     "BWS_PEM_SECRET_ID",
-    "BH_GITHUB_APP_PRIVATE_KEY_FILE",
+    "CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE",
     "BWS_GH_TOKEN_SECRET_ID",
     "BWS_HEARTBEAT_PING_URL_SECRET_ID",
 )
 _VALUE_VALIDATED_KEYS = (
-    "BH_REPO_OWNER",
-    "BH_REPO_NAME",
-    "BH_GITHUB_APP_ID",
-    "BH_GITHUB_APP_INSTALLATION_ID",
+    "CODEREEVE_REPO_OWNER",
+    "CODEREEVE_REPO_NAME",
+    "CODEREEVE_GITHUB_APP_ID",
+    "CODEREEVE_GITHUB_APP_INSTALLATION_ID",
     "BWS_GH_TOKEN_SECRET_ID",
     "BWS_HEARTBEAT_PING_URL_SECRET_ID",
+)
+_ALIASES_BY_KEY = {
+    key: alias
+    for alias in PRODUCT_ALIASES
+    for key in (alias.canonical, alias.legacy)
+}
+_PRIVATE_KEY_PROVIDER_KEYS = (
+    "CODEREEVE_GITHUB_APP_KEY_PROVIDER",
+    "BWS_PEM_SECRET_ID",
+    "CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE",
 )
 
 
@@ -114,6 +140,49 @@ class SandboxConfigError(RuntimeError):
         """
         super().__init__(message)
         self.message = message
+
+
+@dataclass(frozen=True)
+class ResolvedSandboxConfig:
+    """One validated config source selected without mutation.
+
+    Attributes:
+        path: File path used for the configuration layer.
+        config: Parsed and validated semantic sandbox configuration.
+        uses_legacy: Whether the project configuration path is legacy.
+        legacy_paths: Compatibility paths selected while resolving sources.
+        legacy_uses: Legacy environment spellings selected by Task 1.
+        environment: Complete resolved runtime snapshot, including host values.
+    """
+
+    path: Path
+    config: SandboxConfig
+    uses_legacy: bool
+    legacy_paths: tuple[Path, ...]
+    legacy_uses: tuple[LegacyUse, ...]
+    environment: ResolvedEnvironment
+
+
+@dataclass(frozen=True)
+class _ConfigResolution:
+    """A validated configuration together with its final alias resolution."""
+
+    config: SandboxConfig
+    environment: ResolvedEnvironment
+
+
+@dataclass(frozen=True)
+class _SourceLayer:
+    """One source layer with its values and optional assignment locations."""
+
+    source: str
+    values: Mapping[str, str]
+    line_numbers: Mapping[str, int]
+    is_environment: bool = False
+
+    def as_environment_layer(self) -> EnvLayer:
+        """Return this source in the Task 1 public resolver shape."""
+        return EnvLayer(self.source, self.values)
 
 
 # ---------------------------------------------------------------------------
@@ -209,13 +278,113 @@ def _is_valid(key: str, value: str) -> bool:
         before). The two optional secret-ID keys accept an empty
         string as valid (not-configured).
     """
-    if key in {"BH_REPO_OWNER", "BH_REPO_NAME"}:
+    if key in {"CODEREEVE_REPO_OWNER", "CODEREEVE_REPO_NAME"}:
         return bool(value) and _REPO_PART_RE.fullmatch(value) is not None
-    if key in {"BH_GITHUB_APP_ID", "BH_GITHUB_APP_INSTALLATION_ID"}:
+    if key in {
+        "CODEREEVE_GITHUB_APP_ID",
+        "CODEREEVE_GITHUB_APP_INSTALLATION_ID",
+    }:
         return value.isdigit() and int(value) > 0
     if key in {"BWS_GH_TOKEN_SECRET_ID", "BWS_HEARTBEAT_PING_URL_SECRET_ID"}:
         return not value or _UUID_RE.fullmatch(value) is not None
     return True
+
+
+def _canonical_key(key: str) -> str:
+    """Return the canonical product spelling for ``key`` when it has one."""
+    alias = _ALIASES_BY_KEY.get(key)
+    return alias.canonical if alias is not None else key
+
+
+def _first_source_layer(
+    layers: tuple[_SourceLayer, ...], key: str
+) -> _SourceLayer | None:
+    """Return the highest-priority layer that explicitly contains ``key``."""
+    for layer in layers:
+        if key in layer.values:
+            return layer
+    return None
+
+
+def _selected_source_layer(
+    key: str, layers: tuple[_SourceLayer, ...]
+) -> tuple[str, _SourceLayer] | None:
+    """Return the spelling and source selected by Task 1 alias resolution."""
+    alias = _ALIASES_BY_KEY.get(key)
+    if alias is None:
+        source = _first_source_layer(layers, key)
+        return None if source is None else (key, source)
+    canonical_source = _first_source_layer(layers, alias.canonical)
+    if canonical_source is not None:
+        return alias.canonical, canonical_source
+    legacy_source = _first_source_layer(layers, alias.legacy)
+    if legacy_source is not None:
+        return alias.legacy, legacy_source
+    return None
+
+
+def _invalid_value_message(key: str, layers: tuple[_SourceLayer, ...]) -> str:
+    """Format a canonical, redacted invalid-value diagnostic.
+
+    The diagnostic retains provenance without including a supplied value.
+    """
+    return _value_message(key, "invalid", layers)
+
+
+def _value_message(
+    key: str, reason: str, layers: tuple[_SourceLayer, ...]
+) -> str:
+    """Format a canonical, redacted value diagnostic with provenance."""
+    canonical_key = _canonical_key(key)
+    selected = _selected_source_layer(canonical_key, layers)
+    if selected is None:
+        return f"{canonical_key} {reason}"
+    spelling, source = selected
+    if source.is_environment:
+        return f"{canonical_key} {reason} (from environment variable)"
+    line_number = source.line_numbers.get(spelling)
+    if line_number is None:
+        return f"{canonical_key} {reason}"
+    return f"{canonical_key} {reason} at {source.source}:{line_number}"
+
+
+def _provider_error_key(message: str) -> str | None:
+    """Identify the source key named by a redacted provider error."""
+    for key in _PRIVATE_KEY_PROVIDER_KEYS:
+        if key in message:
+            return _canonical_key(key)
+    return None
+
+
+def _provider_error_message(
+    key: str, message: str, layers: tuple[_SourceLayer, ...]
+) -> str:
+    """Canonicalize a provider error without reproducing a supplied value."""
+    if "must be absolute" in message:
+        reason = "must be absolute"
+    elif "must be a valid UUID" in message:
+        reason = "must be a valid UUID"
+    elif message.startswith("conflicting"):
+        reason = "conflicts with the selected provider"
+    elif "is required" in message:
+        reason = "is required"
+    else:
+        reason = "invalid"
+    return _value_message(key, reason, layers)
+
+
+def _without_empty_values(layer: _SourceLayer) -> _SourceLayer:
+    """Allow empty fallback only for the historical sandbox field set."""
+    return _SourceLayer(
+        layer.source,
+        {
+            key: value
+            for key, value in layer.values.items()
+            if value or _canonical_key(key) not in _ENV_OVERRIDABLE_KEYS
+        },
+        layer.line_numbers,
+        is_environment=layer.is_environment,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +444,111 @@ def select_config_path(
     return (Path(project_root) / ".bh" / "config.env").resolve()
 
 
+def resolve_config_sources(
+    explicit: Path | None,
+    env: Mapping[str, str],
+    layout: PathLayout,
+) -> ResolvedSandboxConfig:
+    """Resolve one sandbox config with canonical-first compatibility paths.
+
+    Args:
+        explicit: Operator-provided configuration path, when supplied.
+        env: Operator environment snapshot.
+        layout: Host and project filesystem paths for the environment.
+
+    Returns:
+        A validated source selection and compatibility-use record.
+
+    Raises:
+        PathConflictError: If canonical and legacy paths coexist or are unsafe.
+        SandboxConfigError: If no project root or valid configuration exists.
+    """
+    if explicit is not None:
+        _validate_explicit_config_path(explicit)
+        resolution = _resolve_config(explicit, env)
+        return ResolvedSandboxConfig(
+            path=explicit,
+            config=resolution.config,
+            uses_legacy=False,
+            legacy_paths=(),
+            legacy_uses=resolution.environment.legacy_uses,
+            environment=resolution.environment,
+        )
+
+    host_selection = select_compatible_file(
+        layout.canonical_host, layout.legacy_host, label="host config"
+    )
+    host_layer = _read_optional_environment(host_selection.path)
+    try:
+        operator = resolve_environment(
+            (
+                EnvLayer("operator environment", env),
+                host_layer.as_environment_layer(),
+            ),
+            aliases=tuple(
+                alias
+                for alias in PRODUCT_ALIASES
+                if alias.canonical == "CODEREEVE_PROJECT_ROOT"
+            ),
+            export_legacy=False,
+        )
+    except AliasConflictError as exc:
+        raise SandboxConfigError(str(exc)) from exc
+
+    project_root = operator.values.get("CODEREEVE_PROJECT_ROOT", "")
+    if not project_root:
+        raise SandboxConfigError(
+            "CODEREEVE_PROJECT_ROOT is required when --config is not supplied"
+        )
+    project_layout = PathLayout.for_environment(Path(project_root), env)
+    config_selection = select_compatible_file(
+        project_layout.canonical_config,
+        project_layout.legacy_config,
+        label="sandbox config",
+    )
+    resolution = _resolve_config(
+        config_selection.path,
+        env,
+        additional_layers=(host_layer,),
+    )
+    legacy_paths = tuple(
+        path
+        for path, selected in (
+            (host_selection.path, host_selection.uses_legacy),
+            (config_selection.path, config_selection.uses_legacy),
+        )
+        if selected
+    )
+    return ResolvedSandboxConfig(
+        path=config_selection.path,
+        config=resolution.config,
+        uses_legacy=config_selection.uses_legacy,
+        legacy_paths=legacy_paths,
+        legacy_uses=resolution.environment.legacy_uses,
+        environment=resolution.environment,
+    )
+
+
+def _read_optional_environment(path: Path) -> _SourceLayer:
+    """Read one already-validated optional environment file if present."""
+    try:
+        assignments = parse_env_file(path)
+    except FileNotFoundError:
+        return _SourceLayer(str(path), {}, {})
+    except ConfigSyntaxError as exc:
+        raise SandboxConfigError(str(exc)) from exc
+    return _SourceLayer(
+        str(path),
+        {assignment.key: assignment.value for assignment in assignments},
+        {assignment.key: assignment.line for assignment in assignments},
+    )
+
+
+def _validate_explicit_config_path(path: Path) -> None:
+    """Reject an explicit symlink or unsupported filesystem object."""
+    validate_safe_file_path(path, label="sandbox config")
+
+
 def resolve_config(
     path: Path,
     env: Mapping[str, str],
@@ -292,87 +566,125 @@ def resolve_config(
         SandboxConfigError: If the file is missing, malformed, invalid, or
             omits a required key.
     """
-    file_path = os.fspath(path)
+    return _resolve_config(path, env).config
+
+
+def _resolve_config(
+    path: Path,
+    env: Mapping[str, str],
+    *,
+    additional_layers: tuple[_SourceLayer, ...] = (),
+) -> _ConfigResolution:
+    """Resolve one config while retaining actual layers for alias checks."""
     try:
-        with open(file_path, encoding="utf-8") as handle:
-            lines = handle.readlines()
+        assignments = parse_env_file(path)
     except FileNotFoundError as exc:
         raise SandboxConfigError(
-            f"sandbox config file does not exist: {file_path}"
+            f"sandbox config file does not exist: {path}"
         ) from exc
+    except ConfigSyntaxError as exc:
+        raise SandboxConfigError(str(exc)) from exc
 
-    parsed: dict[str, str] = {}
-    parsed_line_numbers: dict[str, int] = {}
+    parsed = {assignment.key: assignment.value for assignment in assignments}
+    file_layer = _SourceLayer(
+        str(path),
+        parsed,
+        {assignment.key: assignment.line for assignment in assignments},
+    )
+    environment_layer = _SourceLayer(
+        "environment variable", env, {}, is_environment=True
+    )
 
-    for line_number, raw_line in enumerate(lines, start=1):
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
+    all_layers = (
+        environment_layer,
+        file_layer,
+        *additional_layers,
+    )
+    try:
+        resolved_environment = resolve_environment(
+            tuple(layer.as_environment_layer() for layer in all_layers),
+            export_legacy=False,
+        )
+    except AliasConflictError as exc:
+        raise SandboxConfigError(str(exc)) from exc
 
-        match = _LINE_RE.match(line)
-        if match is None:
-            raise SandboxConfigError(
-                f"invalid sandbox config line {line_number}: {line!r}"
-            )
-
-        key, value = match.groups()
-        if (
-            len(value) >= 2
-            and value[0] in {"'", '"'}
-            and value[-1] == value[0]
-        ):
-            value = value[1:-1]
-
-        if key in _IGNORED_KEYS:
-            continue
-
-        parsed[key] = value
-        parsed_line_numbers[key] = line_number
-
-    # Resolve each overridable key: a non-empty environment value wins
-    # over the file's value (empty env is treated as absent). The
-    # completely resolved base and optional values are validated below.
-    resolved = resolve_overridable_keys(parsed, env, _ENV_OVERRIDABLE_KEYS)
+    effective_layers = (
+        _without_empty_values(environment_layer),
+        file_layer,
+        *(_without_empty_values(layer) for layer in additional_layers),
+    )
+    try:
+        # Historical fallback applies only to SandboxConfig construction.
+        # The complete runtime snapshot above retains explicit empty values.
+        sandbox_environment = resolve_environment(
+            tuple(layer.as_environment_layer() for layer in effective_layers),
+            export_legacy=False,
+        )
+    except AliasConflictError as exc:
+        raise SandboxConfigError(str(exc)) from exc
+    resolved = sandbox_environment.values
 
     for required_key in _REQUIRED_KEYS:
         if not resolved.get(required_key):
+            selected_source = _selected_source_layer(
+                required_key, effective_layers
+            )
+            diagnostic_layers = effective_layers
+            if selected_source is None:
+                selected_source = _selected_source_layer(
+                    required_key, all_layers
+                )
+                diagnostic_layers = all_layers
+            if selected_source is not None:
+                raise SandboxConfigError(
+                    _value_message(required_key, "is empty", diagnostic_layers)
+                )
             raise SandboxConfigError(f"missing required key: {required_key}")
 
     for key in _VALUE_VALIDATED_KEYS:
-        value = resolved[key]
+        value = resolved.get(key, "")
         if _is_valid(key, value):
             continue
 
-        env_value = env.get(key, "")
-        if env_value:
-            raise SandboxConfigError(
-                f"{key} invalid (from environment variable): {value!r}"
-            )
+        raise SandboxConfigError(_invalid_value_message(key, effective_layers))
 
-        source_line_number = parsed_line_numbers.get(key)
-        if source_line_number is None:
-            raise SandboxConfigError(f"{key} invalid: {value!r}")
+    provider_key = "CODEREEVE_GITHUB_APP_KEY_PROVIDER"
+    if resolved[provider_key] not in {
+        provider.value for provider in AppPrivateKeyProvider
+    }:
         raise SandboxConfigError(
-            f"{key} invalid at line {source_line_number}: {value!r}"
+            _invalid_value_message(provider_key, effective_layers)
         )
 
     try:
         app_key_config = resolve_app_private_key_config(resolved)
     except AppPrivateKeyConfigError as exc:
-        raise SandboxConfigError(str(exc)) from exc
+        provider_error_key = _provider_error_key(str(exc))
+        if provider_error_key is None:
+            raise SandboxConfigError(str(exc)) from exc
+        raise SandboxConfigError(
+            _provider_error_message(
+                provider_error_key, str(exc), effective_layers
+            )
+        ) from exc
 
-    return SandboxConfig(
-        repo_owner=resolved["BH_REPO_OWNER"],
-        repo_name=resolved["BH_REPO_NAME"],
-        github_app_id=resolved["BH_GITHUB_APP_ID"],
-        github_app_installation_id=resolved["BH_GITHUB_APP_INSTALLATION_ID"],
-        github_app_key_provider=app_key_config.provider,
-        bws_pem_secret_id=app_key_config.bws_secret_id,
-        github_app_private_key_file=app_key_config.file_path,
-        bws_gh_token_secret_id=resolved["BWS_GH_TOKEN_SECRET_ID"],
-        bws_heartbeat_ping_url_secret_id=resolved[
-            "BWS_HEARTBEAT_PING_URL_SECRET_ID"
-        ],
+    return _ConfigResolution(
+        config=SandboxConfig(
+            repo_owner=resolved["CODEREEVE_REPO_OWNER"],
+            repo_name=resolved["CODEREEVE_REPO_NAME"],
+            github_app_id=resolved["CODEREEVE_GITHUB_APP_ID"],
+            github_app_installation_id=resolved[
+                "CODEREEVE_GITHUB_APP_INSTALLATION_ID"
+            ],
+            github_app_key_provider=app_key_config.provider,
+            bws_pem_secret_id=app_key_config.bws_secret_id,
+            github_app_private_key_file=app_key_config.file_path,
+            bws_gh_token_secret_id=resolved.get("BWS_GH_TOKEN_SECRET_ID", ""),
+            bws_heartbeat_ping_url_secret_id=resolved.get(
+                "BWS_HEARTBEAT_PING_URL_SECRET_ID", ""
+            ),
+        ),
+        environment=resolved_environment,
     )
 
 
@@ -412,27 +724,35 @@ def apply_config(
         config: Fully resolved sandbox configuration.
         env: Target environment to populate with selected configuration.
     """
-    env["BH_REPO_OWNER"] = config.repo_owner
-    env["BH_REPO_NAME"] = config.repo_name
-    env["BH_GITHUB_APP_ID"] = config.github_app_id
-    env["BH_GITHUB_APP_INSTALLATION_ID"] = config.github_app_installation_id
-    env["BH_GITHUB_APP_KEY_PROVIDER"] = config.github_app_key_provider.value
+    values = dict(runtime_environment(env).values)
+    values["CODEREEVE_REPO_OWNER"] = config.repo_owner
+    values["CODEREEVE_REPO_NAME"] = config.repo_name
+    values["CODEREEVE_GITHUB_APP_ID"] = config.github_app_id
+    values["CODEREEVE_GITHUB_APP_INSTALLATION_ID"] = (
+        config.github_app_installation_id
+    )
+    values["CODEREEVE_GITHUB_APP_KEY_PROVIDER"] = (
+        config.github_app_key_provider.value
+    )
     if config.github_app_key_provider is AppPrivateKeyProvider.BWS:
         assert config.bws_pem_secret_id is not None
-        env["BWS_PEM_SECRET_ID"] = config.bws_pem_secret_id
-        env.pop("BH_GITHUB_APP_PRIVATE_KEY_FILE", None)
+        values["BWS_PEM_SECRET_ID"] = config.bws_pem_secret_id
+        values.pop("CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE", None)
     else:
         assert config.github_app_private_key_file is not None
-        env["BH_GITHUB_APP_PRIVATE_KEY_FILE"] = str(
+        values["CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE"] = str(
             config.github_app_private_key_file
         )
-        env.pop("BWS_PEM_SECRET_ID", None)
-    env["BWS_GH_TOKEN_SECRET_ID"] = config.bws_gh_token_secret_id
-    env["BWS_HEARTBEAT_PING_URL_SECRET_ID"] = (
+        values.pop("BWS_PEM_SECRET_ID", None)
+    values["BWS_GH_TOKEN_SECRET_ID"] = config.bws_gh_token_secret_id
+    values["BWS_HEARTBEAT_PING_URL_SECRET_ID"] = (
         config.bws_heartbeat_ping_url_secret_id
     )
-    env["BWS_APP_ID"] = config.github_app_id
-    env["BWS_INSTALLATION_ID"] = config.github_app_installation_id
+    values["BWS_APP_ID"] = config.github_app_id
+    values["BWS_INSTALLATION_ID"] = config.github_app_installation_id
+    apply_resolved_environment(runtime_environment(values), env)
+    if config.github_app_key_provider is AppPrivateKeyProvider.FILE:
+        env.pop("BWS_PEM_SECRET_ID", None)
 
 
 def read_and_validate(

@@ -197,7 +197,9 @@ def _write_config_env(project_root: Path, content: str) -> None:
     """
     bh_dir = project_root / ".bh"
     bh_dir.mkdir(parents=True, exist_ok=True)
-    (bh_dir / "config.env").write_text(content, encoding="utf-8")
+    (bh_dir / "config.env").write_text(
+        content.replace("\\", "/"), encoding="utf-8"
+    )
 
 
 _VALID_CONFIG_ENV = textwrap.dedent(
@@ -1085,10 +1087,10 @@ def test_malformed_config_is_the_authoritative_configuration_failure(
     result = _get_check("CFG_REQUIRED_KEYS")(ctx)
 
     assert ctx.config is None
-    assert "invalid sandbox config line" in ctx.config_error
+    assert "invalid environment assignment" in ctx.config_error
     assert result.status is CheckStatus.FAIL
     assert result.severity is Severity.CRITICAL
-    assert "invalid sandbox config line" in result.detail
+    assert "invalid environment assignment" in result.detail
 
 
 def test_export_prefixed_config_uses_the_shared_resolver(
@@ -1130,7 +1132,7 @@ def test_expected_config_read_errors_do_not_block_installation(
     if failure_kind == "permission":
         config_path.write_text(_VALID_CONFIG_ENV, encoding="utf-8")
         resolver_patch = patch(
-            "codereeve.chain.doctor.sandbox_config.resolve_config",
+            "codereeve.chain.doctor.sandbox_config.resolve_config_sources",
             side_effect=PermissionError("config access denied"),
         )
     elif failure_kind == "directory":
@@ -1233,8 +1235,100 @@ def test_live_repository_checks_use_explicit_resolved_config_only(
         for command in runner_commands
     )
     assert caller_env == {}
-    assert ctx.env == {}
+    assert ctx.env["CODEREEVE_REPO_OWNER"] == "my-org"
+    assert ctx.env["CODEREEVE_REPO_NAME"] == "my-sandbox"
     assert all(key not in os.environ for key in config_keys)
+
+
+def test_create_context_selects_canonical_config_before_legacy_fallback(
+    tmp_path: Path,
+) -> None:
+    """Doctor and daemon startup share canonical-first config selection."""
+    canonical_dir = tmp_path / ".codereeve"
+    canonical_dir.mkdir()
+    (canonical_dir / "config.env").write_text(
+        _VALID_CONFIG_ENV.replace("BH_", "CODEREEVE_"), encoding="utf-8"
+    )
+
+    ctx = doctor.create_context(
+        env={"CODEREEVE_PROJECT_ROOT": str(tmp_path)},
+        home_dir=str(tmp_path / "home"),
+        which=_unused_which,
+        runner=_unused_runner,
+        run=_unused_run,
+        fetch_secret=_unused_fetch_secret,
+    )
+
+    assert ctx.config_path == canonical_dir / "config.env"
+    assert ctx.config is not None
+    assert ctx.config.repo_owner == "my-org"
+
+
+def test_create_context_accepts_legacy_only_config_during_transition(
+    tmp_path: Path,
+) -> None:
+    """A legacy project remains usable until its migration is applied."""
+    _write_config_env(tmp_path, _VALID_CONFIG_ENV)
+
+    ctx = doctor.create_context(
+        env={"BH_PROJECT_ROOT": str(tmp_path)},
+        home_dir=str(tmp_path / "home"),
+        which=_unused_which,
+        runner=_unused_runner,
+        run=_unused_run,
+        fetch_secret=_unused_fetch_secret,
+    )
+
+    assert ctx.config_path == tmp_path / ".bh" / "config.env"
+    assert ctx.config is not None
+
+
+def test_create_context_blocks_coexisting_config_paths_without_secret_leak(
+    tmp_path: Path,
+) -> None:
+    """Ambiguous paths become a configuration failure instead of a merge."""
+    _write_config_env(tmp_path, _VALID_CONFIG_ENV)
+    canonical_dir = tmp_path / ".codereeve"
+    canonical_dir.mkdir()
+    (canonical_dir / "config.env").write_text(
+        _VALID_CONFIG_ENV, encoding="utf-8"
+    )
+
+    ctx = doctor.create_context(
+        env={"CODEREEVE_PROJECT_ROOT": str(tmp_path)},
+        home_dir=str(tmp_path / "home"),
+        which=_unused_which,
+        runner=_unused_runner,
+        run=_unused_run,
+        fetch_secret=_unused_fetch_secret,
+    )
+
+    assert ctx.config is None
+    assert str(canonical_dir / "config.env") in ctx.config_error
+    assert str(tmp_path / ".bh" / "config.env") in ctx.config_error
+    assert "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" not in ctx.config_error
+
+
+def test_config_check_gives_canonical_remediation_for_legacy_config(
+    tmp_path: Path,
+) -> None:
+    """Doctor reports compatibility use with 0.2 remediation paths."""
+    _write_config_env(tmp_path, _VALID_CONFIG_ENV)
+    ctx = doctor.create_context(
+        env={"BH_PROJECT_ROOT": str(tmp_path)},
+        home_dir=str(tmp_path / "home"),
+        which=_unused_which,
+        runner=_unused_runner,
+        run=_unused_run,
+        fetch_secret=_unused_fetch_secret,
+    )
+
+    result = _get_check("CFG_CONFIG_ENV")(ctx)
+
+    assert result.status is CheckStatus.PASS
+    assert "Legacy .bh/config.env" in result.detail
+    assert ".codereeve/config.env" in result.remediation
+    assert "CODEREEVE_PROJECT_ROOT" in result.remediation
 
 
 def test_pkg_provenance_check_validates_the_packaged_record() -> None:
@@ -1583,6 +1677,21 @@ class TestEnvHostEnv:
         result = check(_make_ctx(home_dir=str(tmp_path)))
         assert result.status == CheckStatus.PASS
 
+    def test_passes_when_canonical_host_env_present(
+        self, tmp_path: Path
+    ) -> None:
+        """The canonical host path is preferred during the transition."""
+        check = _get_check("ENV_HOST_ENV")
+        host_env_dir = tmp_path / ".config" / "codereeve"
+        host_env_dir.mkdir(parents=True)
+        (host_env_dir / "host.env").write_text(
+            "CODEREEVE_PROJECT_ROOT=/x\n", encoding="utf-8"
+        )
+
+        result = check(_make_ctx(home_dir=str(tmp_path)))
+
+        assert result.status == CheckStatus.PASS
+
 
 # ---------------------------------------------------------------------------
 # CFG_CONFIG_ENV
@@ -1695,7 +1804,7 @@ class TestCfgRequiredKeys:
         _write_config_env(tmp_path, content)
         result = check(_make_ctx(project_root=str(tmp_path)))
         assert result.status == CheckStatus.FAIL
-        assert "BH_GITHUB_APP_ID" in result.detail
+        assert "CODEREEVE_GITHUB_APP_ID" in result.detail
 
     def test_never_calls_run_or_runner_seams(self, tmp_path: Path) -> None:
         """Phase A / no-network: must not touch run() or runner()."""

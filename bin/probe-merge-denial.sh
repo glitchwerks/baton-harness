@@ -6,14 +6,14 @@
 # and exits non-zero if any vector succeeds unexpectedly.
 #
 # Required environment variables:
-#   BH_PROBE_SANDBOX_REPO       owner/repo of the live sandbox repo
-#   BH_PROBE_PR_NUMBER          open PR number in that repo (against main)
-#   BH_PROBE_WORKER_TOKEN_PATH  file path containing the worker-identity
+#   CODEREEVE_PROBE_SANDBOX_REPO       owner/repo of the live sandbox repo
+#   CODEREEVE_PROBE_PR_NUMBER          open PR number in that repo (against main)
+#   CODEREEVE_PROBE_WORKER_TOKEN_PATH  file path containing the worker-identity
 #                               token (NEVER inline or env-var value)
 #
 # Optional environment variables:
-#   BH_PROBE_DRY_RUN=1          print commands without executing them
-#   BH_PROBE_HOOK_SCRIPT        path to force-pr-not-merge hook script
+#   CODEREEVE_PROBE_DRY_RUN=1          print commands without executing them
+#   CODEREEVE_PROBE_HOOK_SCRIPT        path to force-pr-not-merge hook script
 #                               (default: auto-detected from harness root)
 #
 # Exit codes:
@@ -22,9 +22,9 @@
 #   2  missing env / precondition failure
 #
 # Usage:
-#   export BH_PROBE_SANDBOX_REPO="owner/sandbox-repo"
-#   export BH_PROBE_PR_NUMBER="42"
-#   export BH_PROBE_WORKER_TOKEN_PATH="/path/to/worker-token.txt"
+#   export CODEREEVE_PROBE_SANDBOX_REPO="owner/sandbox-repo"
+#   export CODEREEVE_PROBE_PR_NUMBER="42"
+#   export CODEREEVE_PROBE_WORKER_TOKEN_PATH="/path/to/worker-token.txt"
 #   bash bin/probe-merge-denial.sh
 
 set -uo pipefail
@@ -37,18 +37,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HARNESS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # ---------------------------------------------------------------------------
-# Source shared env-config loader (host.env -> BH_PROJECT_ROOT;
-# .bh/config.env -> BH_REPO_OWNER/BH_REPO_NAME/BH_GITHUB_APP_ID/etc;
+# Source shared env-config loader (host.env -> CODEREEVE_PROJECT_ROOT;
+# .codereeve/config.env -> CODEREEVE_REPO_OWNER/CODEREEVE_REPO_NAME/CODEREEVE_GITHUB_APP_ID/etc;
 # operator env wins). Same pattern as provision-ruleset.sh; a no-op here
-# unless BH_PROJECT_ROOT ends up known, since this probe's own required
-# vars (BH_PROBE_*) are not part of .bh/config.env's schema.
+# unless CODEREEVE_PROJECT_ROOT ends up known, since this probe's own required
+# vars (BH_PROBE_*) are not part of .codereeve/config.env's schema.
 # ---------------------------------------------------------------------------
-_BH_LOAD_CONFIG="${SCRIPT_DIR}/lib/load-config.sh"
-if [[ -f "${_BH_LOAD_CONFIG}" ]]; then
+_codereeve_load_config="${SCRIPT_DIR}/lib/load-config.sh"
+if [[ -f "${_codereeve_load_config}" ]]; then
     # shellcheck disable=SC1090,SC1091
-    source "${_BH_LOAD_CONFIG}"
+    source "${_codereeve_load_config}" || exit 1
 fi
-unset _BH_LOAD_CONFIG
+unset _codereeve_load_config
 
 # ---------------------------------------------------------------------------
 # Python resolver — same pattern as provision-ruleset.sh.
@@ -72,47 +72,49 @@ _probe_assert() {
 # Env validation.
 # ---------------------------------------------------------------------------
 _missing=()
-for v in BH_PROBE_SANDBOX_REPO BH_PROBE_PR_NUMBER BH_PROBE_WORKER_TOKEN_PATH; do
+for v in CODEREEVE_PROBE_SANDBOX_REPO CODEREEVE_PROBE_PR_NUMBER CODEREEVE_PROBE_WORKER_TOKEN_PATH; do
     if [[ -z "${!v:-}" ]]; then
         _missing+=("${v}")
     fi
 done
 if [[ ${#_missing[@]} -gt 0 ]]; then
     echo "probe-merge-denial: missing required env vars: ${_missing[*]}" >&2
-    echo "  Set BH_PROBE_SANDBOX_REPO, BH_PROBE_PR_NUMBER, and" >&2
-    echo "  BH_PROBE_WORKER_TOKEN_PATH before running this probe." >&2
+    echo "  Set CODEREEVE_PROBE_SANDBOX_REPO, CODEREEVE_PROBE_PR_NUMBER, and" >&2
+    echo "  CODEREEVE_PROBE_WORKER_TOKEN_PATH before running this probe." >&2
     exit 2
 fi
 
 # Validate token file exists and is readable (NEVER read its value).
-if [[ ! -f "${BH_PROBE_WORKER_TOKEN_PATH}" ]]; then
-    echo "probe-merge-denial: token file not found: ${BH_PROBE_WORKER_TOKEN_PATH}" >&2
+if [[ ! -f "${CODEREEVE_PROBE_WORKER_TOKEN_PATH}" ]]; then
+    echo "probe-merge-denial: token file not found: ${CODEREEVE_PROBE_WORKER_TOKEN_PATH}" >&2
     exit 2
 fi
-if [[ ! -r "${BH_PROBE_WORKER_TOKEN_PATH}" ]]; then
-    echo "probe-merge-denial: token file not readable: ${BH_PROBE_WORKER_TOKEN_PATH}" >&2
+if [[ ! -r "${CODEREEVE_PROBE_WORKER_TOKEN_PATH}" ]]; then
+    echo "probe-merge-denial: token file not readable: ${CODEREEVE_PROBE_WORKER_TOKEN_PATH}" >&2
     exit 2
 fi
 
 # Compute token length for diagnostics (never echo value).
-_TOKEN_LEN="$(wc -c < "${BH_PROBE_WORKER_TOKEN_PATH}" | tr -d ' ')"
+_TOKEN_LEN="$(wc -c < "${CODEREEVE_PROBE_WORKER_TOKEN_PATH}" | tr -d ' ')"
 
 # Locate the force-pr-not-merge hook script.
-_HOOK_SCRIPT="${BH_PROBE_HOOK_SCRIPT:-}"
+_HOOK_SCRIPT="${CODEREEVE_PROBE_HOOK_SCRIPT:-}"
+_HOOK_ARGS=()
 if [[ -z "${_HOOK_SCRIPT}" ]]; then
-    _HOOK_SCRIPT="${HARNESS_DIR}/.venv/Scripts/bh-force-pr-not-merge.exe"
+    _HOOK_SCRIPT="${HARNESS_DIR}/.venv/Scripts/codereeve.exe"
     [[ ! -x "${_HOOK_SCRIPT}" ]] && \
-        _HOOK_SCRIPT="${HARNESS_DIR}/.venv/bin/bh-force-pr-not-merge"
+        _HOOK_SCRIPT="${HARNESS_DIR}/.venv/bin/codereeve"
     [[ ! -x "${_HOOK_SCRIPT}" ]] && _HOOK_SCRIPT=""
+    _HOOK_ARGS=(hook force-pr-not-merge)
 fi
 
 # Construct API base URL.
-SANDBOX_REPO="${BH_PROBE_SANDBOX_REPO}"
-PR_NUM="${BH_PROBE_PR_NUMBER}"
+SANDBOX_REPO="${CODEREEVE_PROBE_SANDBOX_REPO}"
+PR_NUM="${CODEREEVE_PROBE_PR_NUMBER}"
 API_URL="https://api.github.com/repos/${SANDBOX_REPO}/pulls/${PR_NUM}/merge"
 
 # Dry-run flag.
-DRY_RUN="${BH_PROBE_DRY_RUN:-0}"
+DRY_RUN="${CODEREEVE_PROBE_DRY_RUN:-0}"
 
 # ---------------------------------------------------------------------------
 # Banner.
@@ -123,7 +125,7 @@ echo "  baton-harness merge-denial probe  (slice 3c, #160)"
 echo "============================================================"
 echo "  Sandbox repo : ${SANDBOX_REPO}"
 echo "  PR number    : ${PR_NUM}"
-echo "  Token path   : ${BH_PROBE_WORKER_TOKEN_PATH} (len=${_TOKEN_LEN})"
+echo "  Token path   : ${CODEREEVE_PROBE_WORKER_TOKEN_PATH} (len=${_TOKEN_LEN})"
 echo "  Dry-run      : ${DRY_RUN}"
 echo "  API URL      : ${API_URL}"
 if [[ -n "${_HOOK_SCRIPT}" ]]; then
@@ -218,7 +220,7 @@ _hook_vector() {
     _tmp_herr="$(mktemp)"
     (
         cd "${tmpdir}" || exit
-        printf '%s' "${payload}" | "${_HOOK_SCRIPT}" 2>"${_tmp_herr}"
+        printf '%s' "${payload}" | "${_HOOK_SCRIPT}" "${_HOOK_ARGS[@]}" 2>"${_tmp_herr}"
     )
     _HOOK_EXIT=$?
     _HOOK_STDERR="$(cat "${_tmp_herr}")"
@@ -279,7 +281,7 @@ _v2_hook_stderr="${_HOOK_STDERR:-}"
 _v2_sentinel_dir="${_SENTINEL_DIR:-}"
 
 # Also attempt live API call (captures 403 from ruleset, orthogonal to hook).
-_GH_TOKEN="$(cat "${BH_PROBE_WORKER_TOKEN_PATH}")"
+_GH_TOKEN="$(cat "${CODEREEVE_PROBE_WORKER_TOKEN_PATH}")"
 export GH_TOKEN="${_GH_TOKEN}"
 _run_vector gh api -X PUT "repos/${SANDBOX_REPO}/pulls/${PR_NUM}/merge" \
     -f merge_method=merge 2>&1 || true
@@ -339,7 +341,7 @@ _v3_hook_exit="${_CMD_EXIT}"
 _v3_hook_stderr="${_HOOK_STDERR:-}"
 _v3_sentinel_dir="${_SENTINEL_DIR:-}"
 
-_GH_TOKEN="$(cat "${BH_PROBE_WORKER_TOKEN_PATH}")"
+_GH_TOKEN="$(cat "${CODEREEVE_PROBE_WORKER_TOKEN_PATH}")"
 export GH_TOKEN="${_GH_TOKEN}"
 _run_vector gh api "repos/${SANDBOX_REPO}/pulls/${PR_NUM}/merge" -X PUT \
     -f merge_method=merge 2>&1 || true
@@ -399,7 +401,7 @@ _v4_hook_exit="${_CMD_EXIT}"
 _v4_hook_stderr="${_HOOK_STDERR:-}"
 _v4_sentinel_dir="${_SENTINEL_DIR:-}"
 
-_GH_TOKEN="$(cat "${BH_PROBE_WORKER_TOKEN_PATH}")"
+_GH_TOKEN="$(cat "${CODEREEVE_PROBE_WORKER_TOKEN_PATH}")"
 export GH_TOKEN="${_GH_TOKEN}"
 _run_vector gh api --method=PUT "repos/${SANDBOX_REPO}/pulls/${PR_NUM}/merge" \
     -f merge_method=merge 2>&1 || true
@@ -455,7 +457,7 @@ echo ""
 # exercises the ruleset independently for belt-and-braces verification.
 # ---------------------------------------------------------------------------
 echo "=== Vector 5: curl -X PUT (raw HTTP, flag-space form) ==="
-_GH_TOKEN="$(cat "${BH_PROBE_WORKER_TOKEN_PATH}")"
+_GH_TOKEN="$(cat "${CODEREEVE_PROBE_WORKER_TOKEN_PATH}")"
 _run_vector curl --silent --show-error --write-out "\nHTTP_STATUS:%{http_code}" \
     --fail-with-body \
     -X PUT \
@@ -489,7 +491,7 @@ echo ""
 # Hook coverage: NONE — ruleset only.
 # ---------------------------------------------------------------------------
 echo "=== Vector 6: curl --request=PUT (raw HTTP, equals form) ==="
-_GH_TOKEN="$(cat "${BH_PROBE_WORKER_TOKEN_PATH}")"
+_GH_TOKEN="$(cat "${CODEREEVE_PROBE_WORKER_TOKEN_PATH}")"
 _run_vector curl --silent --show-error --write-out "\nHTTP_STATUS:%{http_code}" \
     --fail-with-body \
     "--request=PUT" \
@@ -523,7 +525,7 @@ echo ""
 # Hook coverage: NONE — ruleset only (Python stdlib not hooked).
 # ---------------------------------------------------------------------------
 echo "=== Vector 7: Python urllib.request (raw HTTP via Python) ==="
-_GH_TOKEN="$(cat "${BH_PROBE_WORKER_TOKEN_PATH}")"
+_GH_TOKEN="$(cat "${CODEREEVE_PROBE_WORKER_TOKEN_PATH}")"
 
 if [[ "${DRY_RUN}" == "1" ]]; then
     echo "  [DRY-RUN] would run: python -c urllib.request PUT ${API_URL}"
@@ -533,9 +535,9 @@ if [[ "${DRY_RUN}" == "1" ]]; then
 else
     # Pass token length only to diagnostics; token itself goes through env var
     # scoped strictly to the python subprocess (never printed/logged).
-    _run_vector env _BH_PROBE_TOKEN_INNER="${_GH_TOKEN}" "${_PYTHON}" -c "
+    _run_vector env _codereeve_probe_token_inner="${_GH_TOKEN}" "${_PYTHON}" -c "
 import urllib.request, urllib.error, json, os, sys
-token = os.environ.get('_BH_PROBE_TOKEN_INNER', '')
+token = os.environ.get('_codereeve_probe_token_inner', '')
 url = '${API_URL}'
 data = json.dumps({'merge_method': 'merge'}).encode('utf-8')
 req = urllib.request.Request(

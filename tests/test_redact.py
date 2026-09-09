@@ -48,6 +48,19 @@ _TOKEN_SAMPLES = {
 
 
 @pytest.mark.parametrize(
+    "text",
+    [
+        "https:/user:private-pass@host/path",
+        r"https:\user:private-pass@host\path",
+        r"https:\\user:private-pass@host\path",
+    ],
+)
+def test_path_normalized_url_credentials_are_redacted(text: str) -> None:
+    """Path rendering must not conceal URL userinfo from redaction."""
+    assert "private-pass" not in redact_secrets(text)
+
+
+@pytest.mark.parametrize(
     ("text", "secret"),
     [
         (

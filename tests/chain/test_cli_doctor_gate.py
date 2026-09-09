@@ -156,16 +156,16 @@ def test_daemon_config_and_gate_order(
         encoding="utf-8",
     )
     events = []
-    resolve = sandbox_config.resolve_config
+    resolve = sandbox_config.resolve_config_sources
     apply = sandbox_config.apply_config
 
     def resolve_spy(
-        selected: Path, env: Mapping[str, str]
-    ) -> sandbox_config.SandboxConfig:
+        selected: Path, env: Mapping[str, str], layout: object
+    ) -> sandbox_config.ResolvedSandboxConfig:
         """Record config resolution without replacing its validation."""
         assert selected == path
         events.append("resolve_config")
-        return resolve(selected, env)
+        return resolve(selected, env, layout)
 
     def apply_spy(
         config: sandbox_config.SandboxConfig, env: MutableMapping[str, str]
@@ -216,7 +216,7 @@ def test_daemon_config_and_gate_order(
             clear=True,
         ),
         patch.object(
-            sandbox_config, "resolve_config", side_effect=resolve_spy
+            sandbox_config, "resolve_config_sources", side_effect=resolve_spy
         ),
         patch.object(sandbox_config, "apply_config", side_effect=apply_spy),
         patch.object(doctor, "run_gate", side_effect=gate),
@@ -727,7 +727,9 @@ def test_doctor_strict_only_warning_failures_exits_0() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_no_doctor_flag_runs_daemon_path_and_never_calls_run_report() -> None:
+def test_no_doctor_flag_runs_daemon_path_and_never_calls_run_report(
+    tmp_path: Path,
+) -> None:
     """Without --doctor, main() still launches the daemon as before.
 
     Regression guard: adding the --doctor branch must not divert the
@@ -751,7 +753,7 @@ def test_no_doctor_flag_runs_daemon_path_and_never_calls_run_report() -> None:
         ),
         patch(
             "codereeve.chain.cli.load_registry",
-            return_value=[MagicMock()],
+            return_value=[MagicMock(project_root=tmp_path)],
         ),
         patch(
             "codereeve.chain.cli.run_daemon",
@@ -817,11 +819,12 @@ class TestPreBootstrapDoctorGate:
 
     def test_gate_runs_before_tripwire_and_bootstrap_on_pass(
         self,
+        tmp_path: Path,
     ) -> None:
         """Both gates pass before the daemon loop can start."""
         call_order: list[str] = []
 
-        fake_repo_cfg = MagicMock()
+        fake_repo_cfg = MagicMock(project_root=tmp_path)
 
         def fake_self_test() -> None:
             call_order.append("self-test")

@@ -3,15 +3,15 @@
 The existing missing-env-vars fatal path (``bin/provision-ruleset.sh``,
 just before ``exit 2``) prints a single summary line naming the missing
 variables. This suite covers the new *always-on* (not gated by
-``BH_DEBUG_CONFIG``) detail lines that must follow it, giving an
+``CODEREEVE_DEBUG_CONFIG``) detail lines that must follow it, giving an
 operator enough context to see WHY the vars are missing without
 re-running with debug tracing enabled:
 
-  1. ``  detail: BH_PROJECT_ROOT=`` — the current value, or the literal
+  1. ``  detail: CODEREEVE_PROJECT_ROOT=`` — the current value, or the literal
      ``(unset)``.
-  2. ``  detail: .bh/config.env=`` — one of the resolved path + "
+  2. ``  detail: .codereeve/config.env=`` — one of the resolved path + "
      (exists)"/" (does not exist)", or the literal
-     "(not checked: BH_PROJECT_ROOT unset)" when BH_PROJECT_ROOT itself
+     "(not checked: CODEREEVE_PROJECT_ROOT unset)" when the root itself
      is unset.
 
 Each test isolates HOME/XDG_CONFIG_HOME to a fresh tmp_path subtree so a
@@ -41,10 +41,10 @@ else:
 _BASH_BIN_DIR = str(Path(_BASH).parent) if Path(_BASH).exists() else ""
 
 _REQUIRED_VARS = (
-    "BH_REPO_OWNER",
-    "BH_REPO_NAME",
-    "BH_GITHUB_APP_ID",
-    "BH_GITHUB_APP_INSTALLATION_ID",
+    "CODEREEVE_REPO_OWNER",
+    "CODEREEVE_REPO_NAME",
+    "CODEREEVE_GITHUB_APP_ID",
+    "CODEREEVE_GITHUB_APP_INSTALLATION_ID",
 )
 
 
@@ -62,8 +62,8 @@ def _invoke(
         tmp_path: Pytest-provided temp directory for this test, used to
             build an isolated HOME/XDG_CONFIG_HOME so no real host.env
             on this machine can supply the required vars (or
-            BH_PROJECT_ROOT) and mask the fatal path under test.
-        project_root: Value for BH_PROJECT_ROOT, or None to leave it
+            CODEREEVE_PROJECT_ROOT) and mask the fatal path under test.
+        project_root: Value for CODEREEVE_PROJECT_ROOT, or None to leave it
             unset.
 
     Returns:
@@ -79,9 +79,9 @@ def _invoke(
         if k
         not in (
             *_REQUIRED_VARS,
-            "BH_PROJECT_ROOT",
-            "BH_ADMIN_ROLE_ID",
-            "BH_DEBUG_CONFIG",
+            "CODEREEVE_PROJECT_ROOT",
+            "CODEREEVE_ADMIN_ROLE_ID",
+            "CODEREEVE_DEBUG_CONFIG",
         )
     }
     env["PATH"] = os.pathsep.join(
@@ -90,7 +90,7 @@ def _invoke(
     env["HOME"] = home.as_posix()
     env["XDG_CONFIG_HOME"] = xdg_config_home.as_posix()
     if project_root is not None:
-        env["BH_PROJECT_ROOT"] = project_root.as_posix()
+        env["CODEREEVE_PROJECT_ROOT"] = project_root.as_posix()
 
     proc = subprocess.run(
         [_BASH, str(SCRIPT)],
@@ -103,12 +103,12 @@ def _invoke(
 
 
 # ---------------------------------------------------------------------------
-# Case 1: BH_PROJECT_ROOT unset
+# Case 1: CODEREEVE_PROJECT_ROOT unset
 # ---------------------------------------------------------------------------
 
 
 def test_missing_env_vars_detail_project_root_unset(tmp_path: Path) -> None:
-    """BH_PROJECT_ROOT unset -> both detail lines report unset/not-checked."""
+    """Project root unset -> both detail lines report unset/not- checked."""
     rc, stdout, stderr = _invoke(tmp_path, project_root=None)
 
     assert rc == 2, (
@@ -116,28 +116,28 @@ def test_missing_env_vars_detail_project_root_unset(tmp_path: Path) -> None:
         f"stdout:\n{stdout}\nstderr:\n{stderr}"
     )
     assert "provision-ruleset: missing env vars:" in stderr, stderr
-    assert "detail: BH_PROJECT_ROOT=(unset)" in stderr, (
-        f"expected the BH_PROJECT_ROOT=(unset) detail line; stderr was:\n"
-        f"{stderr!r}"
+    assert "detail: CODEREEVE_PROJECT_ROOT=(unset)" in stderr, (
+        f"expected the unset project-root detail line; stderr was:\n{stderr!r}"
     )
     assert (
-        "detail: .bh/config.env=(not checked: BH_PROJECT_ROOT unset)" in stderr
+        "detail: .codereeve/config.env="
+        "(not checked: CODEREEVE_PROJECT_ROOT unset)" in stderr
     ), (
-        "expected the .bh/config.env not-checked detail line; stderr "
+        "expected the .codereeve/config.env not-checked detail line; stderr "
         f"was:\n{stderr!r}"
     )
 
 
 # ---------------------------------------------------------------------------
-# Case 2: BH_PROJECT_ROOT set, .bh/config.env absent
+# Case 2: CODEREEVE_PROJECT_ROOT set, .codereeve/config.env absent
 # ---------------------------------------------------------------------------
 
 
 def test_missing_env_vars_detail_config_env_absent(tmp_path: Path) -> None:
-    """BH_PROJECT_ROOT set, .bh/config.env absent -> "does not exist"."""
+    """Project root set, .codereeve/config.env absent -> "does not exist"."""
     project_root = tmp_path / "project"
     project_root.mkdir()
-    # Deliberately no .bh/config.env under project_root.
+    # Deliberately no .codereeve/config.env under project_root.
 
     rc, stdout, stderr = _invoke(tmp_path, project_root=project_root)
 
@@ -146,27 +146,27 @@ def test_missing_env_vars_detail_config_env_absent(tmp_path: Path) -> None:
         f"stdout:\n{stdout}\nstderr:\n{stderr}"
     )
     expected_root = project_root.as_posix()
-    expected_config_env = f"{expected_root}/.bh/config.env"
-    assert f"detail: BH_PROJECT_ROOT={expected_root}" in stderr, (
-        f"expected the resolved BH_PROJECT_ROOT detail line; stderr "
+    expected_config_env = f"{expected_root}/.codereeve/config.env"
+    assert f"detail: CODEREEVE_PROJECT_ROOT={expected_root}" in stderr, (
+        f"expected the resolved CODEREEVE_PROJECT_ROOT detail line; stderr "
         f"was:\n{stderr!r}"
     )
     assert (
-        f"detail: .bh/config.env={expected_config_env} (does not exist)"
+        f"detail: .codereeve/config.env={expected_config_env} (does not exist)"
         in stderr
     ), (
-        "expected the .bh/config.env (does not exist) detail line with "
+        "expected the .codereeve/config.env (does not exist) detail line with "
         f"the correct resolved path; stderr was:\n{stderr!r}"
     )
 
 
 # ---------------------------------------------------------------------------
-# Case 3: BH_PROJECT_ROOT set, .bh/config.env present
+# Case 3: CODEREEVE_PROJECT_ROOT set, .codereeve/config.env present
 # ---------------------------------------------------------------------------
 
 
 def test_missing_env_vars_detail_config_env_present(tmp_path: Path) -> None:
-    """BH_PROJECT_ROOT set, .bh/config.env present -> "(exists)".
+    """CODEREEVE_PROJECT_ROOT set, .codereeve/config.env present -> "(exists)".
 
     The fixture file deliberately does NOT supply the missing required
     vars — the point of this case is only that the file's *existence*
@@ -175,7 +175,7 @@ def test_missing_env_vars_detail_config_env_present(tmp_path: Path) -> None:
     differs from case 2).
     """
     project_root = tmp_path / "project"
-    bh_dir = project_root / ".bh"
+    bh_dir = project_root / ".codereeve"
     bh_dir.mkdir(parents=True)
     (bh_dir / "config.env").write_text(
         "# fixture config.env — deliberately does not set the missing "
@@ -190,11 +190,12 @@ def test_missing_env_vars_detail_config_env_present(tmp_path: Path) -> None:
         f"expected exit 2 for missing required env vars; got rc={rc}\n"
         f"stdout:\n{stdout}\nstderr:\n{stderr}"
     )
-    expected_config_env = f"{project_root.as_posix()}/.bh/config.env"
+    expected_config_env = f"{project_root.as_posix()}/.codereeve/config.env"
     assert (
-        f"detail: .bh/config.env={expected_config_env} (exists)" in stderr
+        f"detail: .codereeve/config.env={expected_config_env} (exists)"
+        in stderr
     ), (
-        "expected the .bh/config.env (exists) detail line with the "
+        "expected the .codereeve/config.env (exists) detail line with the "
         f"correct resolved path; stderr was:\n{stderr!r}"
     )
 
@@ -210,7 +211,9 @@ def test_missing_env_vars_per_var_detail_project_root_unset(
         f"stdout:\n{stdout}\nstderr:\n{stderr}"
     )
     for var_name in _REQUIRED_VARS:
-        expected = f"  detail: {var_name}: not checked (BH_PROJECT_ROOT unset)"
+        expected = (
+            f"  detail: {var_name}: not checked (CODEREEVE_PROJECT_ROOT unset)"
+        )
         assert expected in stderr, (
             f"expected per-variable not-checked detail {expected!r}; "
             f"stderr was:\n{stderr!r}"
@@ -220,10 +223,10 @@ def test_missing_env_vars_per_var_detail_project_root_unset(
 def test_missing_env_vars_per_var_detail_config_env_absent(
     tmp_path: Path,
 ) -> None:
-    """Each missing var reports that .bh/config.env does not exist."""
+    """Each missing var reports that .codereeve/config.env does not exist."""
     project_root = tmp_path / "project"
     project_root.mkdir()
-    # Deliberately no .bh/config.env under project_root.
+    # Deliberately no .codereeve/config.env under project_root.
 
     rc, stdout, stderr = _invoke(tmp_path, project_root=project_root)
 
@@ -232,7 +235,9 @@ def test_missing_env_vars_per_var_detail_config_env_absent(
         f"stdout:\n{stdout}\nstderr:\n{stderr}"
     )
     for var_name in _REQUIRED_VARS:
-        expected = f"  detail: {var_name}: .bh/config.env does not exist"
+        expected = (
+            f"  detail: {var_name}: .codereeve/config.env does not exist"
+        )
         assert expected in stderr, (
             f"expected per-variable missing-file detail {expected!r}; "
             f"stderr was:\n{stderr!r}"
@@ -246,9 +251,9 @@ def test_missing_env_vars_per_var_detail_config_env_absent(
 def test_missing_env_vars_per_var_detail_config_env_unreadable(
     tmp_path: Path,
 ) -> None:
-    """Each missing var reports that .bh/config.env is unreadable."""
+    """Each missing var reports that .codereeve/config.env is unreadable."""
     project_root = tmp_path / "project"
-    bh_dir = project_root / ".bh"
+    bh_dir = project_root / ".codereeve"
     bh_dir.mkdir(parents=True)
     config_env = bh_dir / "config.env"
     config_env.write_text("SOME_UNRELATED_VAR=foo\n", encoding="utf-8")
@@ -262,13 +267,16 @@ def test_missing_env_vars_per_var_detail_config_env_unreadable(
     )
     for var_name in _REQUIRED_VARS:
         expected = (
-            f"  detail: {var_name}: .bh/config.env exists but is not readable"
+            f"  detail: {var_name}: .codereeve/config.env "
+            "exists but is not readable"
         )
         assert expected in stderr, (
             f"expected per-variable unreadable-file detail {expected!r}; "
             f"stderr was:\n{stderr!r}"
         )
-        not_defined = f"  detail: {var_name}: not defined in .bh/config.env"
+        not_defined = (
+            f"  detail: {var_name}: not defined in .codereeve/config.env"
+        )
         assert not_defined not in stderr, (
             f"unexpected undefined-key detail {not_defined!r}; "
             f"stderr was:\n{stderr!r}"
@@ -280,7 +288,7 @@ def test_missing_env_vars_per_var_detail_not_defined_in_config_env(
 ) -> None:
     """Each absent assignment is distinguished from an empty value."""
     project_root = tmp_path / "project"
-    bh_dir = project_root / ".bh"
+    bh_dir = project_root / ".codereeve"
     bh_dir.mkdir(parents=True)
     (bh_dir / "config.env").write_text(
         "SOME_UNRELATED_VAR=foo\n",
@@ -295,7 +303,9 @@ def test_missing_env_vars_per_var_detail_not_defined_in_config_env(
         f"stdout:\n{stdout}\nstderr:\n{stderr}"
     )
     for var_name in _REQUIRED_VARS:
-        expected = f"  detail: {var_name}: not defined in .bh/config.env"
+        expected = (
+            f"  detail: {var_name}: not defined in .codereeve/config.env"
+        )
         assert expected in stderr, (
             f"expected per-variable undefined-key detail {expected!r}; "
             f"stderr was:\n{stderr!r}"
@@ -307,10 +317,10 @@ def test_missing_env_vars_per_var_detail_present_but_empty(
 ) -> None:
     """An assigned empty value is distinguished from absent assignments."""
     project_root = tmp_path / "project"
-    bh_dir = project_root / ".bh"
+    bh_dir = project_root / ".codereeve"
     bh_dir.mkdir(parents=True)
     (bh_dir / "config.env").write_text(
-        "BH_GITHUB_APP_ID=\n",
+        "CODEREEVE_GITHUB_APP_ID=\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -322,7 +332,7 @@ def test_missing_env_vars_per_var_detail_present_but_empty(
         f"stdout:\n{stdout}\nstderr:\n{stderr}"
     )
     empty_expected = (
-        "  detail: BH_GITHUB_APP_ID: present in .bh/config.env "
+        "  detail: CODEREEVE_GITHUB_APP_ID: present in .codereeve/config.env "
         "but resolved empty"
     )
     assert empty_expected in stderr, (
@@ -330,11 +340,13 @@ def test_missing_env_vars_per_var_detail_present_but_empty(
         f"stderr was:\n{stderr!r}"
     )
     for var_name in (
-        "BH_REPO_OWNER",
-        "BH_REPO_NAME",
-        "BH_GITHUB_APP_INSTALLATION_ID",
+        "CODEREEVE_REPO_OWNER",
+        "CODEREEVE_REPO_NAME",
+        "CODEREEVE_GITHUB_APP_INSTALLATION_ID",
     ):
-        expected = f"  detail: {var_name}: not defined in .bh/config.env"
+        expected = (
+            f"  detail: {var_name}: not defined in .codereeve/config.env"
+        )
         assert expected in stderr, (
             f"expected per-variable undefined-key detail {expected!r}; "
             f"stderr was:\n{stderr!r}"

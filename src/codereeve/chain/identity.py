@@ -14,6 +14,10 @@ from codereeve.chain.app_auth import (
     InstallationTokenSource,
     resolve_installation_token,
 )
+from codereeve.config_env import (
+    apply_resolved_environment,
+    runtime_environment,
+)
 
 _PRIVILEGED_ENV_KEYS: frozenset[str] = frozenset(
     {
@@ -23,6 +27,9 @@ _PRIVILEGED_ENV_KEYS: frozenset[str] = frozenset(
         "BH_GITHUB_APP_KEY_PROVIDER",
         "BH_GITHUB_APP_PRIVATE_KEY_FILE",
         "BH_HEARTBEAT_PING_URL",
+        "CODEREEVE_GITHUB_APP_KEY_PROVIDER",
+        "CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE",
+        "CODEREEVE_HEARTBEAT_PING_URL",
         "BWS_ACCESS_TOKEN",
         "BWS_PEM_SECRET_ID",
         "BWS_APP_ID",
@@ -61,7 +68,11 @@ def env_for(
     Raises:
         ValueError: If App identity is requested without a usable token.
     """
-    env = dict(os.environ if base_env is None else base_env)
+    resolved = runtime_environment(
+        os.environ if base_env is None else base_env
+    )
+    env: dict[str, str] = {}
+    apply_resolved_environment(resolved, env)
 
     if identity is Identity.APP:
         if installation_token is None:

@@ -3,7 +3,7 @@
 #
 # Exercises the WORKFLOW.md "Confidence / block rule" end to end against a
 # live sandbox: seeds a genuinely ambiguous agent-ready issue, runs a single
-# bh-daemon poll tick, and asserts the full park+escalate chain fires:
+# codereeve daemon poll tick, and asserts the full park+escalate chain fires:
 #   agent posts a clarifying question -> agent adds `blocked` -> daemon's
 #   post-turn label re-read sees `blocked` -> park path (kind="block",
 #   reason="blocked label set") -> alert(severity="warn", kind="block")
@@ -13,7 +13,7 @@
 # PLATFORM NOTE: intended for the Linux server where the daemon is deployed
 # (same target as bin/verify-recovery.sh). It has no /proc or pgrep
 # dependency, so it is more portable than the sibling script, but it DOES
-# spawn a real `claude -p` agent turn via bh-daemon --once — do not run it
+# spawn a real `claude -p` agent turn via codereeve daemon --once — do not run it
 # against a repo you are not prepared to have a real agent commit/comment
 # on. It is not a decoy-only script like verify-recovery.sh.
 #
@@ -26,15 +26,15 @@
 #   bin/verify-block-escalation.sh [--help|-h]
 #
 # Required environment variables:
-#   BH_REPO_OWNER      GitHub repository owner (org or user login)
-#   BH_REPO_NAME       GitHub repository name (without owner prefix)
-#   BH_PROJECT_ROOT    Absolute path to the local clone of the managed sandbox repo
-#   bh-daemon          Must be on PATH (install the harness first)
+#   CODEREEVE_REPO_OWNER      GitHub repository owner (org or user login)
+#   CODEREEVE_REPO_NAME       GitHub repository name (without owner prefix)
+#   CODEREEVE_PROJECT_ROOT    Absolute path to the local clone of the managed sandbox repo
+#   codereeve daemon          Must be on PATH (install the harness first)
 #
 # Hard prerequisites (checked at startup):
-#   1. bh-daemon is on PATH
+#   1. codereeve daemon is on PATH
 #   2. The sandbox repo has NO open `agent-ready` issues (safety gate)
-#   3. BH_PROJECT_ROOT is a git repo
+#   3. CODEREEVE_PROJECT_ROOT is a git repo
 #   4. GH_TOKEN or GITHUB_TOKEN is set and valid
 #   5. ANTHROPIC_API_KEY is NOT set (OAuth/subscription deployment — G3b)
 #   6. ~/.claude/.credentials.json is present and readable (G3c)
@@ -48,7 +48,7 @@
 #   #N ... kind=block ...") on failure. Assertion 3 requires the SUCCESS
 #   (INFO) line specifically; the WARNING failure-path text is a real
 #   assertion failure.
-#   Slack notifications (when BH_SLACK_WEBHOOK_URL is set) log similarly:
+#   Slack notifications (when CODEREEVE_SLACK_WEBHOOK_URL is set) log similarly:
 #   INFO "escalate: Slack notification posted (issue #N kind=block)" or
 #   WARNING "escalate: Slack POST failed (issue #N kind=block): ...".
 #
@@ -75,15 +75,15 @@ Usage: bin/verify-block-escalation.sh [--help|-h]
 
 Exercises the #239 self-block escalation chain against a configured
 sandbox: seeds a genuinely ambiguous agent-ready issue, runs one
-bh-daemon --once poll tick, and asserts the park+escalate chain fired.
+codereeve daemon --once poll tick, and asserts the park+escalate chain fired.
 
 Required environment variables:
-  BH_REPO_OWNER      GitHub repository owner (org or user login)
-  BH_REPO_NAME       GitHub repository name (without owner prefix)
-  BH_PROJECT_ROOT    Absolute path to the local clone of the managed sandbox repo
+  CODEREEVE_REPO_OWNER      GitHub repository owner (org or user login)
+  CODEREEVE_REPO_NAME       GitHub repository name (without owner prefix)
+  CODEREEVE_PROJECT_ROOT    Absolute path to the local clone of the managed sandbox repo
 
 Prerequisites:
-  - bh-daemon must be on PATH
+  - codereeve daemon must be on PATH
   - Sandbox must have ZERO open `agent-ready` issues before this script
     seeds its own (safety guard — the single poll tick may only ever pick
     up the issue this script creates)
@@ -98,7 +98,7 @@ Assertions:
   2. `agent-in-progress` label NOT present after the run
   3. escalation log line present in captured daemon output (kind=block)
   4. at least one comment exists on the issue post-run (clarifying question)
-  5. (conditional) if BH_SLACK_WEBHOOK_URL is set, a Slack POST was
+  5. (conditional) if CODEREEVE_SLACK_WEBHOOK_URL is set, a Slack POST was
      attempted per the daemon log; otherwise this assertion is SKIPPED,
      not failed
 
@@ -122,7 +122,7 @@ print_safety_banner() {
     echo "" >&2
     echo "  *** SAFETY WARNING ***" >&2
     echo "" >&2
-    echo "  This script starts bh-daemon against a LIVE sandbox repo and" >&2
+    echo "  This script starts codereeve daemon against a LIVE sandbox repo and" >&2
     echo "  dispatches ONE real Claude Code agent turn." >&2
     echo "" >&2
     echo "  The sandbox MUST have ZERO open agent-ready issues before this" >&2
@@ -134,7 +134,7 @@ print_safety_banner() {
     echo "  implementation can satisfy all of them — the agent is expected" >&2
     echo "  to self-block rather than implement anything." >&2
     echo "" >&2
-    echo "  Target repo is read from BH_REPO_OWNER / BH_REPO_NAME." >&2
+    echo "  Target repo is read from CODEREEVE_REPO_OWNER / CODEREEVE_REPO_NAME." >&2
     echo "" >&2
 }
 
@@ -171,23 +171,23 @@ skipped() {
 }
 
 # ---------------------------------------------------------------------------
-# Source shared env-config loader (host.env -> BH_PROJECT_ROOT;
-# .bh/config.env -> BH_REPO_OWNER/BH_REPO_NAME/etc; operator env wins)
+# Source shared env-config loader (host.env -> CODEREEVE_PROJECT_ROOT;
+# .codereeve/config.env -> CODEREEVE_REPO_OWNER/CODEREEVE_REPO_NAME/etc; operator env wins)
 # ---------------------------------------------------------------------------
 
-_BH_LOAD_CONFIG="$(dirname "${BASH_SOURCE[0]}")/lib/load-config.sh"
-if [[ -f "${_BH_LOAD_CONFIG}" ]]; then
+_codereeve_load_config="$(dirname "${BASH_SOURCE[0]}")/lib/load-config.sh"
+if [[ -f "${_codereeve_load_config}" ]]; then
     # shellcheck disable=SC1090,SC1091
-    source "${_BH_LOAD_CONFIG}"
+    source "${_codereeve_load_config}"
 fi
-unset _BH_LOAD_CONFIG
+unset _codereeve_load_config
 
 # ---------------------------------------------------------------------------
 # Validate required environment variables
 # ---------------------------------------------------------------------------
 
 _missing_env=()
-for _var in BH_REPO_OWNER BH_REPO_NAME BH_PROJECT_ROOT; do
+for _var in CODEREEVE_REPO_OWNER CODEREEVE_REPO_NAME CODEREEVE_PROJECT_ROOT; do
     if [[ -z "${!_var:-}" ]]; then
         _missing_env+=("${_var}")
     fi
@@ -200,18 +200,18 @@ if [[ ${#_missing_env[@]} -gt 0 ]]; then
     done
     echo "" >&2
     echo "  Set them before running bin/verify-block-escalation.sh:" >&2
-    echo "    export BH_REPO_OWNER=<owner>" >&2
-    echo "    export BH_REPO_NAME=<repo>" >&2
-    echo "    export BH_PROJECT_ROOT=/path/to/local/sandbox/clone" >&2
+    echo "    export CODEREEVE_REPO_OWNER=<owner>" >&2
+    echo "    export CODEREEVE_REPO_NAME=<repo>" >&2
+    echo "    export CODEREEVE_PROJECT_ROOT=/path/to/local/sandbox/clone" >&2
     exit 1
 fi
 
 # ---------------------------------------------------------------------------
-# Locate bh-daemon (must be on PATH)
+# Locate codereeve daemon (must be on PATH)
 # ---------------------------------------------------------------------------
 
-BH_DAEMON_BIN="$(command -v bh-daemon)" || {
-    echo "baton-harness: error: bh-daemon not found on PATH — install the harness first" >&2
+_codereeve_daemon_bin="$(command -v codereeve)" || {
+    echo "baton-harness: error: codereeve daemon not found on PATH — install the harness first" >&2
     echo "               uv pip install -e ." >&2
     exit 1
 }
@@ -221,16 +221,16 @@ BH_DAEMON_BIN="$(command -v bh-daemon)" || {
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BATON_HARNESS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-export BATON_HARNESS_DIR
+CODEREEVE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+export CODEREEVE_ROOT
 
-WORKFLOW_FILE="${BATON_HARNESS_DIR}/config/WORKFLOW.md"
+WORKFLOW_FILE="${CODEREEVE_ROOT}/config/WORKFLOW.md"
 if [[ ! -f "${WORKFLOW_FILE}" ]]; then
     echo "baton-harness: error: workflow config not found: ${WORKFLOW_FILE}" >&2
     exit 1
 fi
 
-_REPO_SLUG="${BH_REPO_OWNER}/${BH_REPO_NAME}"
+_REPO_SLUG="${CODEREEVE_REPO_OWNER}/${CODEREEVE_REPO_NAME}"
 
 # ---------------------------------------------------------------------------
 # Preflight checks
@@ -238,16 +238,16 @@ _REPO_SLUG="${BH_REPO_OWNER}/${BH_REPO_NAME}"
 
 echo "baton-harness: running preflight checks..."
 
-# BH_PROJECT_ROOT must be a git repo
-if [[ ! -d "${BH_PROJECT_ROOT}" ]]; then
-    echo "baton-harness: error: BH_PROJECT_ROOT does not exist: ${BH_PROJECT_ROOT}" >&2
+# CODEREEVE_PROJECT_ROOT must be a git repo
+if [[ ! -d "${CODEREEVE_PROJECT_ROOT}" ]]; then
+    echo "baton-harness: error: CODEREEVE_PROJECT_ROOT does not exist: ${CODEREEVE_PROJECT_ROOT}" >&2
     exit 1
 fi
-if ! git -C "${BH_PROJECT_ROOT}" rev-parse --git-dir &>/dev/null; then
-    echo "baton-harness: error: BH_PROJECT_ROOT is not a git repository: ${BH_PROJECT_ROOT}" >&2
+if ! git -C "${CODEREEVE_PROJECT_ROOT}" rev-parse --git-dir &>/dev/null; then
+    echo "baton-harness: error: CODEREEVE_PROJECT_ROOT is not a git repository: ${CODEREEVE_PROJECT_ROOT}" >&2
     exit 1
 fi
-echo "baton-harness: BH_PROJECT_ROOT is a git repo: ${BH_PROJECT_ROOT}"
+echo "baton-harness: CODEREEVE_PROJECT_ROOT is a git repo: ${CODEREEVE_PROJECT_ROOT}"
 
 # GH_TOKEN / GITHUB_TOKEN must be set (structural presence only — value never inspected)
 _token_env_set=0
@@ -299,7 +299,7 @@ _assert_agent_ready_isolation() {
         --jq '.[].number' 2>&1)"; then
         echo "baton-harness: ABORT: gh issue list failed — cannot prove sandbox isolation" >&2
         echo "  Refusing to seed a new issue or run the daemon." >&2
-        echo "  Check BH_REPO_OWNER/BH_REPO_NAME, GH_TOKEN, and network." >&2
+        echo "  Check CODEREEVE_REPO_OWNER/CODEREEVE_REPO_NAME, GH_TOKEN, and network." >&2
         echo "  gh output: ${_ready_out}" >&2
         exit 1
     fi
@@ -328,7 +328,7 @@ _assert_agent_ready_isolation() {
 
     if [[ -n "${_expected_issue_num}" && "${_ready_numbers[0]}" != "${_expected_issue_num}" ]]; then
         echo "baton-harness: ABORT: expected seeded issue #${_expected_issue_num} to be the sole open agent-ready issue, found #${_ready_numbers[0]}." >&2
-        echo "  Refusing to run bh-daemon --once against the wrong issue." >&2
+        echo "  Refusing to run codereeve daemon --once against the wrong issue." >&2
         exit 1
     fi
 
@@ -368,7 +368,7 @@ echo ""
 # ---------------------------------------------------------------------------
 # G3c preflight: OAuth credential file presence check
 #
-# Mirrors verify-recovery.sh exactly. If absent, bh-daemon --once would
+# Mirrors verify-recovery.sh exactly. If absent, codereeve daemon --once would
 # sys.exit(1) at startup before ever polling, producing a misleading FAIL
 # rather than a real signal about the block-escalation chain.
 #
@@ -403,7 +403,7 @@ _cleanup() {
     # every exit, and the inline dump further up only fires on a non-zero
     # daemon exit. Once any assertion has failed, keep the temp file around
     # (the summary FAIL branch above already copied it to a stable,
-    # announced path — see BH_PROJECT_ROOT/verify-block-escalation-daemon-*
+    # announced path — see CODEREEVE_PROJECT_ROOT/verify-block-escalation-daemon-*
     # — but preserving the original too costs nothing and doubles as a
     # belt-and-suspenders fallback if that copy failed).
     if [[ -n "${_DAEMON_OUTPUT_FILE}" && -f "${_DAEMON_OUTPUT_FILE}" ]]; then
@@ -526,7 +526,7 @@ echo "baton-harness: seeded issue #${_ISSUE_NUM} (${_issue_url})"
 echo ""
 
 # ---------------------------------------------------------------------------
-# Run one bh-daemon --once poll tick.
+# Run one codereeve daemon --once poll tick.
 #
 # Unlike verify-recovery.sh's decoy-only scenarios, this tick DOES dispatch
 # a real agent turn (against the single seeded issue above). Timeout is
@@ -537,20 +537,20 @@ echo ""
 # ---------------------------------------------------------------------------
 
 _assert_agent_ready_isolation 1 "${_ISSUE_NUM}"
-echo "baton-harness: --- Running bh-daemon --once (dispatches real agent turn) ---"
+echo "baton-harness: --- Running codereeve daemon --once (dispatches real agent turn) ---"
 
 _DAEMON_OUTPUT_FILE="$(mktemp "${TMPDIR:-/tmp}/bh-verify-block.XXXXXX")"
-_BLOCK_TIMEOUT_SECS="${BH_VERIFY_BLOCK_TIMEOUT_SECS:-600}"
+_BLOCK_TIMEOUT_SECS="${CODEREEVE_VERIFY_BLOCK_TIMEOUT_SECS:-600}"
 
 _daemon_exit=0
 timeout "${_BLOCK_TIMEOUT_SECS}" \
-    "${BH_DAEMON_BIN}" \
+    "${_codereeve_daemon_bin}" daemon \
         --once \
         --workflow "${WORKFLOW_FILE}" \
     > "${_DAEMON_OUTPUT_FILE}" 2>&1 || _daemon_exit=$?
 
 if [[ "${_daemon_exit}" -ne 0 ]]; then
-    fail "BLOCK-daemon-exit" "bh-daemon --once exited ${_daemon_exit} (expected 0 — park is non-fatal)"
+    fail "BLOCK-daemon-exit" "codereeve daemon --once exited ${_daemon_exit} (expected 0 — park is non-fatal)"
     if [[ "${_daemon_exit}" -eq 124 ]]; then
         echo "baton-harness: warning: exit 124 means the ${_BLOCK_TIMEOUT_SECS}s timeout fired" >&2
     fi
@@ -639,10 +639,10 @@ fi
 # --- Assertion 6 (conditional): Slack block ping attempted ---
 # Slack cannot be inspected directly, so this asserts on the daemon's own
 # log line for the Slack POST attempt (success or failure — see header
-# note). When BH_SLACK_WEBHOOK_URL is unset, Slack is not attempted at
+# note). When CODEREEVE_SLACK_WEBHOOK_URL is unset, Slack is not attempted at
 # all and this assertion is SKIPPED, not failed (mirrors verify-recovery.sh
 # G3c SKIPPED handling).
-if [[ -n "${BH_SLACK_WEBHOOK_URL:-}" ]]; then
+if [[ -n "${CODEREEVE_SLACK_WEBHOOK_URL:-}" ]]; then
     # Same bounded-issue-number, single-line treatment as Assertion 3 above
     # — three independent grep -q checks could each match a different
     # line, and the earlier GitHub-comment escalation output could
@@ -650,10 +650,10 @@ if [[ -n "${BH_SLACK_WEBHOOK_URL:-}" ]]; then
     if grep -qE "escalate: Slack.*issue #${_ISSUE_NUM}[^0-9].*kind=block" "${_DAEMON_OUTPUT_FILE}"; then
         pass "BLOCK-slack-attempted"
     else
-        fail "BLOCK-slack-attempted" "BH_SLACK_WEBHOOK_URL is set but no single line matching 'escalate: Slack ... issue #${_ISSUE_NUM} ... kind=block' found in daemon output"
+        fail "BLOCK-slack-attempted" "CODEREEVE_SLACK_WEBHOOK_URL is set but no single line matching 'escalate: Slack ... issue #${_ISSUE_NUM} ... kind=block' found in daemon output"
     fi
 else
-    skipped "BLOCK-slack-attempted" "BH_SLACK_WEBHOOK_URL not set — Slack channel not exercised"
+    skipped "BLOCK-slack-attempted" "CODEREEVE_SLACK_WEBHOOK_URL not set — Slack channel not exercised"
 fi
 
 echo ""
@@ -685,7 +685,7 @@ if [[ ${_FAIL} -gt 0 ]]; then
         echo "baton-harness: --- daemon output (last 40 lines) — assertion failure ---" >&2
         tail -40 "${_DAEMON_OUTPUT_FILE}" >&2 || true
 
-        _preserved_log="${BH_PROJECT_ROOT}/verify-block-escalation-daemon-${_ISSUE_NUM}.log"
+        _preserved_log="${CODEREEVE_PROJECT_ROOT}/verify-block-escalation-daemon-${_ISSUE_NUM}.log"
         if cp "${_DAEMON_OUTPUT_FILE}" "${_preserved_log}" 2>/dev/null; then
             echo "baton-harness: full daemon output preserved at: ${_preserved_log}" >&2
         else

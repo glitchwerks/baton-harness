@@ -1,27 +1,27 @@
 #!/usr/bin/env bash
 # bin/run-daemon.sh — Always-on daemon launcher
 #
-# Replaces bin/run.sh (deleted in P3).  Launches the bh-daemon entry point
+# Replaces bin/run.sh (deleted in P3).  Launches the codereeve daemon entry point
 # which polls for agent-ready issues and runs dependency-ordered work units.
 #
 # Usage:
 #   bin/run-daemon.sh [--once] [--workflow <path>] [--poll-interval <secs>]
 #
-# Arguments passed through to bh-daemon:
+# Arguments passed through to codereeve daemon:
 #   --once            Run one tick then exit (useful for smoke tests).
 #   --workflow PATH   Path to WORKFLOW.md.  Defaults to config/WORKFLOW.md
 #                     in the harness root.
 #   --poll-interval N Override the outer-loop poll interval in seconds.
 #
 # Required environment variable:
-#   BH_PROJECT_ROOT    Absolute path to the local clone of the managed repo.
+#   CODEREEVE_PROJECT_ROOT    Absolute path to the local clone of the managed repo.
 #
-# Sandbox repo identity and GitHub App settings are read by bh-daemon from
-# ${BH_PROJECT_ROOT}/.bh/config.env at startup.
+# Sandbox repo identity and GitHub App settings are read by codereeve daemon from
+# ${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env at startup.
 #
 # Exported environment:
-#   BATON_HARNESS_DIR  Absolute path to this harness repo root.
-#   BH_VENV            Absolute path to the venv that contains bh-daemon.
+#   CODEREEVE_ROOT  Absolute path to this harness repo root.
+#   CODEREEVE_VENV            Absolute path to the venv that contains codereeve daemon.
 
 set -euo pipefail
 
@@ -39,15 +39,15 @@ Arguments:
   --poll-interval N   Override outer-loop poll interval in seconds
 
 Required environment variable:
-  BH_PROJECT_ROOT    Absolute path to the local clone of the managed repo
+  CODEREEVE_PROJECT_ROOT    Absolute path to the local clone of the managed repo
 
 Sandbox config:
-  bh-daemon reads ${BH_PROJECT_ROOT}/.bh/config.env at startup for
-  BH_REPO_OWNER, BH_REPO_NAME, BH_GITHUB_APP_ID, and related BWS_* IDs.
+  codereeve daemon reads ${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env at startup for
+  CODEREEVE_REPO_OWNER, CODEREEVE_REPO_NAME, CODEREEVE_GITHUB_APP_ID, and related BWS_* IDs.
 
 Exported to hooks:
-  BATON_HARNESS_DIR  Absolute path to this harness repo root
-  BH_VENV            Absolute path to the venv containing bh-daemon
+  CODEREEVE_ROOT  Absolute path to this harness repo root
+  CODEREEVE_VENV            Absolute path to the venv containing codereeve daemon
 EOF
 }
 
@@ -57,36 +57,36 @@ if [[ "${1-}" == "--help" || "${1-}" == "-h" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Locate bh-daemon and derive the venv root
+# Locate codereeve daemon and derive the venv root
 # ---------------------------------------------------------------------------
 
-BH_DAEMON_BIN="$(command -v bh-daemon)" || {
-    echo "error: bh-daemon not found on PATH — install the harness first" >&2
+_codereeve_daemon_bin="$(command -v codereeve)" || {
+    echo "error: codereeve daemon not found on PATH — install the harness first" >&2
     echo "       pip install -e . (or uv pip install -e .)" >&2
     exit 1
 }
-BH_VENV="$(cd "$(dirname "${BH_DAEMON_BIN}")/.." && pwd)"
-export BH_VENV
+CODEREEVE_VENV="$(cd "$(dirname "${_codereeve_daemon_bin}")/.." && pwd)"
+export CODEREEVE_VENV
 
 # ---------------------------------------------------------------------------
 # Resolve harness root from the script's own location
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BATON_HARNESS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-export BATON_HARNESS_DIR
+CODEREEVE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+export CODEREEVE_ROOT
 
 # ---------------------------------------------------------------------------
-# Source shared env-config loader (host.env -> BH_PROJECT_ROOT;
-# .bh/config.env -> BH_REPO_OWNER/BH_REPO_NAME/etc; operator env wins)
+# Source shared env-config loader (host.env -> CODEREEVE_PROJECT_ROOT;
+# .codereeve/config.env -> CODEREEVE_REPO_OWNER/CODEREEVE_REPO_NAME/etc; operator env wins)
 # ---------------------------------------------------------------------------
 
-_BH_LOAD_CONFIG="$(dirname "${BASH_SOURCE[0]}")/lib/load-config.sh"
-if [[ -f "${_BH_LOAD_CONFIG}" ]]; then
+_codereeve_load_config="$(dirname "${BASH_SOURCE[0]}")/lib/load-config.sh"
+if [[ -f "${_codereeve_load_config}" ]]; then
     # shellcheck disable=SC1090,SC1091
-    source "${_BH_LOAD_CONFIG}"
+    source "${_codereeve_load_config}"
 fi
-unset _BH_LOAD_CONFIG
+unset _codereeve_load_config
 
 # ---------------------------------------------------------------------------
 # Validate required environment variables
@@ -94,7 +94,7 @@ unset _BH_LOAD_CONFIG
 
 _missing_env=()
 # shellcheck disable=SC2043  # deliberate extensible checklist; currently one entry
-for _var in BH_PROJECT_ROOT; do
+for _var in CODEREEVE_PROJECT_ROOT; do
     if [[ -z "${!_var:-}" ]]; then
         _missing_env+=("${_var}")
     fi
@@ -107,13 +107,13 @@ if [[ ${#_missing_env[@]} -gt 0 ]]; then
     done
     echo >&2
     echo "Set it via one of:" >&2
-    echo "  - Run bin/setup-env.sh (writes BH_PROJECT_ROOT to ~/.config/baton-harness/host.env)" >&2
-    echo "  - Or export BH_PROJECT_ROOT in your shell as a last-resort override" >&2
+    echo "  - Run bin/setup-env.sh (writes CODEREEVE_PROJECT_ROOT to ~/.config/codereeve/host.env)" >&2
+    echo "  - Or export CODEREEVE_PROJECT_ROOT in your shell as a last-resort override" >&2
     exit 1
 fi
 
 # ---------------------------------------------------------------------------
-# Parse --workflow override (without consuming/altering "$@" for bh-daemon)
+# Parse --workflow override (without consuming/altering "$@" for codereeve daemon)
 # ---------------------------------------------------------------------------
 
 _WORKFLOW_OVERRIDE=""
@@ -147,7 +147,7 @@ if [[ -n "${_WORKFLOW_OVERRIDE}" ]]; then
         exit 1
     fi
 else
-    WORKFLOW_FILE="${BATON_HARNESS_DIR}/config/WORKFLOW.md"
+    WORKFLOW_FILE="${CODEREEVE_ROOT}/config/WORKFLOW.md"
     if [[ ! -f "${WORKFLOW_FILE}" ]]; then
         echo "error: workflow config not found: ${WORKFLOW_FILE}" >&2
         echo "       Create config/WORKFLOW.md in the harness repo." >&2
@@ -156,26 +156,11 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Extract repo slug from .bh/config.env for shell-side preflights
+# Extract repo slug from .codereeve/config.env for shell-side preflights
 # ---------------------------------------------------------------------------
 
-_CONFIG_ENV="${BH_PROJECT_ROOT}/.bh/config.env"
-if [[ ! -f "${_CONFIG_ENV}" ]]; then
-    echo "error: sandbox config not found: ${_CONFIG_ENV}" >&2
-    echo "  Run bin/init-sandbox.sh in the sandbox, or add .bh/config.env by hand (see docs/smoke-test-daemon.md)." >&2
-    exit 1
-fi
-# Operator override: operator env wins; only extract values still unset/empty.
-if [[ -z "${BH_REPO_OWNER:-}" ]]; then
-    BH_REPO_OWNER="$(grep -E '^BH_REPO_OWNER=' "${_CONFIG_ENV}" | head -1 | cut -d= -f2- | tr -d "\"' " || true)"
-fi
-if [[ -z "${BH_REPO_NAME:-}" ]]; then
-    BH_REPO_NAME="$(grep -E '^BH_REPO_NAME=' "${_CONFIG_ENV}" | head -1 | cut -d= -f2- | tr -d "\"' " || true)"
-fi
-
-if [[ -z "${BH_REPO_OWNER}" || -z "${BH_REPO_NAME}" ]]; then
-    echo "error: BH_REPO_OWNER or BH_REPO_NAME missing from ${_CONFIG_ENV}" >&2
-    echo "  Check that both keys are set in ${_CONFIG_ENV}." >&2
+if [[ -z "${CODEREEVE_REPO_OWNER:-}" || -z "${CODEREEVE_REPO_NAME:-}" ]]; then
+    echo "error: CODEREEVE_REPO_OWNER or CODEREEVE_REPO_NAME missing from resolved configuration" >&2
     exit 1
 fi
 
@@ -191,7 +176,7 @@ _REQUIRED_LABELS=(
     "agent-merged"
 )
 
-_REPO_SLUG="${BH_REPO_OWNER}/${BH_REPO_NAME}"
+_REPO_SLUG="${CODEREEVE_REPO_OWNER}/${CODEREEVE_REPO_NAME}"
 echo "baton-harness: checking required labels in ${_REPO_SLUG}..."
 
 _missing_labels=()
@@ -222,12 +207,12 @@ echo "baton-harness: all required labels present"
 # Gitignore preflight — verify .symphony/ is gitignored in the target repo
 # ---------------------------------------------------------------------------
 
-echo "baton-harness: checking .symphony/ is gitignored in ${BH_PROJECT_ROOT}..."
+echo "baton-harness: checking .symphony/ is gitignored in ${CODEREEVE_PROJECT_ROOT}..."
 
-if [[ ! -f "${BH_PROJECT_ROOT}/.gitignore" ]] || ! grep -qxF '.symphony/' "${BH_PROJECT_ROOT}/.gitignore"; then
-    echo "error: this repo is not ready for harness work — '.symphony/' is not gitignored in ${BH_PROJECT_ROOT}" >&2
+if [[ ! -f "${CODEREEVE_PROJECT_ROOT}/.gitignore" ]] || ! grep -qxF '.symphony/' "${CODEREEVE_PROJECT_ROOT}/.gitignore"; then
+    echo "error: this repo is not ready for harness work — '.symphony/' is not gitignored in ${CODEREEVE_PROJECT_ROOT}" >&2
     echo "  The daemon writes orchestrator state to .symphony/; it must be gitignored or gh pr create warns and the state file pollutes the tree." >&2
-    echo "  fix: add a line '.symphony/' to ${BH_PROJECT_ROOT}/.gitignore and commit it (bin/init-sandbox.sh does this automatically for sandboxes)." >&2
+    echo "  fix: add a line '.symphony/' to ${CODEREEVE_PROJECT_ROOT}/.gitignore and commit it (bin/init-sandbox.sh does this automatically for sandboxes)." >&2
     exit 1
 fi
 
@@ -237,15 +222,15 @@ echo "baton-harness: .symphony/ is gitignored"
 # Launch the daemon
 # ---------------------------------------------------------------------------
 
-echo "baton-harness: harness=${BATON_HARNESS_DIR}"
+echo "baton-harness: harness=${CODEREEVE_ROOT}"
 echo "baton-harness: workflow=${WORKFLOW_FILE}"
-echo "baton-harness: repo=${BH_REPO_OWNER}/${BH_REPO_NAME} at ${BH_PROJECT_ROOT}"
-echo "baton-harness: starting bh-daemon..."
+echo "baton-harness: repo=${CODEREEVE_REPO_OWNER}/${CODEREEVE_REPO_NAME} at ${CODEREEVE_PROJECT_ROOT}"
+echo "baton-harness: starting codereeve daemon..."
 
 # Change into the managed repo root so that any gh calls that rely on cwd
 # for repo resolution (e.g. vendored GitHubTracker) hit the right repo.
 # Belt-and-suspenders with the cli.py os.chdir; also makes the intent
 # obvious to operators reading this script.
-cd "${BH_PROJECT_ROOT}"
+cd "${CODEREEVE_PROJECT_ROOT}"
 
-exec bh-daemon "$@"
+exec codereeve daemon "$@"

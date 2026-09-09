@@ -23,6 +23,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from codereeve.config_env import runtime_environment
+
 
 @dataclass(frozen=True)
 class RepoConfig:
@@ -61,16 +63,16 @@ def load_registry() -> list[RepoConfig]:
         ValueError: If the required environment variables are not set and
             no default can be determined.
     """
-    import os
-
-    owner = os.environ.get("BH_REPO_OWNER", "")
-    repo = os.environ.get("BH_REPO_NAME", "")
-    root_str = os.environ.get("BH_PROJECT_ROOT", "")
+    values = runtime_environment().values
+    owner = values.get("CODEREEVE_REPO_OWNER", "")
+    repo = values.get("CODEREEVE_REPO_NAME", "")
+    root_str = values.get("CODEREEVE_PROJECT_ROOT", "")
 
     if not owner or not repo or not root_str:
         raise ValueError(
-            "Registry is not configured.  Set BH_REPO_OWNER, BH_REPO_NAME,"
-            " and BH_PROJECT_ROOT environment variables."
+            "Registry is not configured.  Set CODEREEVE_REPO_OWNER,"
+            " CODEREEVE_REPO_NAME,"
+            " and CODEREEVE_PROJECT_ROOT environment variables."
         )
 
     registry = [

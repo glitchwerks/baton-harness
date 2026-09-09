@@ -256,6 +256,7 @@ def test_should_launch_worker_refuses_and_alerts_on_drift(
         *,
         app_id: str,
         runner: Any,  # noqa: ANN401
+        baseline_path: Path | None = None,
     ) -> RulesetCheckResult:
         check_calls.append((owner, repo, app_id))
         return RulesetCheckResult(

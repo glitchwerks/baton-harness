@@ -45,7 +45,6 @@ from codereeve.vendor.symphony.config import WorkflowConfig
 # Helpers (mirrors test_daemon.py exactly)
 # ---------------------------------------------------------------------------
 
-_REPO_ROOT = Path("/fake/repo")
 _OWNER = "glitchwerks"
 _REPO_NAME = "baton-harness"
 
@@ -82,12 +81,16 @@ def _minimal_wf_config() -> WorkflowConfig:
     )
 
 
-def _repo_cfg() -> RepoConfig:
-    """Return a minimal RepoConfig."""
+def _repo_cfg(project_root: Path) -> RepoConfig:
+    """Return a config rooted in an existing temporary directory.
+
+    Args:
+        project_root: Test-owned directory supporting the real writer lease.
+    """
     return RepoConfig(
         owner=_OWNER,
         repo=_REPO_NAME,
-        project_root=_REPO_ROOT,
+        project_root=project_root,
     )
 
 
@@ -336,7 +339,7 @@ def test_lone_orphan_milestone_triggers_reconstruct_and_tally(
         asyncio.run(
             run_daemon(
                 _minimal_wf_config(),
-                [_repo_cfg()],
+                [_repo_cfg(tmp_path)],
                 once=True,
                 poll_interval_s=0,
             )
@@ -377,7 +380,9 @@ def test_lone_orphan_milestone_triggers_reconstruct_and_tally(
 # ---------------------------------------------------------------------------
 
 
-def test_milestone_with_ready_and_orphan_runs_work_unit_exactly_once() -> None:
+def test_milestone_with_ready_and_orphan_runs_work_unit_exactly_once(
+    tmp_path: Path,
+) -> None:
     """Work unit for a milestone with both label types runs exactly once.
 
     A milestone has one ``agent-ready`` issue (#20) and one
@@ -455,7 +460,7 @@ def test_milestone_with_ready_and_orphan_runs_work_unit_exactly_once() -> None:
         asyncio.run(
             run_daemon(
                 _minimal_wf_config(),
-                [_repo_cfg()],
+                [_repo_cfg(tmp_path)],
                 once=True,
                 poll_interval_s=0,
             )
@@ -585,7 +590,7 @@ def test_lone_orphan_populates_liveness_state(
         asyncio.run(
             run_daemon(
                 _minimal_wf_config(),
-                [_repo_cfg()],
+                [_repo_cfg(tmp_path)],
                 once=True,
                 poll_interval_s=0,
             )

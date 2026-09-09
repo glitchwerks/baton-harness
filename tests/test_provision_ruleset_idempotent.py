@@ -149,12 +149,12 @@ def _invoke(
         tmp_path: Pytest-provided temp directory for this test.
         canned_state_dir: Directory containing canned response files
             read by both the fake gh and fake curl shims.
-        app_id: Value of BH_GITHUB_APP_ID passed to the script.
+        app_id: Value of CODEREEVE_GITHUB_APP_ID passed to the script.
         preflight_app_id: The id the fake curl GET /app endpoint
             returns in the "success" outcome (may differ from app_id
             to trigger a B3 mismatch). Ignored for every other
             app_get_outcome value.
-        admin_role_id: Value of BH_ADMIN_ROLE_ID passed to the
+        admin_role_id: Value of CODEREEVE_ADMIN_ROLE_ID passed to the
             script; defaults to the spec default of "5".
         admin_collaborators_body: Optional canned JSON body for
             GET /collaborators?permission=admin. Defaults to one
@@ -238,6 +238,7 @@ def _invoke(
             custom_roles_body, encoding="utf-8"
         )
     env = {
+        "XDG_CONFIG_HOME": str(tmp_path / "xdg"),
         **os.environ,
         "PATH": os.pathsep.join(
             part
@@ -249,11 +250,11 @@ def _invoke(
             ]
             if part
         ),
-        "BH_REPO_OWNER": "fake-owner",
-        "BH_REPO_NAME": "fake-repo",
-        "BH_GITHUB_APP_ID": app_id,
-        "BH_GITHUB_APP_INSTALLATION_ID": "999999",
-        "BH_ADMIN_ROLE_ID": admin_role_id,
+        "CODEREEVE_REPO_OWNER": "fake-owner",
+        "CODEREEVE_REPO_NAME": "fake-repo",
+        "CODEREEVE_GITHUB_APP_ID": app_id,
+        "CODEREEVE_GITHUB_APP_INSTALLATION_ID": "999999",
+        "CODEREEVE_ADMIN_ROLE_ID": admin_role_id,
         "BH_FAKE_GH_LOG": str(log_path),
         "BH_FAKE_GH_CANNED_DIR": str(canned_state_dir),
         # #200: the script now unconditionally obtains App-auth credentials
@@ -264,8 +265,10 @@ def _invoke(
         # #326: the App JWT this produces is also what the curl-based
         # preflight must send as "Authorization: Bearer <this value>" —
         # see the "Issue #326" test section, which pins the exact header.
-        "BH_APP_AUTH_JWT_CMD": ("printf %s fake-jwt-for-idempotency-tests"),
-        "BH_APP_AUTH_TOKEN_CMD": (
+        "CODEREEVE_APP_AUTH_JWT_CMD": (
+            "printf %s fake-jwt-for-idempotency-tests"
+        ),
+        "CODEREEVE_APP_AUTH_TOKEN_CMD": (
             "printf %s fake-install-token-for-idempotency-tests"
         ),
     }
@@ -441,7 +444,7 @@ def test_identical_state_is_noop(tmp_path: Path) -> None:
     main_body = json.loads(
         (HARNESS / "config" / "ruleset.main.json").read_text(encoding="utf-8")
     )
-    main_body["bypass_actors"][0]["actor_id"] = 5  # BH_ADMIN_ROLE_ID
+    main_body["bypass_actors"][0]["actor_id"] = 5  # CODEREEVE_ADMIN_ROLE_ID
     (canned / "byid_11.body").write_text(
         json.dumps(_strip_comments(main_body)), encoding="utf-8"
     )
@@ -451,7 +454,9 @@ def test_identical_state_is_noop(tmp_path: Path) -> None:
             encoding="utf-8"
         )
     )
-    feature_body["bypass_actors"][0]["actor_id"] = 111  # BH_GITHUB_APP_ID
+    feature_body["bypass_actors"][0]["actor_id"] = (
+        111  # CODEREEVE_GITHUB_APP_ID
+    )
     (canned / "byid_22.body").write_text(
         json.dumps(_strip_comments(feature_body)), encoding="utf-8"
     )
@@ -665,7 +670,7 @@ def test_nondefault_admin_role_requires_custom_role_validation(
 
     assert rc == 2, (
         "expected exit 2 when custom-role validation is unavailable for a "
-        "non-default BH_ADMIN_ROLE_ID override"
+        "non-default CODEREEVE_ADMIN_ROLE_ID override"
     )
     assert _writes(_calls(log)) == [], (
         "script must write zero ruleset mutations when overridden admin "
@@ -977,7 +982,7 @@ def test_preflight_curl_success_id_mismatch_hard_fails(
 
     Mirrors the pre-#326 B3 preflight-mismatch case, but via curl: the
     real 200 status plus a parsed .id that disagrees with
-    BH_GITHUB_APP_ID must still abort before any ruleset write.
+    CODEREEVE_GITHUB_APP_ID must still abort before any ruleset write.
     """
     canned = tmp_path / "canned"
     canned.mkdir()
@@ -1013,7 +1018,7 @@ def test_preflight_curl_success_id_mismatch_hard_fails(
         f"expected the existing hard-fail banner to be preserved; "
         f"stderr was:\n{stderr}"
     )
-    assert "BH_GITHUB_APP_ID=222" in stderr, (
+    assert "CODEREEVE_GITHUB_APP_ID=222" in stderr, (
         f"expected the configured (wrong) app id in the failure "
         f"message; stderr was:\n{stderr}"
     )

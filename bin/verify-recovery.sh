@@ -19,15 +19,15 @@
 #   bin/verify-recovery.sh [--help|-h]
 #
 # Required environment variables:
-#   BH_REPO_OWNER      GitHub repository owner (org or user login)
-#   BH_REPO_NAME       GitHub repository name (without owner prefix)
-#   BH_PROJECT_ROOT    Absolute path to the local clone of the managed sandbox repo
-#   bh-daemon          Must be on PATH (install the harness first)
+#   CODEREEVE_REPO_OWNER      GitHub repository owner (org or user login)
+#   CODEREEVE_REPO_NAME       GitHub repository name (without owner prefix)
+#   CODEREEVE_PROJECT_ROOT    Absolute path to the local clone of the managed sandbox repo
+#   codereeve daemon          Must be on PATH (install the harness first)
 #
 # Hard prerequisites (checked at startup):
-#   1. bh-daemon is on PATH
+#   1. codereeve daemon is on PATH
 #   2. The sandbox repo has NO open `agent-ready` issues (safety gate)
-#   3. BH_PROJECT_ROOT is a git repo
+#   3. CODEREEVE_PROJECT_ROOT is a git repo
 #   4. GH_TOKEN or GITHUB_TOKEN is set and valid (needed by G3a pass path)
 #
 # Observability note — what IS locally observable:
@@ -42,7 +42,7 @@
 #
 #   Gates that are NOT locally assertable (no local signal):
 #   - The runlog JSONL event (written to obs.runlog_path — we don't read it here)
-#   - Slack notification (BH_SLACK_WEBHOOK_URL not set in test env)
+#   - Slack notification (CODEREEVE_SLACK_WEBHOOK_URL not set in test env)
 #   These are documented below in each scenario but not asserted.
 
 set -euo pipefail
@@ -58,12 +58,12 @@ Usage: bin/verify-recovery.sh [--help|-h]
 Exercises each #40 startup-recovery gate and reports PASS/FAIL per scenario.
 
 Required environment variables:
-  BH_REPO_OWNER      GitHub repository owner (org or user login)
-  BH_REPO_NAME       GitHub repository name (without owner prefix)
-  BH_PROJECT_ROOT    Absolute path to the local clone of the managed sandbox repo
+  CODEREEVE_REPO_OWNER      GitHub repository owner (org or user login)
+  CODEREEVE_REPO_NAME       GitHub repository name (without owner prefix)
+  CODEREEVE_PROJECT_ROOT    Absolute path to the local clone of the managed sandbox repo
 
 Prerequisites:
-  - bh-daemon must be on PATH
+  - codereeve daemon must be on PATH
   - Sandbox must have ZERO open `agent-ready` issues (safety guard against
     accidental agent dispatch — script aborts if any are found)
   - GH_TOKEN or GITHUB_TOKEN must be a valid fine-grained PAT
@@ -93,7 +93,7 @@ print_safety_banner() {
     echo "" >&2
     echo "  *** SAFETY WARNING ***" >&2
     echo "" >&2
-    echo "  This script starts bh-daemon against a LIVE sandbox repo." >&2
+    echo "  This script starts codereeve daemon against a LIVE sandbox repo." >&2
     echo "  The sandbox MUST have ZERO open agent-ready issues." >&2
     echo "  If any agent-ready issues exist the script ABORTS before" >&2
     echo "  running any scenario that reaches the daemon poll loop." >&2
@@ -101,7 +101,7 @@ print_safety_banner() {
     echo "  The decoy 'claude -p' process is a harmless sleep — NOT a" >&2
     echo "  real Claude binary.  No agents are dispatched by this script." >&2
     echo "" >&2
-    echo "  Target repo is read from BH_REPO_OWNER / BH_REPO_NAME." >&2
+    echo "  Target repo is read from CODEREEVE_REPO_OWNER / CODEREEVE_REPO_NAME." >&2
     echo "" >&2
 }
 
@@ -130,23 +130,23 @@ fail() {
 }
 
 # ---------------------------------------------------------------------------
-# Source shared env-config loader (host.env -> BH_PROJECT_ROOT;
-# .bh/config.env -> BH_REPO_OWNER/BH_REPO_NAME/etc; operator env wins)
+# Source shared env-config loader (host.env -> CODEREEVE_PROJECT_ROOT;
+# .codereeve/config.env -> CODEREEVE_REPO_OWNER/CODEREEVE_REPO_NAME/etc; operator env wins)
 # ---------------------------------------------------------------------------
 
-_BH_LOAD_CONFIG="$(dirname "${BASH_SOURCE[0]}")/lib/load-config.sh"
-if [[ -f "${_BH_LOAD_CONFIG}" ]]; then
+_codereeve_load_config="$(dirname "${BASH_SOURCE[0]}")/lib/load-config.sh"
+if [[ -f "${_codereeve_load_config}" ]]; then
     # shellcheck disable=SC1090,SC1091
-    source "${_BH_LOAD_CONFIG}"
+    source "${_codereeve_load_config}"
 fi
-unset _BH_LOAD_CONFIG
+unset _codereeve_load_config
 
 # ---------------------------------------------------------------------------
 # Validate required environment variables
 # ---------------------------------------------------------------------------
 
 _missing_env=()
-for _var in BH_REPO_OWNER BH_REPO_NAME BH_PROJECT_ROOT; do
+for _var in CODEREEVE_REPO_OWNER CODEREEVE_REPO_NAME CODEREEVE_PROJECT_ROOT; do
     if [[ -z "${!_var:-}" ]]; then
         _missing_env+=("${_var}")
     fi
@@ -159,18 +159,18 @@ if [[ ${#_missing_env[@]} -gt 0 ]]; then
     done
     echo "" >&2
     echo "Set them via one of:" >&2
-    echo "  - Run bin/setup-env.sh (writes BH_PROJECT_ROOT to ~/.config/baton-harness/host.env)" >&2
-    echo "  - Run bin/init-sandbox.sh (writes BH_REPO_OWNER/BH_REPO_NAME to \${BH_PROJECT_ROOT}/.bh/config.env)" >&2
+    echo "  - Run bin/setup-env.sh (writes CODEREEVE_PROJECT_ROOT to ~/.config/codereeve/host.env)" >&2
+    echo "  - Run bin/init-sandbox.sh (writes CODEREEVE_REPO_OWNER/CODEREEVE_REPO_NAME to \${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env)" >&2
     echo "  - Or export the missing variables in your shell as a last-resort override" >&2
     exit 1
 fi
 
 # ---------------------------------------------------------------------------
-# Locate bh-daemon (must be on PATH)
+# Locate codereeve daemon (must be on PATH)
 # ---------------------------------------------------------------------------
 
-BH_DAEMON_BIN="$(command -v bh-daemon)" || {
-    echo "baton-harness: error: bh-daemon not found on PATH — install the harness first" >&2
+_codereeve_daemon_bin="$(command -v codereeve)" || {
+    echo "baton-harness: error: codereeve daemon not found on PATH — install the harness first" >&2
     echo "               uv pip install -e ." >&2
     exit 1
 }
@@ -180,16 +180,18 @@ BH_DAEMON_BIN="$(command -v bh-daemon)" || {
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BATON_HARNESS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-export BATON_HARNESS_DIR
+CODEREEVE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+export CODEREEVE_ROOT
 
-WORKFLOW_FILE="${BATON_HARNESS_DIR}/config/WORKFLOW.md"
+WORKFLOW_FILE="${CODEREEVE_ROOT}/config/WORKFLOW.md"
 if [[ ! -f "${WORKFLOW_FILE}" ]]; then
     echo "baton-harness: error: workflow config not found: ${WORKFLOW_FILE}" >&2
     exit 1
 fi
 
-MARKER_PATH="${BH_PROJECT_ROOT}/.baton-harness/daemon.alive"
+# The validated NUL bridge exports this internal path during load-config.
+# shellcheck disable=SC2154
+MARKER_PATH="${_codereeve_state_directory}/daemon.alive"
 
 # ---------------------------------------------------------------------------
 # Preflight checks
@@ -197,16 +199,16 @@ MARKER_PATH="${BH_PROJECT_ROOT}/.baton-harness/daemon.alive"
 
 echo "baton-harness: running preflight checks..."
 
-# BH_PROJECT_ROOT must be a git repo
-if [[ ! -d "${BH_PROJECT_ROOT}" ]]; then
-    echo "baton-harness: error: BH_PROJECT_ROOT does not exist: ${BH_PROJECT_ROOT}" >&2
+# CODEREEVE_PROJECT_ROOT must be a git repo
+if [[ ! -d "${CODEREEVE_PROJECT_ROOT}" ]]; then
+    echo "baton-harness: error: CODEREEVE_PROJECT_ROOT does not exist: ${CODEREEVE_PROJECT_ROOT}" >&2
     exit 1
 fi
-if ! git -C "${BH_PROJECT_ROOT}" rev-parse --git-dir &>/dev/null; then
-    echo "baton-harness: error: BH_PROJECT_ROOT is not a git repository: ${BH_PROJECT_ROOT}" >&2
+if ! git -C "${CODEREEVE_PROJECT_ROOT}" rev-parse --git-dir &>/dev/null; then
+    echo "baton-harness: error: CODEREEVE_PROJECT_ROOT is not a git repository: ${CODEREEVE_PROJECT_ROOT}" >&2
     exit 1
 fi
-echo "baton-harness: BH_PROJECT_ROOT is a git repo: ${BH_PROJECT_ROOT}"
+echo "baton-harness: CODEREEVE_PROJECT_ROOT is a git repo: ${CODEREEVE_PROJECT_ROOT}"
 
 # GH_TOKEN / GITHUB_TOKEN must be set (structural presence only — value never inspected)
 _token_env_set=0
@@ -233,14 +235,14 @@ _ready_count=0
 # allowing the scenarios that reach the poll loop would silently disable the
 # safety guarantee.  Only a successful query returning exactly 0 may continue.
 if ! _ready_out="$(gh issue list \
-    --repo "${BH_REPO_OWNER}/${BH_REPO_NAME}" \
+    --repo "${CODEREEVE_REPO_OWNER}/${CODEREEVE_REPO_NAME}" \
     --label "agent-ready" \
     --state open \
     --json number \
     --jq 'length' 2>&1)"; then
     echo "baton-harness: ABORT: gh issue list failed — cannot prove sandbox has zero" >&2
     echo "  agent-ready issues; refusing to run recovery scenarios that reach the" >&2
-    echo "  poll loop.  Check BH_REPO_OWNER/BH_REPO_NAME, GH_TOKEN, and network." >&2
+    echo "  poll loop.  Check CODEREEVE_REPO_OWNER/CODEREEVE_REPO_NAME, GH_TOKEN, and network." >&2
     echo "  gh output: ${_ready_out}" >&2
     exit 1
 fi
@@ -343,10 +345,10 @@ fi
 _SAVED_GH_TOKEN="${GH_TOKEN:-}"
 
 # ---------------------------------------------------------------------------
-# Helper: run bh-daemon --once with a timeout, capture output, return exit code
+# Helper: run codereeve daemon --once with a timeout, capture output, return exit code
 #
 # Usage: _run_daemon_once <timeout_secs> <output_var> [extra env assignments...]
-#   Runs bh-daemon --once under timeout(1); captures merged stdout+stderr into
+#   Runs codereeve daemon --once under timeout(1); captures merged stdout+stderr into
 #   the variable named by <output_var>; sets _DAEMON_EXIT to the exit code.
 #   Extra env assignments (e.g. "GH_TOKEN=bogus") are applied inline.
 # ---------------------------------------------------------------------------
@@ -366,7 +368,7 @@ _run_daemon_once() {
     _out="$(
         env "$@" \
             timeout "${timeout_secs}" \
-            "${BH_DAEMON_BIN}" \
+            "${_codereeve_daemon_bin}" daemon \
                 --once \
                 --workflow "${WORKFLOW_FILE}" \
             2>&1
@@ -379,7 +381,7 @@ _run_daemon_once() {
 }
 
 # ---------------------------------------------------------------------------
-# Helper: run bh-daemon in continuous mode (background), return PID
+# Helper: run codereeve daemon in continuous mode (background), return PID
 # ---------------------------------------------------------------------------
 
 _DAEMON_BG_PID=""
@@ -389,7 +391,7 @@ _start_daemon_bg() {
 
     # Start in background, redirect all output to a temp file the caller supplies
     env \
-        "${BH_DAEMON_BIN}" \
+        "${_codereeve_daemon_bin}" daemon \
             --workflow "${WORKFLOW_FILE}" \
         > "${output_file}" 2>&1 &
 

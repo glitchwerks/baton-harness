@@ -681,6 +681,7 @@ def test_launch_proceeds_when_probe_denies_despite_comparator_drift(
         *,
         app_id: str,
         runner: Any,  # noqa: ANN401
+        baseline_path: Path | None = None,
     ) -> RulesetCheckResult:
         check_calls.append((owner, repo, app_id))
         return RulesetCheckResult(
@@ -930,6 +931,7 @@ def test_comparator_called_exactly_once_regardless_of_probe_outcome(
         *,
         app_id: str,
         runner: Any,  # noqa: ANN401
+        baseline_path: Path | None = None,
     ) -> RulesetCheckResult:
         check_calls.append(1)
         return RulesetCheckResult(status=RulesetStatus.MATCH)

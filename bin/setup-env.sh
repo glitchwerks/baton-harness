@@ -2,7 +2,7 @@
 # bin/setup-env.sh — Harness-side environment setup
 #
 # Creates the Python venv and installs the baton-harness package so that
-# bh-daemon is available.  Safe to re-run (idempotent).
+# codereeve daemon is available.  Safe to re-run (idempotent).
 #
 # Usage:
 #   bin/setup-env.sh [--help|-h]
@@ -29,7 +29,7 @@ usage() {
 Usage: bin/setup-env.sh [--help|-h]
 
 Sets up the Python virtual environment and installs the baton-harness
-package (including bh-daemon entry point) using uv.
+package (including codereeve daemon entry point) using uv.
 
 Steps performed:
   1. Checks that uv is on PATH
@@ -43,9 +43,9 @@ Steps performed:
   6. Syncs the locked package with dev extras (editable by default)
   7. Checks whether prek is on PATH and installs the git pre-commit hook when
      available; prints a non-fatal warning and skips it otherwise
-  8. Verifies bh-daemon is accessible inside the venv
+  8. Verifies codereeve daemon is accessible inside the venv
   9. Prints the activation hint
-  10. Checks whether BWS_ACCESS_TOKEN is present for bh-daemon runtime and
+  10. Checks whether BWS_ACCESS_TOKEN is present for codereeve daemon runtime and
      prints a non-fatal notice if it is missing
 
 Safe to re-run: venv creation is skipped when .venv already exists.
@@ -58,12 +58,12 @@ whether it is present and never persists it.
 
 bws auto-install behaviour:
   - Interactive terminal (default): prompts before downloading.
-  - Declining, input EOF, BH_SETUP_NO_PROMPT=1, or non-TTY skips installation
+  - Declining, input EOF, CODEREEVE_SETUP_NO_PROMPT=1, or non-TTY skips installation
     with conditional guidance and continues. No silent network calls.
 
 gh/claude auto-install behaviour (both remain required):
   - Interactive terminal (default): prompts before downloading.
-  - BH_SETUP_NO_PROMPT=1 or non-TTY (e.g. CI): skips prompt and exits 1
+  - CODEREEVE_SETUP_NO_PROMPT=1 or non-TTY (e.g. CI): skips prompt and exits 1
     with a link to the manual install page. No silent network calls.
   - Manual install pages:
       bws:    https://bitwarden.com/help/secrets-manager-cli/
@@ -86,7 +86,11 @@ fi
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BATON_HARNESS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+CODEREEVE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# shellcheck source=bin/lib/bootstrap-alias.sh
+source "${SCRIPT_DIR}/lib/bootstrap-alias.sh"
+_codereeve_bootstrap_alias CODEREEVE_SETUP_NO_PROMPT BH_SETUP_NO_PROMPT
 
 # ---------------------------------------------------------------------------
 # Preflight: uv must be on PATH
@@ -108,7 +112,7 @@ _bws_manual_url="https://bitwarden.com/help/secrets-manager-cli/"
 
 _print_optional_bws_guidance() {
     echo "baton-harness: warning: bws not found on PATH; continuing because BWS is optional until a provider is selected." >&2
-    echo "  Install bws v${BWS_INSTALL_VERSION} only when BH_GITHUB_APP_KEY_PROVIDER=bws or an optional PAT/heartbeat BWS secret locator is configured." >&2
+    echo "  Install bws v${BWS_INSTALL_VERSION} only when CODEREEVE_GITHUB_APP_KEY_PROVIDER=bws or an optional PAT/heartbeat BWS secret locator is configured." >&2
     echo "  Install bws manually: ${_bws_manual_url}" >&2
 }
 
@@ -216,7 +220,7 @@ _install_bws() {
 
 if command -v bws &>/dev/null; then
     echo "baton-harness: bws already on PATH ($(bws --version 2>&1))"
-elif [[ -t 0 && -t 1 && "${BH_SETUP_NO_PROMPT:-0}" != "1" ]]; then
+elif [[ -t 0 && -t 1 && "${CODEREEVE_SETUP_NO_PROMPT:-0}" != "1" ]]; then
     echo ""
     read -r -p "baton-harness: bws not found. Install Bitwarden Secrets CLI v${BWS_INSTALL_VERSION} to ~/.local/bin? [Y/n] " _bws_reply || _bws_reply="n"
     case "${_bws_reply}" in
@@ -352,7 +356,7 @@ _install_gh() {
 
 if command -v gh &>/dev/null; then
     echo "baton-harness: gh already on PATH ($(gh --version 2>&1 | head -1))"
-elif [[ -t 0 && -t 1 && "${BH_SETUP_NO_PROMPT:-0}" != "1" ]]; then
+elif [[ -t 0 && -t 1 && "${CODEREEVE_SETUP_NO_PROMPT:-0}" != "1" ]]; then
     echo ""
     read -r -p "baton-harness: gh not found. Install GitHub CLI v${GH_INSTALL_VERSION} to ~/.local/bin? [Y/n] " _gh_reply || _gh_reply="n"
     case "${_gh_reply}" in
@@ -408,7 +412,7 @@ _install_claude() {
 
 if command -v claude &>/dev/null; then
     echo "baton-harness: claude already on PATH ($(claude --version 2>&1))"
-elif [[ -t 0 && -t 1 && "${BH_SETUP_NO_PROMPT:-0}" != "1" ]]; then
+elif [[ -t 0 && -t 1 && "${CODEREEVE_SETUP_NO_PROMPT:-0}" != "1" ]]; then
     echo ""
     read -r -p "baton-harness: claude not found. Install Claude Code CLI via official installer? [Y/n] " _claude_reply || _claude_reply="n"
     case "${_claude_reply}" in
@@ -429,7 +433,7 @@ fi
 # Create venv (idempotent)
 # ---------------------------------------------------------------------------
 
-VENV_DIR="${BATON_HARNESS_DIR}/.venv"
+VENV_DIR="${CODEREEVE_ROOT}/.venv"
 
 if [[ -d "${VENV_DIR}" ]]; then
     echo "baton-harness: venv already present, skipping creation"
@@ -443,7 +447,7 @@ fi
 # ---------------------------------------------------------------------------
 
 echo "baton-harness: syncing locked editable package with dev extras ..."
-BH_BUILD_DEVELOPMENT=1 uv sync --project "${BATON_HARNESS_DIR}" --locked --extra dev
+CODEREEVE_BUILD_DEVELOPMENT=1 uv sync --project "${CODEREEVE_ROOT}" --locked --extra dev
 
 # ---------------------------------------------------------------------------
 # Install the git pre-commit hook (prek install is idempotent)
@@ -460,29 +464,29 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Verify bh-daemon is accessible inside the venv
+# Verify codereeve daemon is accessible inside the venv
 # ---------------------------------------------------------------------------
 
 # Probe both Windows (Scripts/) and POSIX (bin/) venv layouts.
-BH_DAEMON_WIN="${VENV_DIR}/Scripts/bh-daemon"
-BH_DAEMON_POSIX="${VENV_DIR}/bin/bh-daemon"
+_codereeve_daemon_win="${VENV_DIR}/Scripts/codereeve"
+_codereeve_daemon_posix="${VENV_DIR}/bin/codereeve"
 
-if [[ -f "${BH_DAEMON_WIN}" ]]; then
-    BH_DAEMON_FOUND="${BH_DAEMON_WIN}"
-elif [[ -f "${BH_DAEMON_POSIX}" ]]; then
-    BH_DAEMON_FOUND="${BH_DAEMON_POSIX}"
+if [[ -f "${_codereeve_daemon_win}" ]]; then
+    _codereeve_daemon_found="${_codereeve_daemon_win}"
+elif [[ -f "${_codereeve_daemon_posix}" ]]; then
+    _codereeve_daemon_found="${_codereeve_daemon_posix}"
 else
-    echo "baton-harness: error: bh-daemon not found after install" >&2
+    echo "baton-harness: error: codereeve daemon not found after install" >&2
     echo "  Expected one of:" >&2
-    echo "    ${BH_DAEMON_WIN}" >&2
-    echo "    ${BH_DAEMON_POSIX}" >&2
+    echo "    ${_codereeve_daemon_win}" >&2
+    echo "    ${_codereeve_daemon_posix}" >&2
     echo "  Check that pyproject.toml declares:" >&2
     echo "    [project.scripts]" >&2
-    echo "    bh-daemon = \"codereeve.chain.cli:main\"" >&2
+    echo "    codereeve = \"codereeve.cli:main\"" >&2
     exit 1
 fi
 
-echo "baton-harness: bh-daemon found at ${BH_DAEMON_FOUND}"
+echo "baton-harness: codereeve daemon found at ${_codereeve_daemon_found}"
 
 # ---------------------------------------------------------------------------
 # Print activation hint
@@ -491,48 +495,48 @@ echo "baton-harness: bh-daemon found at ${BH_DAEMON_FOUND}"
 echo ""
 echo "baton-harness: setup complete."
 echo ""
-echo "  Activate the venv before running bh-daemon manually:"
+echo "  Activate the venv before running codereeve daemon manually:"
 echo ""
 echo "    source .venv/bin/activate        # macOS / Linux"
 echo "    source .venv/Scripts/activate    # Windows Git Bash"
 printf '    .venv\\Scripts\\Activate.ps1      # Windows PowerShell\n'
 printf '    .venv\\Scripts\\activate.bat      # Windows cmd\n'
 echo ""
-echo "  Or run bh-daemon directly via bin/run-daemon.sh (no activation needed)."
+echo "  Or run codereeve daemon directly via bin/run-daemon.sh (no activation needed)."
 echo ""
 
 # ---------------------------------------------------------------------------
 # Prompt for per-host config and persist
 # ---------------------------------------------------------------------------
 
-HOST_CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/baton-harness"
+HOST_CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/codereeve"
 HOST_ENV="${HOST_CONFIG_DIR}/host.env"
 
-_BH_LOAD_CONFIG="${SCRIPT_DIR}/lib/load-config.sh"
-if [[ -f "${_BH_LOAD_CONFIG}" ]]; then
+_codereeve_load_config="${SCRIPT_DIR}/lib/load-config.sh"
+if [[ -f "${_codereeve_load_config}" ]]; then
     # shellcheck disable=SC1090,SC1091
-    source "${_BH_LOAD_CONFIG}"
+    source "${_codereeve_load_config}"
 fi
-unset _BH_LOAD_CONFIG
+unset _codereeve_load_config
 
 _bh_prompt_and_write_host_config() {
-    if [[ "${BH_SETUP_NO_PROMPT:-0}" == "1" || ! -t 0 || ! -t 1 ]]; then
+    if [[ "${CODEREEVE_SETUP_NO_PROMPT:-0}" == "1" || ! -t 0 || ! -t 1 ]]; then
         echo "baton-harness: per-host config setup requires an interactive terminal; skipping host.env." >&2
         return 0
     fi
     local _bh_project_root
     echo ""
     echo "baton-harness: setting up per-host config at ${HOST_ENV}"
-    read -r -p "  BH_PROJECT_ROOT (absolute path to local sandbox clone): " _bh_project_root
+    read -r -p "  CODEREEVE_PROJECT_ROOT (absolute path to local sandbox clone): " _bh_project_root
     if [[ -z "${_bh_project_root}" ]]; then
-        echo "  skipped — re-run bin/setup-env.sh to set it, or export BH_PROJECT_ROOT manually"
+        echo "  skipped — re-run bin/setup-env.sh to set it, or export CODEREEVE_PROJECT_ROOT manually"
     else
         mkdir -p "${HOST_CONFIG_DIR}"
         chmod 700 "${HOST_CONFIG_DIR}"
         cat > "${HOST_ENV}" <<EOF
 # baton-harness per-host config — written by bin/setup-env.sh
 # Sourced automatically by bin/run-daemon.sh at startup.
-export BH_PROJECT_ROOT="${_bh_project_root}"
+export CODEREEVE_PROJECT_ROOT="${_bh_project_root}"
 EOF
         chmod 600 "${HOST_ENV}"
         echo "  wrote ${HOST_ENV} (mode 600)"
@@ -548,5 +552,5 @@ _bh_resolve_config_with_reuse_prompt "${HOST_ENV}" _bh_prompt_and_write_host_con
 if [[ -n "${BWS_ACCESS_TOKEN:-}" ]]; then
     echo "baton-harness: BWS_ACCESS_TOKEN already set in environment; it is used only when the selected App-key provider or optional PAT/heartbeat secret locators use BWS"
 else
-    echo "baton-harness: warning: BWS_ACCESS_TOKEN not set — needed only when the selected App-key provider or optional PAT/heartbeat secret locators use BWS. When needed, export it for manual bin/run-daemon.sh runs or place it in /etc/bh-daemon/secrets.env (mode 600) for systemd. Do not store it in ~/.config/baton-harness/host.env. A file-only deployment needs neither bws nor this token." >&2
+    echo "baton-harness: warning: BWS_ACCESS_TOKEN not set — needed only when the selected App-key provider or optional PAT/heartbeat secret locators use BWS. When needed, export it for manual bin/run-daemon.sh runs or place it in /etc/bh-daemon/secrets.env (mode 600) for systemd. Do not store it in ~/.config/codereeve/host.env. A file-only deployment needs neither bws nor this token." >&2
 fi
