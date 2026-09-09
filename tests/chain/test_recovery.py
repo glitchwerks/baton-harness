@@ -133,8 +133,9 @@ def test_open_pr_recognition_rejects_unrelated_branches(head: str) -> None:
     assert _has_open_pr(42, [head]) is False
 
 
-def test_provenance_reader_accepts_canonical_legacy_and_mixed_history(
-) -> None:
+def test_provenance_reader_accepts_canonical_legacy_and_mixed_history() -> (
+    None
+):
     """Recovery reads new and legacy trailers in the same history."""
     history = _git_log_with_canonical_trailer(41) + _git_log_with_trailer(42)
 

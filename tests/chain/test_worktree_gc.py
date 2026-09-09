@@ -98,9 +98,7 @@ def test_parse_worktree_list_accepts_canonical_and_legacy_branches() -> None:
     """Worktree recovery recognizes both supported branch namespaces."""
     porcelain = _porcelain_block(
         _WT_PATH_42, "refs/heads/codereeve/canonical-worker-42"
-    ) + _porcelain_block(
-        _WT_PATH_99, "refs/heads/baton/legacy-worker-99"
-    )
+    ) + _porcelain_block(_WT_PATH_99, "refs/heads/baton/legacy-worker-99")
 
     assert recovery_mod._parse_worktree_list(porcelain) == [
         (_WT_PATH_42, 42),
@@ -110,12 +108,10 @@ def test_parse_worktree_list_accepts_canonical_and_legacy_branches() -> None:
 
 def test_parse_worktree_list_rejects_unrelated_branches() -> None:
     """Worktree recovery ignores other namespaces and missing suffixes."""
-    porcelain = _porcelain_block(
-        _WT_PATH_42, "refs/heads/feature/canonical-worker-42"
-    ) + _porcelain_block(
-        _WT_PATH_99, "refs/heads/codereeve/no-issue-suffix"
-    ) + _porcelain_block(
-        _WT_PATH_7, "refs/heads/codereeve/7"
+    porcelain = (
+        _porcelain_block(_WT_PATH_42, "refs/heads/feature/canonical-worker-42")
+        + _porcelain_block(_WT_PATH_99, "refs/heads/codereeve/no-issue-suffix")
+        + _porcelain_block(_WT_PATH_7, "refs/heads/codereeve/7")
     )
 
     assert recovery_mod._parse_worktree_list(porcelain) == []
