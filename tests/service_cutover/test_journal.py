@@ -1006,3 +1006,82 @@ def test_environment_digest_requires_a_string(
     selected["environment_digest"] = invalid
     with pytest.raises(CutoverError):
         module._validate_unit(selected)
+
+
+def test_review_r3_deferred_receipt_schema_retains_exact_effect(
+    tmp_path: Path,
+) -> None:
+    """Deferred authority permits probes and blocks terminal release."""
+    journal = make_journal(tmp_path)
+    advance_runtime_phase(journal, "committed")
+    release = {
+        "operation": "release_gate",
+        "path": str(tmp_path / "receipt"),
+        "digest": "a" * 64,
+    }
+    journal.record("effect_intent", release)
+    with pytest.raises(CutoverError):
+        journal.record("release_deferred", {"path": "other"})
+    journal.record("release_deferred", {})
+    journal = module.CutoverJournal.open(journal.path, storage=journal.storage)
+    assert journal.pending is None and journal.deferred_release == release
+    with pytest.raises(CutoverError):
+        journal.record("effect_intent", {**release, "digest": "b" * 64})
+    with pytest.raises(CutoverError):
+        journal.record("finalized", {})
+    job = {
+        "operation": "verify_job",
+        "unit": "codereeve-verify-deferred.service",
+    }
+    journal.record("effect_intent", job)
+    journal.record("effect_done", job)
+    journal.record("release_resumed", {})
+    assert journal.pending == release and journal.deferred_release is None
+    journal.record("effect_done", release)
+
+
+def test_review_r1_outer_restore_waits_for_each_input(tmp_path: Path) -> None:
+    """A broad restoration completion cannot discard a per-input obligation."""
+    journal = make_journal(tmp_path)
+    advance(journal)
+    rollback(journal)
+    journal.record("filesystem_restored", {})
+    journal.record("effect_intent", {"operation": "restore_migration"})
+    journal.record("effect_done", {"operation": "restore_migration"})
+    outer = {"operation": "restore_selection"}
+    journal.record("effect_intent", outer)
+    journal.record(
+        "restore_input_intent",
+        {"index": 0, "snapshot": journal.original_snapshots[0].metadata()},
+    )
+    with pytest.raises(CutoverError):
+        journal.record("effect_done", outer)
+    journal.record("restore_input_done", {"index": 0})
+    journal.record("effect_done", outer)
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [("exists", 0), ("inode", 1), ("restore_uid", True), ("extra", 1)],
+)
+def test_review_r2_lock_header_is_closed(
+    tmp_path: Path, key: str, value: object
+) -> None:
+    """Malformed creation authority cannot survive journal replay."""
+    journal = make_journal(tmp_path)
+    header = dict(journal.header)
+    header["writer_lock"] = {
+        "path": str(tmp_path / ".codereeve-migration.lock"),
+        "exists": False,
+        "inode": None,
+        "device": None,
+        "mode": 0o600,
+        "uid": 0,
+        "gid": 0,
+        "restore_uid": 1001,
+        "restore_gid": 1001,
+        key: value,
+    }
+    fresh = module.CutoverJournal(journal.path, journal.storage)
+    with pytest.raises(CutoverError, match="writer lock"):
+        fresh._accept("created", header)

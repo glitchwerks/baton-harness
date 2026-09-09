@@ -156,3 +156,16 @@ def test_retained_identity_rejects_named_inode_replacement(
                 pass
     with pytest.raises(LeaseError):
         lease.verify_identity()
+
+
+def test_retained_lease_flushes_without_reading_or_replacing(
+    tmp_path: Path,
+) -> None:
+    """A live locked descriptor can make new identity and metadata durable."""
+    path = tmp_path / "writer.lock"
+    with WriterLease.acquire(path, purpose="durability") as lease:
+        inode = lease.verify_identity()
+        lease.make_durable()
+        assert lease.verify_identity() == inode
+    with pytest.raises(LeaseError):
+        lease.make_durable()

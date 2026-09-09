@@ -577,3 +577,318 @@ def test_old_venv_binary_resolution_is_attested(
     assert result.recovery == ("incomplete" if retarget else "complete")
     assert first.read_bytes() == b"\x7fELFfirst binary"
     assert second.read_bytes() == b"\x7fELFsecond binary"
+
+
+@pytest.mark.parametrize(
+    "selected", ["srv/project/.bh/config.env", "etc/bh-daemon/secrets.env"]
+)
+def test_review_r1_preserves_post_stop_operator_drift(
+    upgrade_context: CutoverContext, selected: str
+) -> None:
+    """Unknown pre-publication operator edits never become rollback inputs."""
+    spec, backend, storage = upgrade_context
+    path = backend.filesystem_root / selected
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"TOKEN=original\n")
+    stop = backend.stop_and_verify
+    changed = False
+
+    def stopped(name: str) -> None:
+        nonlocal changed
+        stop(name)
+        if name == "bh-daemon.service" and not changed:
+            changed = True
+            path.write_bytes(b"TOKEN=operator-edit\n")
+
+    backend.stop_and_verify = stopped
+    result = cutover(spec, backend=backend, storage=storage)
+    assert result.recovery == "incomplete"
+    assert path.read_bytes() == b"TOKEN=operator-edit\n"
+    assert all(s.active_state == "inactive" for s in backend.states.values())
+
+
+def test_review_r1_retry_preserves_drift_after_filesystem_restored(
+    cutover_context: CutoverContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A completed publication restore does not authorize later input edits."""
+    from conftest import Interrupted
+
+    from codereeve.service_cutover.coordinator import recover
+
+    spec, backend, storage = cutover_context
+    backend.fail_at = "health"
+    record = CutoverJournal.record
+
+    def interrupted(
+        self: CutoverJournal, event: str, metadata: dict[str, object]
+    ) -> None:
+        record(self, event, metadata)
+        if event == "filesystem_restored":
+            raise Interrupted()
+
+    monkeypatch.setattr(CutoverJournal, "record", interrupted)
+    with pytest.raises(Interrupted):
+        cutover(spec, backend=backend, storage=storage)
+    monkeypatch.setattr(CutoverJournal, "record", record)
+    path = backend.filesystem_root / "srv/project/.codereeve/config.env"
+    path.write_bytes(b"TOKEN=operator-edit\n")
+    journal = next(
+        (backend.target_path(spec.project_root) / ".codereeve-cutover").glob(
+            "*/journal.jsonl"
+        )
+    )
+    assert (
+        recover(journal, backend=backend, storage=storage).recovery
+        == "incomplete"
+    )
+    assert path.read_bytes() == b"TOKEN=operator-edit\n"
+
+
+@pytest.mark.parametrize("failure", ["writers_checked", "reload"])
+def test_review_r2_restores_early_or_recovery_created_lock(
+    upgrade_context: CutoverContext, failure: str
+) -> None:
+    """Prior account access survives failures before the normal handoff."""
+    spec, backend, storage = upgrade_context
+    backend.fail_at = failure
+    result = cutover(spec, backend=backend, storage=storage)
+    lock = backend.target_path(spec.project_root) / ".codereeve-migration.lock"
+    assert result.recovery == "complete"
+    assert storage.metadata(lock) == (0o600, 1001, 1001)
+    assert backend.states["bh-daemon.service"].active_state == "active"
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_review_r3_pending_receipt_stays_closed_until_healthy(
+    cutover_context: CutoverContext,
+    monkeypatch: pytest.MonkeyPatch,
+    partial: bool,
+) -> None:
+    """An interrupted receipt never precedes successful fresh revalidation."""
+    from conftest import Interrupted
+
+    from codereeve.service_cutover import readiness
+    from codereeve.service_cutover.coordinator import recover
+    from codereeve.service_cutover.model import CutoverError
+
+    spec, backend, storage = cutover_context
+    record = CutoverJournal.record
+
+    def interrupted(
+        self: CutoverJournal, event: str, metadata: dict[str, object]
+    ) -> None:
+        record(self, event, metadata)
+        if (
+            event == "effect_intent"
+            and metadata.get("operation") == "release_gate"
+        ):
+            if partial:
+                (
+                    Path(str(metadata["path"])).parent / ".receipt-interrupted"
+                ).write_bytes(b"partial")
+            raise Interrupted()
+
+    monkeypatch.setattr(CutoverJournal, "record", interrupted)
+    with pytest.raises(Interrupted):
+        cutover(spec, backend=backend, storage=storage)
+    monkeypatch.setattr(CutoverJournal, "record", record)
+    path = next(
+        (backend.target_path(spec.project_root) / ".codereeve-cutover").glob(
+            "*/journal.jsonl"
+        )
+    )
+    gate = (
+        backend.filesystem_root
+        / "run/codereeve/cutover"
+        / path.parent.name
+        / "committed.json"
+    )
+    health = backend.verify_health
+
+    def unhealthy(selected: ServiceSpec, started: UnitState) -> Provenance:
+        assert not readiness.receipt_committed(
+            gate,
+            pid=started.main_pid,
+            invocation_id=started.invocation_id,
+            storage=storage,
+        )
+        raise CutoverError("unhealthy recovery")
+
+    backend.verify_health = unhealthy
+    for _ in range(2):
+        assert (
+            recover(path, backend=backend, storage=storage).status
+            == "incomplete"
+        )
+        assert not gate.exists()
+    backend.verify_health = health
+    assert (
+        recover(path, backend=backend, storage=storage).status == "committed"
+    )
+    assert gate.exists()
+
+
+@pytest.mark.parametrize("boundary", ["intent", "unlink", "copied"])
+def test_review_r1_owned_input_restore_retries(
+    upgrade_context: CutoverContext,
+    monkeypatch: pytest.MonkeyPatch,
+    boundary: str,
+) -> None:
+    """Per-input authority survives each destructive restoration window."""
+    from conftest import Interrupted
+
+    from codereeve.service_cutover.coordinator import recover
+
+    spec, backend, storage = upgrade_context
+    target = backend.filesystem_root / "etc/systemd/system/bh-daemon.service"
+    original_bytes = target.read_bytes()
+    record = CutoverJournal.record
+    unlink = Path.unlink
+    restore = storage.resume_restore
+    fired = False
+
+    def recorded(
+        self: CutoverJournal, event: str, metadata: dict[str, object]
+    ) -> None:
+        nonlocal fired
+        record(self, event, metadata)
+        if (
+            boundary == "intent"
+            and event == "restore_input_intent"
+            and not fired
+        ):
+            fired = True
+            raise Interrupted()
+
+    def removed(path: Path, *args: object, **kwargs: object) -> None:
+        nonlocal fired
+        unlink(path, *args, **kwargs)
+        if boundary == "unlink" and path == target and not fired:
+            fired = True
+            raise Interrupted()
+
+    def copied(snapshot: object, backup: Path) -> None:
+        nonlocal fired
+        restore(snapshot, backup)
+        if boundary == "copied" and not fired:
+            fired = True
+            raise Interrupted()
+
+    monkeypatch.setattr(CutoverJournal, "record", recorded)
+    monkeypatch.setattr(Path, "unlink", removed)
+    monkeypatch.setattr(storage, "resume_restore", copied)
+    backend.fail_at = "health"
+    with pytest.raises(Interrupted):
+        cutover(spec, backend=backend, storage=storage)
+    monkeypatch.setattr(CutoverJournal, "record", record)
+    monkeypatch.setattr(Path, "unlink", unlink)
+    monkeypatch.setattr(storage, "resume_restore", restore)
+    path = next(
+        (backend.target_path(spec.project_root) / ".codereeve-cutover").glob(
+            "*/journal.jsonl"
+        )
+    )
+    assert (
+        recover(path, backend=backend, storage=storage).recovery == "complete"
+    )
+    assert target.read_bytes() == original_bytes
+
+
+@pytest.mark.parametrize("when", ["before", "after"])
+def test_review_r2_lock_acquisition_identity_survives_interruption(
+    upgrade_context: CutoverContext, monkeypatch: pytest.MonkeyPatch, when: str
+) -> None:
+    """The initial header owns creation before acquisition is acknowledged."""
+    from conftest import Interrupted
+
+    from codereeve.service_cutover.coordinator import recover
+
+    spec, backend, storage = upgrade_context
+    record = CutoverJournal.record
+
+    def interrupted(
+        self: CutoverJournal, event: str, metadata: dict[str, object]
+    ) -> None:
+        if when == "before" and event == "writer_lock_acquired":
+            raise Interrupted()
+        record(self, event, metadata)
+        if when == "after" and event == "writer_lock_acquired":
+            raise Interrupted()
+
+    monkeypatch.setattr(CutoverJournal, "record", interrupted)
+    with pytest.raises(Interrupted):
+        cutover(spec, backend=backend, storage=storage)
+    monkeypatch.setattr(CutoverJournal, "record", record)
+    lock = backend.target_path(spec.project_root) / ".codereeve-migration.lock"
+    inode = lock.stat().st_ino
+    path = next(
+        (backend.target_path(spec.project_root) / ".codereeve-cutover").glob(
+            "*/journal.jsonl"
+        )
+    )
+    assert (
+        recover(path, backend=backend, storage=storage).recovery == "complete"
+    )
+    assert lock.stat().st_ino == inode
+    assert storage.metadata(lock) == (0o600, 1001, 1001)
+
+
+@pytest.mark.parametrize("boundary", ["release_deferred", "release_resumed"])
+def test_review_r3_deferred_receipt_retry_remains_gated(
+    cutover_context: CutoverContext,
+    monkeypatch: pytest.MonkeyPatch,
+    boundary: str,
+) -> None:
+    """Interrupted deferral and resumption still require fresh health."""
+    from conftest import Interrupted
+
+    from codereeve.service_cutover.coordinator import recover
+    from codereeve.service_cutover.model import CutoverError
+
+    spec, backend, storage = cutover_context
+    record = CutoverJournal.record
+
+    def initial(
+        self: CutoverJournal, event: str, metadata: dict[str, object]
+    ) -> None:
+        record(self, event, metadata)
+        if (
+            event == "effect_intent"
+            and metadata.get("operation") == "release_gate"
+        ):
+            raise Interrupted()
+
+    monkeypatch.setattr(CutoverJournal, "record", initial)
+    with pytest.raises(Interrupted):
+        cutover(spec, backend=backend, storage=storage)
+    path = next(
+        (backend.target_path(spec.project_root) / ".codereeve-cutover").glob(
+            "*/journal.jsonl"
+        )
+    )
+
+    def interrupted(
+        self: CutoverJournal, event: str, metadata: dict[str, object]
+    ) -> None:
+        record(self, event, metadata)
+        if event == boundary:
+            raise Interrupted()
+
+    monkeypatch.setattr(CutoverJournal, "record", interrupted)
+    with pytest.raises(Interrupted):
+        recover(path, backend=backend, storage=storage)
+    monkeypatch.setattr(CutoverJournal, "record", record)
+
+    def unhealthy(selected: ServiceSpec, started: UnitState) -> Provenance:
+        raise CutoverError("unhealthy")
+
+    backend.verify_health = unhealthy
+    assert (
+        recover(path, backend=backend, storage=storage).status == "incomplete"
+    )
+    assert not (
+        backend.filesystem_root
+        / "run/codereeve/cutover"
+        / path.parent.name
+        / "committed.json"
+    ).exists()

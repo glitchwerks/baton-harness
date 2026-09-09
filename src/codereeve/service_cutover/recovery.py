@@ -7,7 +7,7 @@ from dataclasses import asdict, replace
 from pathlib import Path
 
 from codereeve.migration.journal import JournalError
-from codereeve.migration.lease import LeaseError, WriterLease
+from codereeve.migration.lease import LeaseError
 from codereeve.migration.transaction import MigrationError
 
 from .journal import CutoverJournal
@@ -24,15 +24,18 @@ from .selection import (
     linux_path,
     observe,
     original_selection,
+    project_lease,
     publish_effect,
+    restore_writer_lock,
     verify_activation,
 )
+from .storage import FileSnapshot
 from .systemd import NEW_UNIT, OLD_UNIT, SystemdBackend
 
 
 def validate_units(journal: CutoverJournal) -> None:
     """Reject unrelated unit edits before quarantining any runtime output."""
-    for snapshot in journal.original_snapshots:
+    for index, snapshot in enumerate(journal.original_snapshots):
         path = Path(snapshot.path)
         if path.name not in {OLD_UNIT, NEW_UNIT}:
             continue
@@ -74,6 +77,8 @@ def validate_units(journal: CutoverJournal) -> None:
                 ).hexdigest() == intended and journal.storage.metadata(
                     path
                 ) == (0o644, 0, 0)
+        if index in journal.restoring_inputs:
+            matched |= partial_original(journal, snapshot)
         if not matched:
             raise CutoverError("owned unit selection drifted")
 
@@ -120,40 +125,94 @@ def restored_snapshot(
     return ServiceSnapshot(states[0], states[1])
 
 
+def partial_original(journal: CutoverJournal, snapshot: FileSnapshot) -> bool:
+    """Observe a possible interrupted original copy without changing it."""
+    actual = journal.storage.inspect(Path(snapshot.path), mask=True)
+    expected = {node.name: node for node in snapshot.nodes}
+    for node in actual.nodes:
+        original = expected.get(node.name)
+        if original is None or (node.kind, node.digest) != (
+            original.kind,
+            original.digest,
+        ):
+            return False
+        if (node.mode, node.uid, node.gid) not in {
+            (original.mode, original.uid, original.gid),
+            (
+                0o700 if node.kind == "directory" else 0o600,
+                *journal.storage.owner(),
+            ),
+        }:
+            return False
+    return True
+
+
 def restore_selection(
     journal: CutoverJournal, backend: SystemdBackend
 ) -> None:
-    """Restore mutable operator selections from verified private originals."""
+    """Validate every operator input before restoring any selected file."""
     layout = layout_for(journal.spec, backend)
-    mutable = {
-        layout.legacy_unit,
-        layout.canonical_unit,
-        layout.legacy_config,
-        layout.canonical_config,
-        layout.legacy_host,
-        layout.canonical_host,
-        layout.legacy_secrets,
-        layout.canonical_secrets,
-    }
+    units = {layout.legacy_unit, layout.canonical_unit}
+    validate_units(journal)
+    planned = []
     for index, snapshot in enumerate(journal.original_snapshots):
         path = Path(snapshot.path)
         backup = journal.original_backup(index)
-        if path not in mutable:
-            if not journal.storage.matches(path, snapshot):
-                raise CutoverError("original environment attestation changed")
-            continue
-        if journal.storage.matches(path, snapshot):
+        original = journal.storage.matches(path, snapshot)
+        pending = journal.restoring_inputs.get(index)
+        resume = pending is not None and not journal.storage.matches(
+            path, pending
+        )
+        if not original:
+            if pending is not None:
+                if resume and not partial_original(journal, snapshot):
+                    raise CutoverError("partial operator restoration drifted")
+            elif path not in units:
+                publications = [
+                    e["metadata"]
+                    for e in journal.events
+                    if e["event"] == "effect_intent"
+                    and e["metadata"].get("operation") == "publish_secrets"
+                    and e["metadata"].get("path") == str(path)
+                ]
+                if (
+                    not publications
+                    or not path.is_file()
+                    or path.is_symlink()
+                    or hashlib.sha256(journal.storage.read(path)).hexdigest()
+                    != publications[-1]["digest"]
+                    or journal.storage.metadata(path) != (0o600, 0, 0)
+                ):
+                    raise CutoverError("original operator input drifted")
+        authorized = journal.storage.inspect(path, mask=True)
+        planned.append((index, snapshot, backup, original, resume, authorized))
+    for index, snapshot, backup, original, resume, authorized in planned:
+        if not journal.storage.matches(Path(snapshot.path), authorized):
+            raise CutoverError("operator input changed during restoration")
+        path = Path(snapshot.path)
+        if original:
             journal.storage.make_durable(path, snapshot)
-            continue
-        if path.exists() or path.is_symlink():
-            journal.storage.safe(path, leaf_link=True)
-            if path.is_dir():
-                raise CutoverError(
-                    "selection restoration target is not a file"
+        else:
+            if index not in journal.restoring_inputs:
+                journal.record(
+                    "restore_input_intent",
+                    {"index": index, "snapshot": authorized.metadata()},
                 )
-            path.unlink()
-            journal.storage.sync_directory(path.parent)
-        journal.storage.resume_restore(snapshot, backup)
+            if not journal.storage.matches(path, authorized):
+                raise CutoverError(
+                    "operator input changed after restoration intent"
+                )
+            if not resume and (path.exists() or path.is_symlink()):
+                journal.storage.safe(path, leaf_link=True)
+                if path.is_dir():
+                    raise CutoverError(
+                        "selection restoration target is not a file"
+                    )
+                path.unlink()
+                journal.storage.sync_directory(path.parent)
+            journal.storage.resume_restore(snapshot, backup)
+        if index in journal.restoring_inputs:
+            journal.record("restore_input_done", {"index": index})
 
 
 def rollback(
@@ -196,9 +255,7 @@ def rollback(
         backend.verify_shutdown(name)
     journal.record("all_writers_stopped", {})
     root = Path(journal.header["project"])
-    with WriterLease.acquire(
-        root / ".codereeve-migration.lock", purpose="service recovery"
-    ) as lease:
+    with project_lease(journal) as lease:
         validate_units(journal)
         from .coordinator import MigrationOperations
 
@@ -210,6 +267,7 @@ def rollback(
         journal.record("filesystem_restored", {})
         lease.verify_identity()
         restore_ownership(journal)
+        restore_writer_lock(journal, lease)
         lease.verify_identity()
         if journal.migration_attempted:
             from codereeve.migration.transaction import (
@@ -307,11 +365,8 @@ def restore_ownership(journal: CutoverJournal) -> None:
             original.append(metadata)
     for metadata in reversed(original):
         path = Path(metadata["path"])
-        if (
-            path.name == ".codereeve-migration.lock"
-            and path.lstat().st_ino != metadata["inode"]
-        ):
-            raise CutoverError("retained writer lock identity changed")
+        if path.name == ".codereeve-migration.lock":
+            continue
         if not all(
             k in metadata
             for k in ("previous_mode", "previous_uid", "previous_gid")
@@ -459,18 +514,8 @@ def finalize(
                 "digest"
             ) != digest(asdict(evidence)):
                 raise CutoverError("committed receipt intent differs")
-            if not actual_gate.exists() and not tuple(
-                actual_gate.parent.iterdir()
-            ):
-                journal.record("effect_cancelled", pending)
-                pending = {}
-            else:
-                readiness.publish_commit_receipt(
-                    actual_gate,
-                    pid=evidence.pid,
-                    invocation_id=evidence.invocation_id,
-                    storage=journal.storage,
-                )
+            journal.record("release_deferred", {})
+            pending = {}
         else:
             raise CutoverError("unknown committed effect")
         if pending:
@@ -500,24 +545,30 @@ def finalize(
         backend.reload()
         backend.verify_selection(journal.spec, gate=None)
     actual_gate = backend.target_path(gate)
-    with effect(
-        journal,
-        "release_gate",
-        path=str(actual_gate),
-        digest=digest(asdict(evidence)),
+    release = {
+        "operation": "release_gate",
+        "path": str(actual_gate),
+        "digest": digest(asdict(evidence)),
+    }
+    if journal.deferred_release is not None:
+        if journal.deferred_release != release:
+            raise CutoverError("deferred receipt selection differs")
+        journal.record("release_resumed", {})
+    else:
+        journal.record("effect_intent", release)
+    actual = backend.inspect(NEW_UNIT)
+    if (actual.main_pid, actual.invocation_id) != (
+        evidence.pid,
+        evidence.invocation_id,
     ):
-        actual = backend.inspect(NEW_UNIT)
-        if (actual.main_pid, actual.invocation_id) != (
-            evidence.pid,
-            evidence.invocation_id,
-        ):
-            raise CutoverError("committed invocation changed before release")
-        readiness.publish_commit_receipt(
-            actual_gate,
-            pid=evidence.pid,
-            invocation_id=evidence.invocation_id,
-            storage=journal.storage,
-        )
+        raise CutoverError("committed invocation changed before release")
+    readiness.publish_commit_receipt(
+        actual_gate,
+        pid=evidence.pid,
+        invocation_id=evidence.invocation_id,
+        storage=journal.storage,
+    )
+    journal.record("effect_done", release)
     journal.record("finalized", {})
     return CutoverResult("committed", journal.path, None)
 

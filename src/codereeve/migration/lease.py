@@ -140,6 +140,14 @@ class WriterLease:
         except OSError:
             raise LeaseError("writer lease identity unavailable") from None
 
+    def make_durable(self) -> None:
+        """Flush inode metadata through the retained locked descriptor."""
+        self.verify_identity()
+        if self._fd is None:
+            raise LeaseError("closed writer lease")
+        os.fsync(self._fd)
+        self.verify_identity()
+
     def close(self) -> None:
         """Release ownership even when the explicit unlock operation fails."""
         if self._fd is not None:

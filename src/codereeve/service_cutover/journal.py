@@ -379,6 +379,9 @@ class CutoverJournal:
         self.events: list[dict[str, Any]] = []
         self.header: dict[str, Any] = {}
         self.publication: list[dict[str, Any]] = []
+        self.deferred_release: dict[str, Any] | None = None
+        self.writer_lock_identity: tuple[int, int] | None = None
+        self.restoring_inputs: dict[int, FileSnapshot] = {}
         self.publication_restored = False
         self.selection_mutated = False
         self.old_stop_attempted = False
@@ -395,6 +398,7 @@ class CutoverJournal:
         storage: Storage | None = None,
         mode: str = "cutover",
         predecessor: Path | None = None,
+        writer_lock: dict[str, object] | None = None,
     ) -> CutoverJournal:
         """Retain original inputs privately before any service mutation."""
         store = storage or Storage()
@@ -441,6 +445,7 @@ class CutoverJournal:
                 "old": _unit(snapshot.old),
                 "new": _unit(snapshot.new),
                 "original": original,
+                "writer_lock": writer_lock,
                 "predecessor": str(predecessor)
                 if predecessor is not None
                 else None,
@@ -566,6 +571,7 @@ class CutoverJournal:
                     "new",
                     "original",
                     "predecessor",
+                    "writer_lock",
                 }
                 or type(metadata["version"]) is not int
                 or metadata["version"] != 1
@@ -573,6 +579,59 @@ class CutoverJournal:
             ):
                 raise CutoverError("unknown journal manifest")
             _path(metadata["project"])
+            lock = metadata["writer_lock"]
+            if lock is not None:
+                keys = {
+                    "path",
+                    "exists",
+                    "inode",
+                    "device",
+                    "mode",
+                    "uid",
+                    "gid",
+                    "restore_uid",
+                    "restore_gid",
+                }
+                if (
+                    not isinstance(lock, dict)
+                    or set(lock) != keys
+                    or type(lock["exists"]) is not bool
+                ):
+                    raise CutoverError("invalid writer lock authority")
+                _path(lock["path"])
+                if (
+                    Path(lock["path"])
+                    != Path(metadata["project"]) / ".codereeve-migration.lock"
+                    or any(
+                        not _integer(lock[k])
+                        for k in (
+                            "mode",
+                            "uid",
+                            "gid",
+                            "restore_uid",
+                            "restore_gid",
+                        )
+                    )
+                    or lock["mode"] > 0o7777
+                ):
+                    raise CutoverError("invalid writer lock selection")
+                if lock["exists"]:
+                    if any(
+                        not _integer(lock[k]) for k in ("inode", "device")
+                    ) or (lock["restore_uid"], lock["restore_gid"]) != (
+                        lock["uid"],
+                        lock["gid"],
+                    ):
+                        raise CutoverError(
+                            "invalid existing writer lock authority"
+                        )
+                elif (
+                    lock["inode"] is not None
+                    or lock["device"] is not None
+                    or (lock["mode"], lock["uid"], lock["gid"])
+                    != (0o600, 0, 0)
+                ):
+                    raise CutoverError("invalid absent writer lock authority")
             predecessor = metadata["predecessor"]
             if predecessor is not None:
                 _path(predecessor)
@@ -610,6 +669,85 @@ class CutoverJournal:
                 "created",
             )
             return
+        if event in {"release_deferred", "release_resumed"}:
+            if self.phase != "committed" or metadata:
+                raise CutoverError("invalid deferred receipt authority")
+            if event == "release_deferred":
+                if (
+                    self.deferred_release is not None
+                    or self.pending is None
+                    or self.pending.get("operation") != "release_gate"
+                ):
+                    raise CutoverError(
+                        "receipt deferral has no exact pending intent"
+                    )
+                self.deferred_release = self.pending
+                self.pending = None
+            else:
+                if self.pending is not None or self.deferred_release is None:
+                    raise CutoverError(
+                        "receipt resumption has no exact deferred intent"
+                    )
+                self.pending = self.deferred_release
+                self.deferred_release = None
+            return
+        if event == "finalized" and self.deferred_release is not None:
+            raise CutoverError("receipt authority remains deferred")
+        if event == "writer_lock_acquired":
+            if (
+                self.phase not in {"guarded", "all_writers_stopped"}
+                or self.pending
+                or self.writer_lock_identity is not None
+                or self.header["writer_lock"] is None
+                or set(metadata) != {"inode", "device"}
+                or any(not _integer(v) for v in metadata.values())
+            ):
+                raise CutoverError("invalid acquired writer lock identity")
+            lock = self.header["writer_lock"]
+            if lock["exists"] and (metadata["device"], metadata["inode"]) != (
+                lock["device"],
+                lock["inode"],
+            ):
+                raise CutoverError("acquired writer lock differs")
+            self.writer_lock_identity = (metadata["device"], metadata["inode"])
+            return
+        if event in {"restore_input_intent", "restore_input_done"}:
+            index = metadata.get("index")
+            if (
+                self.phase not in {"filesystem_restored", "aborting"}
+                or not self.pending
+                or self.pending.get("operation") != "restore_selection"
+                or type(index) is not int
+                or index < 0
+                or index >= len(self.header["original"])
+            ):
+                raise CutoverError("invalid input restoration authority")
+            if event == "restore_input_intent":
+                if (
+                    set(metadata) != {"index", "snapshot"}
+                    or index in self.restoring_inputs
+                ):
+                    raise CutoverError("duplicate input restoration authority")
+                input_snapshot = _snapshot(metadata["snapshot"])
+                if (
+                    input_snapshot.path
+                    != self.header["original"][index]["path"]
+                ):
+                    raise CutoverError("input restoration selection differs")
+                self.restoring_inputs[index] = input_snapshot
+            else:
+                if (
+                    set(metadata) != {"index"}
+                    or index not in self.restoring_inputs
+                ):
+                    raise CutoverError("unknown input restoration completion")
+                del self.restoring_inputs[index]
+            return
+        if (
+            event in {"selection_restored", "aborted"}
+            and self.restoring_inputs
+        ):
+            raise CutoverError("input restoration remains incomplete")
         if event == "revalidation_intent":
             if (
                 self.phase != "finalized"
@@ -815,6 +953,12 @@ class CutoverJournal:
         operation = metadata.get("operation")
         if not isinstance(operation, str) or operation not in _OPERATIONS:
             raise CutoverError("unknown service operation")
+        if (
+            event == "effect_done"
+            and operation == "restore_selection"
+            and self.restoring_inputs
+        ):
+            raise CutoverError("input restoration remains incomplete")
         required = {"operation"}
         fields = {
             "quarantine": {"index", "path", "snapshot"},
@@ -879,6 +1023,11 @@ class CutoverJournal:
             } and not _integer(value):
                 raise CutoverError("invalid ownership effect")
         if event == "effect_intent":
+            if (
+                operation == "release_gate"
+                and self.deferred_release is not None
+            ):
+                raise CutoverError("receipt authority is already deferred")
             if self.pending or self.phase not in _OPERATIONS[operation]:
                 raise CutoverError("illegal service effect")
             if (

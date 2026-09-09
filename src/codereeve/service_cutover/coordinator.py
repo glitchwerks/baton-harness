@@ -37,11 +37,13 @@ from .selection import (
     layout_for,
     linux_path,
     original_selection,
+    project_lease,
     publish_effect,
     stage_secrets,
     verify_activation,
     verify_original_inputs,
     verify_runtime_paths,
+    writer_lock_authority,
 )
 from .storage import Storage
 from .systemd import NEW_UNIT, OLD_UNIT, SystemdBackend
@@ -96,12 +98,18 @@ def cutover(
             raise CutoverError(
                 "canonical service requires verified prior ownership"
             )
+        old_account = (
+            backend.account(snapshot.old.user)
+            if snapshot.old.load_state == "loaded"
+            else None
+        )
         journal = CutoverJournal.create(
             root,
             spec,
             snapshot,
             storage=storage,
             predecessor=previous.path if previous is not None else None,
+            writer_lock=writer_lock_authority(root, storage, old_account),
         )
         if previous is not None:
             journal.record("adopt_installation", {"path": str(previous.path)})
@@ -125,11 +133,6 @@ def cutover(
                     canonical=False,
                 )
                 uid, gid, _ = backend.account(spec.run_user)
-                old_account = (
-                    backend.account(snapshot.old.user)
-                    if snapshot.old.load_state != "not-found"
-                    else None
-                )
                 journal.record(
                     "preflight_passed",
                     {
@@ -175,14 +178,7 @@ def cutover(
                                 "owned canonical staging is unproven"
                             )
                 lock = root / ".codereeve-migration.lock"
-                lock_restore = (
-                    old_account[:2]
-                    if old_account is not None and not lock.exists()
-                    else None
-                )
-                with WriterLease.acquire(
-                    lock, purpose="service migration"
-                ) as lease:
+                with project_lease(journal) as lease:
                     backend.verify_shutdown(OLD_UNIT)
                     backend.verify_shutdown(NEW_UNIT)
                     backend.verify_process_ownership(
@@ -239,7 +235,6 @@ def cutover(
                         uid,
                         gid,
                         lease=lease,
-                        lock_restore=lock_restore,
                     )
                     if layout.canonical_host.exists():
                         handoff(

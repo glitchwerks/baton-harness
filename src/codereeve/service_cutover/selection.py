@@ -380,3 +380,91 @@ def cutover_lease(root: Path, storage: Storage) -> Iterator[WriterLease]:
             lease.verify_identity()
     except LeaseError:
         raise CutoverError("cutover writer exclusion is unavailable") from None
+
+
+def writer_lock_authority(
+    root: Path, storage: Storage, old_account: tuple[int, int, Path] | None
+) -> dict[str, object]:
+    """Observe the lock and its restoration target before any creation."""
+    path = root / ".codereeve-migration.lock"
+    storage.safe(path)
+    exists = path.exists()
+    info = path.lstat() if exists else None
+    mode, uid, gid = storage.metadata(path) if exists else (0o600, 0, 0)
+    restore = (uid, gid) if exists or old_account is None else old_account[:2]
+    return {
+        "path": str(path),
+        "exists": exists,
+        "inode": info.st_ino if info else None,
+        "device": info.st_dev if info else None,
+        "mode": mode,
+        "uid": uid,
+        "gid": gid,
+        "restore_uid": restore[0],
+        "restore_gid": restore[1],
+    }
+
+
+@contextmanager
+def project_lease(journal: CutoverJournal) -> Iterator[WriterLease]:
+    """Acquire only the initially recorded project lock and retain identity."""
+    authority = journal.header["writer_lock"]
+    if authority is None:
+        raise CutoverError("writer lock authority is missing")
+    path = Path(authority["path"])
+    journal.storage.safe(path)
+    expected = journal.writer_lock_identity
+    if expected is None and authority["exists"]:
+        expected = (authority["device"], authority["inode"])
+    if expected is not None:
+        if (
+            not path.exists()
+            or (path.lstat().st_dev, path.lstat().st_ino) != expected
+        ):
+            raise CutoverError("writer lock identity changed")
+    elif path.exists() and journal.storage.metadata(path) != (0o600, 0, 0):
+        raise CutoverError("unrecorded writer lock ownership differs")
+    with WriterLease.acquire(path, purpose="service transaction") as lease:
+        inode = lease.verify_identity()
+        actual = (path.lstat().st_dev, inode)
+        if expected is not None and actual != expected:
+            raise CutoverError("writer lock acquisition identity changed")
+        lease.make_durable()
+        journal.storage.sync_directory(path.parent)
+        if journal.writer_lock_identity is None:
+            journal.record(
+                "writer_lock_acquired",
+                {"device": actual[0], "inode": actual[1]},
+            )
+        yield lease
+        lease.verify_identity()
+
+
+def restore_writer_lock(journal: CutoverJournal, lease: WriterLease) -> None:
+    """Restore recorded prior access in place even before normal handoff."""
+    authority = journal.header["writer_lock"]
+    if authority is None:
+        raise CutoverError("writer lock authority is missing")
+    path = Path(authority["path"])
+    inode = lease.verify_identity()
+    mode, uid, gid = (
+        authority["mode"],
+        authority["restore_uid"],
+        authority["restore_gid"],
+    )
+    with effect(
+        journal,
+        "ownership",
+        path=str(path),
+        mode=mode,
+        uid=uid,
+        gid=gid,
+        inode=inode,
+    ):
+        journal.storage.set_metadata(path, mode, uid, gid)
+        lease.make_durable()
+        journal.storage.sync_directory(path.parent)
+        if lease.verify_identity() != inode or journal.storage.metadata(
+            path
+        ) != (mode, uid, gid):
+            raise CutoverError("writer lock restoration is unproven")

@@ -334,3 +334,35 @@ def test_cutover_lock_requires_root_owned_exclusive_inode(
         with pytest.raises(CutoverError):
             cutover(spec, backend=backend, storage=storage)
     assert "preflight" not in backend.events
+
+
+def test_review_r2_lock_authority_precedes_preflight(
+    upgrade_context: CutoverContext,
+) -> None:
+    """The initial durable record carries absent-lock restoration authority."""
+    from codereeve.service_cutover.coordinator import cutover
+    from codereeve.service_cutover.journal import CutoverJournal
+
+    spec, backend, storage = upgrade_context
+    preflight = backend.preflight
+
+    def inspect(selected: ServiceSpec, **kwargs: object) -> PreflightEvidence:
+        root = backend.target_path(spec.project_root)
+        journal = CutoverJournal.open(
+            next((root / ".codereeve-cutover").glob("*/journal.jsonl")),
+            storage=storage,
+        )
+        authority = journal.header["writer_lock"]
+        assert authority["exists"] is False
+        assert authority["inode"] is None
+        assert (authority["restore_uid"], authority["restore_gid"]) == (
+            1001,
+            1001,
+        )
+        assert not (root / ".codereeve-migration.lock").exists()
+        return preflight(selected, **kwargs)
+
+    backend.preflight = inspect
+    assert (
+        cutover(spec, backend=backend, storage=storage).status == "committed"
+    )
