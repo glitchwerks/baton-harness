@@ -1,20 +1,20 @@
 # CodeReeve: first-run smoke-test guide
 
-This guide walks through the first live run of `bh-daemon`. The daemon has only ever been exercised by mocked unit tests; this is the procedure for its first real dispatch.
+This guide walks through the first live run of `codereeve daemon`. The daemon has only ever been exercised by mocked unit tests; this is the procedure for its first real dispatch.
 
 ## What the daemon does
 
-`bh-daemon` is an always-on poll loop that watches a GitHub repository for issues labelled `agent-ready`. It groups them into work units: a milestone becomes a single work unit whose issues are ordered by their `blocked_by` dependency edges into a DAG; an un-milestoned issue becomes its own N=1 unit. The daemon processes one work unit and one issue at a time (serial v1). For each issue it checks out a `feature/<slug>` branch, runs a Claude Code agent, waits for CI to pass on the agent's PR, then merges that PR into the feature branch with `--no-ff`. When all issues in a work unit are done it opens a single ready-for-review `feature/<slug> → main` PR. The daemon never merges to `main` — a human does that.
+`codereeve daemon` is an always-on poll loop that watches a GitHub repository for issues labelled `agent-ready`. It groups them into work units: a milestone becomes a single work unit whose issues are ordered by their `blocked_by` dependency edges into a DAG; an un-milestoned issue becomes its own N=1 unit. The daemon processes one work unit and one issue at a time (serial v1). For each issue it checks out a `feature/<slug>` branch, runs a Claude Code agent, waits for CI to pass on the agent's PR, then merges that PR into the feature branch with `--no-ff`. When all issues in a work unit are done it opens a single ready-for-review `feature/<slug> → main` PR. The daemon never merges to `main` — a human does that.
 
 ### State persistence
 
-As of issue #106 (PR #166), `OrchestratorState` persists atomically to disk and reloads on startup. The state file lives at `$BH_PROJECT_ROOT/.symphony/state.json` (see §"Target-repo `.gitignore` requirement" below for why this path must be gitignored). Both `retry_queue` and running-issue state survive daemon restart or crash. A killed daemon that restarts picks up where it left off — it is **not** a clean slate. On a first smoke test this rarely matters; on subsequent runs after a forced kill, account for any state accumulated by the prior run.
+As of issue #106 (PR #166), `OrchestratorState` persists atomically to disk and reloads on startup. The state file lives at `$CODEREEVE_PROJECT_ROOT/.symphony/state.json` (see §"Target-repo `.gitignore` requirement" below for why this path must be gitignored). Both `retry_queue` and running-issue state survive daemon restart or crash. A killed daemon that restarts picks up where it left off — it is **not** a clean slate. On a first smoke test this rarely matters; on subsequent runs after a forced kill, account for any state accumulated by the prior run.
 
 ---
 
 ## WARNING: safety first
 
-**`bh-daemon` spawns real `claude -p --dangerously-skip-permissions` processes** that write code, commit, push branches, and open GitHub PRs autonomously. The `permission_mode: bypassPermissions` setting in `config/WORKFLOW.md` means every file-system and shell operation the agent attempts is permitted without confirmation.
+**`codereeve daemon` spawns real `claude -p --dangerously-skip-permissions` processes** that write code, commit, push branches, and open GitHub PRs autonomously. The `permission_mode: bypassPermissions` setting in `config/WORKFLOW.md` means every file-system and shell operation the agent attempts is permitted without confirmation.
 
 Before running:
 
@@ -26,7 +26,7 @@ Before running:
 
 ## Prerequisites
 
-> **Fast path:** `bin/setup-env.sh` automates the venv creation, package install, and per-host config steps below (run it from the harness repo root; pass `--help` for details). When prompted, supply the absolute path to your local sandbox clone — the script writes it to `~/.config/baton-harness/host.env` (mode 600) so `bin/run-daemon.sh` picks it up automatically on every subsequent launch. Re-running the script when `host.env` already exists reports "delete it and re-run to reset" rather than re-prompting. Pass `BH_SETUP_NO_PROMPT=1` to skip the prompt in non-interactive contexts such as CI. `bin/init-sandbox.sh` automates the sandbox label creation, trigger-issue creation, `hello-feature` DAG, stub CI workflow, and `.bh/config.env` creation — run it after `bin/setup-env.sh` (pass `--help` for its safety warning and full option list). The manual steps below remain as the explainer and for partial or custom setups.
+> **Fast path:** `bin/setup-env.sh` automates the venv creation, package install, and per-host config steps below (run it from the harness repo root; pass `--help` for details). When prompted, supply the absolute path to your local sandbox clone — the script writes it to `~/.config/codereeve/host.env` (mode 600) so `bin/run-daemon.sh` picks it up automatically on every subsequent launch. Re-running the script when `host.env` already exists reports "delete it and re-run to reset" rather than re-prompting. Pass `CODEREEVE_SETUP_NO_PROMPT=1` to skip the prompt in non-interactive contexts such as CI. `bin/init-sandbox.sh` automates the sandbox label creation, trigger-issue creation, `hello-feature` DAG, stub CI workflow, and `.codereeve/config.env` creation — run it after `bin/setup-env.sh` (pass `--help` for its safety warning and full option list). The manual steps below remain as the explainer and for partial or custom setups.
 
 - `claude` CLI on `PATH` and authenticated (subscription auth — run `claude` once interactively to confirm). `bin/setup-env.sh` offers to auto-install via the official native installer when running interactively; auth is operator-supplied after install.
 - `gh` CLI authenticated (`gh auth status`). `bin/setup-env.sh` offers to auto-install v2.62.0 (pinned, checksum-verified) when running interactively; `gh auth login` is operator-supplied after install.
@@ -35,8 +35,8 @@ Before running:
   optional PAT/heartbeat BWS secret locator is configured. A file-only deployment needs
   neither this CLI nor `BWS_ACCESS_TOKEN`. `bin/setup-env.sh` offers to auto-install
   v2.1.0 when running interactively; verify with `bws --version` when BWS is used.
-- The **sandbox repo cloned locally**. The local clone path becomes `BH_PROJECT_ROOT`.
-- The harness package installed into a venv with `bh-daemon` on `PATH`:
+- The **sandbox repo cloned locally**. The local clone path becomes `CODEREEVE_PROJECT_ROOT`.
+- The harness package installed into a venv with `codereeve` on `PATH`:
 
 ```bash
 # From the CodeReeve repository root (the remote still uses the pre-cutover slug):
@@ -50,7 +50,7 @@ source .venv/bin/activate   # Linux / macOS / Git Bash
 Confirm the entry point exists in `pyproject.toml` `[project.scripts]`:
 
 ```
-bh-daemon = "baton_harness.chain.cli:main"
+codereeve = "codereeve.cli:main"
 ```
 
 ---
@@ -89,35 +89,39 @@ If you are using `bin/init-sandbox.sh` to provision a throwaway sandbox, this is
 
 ## Environment variables
 
+Current setup uses `CODEREEVE_*`, `.codereeve/`, and the shared literal-assignment
+parser. Legacy `BH_*`, `.bh/`, and `.baton-harness/` examples are migration-only
+compatibility through 0.3.x and are removed in 0.4; do not source or evaluate old files.
+
 The daemon's environment is assembled from three sources in order, with explicit shell exports as an escape hatch for any layer. This section describes each source and what it supplies — for what each credential *is* and why it's required, see [docs/authentication.md](authentication.md).
 
 ### Sandbox-committed constants — `.codereeve/config.env` in the sandbox repo
 
-`${BH_PROJECT_ROOT}/.bh/config.env` is a plain `KEY=VAL` file committed in the **sandbox** repo (not the harness fork). This inverts the old model — per-deployment identity now lives alongside the code the daemon manages rather than in a file that had to be edited in the harness checkout on every new deploy.
+`${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env` is a plain `KEY=VAL` file committed in the **sandbox** repo (not the harness fork). This inverts the old model — per-deployment identity now lives alongside the code the daemon manages rather than in a file that had to be edited in the harness checkout on every new deploy.
 
-`bin/run-daemon.sh` sources `host.env` for `BH_PROJECT_ROOT`, then reads `.bh/config.env` for the repo slug to run its label and `.symphony/`-gitignore preflights. `bh-daemon` itself then authoritatively parses and validates `.bh/config.env` via `sandbox_config.read_and_validate` before the registry loads.
+`bin/run-daemon.sh` sources `host.env` for `CODEREEVE_PROJECT_ROOT`, then reads `.codereeve/config.env` for the repo slug to run its label and `.symphony/`-gitignore preflights. `bh-daemon` itself then authoritatively parses and validates `.codereeve/config.env` via `sandbox_config.read_and_validate` before the registry loads.
 
 `bin/init-sandbox.sh` writes this file interactively at provision time. To create it by
 hand, add the common values and exactly one provider block to
-`${BH_PROJECT_ROOT}/.bh/config.env`:
+`${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env`:
 
 ```
-BH_REPO_OWNER=<org-or-user>
-BH_REPO_NAME=<repo>
-BH_GITHUB_APP_ID=<numeric>
-BH_GITHUB_APP_INSTALLATION_ID=<numeric>
+CODEREEVE_REPO_OWNER=<org-or-user>
+CODEREEVE_REPO_NAME=<repo>
+CODEREEVE_GITHUB_APP_ID=<numeric>
+CODEREEVE_GITHUB_APP_INSTALLATION_ID=<numeric>
 ```
 
 ```bash
 # Existing BWS deployment
-BH_GITHUB_APP_KEY_PROVIDER=bws
+CODEREEVE_GITHUB_APP_KEY_PROVIDER=bws
 BWS_PEM_SECRET_ID=<uuid>
 ```
 
 ```bash
 # BWS-free file deployment
-BH_GITHUB_APP_KEY_PROVIDER=file
-BH_GITHUB_APP_PRIVATE_KEY_FILE=/run/credentials/bh-daemon/app.pem
+CODEREEVE_GITHUB_APP_KEY_PROVIDER=file
+CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE=/run/credentials/bh-daemon/app.pem
 ```
 
 Optional locator lines may follow either provider block:
@@ -129,17 +133,17 @@ BWS_HEARTBEAT_PING_URL_SECRET_ID=<uuid>
 
 | Variable | Purpose |
 |---|---|
-| `BH_REPO_OWNER` | GitHub org or user login for the target (managed) repo |
-| `BH_REPO_NAME` | Repository name, without owner prefix |
-| `BH_GITHUB_APP_ID` | Numeric GitHub App ID; also validated by `bin/provision-ruleset.sh` and read by `_resolve_app_id()` in `daemon.py` (fail-closed if absent) |
-| `BH_GITHUB_APP_INSTALLATION_ID` | Numeric GitHub App installation ID; required by `bin/provision-ruleset.sh` |
-| `BH_GITHUB_APP_KEY_PROVIDER` | Required selector; exactly `bws` or `file` |
+| `CODEREEVE_REPO_OWNER` | GitHub org or user login for the target (managed) repo |
+| `CODEREEVE_REPO_NAME` | Repository name, without owner prefix |
+| `CODEREEVE_GITHUB_APP_ID` | Numeric GitHub App ID; also validated by `bin/provision-ruleset.sh` and read by `_resolve_app_id()` in `daemon.py` (fail-closed if absent) |
+| `CODEREEVE_GITHUB_APP_INSTALLATION_ID` | Numeric GitHub App installation ID; required by `bin/provision-ruleset.sh` |
+| `CODEREEVE_GITHUB_APP_KEY_PROVIDER` | Required selector; exactly `bws` or `file` |
 | `BWS_PEM_SECRET_ID` | Bitwarden Secrets UUID of the RSA PEM private key; required only for `bws` and forbidden for `file` |
-| `BH_GITHUB_APP_PRIVATE_KEY_FILE` | Absolute secured PEM path; required only for `file` and forbidden for `bws` |
+| `CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE` | Absolute secured PEM path; required only for `file` and forbidden for `bws` |
 | `BWS_GH_TOKEN_SECRET_ID` | Bitwarden Secrets UUID for a GitHub fine-grained PAT. When set and `GH_TOKEN` is absent, `bootstrap_secrets()` fetches the PAT at startup. Leave empty to supply `GH_TOKEN` directly (backward-compat). |
 | `BWS_HEARTBEAT_PING_URL_SECRET_ID` | Bitwarden Secrets UUID for the dead-man's-switch heartbeat ping URL (`BH_HEARTBEAT_PING_URL` — not the Slack webhook URL, which has no vaulted form; see [docs/authentication.md § Slack](authentication.md#slack)). When set and `BH_HEARTBEAT_PING_URL` is absent, the URL is vault-fetched at startup. Leave empty to supply the URL directly or to omit it. |
 
-`BWS_APP_ID` and `BWS_INSTALLATION_ID` are **derived** by the parser from `BH_GITHUB_APP_ID` and `BH_GITHUB_APP_INSTALLATION_ID` — do not set them. Missing or malformed values produce per-key errors with line numbers and cause an immediate exit.
+`BWS_APP_ID` and `BWS_INSTALLATION_ID` are **derived** by the parser from `CODEREEVE_GITHUB_APP_ID` and `CODEREEVE_GITHUB_APP_INSTALLATION_ID` — do not set them. Missing or malformed values produce per-key errors with line numbers and cause an immediate exit.
 
 The file provider accepts only a regular, non-symlink, owner-only file (`0400` or `0600`)
 containing non-empty UTF-8 PEM text no larger than 1 MiB. It reads the file once through a
@@ -151,34 +155,34 @@ secured descriptor and proves the PEM can sign an App JWT before any GitHub requ
 | `file` | No | Not required |
 | `file` | `BWS_GH_TOKEN_SECRET_ID` and/or `BWS_HEARTBEAT_PING_URL_SECRET_ID` | Required for those fetches |
 
-`bh-daemon --doctor` keeps stable check IDs for automation. In file-only mode,
+`codereeve doctor` keeps stable check IDs for automation. In file-only mode,
 configuration-phase `CLI_BWS` and live-phase `ENV_BWS_ACCESS_TOKEN` both pass with the safe detail "BWS is not required
 by the resolved secret configuration." In mixed file+BWS mode they perform their normal
 CLI/token checks and fail critically when either prerequisite is absent.
 
 Existing configurations must migrate explicitly by adding
-`BH_GITHUB_APP_KEY_PROVIDER=bws` beside the existing `BWS_PEM_SECRET_ID`. To migrate to a
-host file, set `BH_GITHUB_APP_KEY_PROVIDER=file`, add
-`BH_GITHUB_APP_PRIVATE_KEY_FILE=<absolute-path>`, and remove `BWS_PEM_SECRET_ID`.
+`CODEREEVE_GITHUB_APP_KEY_PROVIDER=bws` beside the existing `BWS_PEM_SECRET_ID`. To migrate to a
+host file, set `CODEREEVE_GITHUB_APP_KEY_PROVIDER=file`, add
+`CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE=<absolute-path>`, and remove `BWS_PEM_SECRET_ID`.
 
 The daemon fails closed on missing or malformed selected config, including direct
-binary launches. Use `--config PATH` to override `$BH_PROJECT_ROOT/.bh/config.env`.
-Run `bh-daemon --doctor --phase installation --format json --strict` for offline,
+binary launches. Use `--config PATH` to override `$CODEREEVE_PROJECT_ROOT/.codereeve/config.env`.
+Run `codereeve doctor --phase installation --format json --strict` for offline,
 credential-free installed-package checks, then configuration and live phases as
-described in [repository onboarding](repository-onboarding.md#5-bh-daemon---doctor--strict--preflight-before-the-first-real-run).
+described in [repository onboarding](repository-onboarding.md#5-codereeve-doctor--strict--preflight-before-the-first-real-run).
 Omitting `--phase` runs all three; repeat it to select multiple phases. Standalone
 findings are advisory unless `--strict` is supplied; daemon startup always rejects
-critical failures. `bh-daemon --check-vault` remains the single live App-key check.
+critical failures. `codereeve daemon --check-vault` remains the single live App-key check.
 
 ### Per-host config — `~/.config/codereeve/host.env`, set by `bin/setup-env.sh`
 
-`bin/setup-env.sh` prompts for `BH_PROJECT_ROOT` (the absolute path to the local clone of the managed repo) and writes it to `~/.config/baton-harness/host.env` (mode 600, directory mode 700). `bin/run-daemon.sh` sources this file at startup. The XDG base directory convention is honoured: the file path follows `${XDG_CONFIG_HOME:-${HOME}/.config}/baton-harness/host.env`.
+`bin/setup-env.sh` prompts for `CODEREEVE_PROJECT_ROOT` (the absolute path to the local clone of the managed repo) and writes it to `~/.config/codereeve/host.env` (mode 600, directory mode 700). `bin/run-daemon.sh` sources this file at startup. The XDG base directory convention is honoured: the file path follows `${XDG_CONFIG_HOME:-${HOME}/.config}/baton-harness/host.env`.
 
 | Variable | How it is set | Purpose |
 |---|---|---|
-| `BH_PROJECT_ROOT` | Written by `bin/setup-env.sh` to `host.env` | Absolute path to the local clone of the managed (sandbox) repo |
+| `CODEREEVE_PROJECT_ROOT` | Written by `bin/setup-env.sh` to `host.env` | Absolute path to the local clone of the managed (sandbox) repo |
 
-To reset the per-host config, delete `~/.config/baton-harness/host.env` and re-run `bin/setup-env.sh`. In non-interactive contexts (CI, cron), pass `BH_SETUP_NO_PROMPT=1` to skip the prompt entirely; the operator is then responsible for supplying `BH_PROJECT_ROOT` via another source.
+To reset the per-host config, delete `~/.config/codereeve/host.env` and re-run `bin/setup-env.sh`. In non-interactive contexts (CI, cron), pass `CODEREEVE_SETUP_NO_PROMPT=1` to skip the prompt entirely; the operator is then responsible for supplying `CODEREEVE_PROJECT_ROOT` via another source.
 
 ### Conditional operator-supplied BWS secret
 
@@ -199,7 +203,7 @@ daemon operations; neither credential substitutes for the other.
 
 **Vault-fetched at startup when a locator and `BWS_ACCESS_TOKEN` are supplied:**
 
-- `GH_TOKEN` — the GitHub fine-grained PAT used by the `before_run` hook subprocess. If `BWS_GH_TOKEN_SECRET_ID` is set in `.bh/config.env` and `GH_TOKEN` is not already in the environment, `bootstrap_secrets()` fetches it from the vault, holds it in a module-global, and threads it through `Orchestrator.hook_env` to that subprocess only. It is never written to the daemon's ambient environment. If `GH_TOKEN` is already set (shell export, CI env), the vault is not called — operator override wins.
+- `GH_TOKEN` — the GitHub fine-grained PAT used by the `before_run` hook subprocess. If `BWS_GH_TOKEN_SECRET_ID` is set in `.codereeve/config.env` and `GH_TOKEN` is not already in the environment, `bootstrap_secrets()` fetches it from the vault, holds it in a module-global, and threads it through `Orchestrator.hook_env` to that subprocess only. It is never written to the daemon's ambient environment. If `GH_TOKEN` is already set (shell export, CI env), the vault is not called — operator override wins.
 - `BH_HEARTBEAT_PING_URL` — the dead-man's-switch heartbeat ping URL for per-launch preflight alerts (#144); a distinct credential from the Slack webhook URL (`BH_SLACK_WEBHOOK_URL`, see [docs/authentication.md § Slack](authentication.md#slack)). Same skip logic: vault-fetch only when `BWS_HEARTBEAT_PING_URL_SECRET_ID` is declared and the URL is not already in the environment. If neither source supplies the URL, no alerts are sent — preflight refusals log to daemon stderr only.
 
 Vault errors propagate as `BwsClientError` — fail-closed, never swallowed.
@@ -220,7 +224,7 @@ minted. The loaded PEM passes an RS256 JWT-signing proof during bootstrap.
 
 ### Operator override
 
-Any variable can be exported in the shell before invoking `bin/run-daemon.sh`; explicit env values win over `.bh/config.env`, `host.env`, and vault-fetch, in that order. This is the escape hatch for one-off testing or CI environments where the standard sourcing chain is unavailable.
+Any variable can be exported in the shell before invoking `bin/run-daemon.sh`; explicit env values win over `.codereeve/config.env`, `host.env`, and vault-fetch, in that order. This is the escape hatch for one-off testing or CI environments where the standard sourcing chain is unavailable.
 
 ### Fresh host bringup — the four-step sequence
 
@@ -239,9 +243,9 @@ bin/setup-env.sh
 #    clean-implement (green merge), block-ambiguity (self-block), or ci-fail
 #    (deterministic red CI). The last three require a real daemon, real agent
 #    dispatch, and OAuth credentials; ordinary GitHub Actions CI cannot run them.
-export BH_REPO_OWNER=<owner>
-export BH_REPO_NAME=<repo>
-export BH_PROJECT_ROOT=<abs-path-to-local-sandbox-clone>
+export CODEREEVE_REPO_OWNER=<owner>
+export CODEREEVE_REPO_NAME=<repo>
+export CODEREEVE_PROJECT_ROOT=<abs-path-to-local-sandbox-clone>
 bin/init-sandbox.sh
 
 # 3. Provision branch-protection rulesets (required before first run).
@@ -263,8 +267,8 @@ bin/run-daemon.sh --once
 Before starting the daemon for the first time, provision the two branch-protection rulesets in the sandbox repo. The per-launch preflight gate (added in #144) calls `ruleset_is_provisioned()` before every worker dispatch and returns `RulesetStatus.ABSENT` on a fresh repo — causing every issue to be parked with "preflight refused — branch protection missing or misconfigured; worker not launched". The only way to create the rulesets is to run `bin/provision-ruleset.sh`.
 
 **Prerequisites for this step:** the GitHub App must be installed on the sandbox repo;
-repo/App IDs, `BH_GITHUB_APP_KEY_PROVIDER`, and exactly its selected source must be
-available from `.bh/config.env` or the shell. Provider `bws` also needs
+repo/App IDs, `CODEREEVE_GITHUB_APP_KEY_PROVIDER`, and exactly its selected source must be
+available from `.codereeve/config.env` or the shell. Provider `bws` also needs
 `BWS_ACCESS_TOKEN`; provider `file` needs its secured absolute path. `gh` must be
 authenticated as the harness App (or with a PAT that has `administration: write`).
 
@@ -398,7 +402,7 @@ baton-harness: checking required labels in <owner>/<repo>...
 baton-harness: all required labels present
 baton-harness: harness=...
 baton-harness: workflow=...
-baton-harness: repo=<owner>/<repo> at <BH_PROJECT_ROOT>
+baton-harness: repo=<owner>/<repo> at <CODEREEVE_PROJECT_ROOT>
 baton-harness: starting bh-daemon...
 INFO baton_harness.chain.daemon: bh-daemon: chdir to managed repo root: ...
 INFO baton_harness.chain.daemon: poll tick: fetching agent-ready issues
@@ -444,7 +448,7 @@ To smoke-test the **full merge path**, add a GitHub Actions workflow to the sand
 - **`--once` mode**: the daemon exits on its own after one tick. No action needed.
 - **Continuous mode**: send Ctrl-C. The daemon catches `KeyboardInterrupt` and exits cleanly.
 - **Parked issues**: an issue that hit CI_TIMEOUT or a merge conflict carries the `blocked` label and an escalation comment on the GitHub issue. Inspect the daemon logs to see the exact outcome. Clear the `blocked` label and re-add `agent-ready` to re-queue an issue.
-- **Branches created**: the agent creates `baton/<slug>-<N>` per-issue branches and a `feature/<slug>` integration branch. Delete them when done: `git -C $BH_PROJECT_ROOT branch -d <branch>` or via the GitHub UI.
+- **Branches created**: the agent creates `baton/<slug>-<N>` per-issue branches and a `feature/<slug>` integration branch. Delete them when done: `git -C $CODEREEVE_PROJECT_ROOT branch -d <branch>` or via the GitHub UI.
 
 ---
 
@@ -471,9 +475,9 @@ What each credential is, why it's required, and which startup gate validates it 
 Follow the same `--once` safe-first-run approach described in the [Run it](#run-it) section above. Provision the sandbox and its labels first (see [Prerequisites](#prerequisites) and the `bin/init-sandbox.sh` automation). Run `bin/provision-ruleset.sh` to provision the branch-protection rulesets (see [Ruleset provisioning](#ruleset-provisioning-required-before-first-run)). Then:
 
 ```bash
-# ${BH_PROJECT_ROOT}/.bh/config.env carries BH_REPO_OWNER, BH_REPO_NAME,
+# ${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env carries CODEREEVE_REPO_OWNER, CODEREEVE_REPO_NAME,
 # BH_GITHUB_APP_*, the selected App-key source, and optional BWS secret IDs.
-# bin/setup-env.sh wrote BH_PROJECT_ROOT to ~/.config/baton-harness/host.env.
+# bin/setup-env.sh wrote CODEREEVE_PROJECT_ROOT to ~/.config/codereeve/host.env.
 # Supply this only when the resolved configuration uses BWS:
 # export BWS_ACCESS_TOKEN=<bitwarden-machine-account-token>
 
@@ -521,7 +525,7 @@ Useful flags:
 
 The candidate refuses activation if `ANTHROPIC_API_KEY` is set. For
 non-interactive installs, set `CODEREEVE_SETUP_NO_PROMPT=1` (the temporary
-`BH_SETUP_NO_PROMPT` alias remains supported). A conditionally required fresh
+`CODEREEVE_SETUP_NO_PROMPT` alias remains supported). A conditionally required fresh
 `BWS_ACCESS_TOKEN` is passed only to the coordinator. File-only installation
 does not read or create a BWS secrets file.
 
@@ -537,9 +541,9 @@ The retired 0.3 installer wrote the provider-aware unit shape below. Its BWS
 configurations. BWS-free deployments had to separately provision the worker PAT
 environment file and drop-in below for the standard `bh-before-run` hook.
 
-`${BH_PROJECT_ROOT}/.bh/config.env` supplies the repo identity, App IDs, provider/source,
+`${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env` supplies the repo identity, App IDs, provider/source,
 and optional secret locators. Because this unit invokes `bh-daemon` directly, it carries
-`BH_PROJECT_ROOT` explicitly. When BWS is needed, keep the environment file root-readable
+`CODEREEVE_PROJECT_ROOT` explicitly. When BWS is needed, keep the environment file root-readable
 only (`chmod 600`). Never place `ANTHROPIC_API_KEY` in either location.
 
 ```ini
@@ -550,9 +554,9 @@ After=network.target
 [Service]
 Type=simple
 User=agent
-Environment=BH_PROJECT_ROOT=/path/to/sandbox/clone
+Environment=CODEREEVE_PROJECT_ROOT=/path/to/sandbox/clone
 # Include only when the resolved configuration needs BWS:
-# EnvironmentFile=/etc/bh-daemon/secrets.env
+# EnvironmentFile=/etc/codereeve/secrets.env
 ExecStart=/path/to/harness/.venv/bin/bh-daemon --workflow /path/to/harness/config/WORKFLOW.md
 Restart=on-failure
 RestartSec=15
@@ -563,7 +567,7 @@ StandardError=journal
 WantedBy=multi-user.target
 ```
 
-For that legacy unit, `/etc/bh-daemon/secrets.env` (mode `600`, owner `root`)
+For that legacy unit, `/etc/codereeve/secrets.env` (mode `600`, owner `root`)
 contained:
 
 ```
@@ -581,8 +585,8 @@ rotation:
 ```ini
 [Service]
 LoadCredential=app.pem:/externally/provisioned/github-app.pem
-Environment=BH_GITHUB_APP_KEY_PROVIDER=file
-Environment=BH_GITHUB_APP_PRIVATE_KEY_FILE=%d/app.pem
+Environment=CODEREEVE_GITHUB_APP_KEY_PROVIDER=file
+Environment=CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE=%d/app.pem
 EnvironmentFile=/etc/bh-daemon/worker.env
 ```
 
@@ -620,7 +624,7 @@ journalctl -u codereeve.service -f
 #### tmux / nohup (lightweight alternative)
 
 For a non-systemd environment or quick deploy, export the BWS bootstrap token only when
-the resolved configuration needs it; all configuration comes from `.bh/config.env` and
+the resolved configuration needs it; all configuration comes from `.codereeve/config.env` and
 `host.env`:
 
 ```bash
@@ -633,7 +637,7 @@ tmux new-session -d -s bh 'bin/run-daemon.sh >> /var/log/bh-daemon.log 2>&1'
 nohup bin/run-daemon.sh >> /var/log/bh-daemon.log 2>&1 &
 ```
 
-If `bin/setup-env.sh` was not run on this host (and therefore `host.env` does not exist), add `BH_PROJECT_ROOT` as a shell export before the launcher call. All other per-deployment vars are read from `${BH_PROJECT_ROOT}/.bh/config.env` at daemon startup.
+If `bin/setup-env.sh` was not run on this host (and therefore `host.env` does not exist), add `CODEREEVE_PROJECT_ROOT` as a shell export before the launcher call. All other per-deployment vars are read from `${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env` at daemon startup.
 
 Send SIGTERM to stop cleanly: `kill -TERM <pid>`.
 
@@ -670,9 +674,9 @@ G3c connects directly to the OAuth credential volume mount described in §"Crede
 
 **Environment requirements:**
 
-`BH_REPO_OWNER`, `BH_REPO_NAME`, and `BH_PROJECT_ROOT` must be available — either via `${BH_PROJECT_ROOT}/.bh/config.env` + `~/.config/baton-harness/host.env` (read automatically at startup), or exported in the caller's shell. Additionally:
+`CODEREEVE_REPO_OWNER`, `CODEREEVE_REPO_NAME`, and `CODEREEVE_PROJECT_ROOT` must be available — either via `${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env` + `~/.config/codereeve/host.env` (read automatically at startup), or exported in the caller's shell. Additionally:
 
-- `GH_TOKEN` or `GITHUB_TOKEN` must be set (fine-grained PAT; structural check only). With `BWS_GH_TOKEN_SECRET_ID` declared in `.bh/config.env` and `BWS_ACCESS_TOKEN` in the environment, the token is vault-fetched automatically. Otherwise export it directly.
+- `GH_TOKEN` or `GITHUB_TOKEN` must be set (fine-grained PAT; structural check only). With `BWS_GH_TOKEN_SECRET_ID` declared in `.codereeve/config.env` and `BWS_ACCESS_TOKEN` in the environment, the token is vault-fetched automatically. Otherwise export it directly.
 - `ANTHROPIC_API_KEY` must NOT be set (the script sets and unsets it temporarily for the G3b scenario; it aborts if the key is already present in the caller's shell).
 - `bh-daemon` must be on `PATH`.
 
@@ -707,7 +711,7 @@ Notes on specific scenarios:
   but it cannot produce the G3a `Startup credential check failed` alert expected by the
   script. Treat this scenario as a known verifier failure, not evidence that G3a was
   exercised; updating the verifier is outside this documentation fix.
-- **G2 marker path**: `$BH_PROJECT_ROOT/.baton-harness/daemon.alive` — pre-created by the script, then re-written by the daemon on startup (non-fatal path). The marker is cleaned up by the script in an EXIT trap.
+- **G2 marker path**: `$CODEREEVE_PROJECT_ROOT/.baton-harness/daemon.alive` — pre-created by the script, then re-written by the daemon on startup (non-fatal path). The marker is cleaned up by the script in an EXIT trap.
 - **G1 decoy**: the "orphan" process is `sleep 999` with its argv set to `sleep 999 claude -p`. No real Claude binary is invoked. The script reaps it immediately after the scenario.
 - **SIGTERM exit code**: Python's SIGTERM handler in `daemon.py` calls `raise SystemExit(0)`, so the daemon exits 0 — not 143 (which would indicate the process was killed externally without the handler firing).
 
@@ -779,9 +783,9 @@ Two related signals are logged by the daemon but not locally assertable by this 
 
 **Environment requirements:**
 
-- `BH_REPO_OWNER`, `BH_REPO_NAME`, `BH_PROJECT_ROOT` — via `.bh/config.env` + `~/.config/baton-harness/host.env`, or exported directly.
+- `CODEREEVE_REPO_OWNER`, `CODEREEVE_REPO_NAME`, `CODEREEVE_PROJECT_ROOT` — via `.codereeve/config.env` + `~/.config/codereeve/host.env`, or exported directly.
 - `bh-daemon` must be on `PATH`.
-- `BH_PROJECT_ROOT` must be a git repository.
+- `CODEREEVE_PROJECT_ROOT` must be a git repository.
 - `GH_TOKEN` or `GITHUB_TOKEN` must be set (fine-grained PAT; structural check only).
 - `ANTHROPIC_API_KEY` must **not** be set (G3b — OAuth/subscription deployment).
 - `~/.claude/.credentials.json` must be present and readable (G3c).
@@ -852,7 +856,7 @@ This mirrors `verify-recovery.sh`'s G3c handling — it is not a failure, it is 
 
 The EXIT trap performs **best-effort** cleanup: it closes the seeded issue (with the same cleanup comment) and then removes the `agent-ready` / `agent-in-progress` / `blocked` / `agent-done` labels. It can act only if `_ISSUE_NUM` was successfully parsed from `gh issue create` output; after an `ORPHAN ISSUE WARNING`, it has no issue number and cannot clean up. Close happens *before* label removal (not after) so a label PATCH can't shift the issue's state out from under the close call. Each `gh` cleanup call is independently non-fatal: a transient failure is logged as a `warning:` line but does not stop the trap or script. After any orphan-issue warning or cleanup `warning:` line, manually verify the seeded issue in the sandbox repo and close or de-label it if the trap did not.
 
-**On assertion failure, the daemon log is preserved, not deleted.** If any assertion fails — even when the daemon itself exited 0 — the summary dumps the last 40 lines of daemon output to stderr and copies the full captured output to a stable, announced path: `${BH_PROJECT_ROOT}/verify-block-escalation-daemon-<issue-number>.log`. Only on a clean run (zero failed assertions) does cleanup delete the temporary capture file.
+**On assertion failure, the daemon log is preserved, not deleted.** If any assertion fails — even when the daemon itself exited 0 — the summary dumps the last 40 lines of daemon output to stderr and copies the full captured output to a stable, announced path: `${CODEREEVE_PROJECT_ROOT}/verify-block-escalation-daemon-<issue-number>.log`. Only on a clean run (zero failed assertions) does cleanup delete the temporary capture file.
 
 ### When to run it
 

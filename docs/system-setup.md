@@ -64,7 +64,7 @@ What it does, in order:
    without a network call; provider selection happens later in `bin/init-sandbox.sh`.
 3. Requires `gh` and `claude` on `PATH`; in an interactive Linux/macOS terminal it offers
    to install them (`gh` v2.62.0 with checksum verification; the official installer for
-   `claude`). Missing either in a non-interactive context or with `BH_SETUP_NO_PROMPT=1`
+   `claude`). Missing either in a non-interactive context or with `CODEREEVE_SETUP_NO_PROMPT=1`
    exits 1 with its manual-install link and makes no network call.
 4. Creates `.venv` (skipped if already present — safe to re-run)
 5. Syncs the package editably with the exact runtime and development
@@ -186,8 +186,8 @@ enrollment, or rotation:
 ```ini
 [Service]
 LoadCredential=app.pem:/externally/provisioned/github-app.pem
-Environment=BH_GITHUB_APP_KEY_PROVIDER=file
-Environment=BH_GITHUB_APP_PRIVATE_KEY_FILE=%d/app.pem
+Environment=CODEREEVE_GITHUB_APP_KEY_PROVIDER=file
+Environment=CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE=%d/app.pem
 ```
 
 systemd expands `%d` to the service credential directory. See the official

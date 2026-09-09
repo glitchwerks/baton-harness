@@ -2,7 +2,7 @@
 
 Assumes [docs/system-setup.md](system-setup.md) is already complete on this machine.
 
-This is the second of two setup walkthroughs for bringing up `bh-daemon` on a machine that
+This is the second of two setup walkthroughs for bringing up `codereeve daemon` on a machine that
 has never run it before. This doc covers **repo/sandbox-level** setup: provisioning a
 throwaway sandbox repository, selecting an App-key provider, provisioning
 branch-protection rulesets, running the daemon's preflight check, and the first `--once`
@@ -12,13 +12,16 @@ out to rather than duplicating. For what each credential below *is* and why it's
 see [docs/authentication.md](authentication.md) — this doc covers the *how* (provisioning
 steps and verification commands) only.
 
-**Read the safety warning before running anything below.** `bh-daemon` spawns real
+**Read the safety warning before running anything below.** `codereeve daemon` spawns real
 `claude -p --dangerously-skip-permissions` processes that write code, commit, push
 branches, and open GitHub PRs autonomously. Every step in this walkthrough targets a
 throwaway sandbox repository — never a real project. See
 [docs/smoke-test-daemon.md §"WARNING: safety first"](smoke-test-daemon.md#warning-safety-first).
 
 ## 1. Prerequisites — have these in hand before you start
+
+This walkthrough uses canonical CodeReeve names. Legacy `BH_*`, `.bh/`, and
+`bh-*` spellings remain accepted only through 0.3.x for migration and are removed in 0.4.
 
 Some of these can be created automatically by the scripts below; the rest you must obtain
 from GitHub and your selected key store before you begin, or a later step will stall
@@ -29,7 +32,7 @@ waiting for a value only you can supply. (For the machine-level CLI prerequisite
 **Accounts and values you must obtain yourself (no script creates these):**
 
 - A **throwaway sandbox GitHub repository**, created and cloned locally. The local clone
-  path becomes `BH_PROJECT_ROOT`. Never point this walkthrough at a real project.
+  path becomes `CODEREEVE_PROJECT_ROOT`. Never point this walkthrough at a real project.
 - A **GitHub App** created and installed on that sandbox repo, with the permissions listed
   in [docs/authentication.md § GitHub App](authentication.md#github-app-primary).
   From it you need two numbers: the **App ID** (from the App's settings page) and the
@@ -38,16 +41,16 @@ waiting for a value only you can supply. (For the machine-level CLI prerequisite
   - `bws`: upload the PEM to Bitwarden Secrets Manager and note its UUID
     (`BWS_PEM_SECRET_ID`).
   - `file`: externally provision the PEM at an absolute host path and note that path
-    (`BH_GITHUB_APP_PRIVATE_KEY_FILE`). The file must be regular, non-symlink,
+    (`CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE`). The file must be regular, non-symlink,
     owner-only (`0400` or `0600`), readable UTF-8 PEM, non-empty, and at most 1 MiB.
-- A **GitHub fine-grained PAT** for the standard `bh-before-run` hook (see
+- A **GitHub fine-grained PAT** for the standard `codereeve hook before-run` hook (see
   [docs/authentication.md § GitHub fine-grained PAT](authentication.md#github-fine-grained-pat-fallback)
   for the exact permission table — narrower than the App's). Optionally upload it to
   Bitwarden Secrets Manager as a secret (`BWS_GH_TOKEN_SECRET_ID`). If you skip this, supply
   `GH_TOKEN` directly instead.
 - A **Bitwarden Secrets Manager machine-account access token** (`BWS_ACCESS_TOKEN`) only
   when you select the `bws` App-key provider or configure either optional BWS secret ID.
-  This token is never stored in the repo or `.bh/config.env`. See
+  This token is never stored in the repo or `.codereeve/config.env`. See
   [docs/authentication.md § Bitwarden Secrets Manager](authentication.md#bitwarden-secrets-manager)
   for what it's used to fetch.
 
@@ -59,13 +62,13 @@ The two selector choices are explicit:
 
 ```bash
 # Legacy BWS deployment migration: add this line and retain BWS_PEM_SECRET_ID.
-BH_GITHUB_APP_KEY_PROVIDER=bws
+CODEREEVE_GITHUB_APP_KEY_PROVIDER=bws
 
-# New host-file deployment: use this line plus BH_GITHUB_APP_PRIVATE_KEY_FILE.
-BH_GITHUB_APP_KEY_PROVIDER=file
+# New host-file deployment: use this line plus CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE.
+CODEREEVE_GITHUB_APP_KEY_PROVIDER=file
 ```
 
-Do not leave both `BWS_PEM_SECRET_ID` and `BH_GITHUB_APP_PRIVATE_KEY_FILE` configured;
+Do not leave both `BWS_PEM_SECRET_ID` and `CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE` configured;
 either conflict is rejected before environment mutation or GitHub access.
 
 ## 2. `bin/init-sandbox.sh` — provision the sandbox repo
@@ -76,15 +79,15 @@ and a `.gitignore` entry. Point it only at the throwaway sandbox repo from step 
 Export the three required variables and run it:
 
 ```bash
-export BH_REPO_OWNER=<owner>
-export BH_REPO_NAME=<sandbox-repo>
-export BH_PROJECT_ROOT=<abs-path-to-local-sandbox-clone>   # still required in this shell even if bin/setup-env.sh (docs/system-setup.md) already ran — that script only writes the value to host.env, which bin/init-sandbox.sh and bin/run-daemon.sh source internally but never export back into your shell
+export CODEREEVE_REPO_OWNER=<owner>
+export CODEREEVE_REPO_NAME=<sandbox-repo>
+export CODEREEVE_PROJECT_ROOT=<abs-path-to-local-sandbox-clone>   # still required in this shell even if bin/setup-env.sh (docs/system-setup.md) already ran — that script only writes the value to host.env, which bin/init-sandbox.sh and bin/run-daemon.sh source internally but never export back into your shell
 bin/init-sandbox.sh
 ```
 
 What it does, in order:
 
-1. Preflight (`gh auth status`, `git`, `BH_PROJECT_ROOT` is a git repo)
+1. Preflight (`gh auth status`, `git`, `CODEREEVE_PROJECT_ROOT` is a git repo)
 2. Creates the six required harness labels, including the terminal
    `agent-failed` state (idempotent)
 3. Creates a trivial trigger issue (`agent-ready`, no milestone)
@@ -93,13 +96,13 @@ What it does, in order:
 5. Writes a stub CI workflow (`.github/workflows/ci.yml`) and pushes it to the sandbox
    default branch (skipped if already identical)
 6. **Prompts interactively** for the GitHub App ID, installation ID,
-   `BH_GITHUB_APP_KEY_PROVIDER` (`bws` or `file`), only that provider's source, and the two
-   optional BWS secret UUIDs, then writes `${BH_PROJECT_ROOT}/.bh/config.env`
+   `CODEREEVE_GITHUB_APP_KEY_PROVIDER` (`bws` or `file`), only that provider's source, and the two
+   optional BWS secret UUIDs, then writes `${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env`
 7. Seeds `.symphony/` into the sandbox repo's `.gitignore` and pushes it (skipped if
    already present)
 
-This script **hard-errors if run non-interactively** (`BH_SETUP_NO_PROMPT=1` or no
-attached terminal) at the `.bh/config.env`-writing step — it has no way to collect the
+This script **hard-errors if run non-interactively** (`CODEREEVE_SETUP_NO_PROMPT=1` or no
+attached terminal) at the `.codereeve/config.env`-writing step — it has no way to collect the
 provider-specific values without a TTY. Run it interactively.
 
 Issue and milestone creation are **not** idempotent — re-running against a repo that
@@ -108,23 +111,23 @@ before repeating this step.
 
 **Verify it worked:** the script prints a summary listing everything it created —
 labels, the trigger issue URL, the milestone number, issues A/B/C, and confirmation that
-`.bh/config.env` and the `.gitignore` entry were written. Spot-check the config file
+`.codereeve/config.env` and the `.gitignore` entry were written. Spot-check the config file
 (no secret values are printed by the script itself, since the UUIDs it writes are
 Bitwarden secret *references*, not the secrets themselves):
 
 ```bash
-cat "${BH_PROJECT_ROOT}/.bh/config.env"
+cat "${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env"
 ```
 
-You should see `BH_REPO_OWNER`, `BH_REPO_NAME`, `BH_GITHUB_APP_ID`,
-`BH_GITHUB_APP_INSTALLATION_ID`, `BH_GITHUB_APP_KEY_PROVIDER`, exactly one of
-`BWS_PEM_SECRET_ID` / `BH_GITHUB_APP_PRIVATE_KEY_FILE`, and any optional
+You should see `CODEREEVE_REPO_OWNER`, `CODEREEVE_REPO_NAME`, `CODEREEVE_GITHUB_APP_ID`,
+`CODEREEVE_GITHUB_APP_INSTALLATION_ID`, `CODEREEVE_GITHUB_APP_KEY_PROVIDER`, exactly one of
+`BWS_PEM_SECRET_ID` / `CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE`, and any optional
 `BWS_*_SECRET_ID` UUIDs you supplied.
 
 ## 3. `BWS_ACCESS_TOKEN` — export only when BWS is configured
 
 `BWS_ACCESS_TOKEN` is the operator-supplied Bitwarden machine-account token. Export it
-when `BH_GITHUB_APP_KEY_PROVIDER=bws`; `bin/provision-ruleset.sh` then uses it to load the
+when `CODEREEVE_GITHUB_APP_KEY_PROVIDER=bws`; `bin/provision-ruleset.sh` then uses it to load the
 PEM before making any GitHub API call. Also export it for daemon startup when a file
 provider configuration retains `BWS_GH_TOKEN_SECRET_ID` or
 `BWS_HEARTBEAT_PING_URL_SECRET_ID`. A file provider with neither optional locator is
@@ -144,14 +147,14 @@ For a first interactive BWS-backed run, the shell export is sufficient through s
 4–6. For a persistent/server deployment, use the conditional root-readable-only file
 described in
 [docs/smoke-test-daemon.md §"systemd unit (recommended)"](smoke-test-daemon.md#systemd-unit-recommended)
-for `/etc/bh-daemon/secrets.env` (mode `600`), or use
+for `/etc/codereeve/secrets.env` (mode `600`), or use
 `bin/install-daemon-service.sh`. The installer omits the file and `EnvironmentFile=` when
 the resolved deployment is file-only.
 
 ## 4. `bin/provision-ruleset.sh` — branch-protection rulesets
 
-Requires `BH_GITHUB_APP_ID`, `BH_GITHUB_APP_INSTALLATION_ID`, and a valid explicit key
-provider — either already in `.bh/config.env` (written by step 2) or exported directly.
+Requires `CODEREEVE_GITHUB_APP_ID`, `CODEREEVE_GITHUB_APP_INSTALLATION_ID`, and a valid explicit key
+provider — either already in `.codereeve/config.env` (written by step 2) or exported directly.
 Provider `bws` also requires `BWS_ACCESS_TOKEN`; provider `file` loads the secured host
 file without BWS.
 
@@ -163,8 +166,8 @@ What it does:
 
 1. Loads the selected App key exactly once and proves it by minting a GitHub App JWT
    (`bws` needs `BWS_ACCESS_TOKEN` + `BWS_PEM_SECRET_ID`; `file` needs the absolute
-   `BH_GITHUB_APP_PRIVATE_KEY_FILE` path)
-2. Cross-checks `BH_GITHUB_APP_ID` against a live `GET /app` call — aborts if it doesn't
+   `CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE` path)
+2. Cross-checks `CODEREEVE_GITHUB_APP_ID` against a live `GET /app` call — aborts if it doesn't
    match (a common mistake here is pasting the *installation* ID where the *App* ID goes)
 3. Mints an installation token and validates the repo reports at least one admin
    collaborator before proceeding
@@ -174,11 +177,11 @@ What it does:
      only a human merges it)
    - `harness-feature-daemon-only` — restricts pushes to `feature/*` branches to the
      harness App only
-5. **Pins a ruleset baseline** at `${BH_PROJECT_ROOT}/.bh/ruleset-baseline.json` (ruleset
+5. **Pins a ruleset baseline** at `${CODEREEVE_PROJECT_ROOT}/.bh/ruleset-baseline.json` (ruleset
    ID + `updated_at` for each ruleset) — this is not optional bookkeeping: without it, the
    daemon's per-launch preflight parks every issue as `NOT_PROVISIONED`. The baseline
    capture only warns and skips (rather than failing the whole script) if
-   `BH_PROJECT_ROOT` is unset, so make sure it is exported.
+   `CODEREEVE_PROJECT_ROOT` is unset, so make sure it is exported.
 
 Exit codes: `0` success (rulesets match or were corrected), `1` drift could not be fixed,
 `2` missing env vars or an App-ID mismatch.
@@ -193,7 +196,7 @@ You should see both `harness-main-no-merge` and `harness-feature-daemon-only`. A
 confirm the baseline file exists:
 
 ```bash
-cat "${BH_PROJECT_ROOT}/.bh/ruleset-baseline.json"
+cat "${CODEREEVE_PROJECT_ROOT}/.bh/ruleset-baseline.json"
 ```
 
 ## 5. `codereeve doctor --strict` — preflight before the first real run
@@ -349,7 +352,7 @@ operation on a server (systemd unit, tmux/nohup), see
 Start with the failing step's own output — every script in this walkthrough prints an
 `error:` (or `provision-ruleset:` / `baton-harness:`-prefixed) line with a specific fix
 when a preflight fails, rather than a bare stack trace. If the failure is inside the
-daemon's startup preflight rather than one of the `bin/*.sh` scripts, `bh-daemon --doctor`
+daemon's startup preflight rather than one of the `bin/*.sh` scripts, `codereeve doctor`
 (step 5) will name the exact check that fails, with a secret-safe `detail:` explaining
 what it saw and a `fix:` explaining what to do about it — run it again after any fix to
 confirm.
@@ -357,18 +360,18 @@ confirm.
 Common first-run stumbling points, in the order you are likely to hit them:
 
 - **`init-sandbox.sh` hard-errors immediately at the config-write step.** You are running
-  it non-interactively (no TTY, or `BH_SETUP_NO_PROMPT=1`). It has no way to collect the
+  it non-interactively (no TTY, or `CODEREEVE_SETUP_NO_PROMPT=1`). It has no way to collect the
   App ID, installation ID, provider/source, and optional BWS UUIDs without prompting —
   run it in an interactive terminal.
 - **`provision-ruleset.sh` fails at the JWT-minting step.** For `bws`,
   `BWS_ACCESS_TOKEN` is absent or `BWS_PEM_SECRET_ID` is unreadable. For `file`, check the
-  absolute `BH_GITHUB_APP_PRIVATE_KEY_FILE` path and its owner-only file contract.
+  absolute `CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE` path and its owner-only file contract.
 - **`provision-ruleset.sh` aborts with an App-ID mismatch.** You pasted the installation
-  ID where the App ID goes (or vice versa) into `.bh/config.env` during step 2. Fetch both
+  ID where the App ID goes (or vice versa) into `.codereeve/config.env` during step 2. Fetch both
   again per the step-1 commands and correct the file.
-- **`bh-daemon --doctor` reports `BH_PROJECT_ROOT` or a BWS prerequisite failure on a host
+- **`codereeve doctor` reports `CODEREEVE_PROJECT_ROOT` or a BWS prerequisite failure on a host
   you believe is correctly set up.** `--doctor` does not source `host.env` — supply `--config PATH` or export
-  `BH_PROJECT_ROOT` in the shell running doctor. Export `BWS_ACCESS_TOKEN` only
+  `CODEREEVE_PROJECT_ROOT` in the shell running doctor. Export `BWS_ACCESS_TOKEN` only
   when the resolved provider/optional-secret composition needs it (see step 5).
 - **`run-daemon.sh` aborts on the label or `.gitignore` preflight.** Do not re-run
   `bin/init-sandbox.sh` to fix this — issue and milestone creation are not idempotent

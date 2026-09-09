@@ -1,6 +1,6 @@
 # Chain Orchestration Design
 
-**Purpose:** Reference for the always-on dependency-chain daemon (`src/baton_harness/chain/`) — how it works and why. This document complements [`harness-design.md`](./harness-design.md) (the parent harness design); consult §10 there for the implementation history and the resolved open questions. Implemented in issue #27 (phases P0–P3, PRs #46–#49).
+**Purpose:** Reference for the always-on dependency-chain daemon (`src/codereeve/chain/`) — how it works and why. This document complements [`harness-design.md`](./harness-design.md) (the parent harness design); consult §10 there for the implementation history and the resolved open questions. Implemented in issue #27 (phases P0–P3, PRs #46–#49).
 
 ---
 
@@ -16,8 +16,8 @@ The chain layer solves this by owning the feature branch, the topological dispat
 
 There is **one** execution path, parameterized by the DAG:
 
-- **A milestone** — all open issues in the milestone form one DAG, executed on one `codereeve/<slug>` branch, finalized as one ready-for-review `codereeve/<slug> → main` PR.
-- **An un-milestoned issue** — its own N=1 DAG on a `codereeve/issue-<N>` branch, its own PR.
+- **A milestone** — all open issues in the milestone form one DAG, executed on one `feature/<slug>` branch, finalized as one ready-for-review `feature/<slug> → main` PR.
+- **An un-milestoned issue** — its own N=1 DAG on a `feature/issue-<N>` branch, its own PR.
 
 N=1 is the degenerate DAG. There is no separate flat-run entry point. The daemon processes these identically.
 
@@ -67,10 +67,10 @@ Key behaviors:
 ## 4. Branch model
 
 **Feature-branch naming:**
-- Milestone work unit: `codereeve/<milestone-slug>` (slug derived from milestone title).
-- Un-milestoned N=1 unit: `codereeve/issue-<N>` (issue number is collision-free by construction).
+- Milestone work unit: `feature/<milestone-slug>` (slug derived from milestone title).
+- Un-milestoned N=1 unit: `feature/issue-<N>` (issue number is collision-free by construction).
 
-The CodeReeve branch is created off `origin/main` and pushed to origin before dispatch — the agent's `gh pr create --base "$CODEREEVE_FEATURE_BRANCH"` requires the base remotely.
+The feature branch is created off `origin/main` and pushed before dispatch. The agent's `gh pr create --base "$BH_FEATURE_BRANCH"` uses the retained hook protocol variable and requires the base remotely.
 
 **Per-issue branches** use `codereeve/<slug>-<N>`. Legacy `baton/<slug>-<N>` branches remain recognized for recovery through 0.3.x and are removed in 0.4.
 
@@ -115,7 +115,7 @@ Step 2: while scheduler.is_active():
                 re-read labels (after_run may have set blocked)
                 apply §7 outcome protocol
 Step 3: push feature branch
-        open one ready-for-review PR  codereeve/<slug> → main  (never merge to main)
+        open one ready-for-review PR  feature/<slug> → main  (never merge to main)
 ```
 
 ---
@@ -209,7 +209,7 @@ The daemon **never exits on a block.** A parked sub-tree is escalated and the lo
 When the per-DAG loop terminates (all nodes done or parked, or frontier has only un-greenlit members):
 
 1. Push the feature branch to origin.
-2. Open exactly **one ready-for-review PR** `codereeve/<slug> → main`. PR body lists merged issues (one `Closes #N` keyword per line — GitHub does not parse comma-continuation) and parked issues with reasons.
+2. Open exactly **one ready-for-review PR** `feature/<slug> → main`. PR body lists merged issues (one `Closes #N` keyword per line — GitHub does not parse comma-continuation) and parked issues with reasons.
 3. The daemon **stops processing this work unit.** It never merges `feature → main`. That is a hard constraint (issue #27; `harness-design.md §10`).
 
 If the feature branch has zero commits over `origin/main`, the PR is skipped (prevents empty PRs when no issue produced commits).

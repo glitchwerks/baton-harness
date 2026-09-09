@@ -169,7 +169,7 @@ succeeded and requires investigation (see Troubleshooting below).
 |---------|--------------|-----|
 | `missing required env vars` | Forgot to export one or more env vars | Export all three: `BH_PROBE_SANDBOX_REPO`, `BH_PROBE_PR_NUMBER`, `BH_PROBE_WORKER_TOKEN_PATH` |
 | `token file not found` | Wrong path in `BH_PROBE_WORKER_TOKEN_PATH` | Verify file exists: `ls -la "$BH_PROBE_WORKER_TOKEN_PATH"` |
-| Vector 1–4 hook exit=0 (no sentinel) | `bh-force-pr-not-merge` not installed or wrong path | Run `uv pip install -e ".[dev]"` in the harness root; check `BH_PROBE_HOOK_SCRIPT` |
+| Vector 1–4 hook exit=0 (no sentinel) | CodeReeve hook command not installed or wrong path | Run `CODEREEVE_BUILD_DEVELOPMENT=1 uv sync --locked --extra dev` in the repository root; check `CODEREEVE_PROBE_HOOK_SCRIPT` |
 | Vectors 5–7 return 200 / no 403 | Ruleset not provisioned or token is in bypass_actors | Run `bin/provision-ruleset.sh`; verify token identity is not an App actor |
 | `403` but no `harness-main-no-merge` in body | Different ruleset blocking the merge | GitHub's 403 body varies — may need to add the ruleset name check for your repo's actual response body |
 | Vector 5–7 FAIL even with ruleset active | Token still has merge permission via App bypass | Check `bypass_actors` in the ruleset config; the worker PAT must not be in the bypass list |
@@ -210,7 +210,7 @@ supersedes it.)
 ## Related
 
 - `bin/provision-ruleset.sh` — idempotent ruleset provisioner (slice 3b)
-- `src/baton_harness/hooks/force_pr_not_merge.py` — the hook the probe tests
+- `src/codereeve/hooks/force_pr_not_merge.py` — the hook the probe tests
 - `docs/architecture-spec.md` §3.5 — defense-in-depth layer description
 - Issue [#160](https://github.com/glitchwerks/baton-harness/issues/160) — slice 3c spec
 - Issue [#133](https://github.com/glitchwerks/baton-harness/issues/133) — parent feature

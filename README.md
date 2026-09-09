@@ -48,7 +48,7 @@ bin/run-daemon.sh --once   # one poll-dispatch tick, then exit
 The daemon polls the target repo for `agent-ready` issues, groups them into dependency-
 ordered DAGs (milestones) or N=1 single-issue work units, calls `Orchestrator._run_worker(issue)`
 directly for each DAG-ready issue, CI-gates each agent's PR, and opens a single
-ready-for-review `codereeve/<slug> → main` PR when all issues in a work unit are done. It
+ready-for-review `feature/<slug> → main` PR when all issues in a work unit are done. It
 never merges to `main`.
 
 For a full walkthrough, see [docs/smoke-test-daemon.md](docs/smoke-test-daemon.md).
@@ -84,7 +84,7 @@ baton-harness/
 │       │   ├── daemon.py        # poll loop, work-unit selection, top-level orchestration
 │       │   ├── dag.py           # DAG construction (graphlib.TopologicalSorter)
 │       │   ├── scheduler.py     # ready-frontier tracking (done/parked/dispatched)
-│       │   ├── branches.py      # codereeve/<slug> branch creation and lifetime
+│       │   ├── branches.py      # feature/<slug> branch creation and lifetime
 │       │   ├── merge.py         # CI-gated --no-ff merge; REQUIRED_CHECKS constant
 │       │   ├── escalation.py    # Slack webhook + GitHub issue comment escalation
 │       │   ├── recovery.py      # crash recovery: reconstruct done/parked on start
@@ -296,15 +296,15 @@ Installation checks are offline and credential-free; configuration checks are
 local-only; live checks may use credentials and network access. Repeat `--phase`
 to select multiple phases; omission runs all three. Text is the default format.
 `--config` selects an explicit file; otherwise selection uses
-`$BH_PROJECT_ROOT/.bh/config.env`, with non-empty environment overrides.
-An explicit `<root>/.bh/config.env` infers the project root when `BH_PROJECT_ROOT`
+`$CODEREEVE_PROJECT_ROOT/.codereeve/config.env`, with non-empty environment overrides.
+An explicit `<root>/.codereeve/config.env` infers the project root when `BH_PROJECT_ROOT`
 is unset or empty; daemon startup applies that root after the readiness gate.
 
 Doctor is advisory (exit 0) unless `--strict` finds a critical failure (exit 1).
 Unsafe report rendering exits 1 even without strict; usage errors exit 2. Daemon
 startup always gates critical failures. `--check-vault` remains a live-check
 compatibility command and exits 0 only on PASS. See
-[operator preflight and JSON schema](docs/repository-onboarding.md#5-bh-daemon---doctor--strict--preflight-before-the-first-real-run)
+[operator preflight and JSON schema](docs/repository-onboarding.md#5-codereeve-doctor--strict--preflight-before-the-first-real-run)
 for report fields and startup ordering.
 
 ### Filesystem migration
@@ -462,7 +462,7 @@ checklist — what to install and export before a first run.
 - **`claude` CLI** on `PATH` and authenticated (run `claude` once interactively; the
   worker processes use OAuth, not an API key). `bin/setup-env.sh` checks for `claude` and,
   when running interactively on Linux/macOS, offers to auto-install via the official native
-  installer. In non-interactive or CI contexts (`BH_SETUP_NO_PROMPT=1`) it exits 1 with a
+  installer. In non-interactive or CI contexts (`CODEREEVE_SETUP_NO_PROMPT=1`) it exits 1 with a
   link to the [setup docs](https://docs.claude.com/en/docs/claude-code/setup).
 - **`gh` CLI** authenticated (`gh auth login`, verify with `gh auth status`). `bin/setup-env.sh`
   checks for `gh` and, when running interactively on Linux/macOS, offers to auto-install
@@ -481,7 +481,7 @@ checklist — what to install and export before a first run.
   file. See the [service cutover runbook](docs/codereeve-service-cutover.md).
 - **GitHub App** created, installed on the target repo, with the required permissions
   configured **before** first run (table in [docs/authentication.md](docs/authentication.md)).
-  `bin/run-daemon.sh` reads the App IDs from `${BH_PROJECT_ROOT}/.bh/config.env`;
+  `bin/run-daemon.sh` reads the App IDs from `${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env`;
   `bin/provision-ruleset.sh` uses them to create the branch-protection rulesets.
 - **`~/.claude/.credentials.json` present and readable** — the OAuth credential file the
   worker processes use. Checked at every daemon start (fatal if absent or unreadable). On a
@@ -492,7 +492,7 @@ checklist — what to install and export before a first run.
 - **OS:** Linux/macOS, bash. The server deployment scripts (`bin/verify-recovery.sh` in
   particular) are Linux-only.
 - `config/WORKFLOW.md` present in this repo (already committed — see `config/`)
-- The target project repo cloned locally (`BH_PROJECT_ROOT`)
+- The target project repo cloned locally (`CODEREEVE_PROJECT_ROOT`)
 - The target project repo must have all six harness labels (see
   [Required GitHub labels](#required-github-labels) below)
 - The target project repo must have `.symphony/` in its `.gitignore` — `bin/run-daemon.sh`
@@ -508,23 +508,23 @@ for an editable local development installation.
 
 ### GitHub App private-key provider
 
-Select exactly one provider in `${BH_PROJECT_ROOT}/.bh/config.env`. Existing BWS
+Select exactly one provider in `${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env`. Existing BWS
 deployments must add the selector explicitly; there is no legacy default:
 
 ```bash
 # Existing BWS deployment
-export BH_GITHUB_APP_KEY_PROVIDER=bws
+export CODEREEVE_GITHUB_APP_KEY_PROVIDER=bws
 export BWS_PEM_SECRET_ID=<uuid>
 ```
 
 ```bash
 # BWS-free file deployment
-export BH_GITHUB_APP_KEY_PROVIDER=file
-export BH_GITHUB_APP_PRIVATE_KEY_FILE=/run/credentials/bh-daemon/app.pem
+export CODEREEVE_GITHUB_APP_KEY_PROVIDER=file
+export CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE=/run/credentials/codereeve/app.pem
 ```
 
 `BWS_ACCESS_TOKEN` is a shell/service bootstrap secret, not provider configuration. Never
-store it in `${BH_PROJECT_ROOT}/.bh/config.env`. For an interactive BWS-backed run, export
+store it in `${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env`. For an interactive BWS-backed run, export
 it separately in the caller's shell:
 
 ```bash
@@ -584,12 +584,12 @@ not a restatement. Quick reference for exporting the optional hook PAT directly
 
 ```bash
 export GH_TOKEN=github_pat_<your-token>
-export BH_PROJECT_ROOT=/path/to/local/clone
+export CODEREEVE_PROJECT_ROOT=/path/to/local/clone
 bin/run-daemon.sh
 ```
 
 This PAT does not replace the App ID, installation ID, or selected App private-key
-provider required in `${BH_PROJECT_ROOT}/.bh/config.env`.
+provider required in `${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env`.
 
 ## Safety and guardrails
 
@@ -598,7 +598,7 @@ code, commit, push branches, and open GitHub PRs autonomously. Before running:
 
 - **Use a throwaway sandbox repo** — never a real project. See [Prerequisites (runtime)](#prerequisites-runtime).
 - **Always start with `--once`** for a first run — one poll-dispatch tick, then exit.
-- **No-merge boundary** — the daemon opens `codereeve/<slug> → main` PRs ready for review
+- **No-merge boundary** — the daemon opens `feature/<slug> → main` PRs ready for review
   and never merges to `main`. A human reviews and merges.
 - **`ANTHROPIC_API_KEY` must not be set** — OAuth/subscription auth only; the key's presence
   triggers an immediate abort at startup.
@@ -611,24 +611,24 @@ code, commit, push branches, and open GitHub PRs autonomously. Before running:
 
 `codereeve daemon` is the always-on poll loop that watches a GitHub repo for `agent-ready`
 issues, runs Claude Code agents against them in dependency order, CI-gates each agent's
-PR, and opens a ready-for-review `codereeve/<slug> → main` PR when a work unit completes.
+PR, and opens a ready-for-review `feature/<slug> → main` PR when a work unit completes.
 It never merges to `main`.
 
 **Required shell variable:**
 
 | Variable | Description |
 |---|---|
-| `BH_PROJECT_ROOT` | Absolute path to the local clone of the target repo |
+| `CODEREEVE_PROJECT_ROOT` | Absolute path to the local clone of the target repo |
 
-Repo identity (`BH_REPO_OWNER`, `BH_REPO_NAME`), GitHub App IDs, the explicit App-key
+Repo identity (`CODEREEVE_REPO_OWNER`, `CODEREEVE_REPO_NAME`), GitHub App IDs, the explicit App-key
 provider and its selected source, and optional vault secret IDs are read from
-`${BH_PROJECT_ROOT}/.bh/config.env` at startup. `bin/init-sandbox.sh` writes that file
+`${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env` at startup. `bin/init-sandbox.sh` writes that file
 interactively at provision time and prompts to overwrite or reuse it on a re-run.
 
 **Quickstart (one tick, then exit):**
 
 ```bash
-export BH_PROJECT_ROOT=/path/to/local/clone
+export CODEREEVE_PROJECT_ROOT=/path/to/local/clone
 
 bin/run-daemon.sh --once
 ```
@@ -667,20 +667,20 @@ codereeve daemon           # continuous
 |---|---|---|
 | `BH_SLACK_WEBHOOK_URL` | (unset) | If set, escalation notices are POSTed to Slack. If unset, Slack is skipped silently and the GitHub issue comment is the only durable escalation record. |
 | `BH_HEARTBEAT_PING_URL` | (unset) | Healthchecks.io-style ping URL. When set, the daemon GETs this URL once per heartbeat tick (nominally every 30 s; actual interval is 30 s plus ping latency, as the ping runs synchronously last in each tick) so an external dead-man's-switch service can alarm if pings stop. Unset = no external ping; local heartbeat file is still written. See [docs/harness-design.md §11](docs/harness-design.md) for setup and threshold guidance. |
-| `BH_HEARTBEAT_FILE` | `${BH_PROJECT_ROOT}/.baton-harness/heartbeat` | Path for the local liveness file written on each heartbeat tick. Override to direct the file to a location convenient for your monitoring setup. |
+| `BH_HEARTBEAT_FILE` | `${CODEREEVE_PROJECT_ROOT}/.baton-harness/heartbeat` | Path for the local liveness file written on each heartbeat tick. Override to direct the file to a location convenient for your monitoring setup. |
 | `BH_WORKER_PROGRESS_STALL_S` | `1800` | Seconds without a turn-progress signal during the worker-active phase (fresh dispatch) before a progress-stall alert fires. 1800 s is 6× the 300 s per-turn timeout. Non-numeric value logs a WARNING and falls back to the default. |
 | `BH_WORKTREE_GC` | `detect` | Worktree orphan-GC mode. `detect` logs orphaned worktrees without removing them (safe default). `reclaim` additionally removes confirmed orphans. Unrecognised value logs a WARNING and falls back to `detect`. |
 | `BH_MAX_ISSUE_FAILURES` | `2` | Consecutive charged worker failures allowed before the issue becomes `agent-failed`. This is lower than `BH_REDISPATCH_MAX` because it counts consumed worker runs, while redispatch counts crash-recovery attempts. |
-| `BH_FAILURE_COUNTS_PATH` | `${BH_PROJECT_ROOT}/.baton-harness/failure-counts.json` | Durable charged-failure counts and one-time alert state. |
+| `BH_FAILURE_COUNTS_PATH` | `${CODEREEVE_PROJECT_ROOT}/.baton-harness/failure-counts.json` | Durable charged-failure counts and one-time alert state. |
 
 `bin/init-sandbox.sh` provisions a throwaway sandbox repo for a smoke test. Its
 `--scenario <name>` flag (or `BH_SCENARIO`) selects `hello` (the existing default),
 `terminal-block` (one dual-labeled no-dispatch issue), or `recovery` (no issues); shared
-setup still creates the labels, stub CI workflow, and `${BH_PROJECT_ROOT}/.bh/config.env`.
+setup still creates the labels, stub CI workflow, and `${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env`.
 
-`bin/run-daemon.sh` now requires only `BH_PROJECT_ROOT` in the shell. Repo identity,
+`bin/run-daemon.sh` now requires only `CODEREEVE_PROJECT_ROOT` in the shell. Repo identity,
 GitHub App IDs, the App-key provider/source, and optional vault secret IDs are read at
-daemon startup from `${BH_PROJECT_ROOT}/.bh/config.env`.
+daemon startup from `${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env`.
 
 For the full first-run walkthrough — sandbox setup, trigger-issue creation, DAG dependency
 wiring, CI-gate behaviour, and expected log output — see
@@ -699,25 +699,25 @@ are already installed and is a quick reference, not a walkthrough.
 The four-step bringup sequence from [docs/smoke-test-daemon.md §"Fresh host bringup"](docs/smoke-test-daemon.md):
 
 ```bash
-# Step 1 — create the venv, install the package, and record BH_PROJECT_ROOT.
+# Step 1 — create the venv, install the package, and record CODEREEVE_PROJECT_ROOT.
 #   Requires uv, gh, and claude; checks optional bws and offers to auto-install it.
 #   Missing/declined bws prints conditional guidance and does not stop setup.
-#   Writes BH_PROJECT_ROOT to ~/.config/baton-harness/host.env (mode 600),
+#   Writes CODEREEVE_PROJECT_ROOT to ~/.config/codereeve/host.env (mode 600),
 #   prompting to overwrite or reuse an existing file on a re-run.
 bin/setup-env.sh
 
 # Step 2 — provision the throwaway sandbox repo.
-#   Reads BH_REPO_OWNER, BH_REPO_NAME, BH_PROJECT_ROOT from the environment.
+#   Reads CODEREEVE_REPO_OWNER, CODEREEVE_REPO_NAME, CODEREEVE_PROJECT_ROOT from the environment.
 #   Prompts for the App IDs, bws/file selector, the selected key source, and
-#   optional BWS secret IDs, then writes ${BH_PROJECT_ROOT}/.bh/config.env.
+#   optional BWS secret IDs, then writes ${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env.
 #   Optional: --scenario hello|terminal-block|recovery (or BH_SCENARIO).
-export BH_REPO_OWNER=<owner>
-export BH_REPO_NAME=<repo>
-export BH_PROJECT_ROOT=<abs-path-to-local-sandbox-clone>
+export CODEREEVE_REPO_OWNER=<owner>
+export CODEREEVE_REPO_NAME=<repo>
+export CODEREEVE_PROJECT_ROOT=<abs-path-to-local-sandbox-clone>
 bin/init-sandbox.sh
 
 # Step 3 — provision branch-protection rulesets (required before first run).
-#   Reads the App IDs and selected key provider from .bh/config.env. Provider bws
+#   Reads the App IDs and selected key provider from .codereeve/config.env. Provider bws
 #   needs the bootstrap token here; file mode does not. Optional BWS IDs need it
 #   later when the daemon starts.
 # read -r -s BWS_ACCESS_TOKEN
@@ -749,26 +749,26 @@ dispatch and parks every issue with "preflight refused — branch protection mis
 misconfigured" when rulesets are absent. The only way to create them is to run
 `bin/provision-ruleset.sh`.
 
-Run after `bin/init-sandbox.sh` (the App IDs it wrote to `.bh/config.env` are read here):
+Run after `bin/init-sandbox.sh` (the App IDs it wrote to `.codereeve/config.env` are read here):
 
 ```bash
 # Required: BOTH App identifiers (they are different integers).
-#   BH_GITHUB_APP_ID is shown at https://github.com/settings/apps/<slug>
+#   CODEREEVE_GITHUB_APP_ID is shown at https://github.com/settings/apps/<slug>
 #     (also returned by `gh api /app --jq .id`).
-#   BH_GITHUB_APP_INSTALLATION_ID is returned by
+#   CODEREEVE_GITHUB_APP_INSTALLATION_ID is returned by
 #     `gh api /repos/<owner>/<repo>/installation --jq .id`.
-export BH_REPO_OWNER=<owner>
-export BH_REPO_NAME=<sandbox-repo>
-export BH_GITHUB_APP_ID=<numeric-from-/app>
-export BH_GITHUB_APP_INSTALLATION_ID=<numeric-from-/repos/.../installation>
-# Select exactly one App private-key source (normally already in .bh/config.env).
+export CODEREEVE_REPO_OWNER=<owner>
+export CODEREEVE_REPO_NAME=<sandbox-repo>
+export CODEREEVE_GITHUB_APP_ID=<numeric-from-/app>
+export CODEREEVE_GITHUB_APP_INSTALLATION_ID=<numeric-from-/repos/.../installation>
+# Select exactly one App private-key source (normally already in .codereeve/config.env).
 # BWS:
-export BH_GITHUB_APP_KEY_PROVIDER=bws
+export CODEREEVE_GITHUB_APP_KEY_PROVIDER=bws
 export BWS_PEM_SECRET_ID=<bws-secret-id-for-app-private-key>
 export BWS_ACCESS_TOKEN=<bws-access-token>
 # Or file (unset BWS_PEM_SECRET_ID; no BWS token unless an optional BWS ID is set):
-# export BH_GITHUB_APP_KEY_PROVIDER=file
-# export BH_GITHUB_APP_PRIVATE_KEY_FILE=/run/credentials/bh-daemon/app.pem
+# export CODEREEVE_GITHUB_APP_KEY_PROVIDER=file
+# export CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE=/run/credentials/codereeve/app.pem
 # Optional: override the RepositoryRole admin actor_id (default 5).
 # Only needed if your org has remapped role ids.
 # export BH_ADMIN_ROLE_ID=5
@@ -785,7 +785,7 @@ This creates two rulesets:
 The script is idempotent — safe to re-run. It uses the GitHub Rulesets REST API's
 list-then-by-id endpoint shape (per the [API contract](https://docs.github.com/en/rest/repos/rules?apiVersion=2022-11-28)
 — `GET /rulesets/{ruleset_id}` requires a numeric id) and runs a preflight cross-check
-that `BH_GITHUB_APP_ID` matches `GET /app`. It also validates the admin bypass
+that `CODEREEVE_GITHUB_APP_ID` matches `GET /app`. It also validates the admin bypass
 assumption before writing rulesets: the repo must report at least one admin
 collaborator via `GET /repos/<owner>/<repo>/collaborators?permission=admin`, and any
 non-default `BH_ADMIN_ROLE_ID` override must be confirmed through the org custom
