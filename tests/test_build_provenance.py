@@ -33,7 +33,12 @@ def test_sdist_excludes_ignored_workspace_state(tmp_path: Path) -> None:
             ".superpowers",
             ".tmp",
             ".venv-codereeve",
+            ".codereeve-cutover",
+            "tests/.codereeve-cutover",
         )
+    ] + [
+        root / ".codereeve-cutover.lock",
+        root / "tests/.codereeve-cutover.lock",
     ]
     created_directories: list[Path] = []
     for marker in markers:

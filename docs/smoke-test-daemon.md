@@ -490,45 +490,52 @@ Two common supervision patterns are shown below. Both are illustrative starting 
 
 #### systemd unit (recommended)
 
-The recommended way to install the `bh-daemon` systemd unit is
-`bin/install-daemon-service.sh` (#208). It resolves the shared provider policy, writes
-`/etc/bh-daemon/secrets.env` (mode `600`) and `EnvironmentFile=` only when BWS is needed,
-writes `/etc/systemd/system/bh-daemon.service`, and optionally starts the service:
+The installer performs a recoverable cutover from `bh-daemon.service` to
+`codereeve.service`. Install the release wheel into a separate environment first;
+the installer never changes the old virtual environment. Render before activation:
 
 ```bash
-# Only for provider bws or configured optional BWS IDs; otherwise omit:
-# export BWS_ACCESS_TOKEN=<bitwarden-machine-account-token>
-bin/install-daemon-service.sh
+bin/install-daemon-service.sh --environment /opt/codereeve --print-unit \
+  --project-root /path/to/sandbox/clone --user codereeve
 ```
 
-For BWS-free file mode, install with `--no-start`, provision the worker PAT environment
-file and drop-in shown below, then run `sudo systemctl daemon-reload` and
-`sudo systemctl enable --now bh-daemon`. The installer does not provision the worker PAT.
+Use `--no-start` to publish the reversible canonical unit without enabling or
+starting it. Omit that flag for activation. If a transaction is interrupted,
+pass its reported path to `--recover JOURNAL`. See the
+[service cutover runbook](codereeve-service-cutover.md) for exact commands,
+Linux/cgroup requirements, retained backups, strict doctor phases, and the
+disposable systemd acceptance procedure.
 
 Useful flags:
 
 | Flag | Effect |
 |---|---|
-| `--print-unit` | Render the unit and, when needed, redacted `secrets.env`; no writes or `systemctl` calls |
-| `--no-start` | Write the unit and any required secrets file, then run `daemon-reload` only |
+| `--print-unit` | Render only the canonical unit; no secret resolution, writes, or systemd calls |
+| `--no-start` | Reversibly install without enabling or starting either service |
+| `--environment PATH` | Select the separate candidate environment (default `<harness>/.venv-codereeve`) |
+| `--recover JOURNAL` | Resume or roll back the exact retained transaction |
 | `--harness-dir PATH` | Override the auto-detected harness repo root |
-| `--project-root PATH` | Override the auto-detected `BH_PROJECT_ROOT` |
+| `--project-root PATH` | Override the resolved `CODEREEVE_PROJECT_ROOT` |
 | `--user NAME` | Override the auto-detected systemd `User=` |
 | `--help` / `-h` | Show usage |
 
-The script refuses to run if `ANTHROPIC_API_KEY` is set. For non-interactive installs,
-set `BH_SETUP_NO_PROMPT=1`; it then fails closed if `BH_PROJECT_ROOT`, or a conditionally
-required `BWS_ACCESS_TOKEN`, cannot be resolved. A file-only install neither reads nor
-creates, backs up, previews, or overwrites the secrets file.
+The candidate refuses activation if `ANTHROPIC_API_KEY` is set. For
+non-interactive installs, set `CODEREEVE_SETUP_NO_PROMPT=1` (the temporary
+`BH_SETUP_NO_PROMPT` alias remains supported). A conditionally required fresh
+`BWS_ACCESS_TOKEN` is passed only to the coordinator. File-only installation
+does not read or create a BWS secrets file.
 
 After it finishes, the script reminds you to run `bin/provision-ruleset.sh` once against the target repo — it does **not** run provisioning itself, and without a captured `.bh/ruleset-baseline.json` the preflight gate (issue #206) parks every issue as `NOT_PROVISIONED`.
 
-##### Manual / reference
+##### Legacy 0.3 reference
 
-`bin/install-daemon-service.sh` writes the provider-aware unit shape below. The
-installer-generated BWS `EnvironmentFile=` line and secrets file exist only for
-BWS-backed configurations. BWS-free deployments must separately provision the worker
-PAT environment file and drop-in below for the standard `bh-before-run` hook.
+The unit below documents the retained predecessor that the cutover coordinator
+recognizes. Do not use it for a new canonical installation.
+
+The retired 0.3 installer wrote the provider-aware unit shape below. Its BWS
+`EnvironmentFile=` line and secrets file existed only for BWS-backed
+configurations. BWS-free deployments had to separately provision the worker PAT
+environment file and drop-in below for the standard `bh-before-run` hook.
 
 `${BH_PROJECT_ROOT}/.bh/config.env` supplies the repo identity, App IDs, provider/source,
 and optional secret locators. Because this unit invokes `bh-daemon` directly, it carries
@@ -556,7 +563,8 @@ StandardError=journal
 WantedBy=multi-user.target
 ```
 
-When BWS is needed, `/etc/bh-daemon/secrets.env` (mode `600`, owner `root`) contains:
+For that legacy unit, `/etc/bh-daemon/secrets.env` (mode `600`, owner `root`)
+contained:
 
 ```
 BWS_ACCESS_TOKEN=<bitwarden-machine-account-token>
@@ -601,12 +609,12 @@ Key points:
 - Do NOT add `KillSignal=SIGKILL` — the default `KillSignal=SIGTERM` lets the handler clear the `daemon.alive` marker before exit.
 - Graceful shutdown: `systemctl stop bh-daemon` sends SIGTERM; the handler fires and exits 0.
 
-Enable and start (this is what `bin/install-daemon-service.sh` does for you):
+After a committed cutover, inspect the canonical service:
 
 ```bash
 systemctl daemon-reload
-systemctl enable --now bh-daemon
-journalctl -u bh-daemon -f   # stream logs
+systemctl status codereeve.service --no-pager
+journalctl -u codereeve.service -f
 ```
 
 #### tmux / nohup (lightweight alternative)

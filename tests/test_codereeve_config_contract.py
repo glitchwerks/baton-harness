@@ -45,6 +45,16 @@ PATH_COMPATIBILITY = {
         "_converted",
         "/etc/bh-daemon/secrets.env",
     ),
+    (
+        "src/codereeve/service_cutover/selection.py",
+        "stage_secrets",
+        "/etc/bh-daemon/secrets.env",
+    ),
+    (
+        "src/codereeve/service_cutover/selection.py",
+        "verify_runtime_paths",
+        ".baton-harness",
+    ),
 }
 
 
@@ -511,18 +521,8 @@ def test_execution_scan_inspects_expanding_heredoc() -> None:
 
 
 def test_shell_legacy_paths_reject_new_writers() -> None:
-    """Legacy default construction stays limited to #394 installer lines."""
-    # Exact executable lines, not a whole installer exemption; expiry 0.4.0.
-    allowed = {
-        (
-            "bin/install-daemon-service.sh",
-            'if [[ ! -f "${BH_PROJECT_ROOT}/.bh/config.env" ]]; then',
-        ),
-        (
-            "bin/install-daemon-service.sh",
-            'BH_DAEMON_SECRETS_PATH="${BH_DAEMON_SECRETS_PATH:-/etc/bh-daemon/secrets.env}"',
-        ),
-    }
+    """Shell launchers never construct legacy product path defaults."""
+    allowed: set[tuple[str, str]] = set()
     actual = {
         (path.relative_to(ROOT).as_posix(), line.strip())
         for path in _production_files()

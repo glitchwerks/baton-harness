@@ -197,6 +197,21 @@ provisioner remains responsible for placing and securing the source PEM.
 
 ## Next: prepare a repo for daemon runs
 
+## Production systemd cutover
+
+The editable `.venv` above is a development environment. Production systemd
+installation uses a separately installed release wheel, normally
+`<harness>/.venv-codereeve`, and the canonical `codereeve.service` unit. Render
+the unit first, install without activation with `--no-start`, and recover an
+interrupted transaction with `--recover JOURNAL`. The installer never modifies
+the legacy environment and retains recovery journals and backups through 0.3.x.
+
+Automatic activation is Linux-only and requires root systemd and complete
+cgroup-v2/process visibility while the daemon runs as a dedicated non-root
+account. Follow [the service cutover runbook](codereeve-service-cutover.md) for
+the exact install, doctor, recovery, and disposable acceptance commands. The
+Windows tests do not claim live activation.
+
 Once `bh-daemon --help` runs inside the venv, this machine's tooling is ready. Continue to
 [docs/repository-onboarding.md](repository-onboarding.md) to provision a sandbox repo and
 run the daemon for the first time.
