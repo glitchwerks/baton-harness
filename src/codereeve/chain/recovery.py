@@ -460,7 +460,12 @@ def _parse_worktree_list(
             )
             if prefix is not None:
                 tail = branch[len(prefix) :]
-                match = re.search(r"(?:^|-)(\d+)$", tail)
+                issue_pattern = (
+                    r"(?:^|-)(\d+)$"
+                    if prefix == "refs/heads/baton/"
+                    else r"-(\d+)$"
+                )
+                match = re.search(issue_pattern, tail)
                 current_issue = int(match.group(1)) if match else None
 
     # Flush the final block.

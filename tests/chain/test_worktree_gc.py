@@ -114,6 +114,8 @@ def test_parse_worktree_list_rejects_unrelated_branches() -> None:
         _WT_PATH_42, "refs/heads/feature/canonical-worker-42"
     ) + _porcelain_block(
         _WT_PATH_99, "refs/heads/codereeve/no-issue-suffix"
+    ) + _porcelain_block(
+        _WT_PATH_7, "refs/heads/codereeve/7"
     )
 
     assert recovery_mod._parse_worktree_list(porcelain) == []
