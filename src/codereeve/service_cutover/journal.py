@@ -992,6 +992,7 @@ class CutoverJournal:
             "guard_new",
             "stage_canonical",
             "release_gate",
+            "enable_new",
         } and ({"path", "digest"} & set(metadata)):
             required |= {"path", "digest"}
         if set(metadata) != required:

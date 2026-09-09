@@ -423,7 +423,7 @@ When `required_checks` is not configured, the CI gate's green predicate requires
 - `Test (pytest)`
 - `Type check (mypy)`
 
-These names are a module constant in `src/baton_harness/chain/merge.py` (`REQUIRED_CHECKS`). If a required check is absent from the check-runs response, `evaluate_ci` treats it as NOT-YET and keeps polling until the 30-minute hard timeout elapses, then returns `CiResult.TIMEOUT` → `MergeOutcome.CI_TIMEOUT`. There is no vacuous pass: zero matching checks is a timeout, not green. The resulting park comment reports which required checks were never observed, plus the poll count and elapsed time (#353).
+These names are a module constant in `src/codereeve/chain/merge.py` (`REQUIRED_CHECKS`). If a required check is absent from the check-runs response, `evaluate_ci` treats it as NOT-YET and keeps polling until the 30-minute hard timeout elapses, then returns `CiResult.TIMEOUT` → `MergeOutcome.CI_TIMEOUT`. There is no vacuous pass: zero matching checks is a timeout, not green. The resulting park comment reports which required checks were never observed, plus the poll count and elapsed time (#353).
 
 **Practical consequence for a sandbox repo:**
 
@@ -484,7 +484,7 @@ This runs one poll-dispatch tick and exits, bounding blast radius.
 
 ### Process supervision (continuous mode)
 
-For continuous operation, omit `--once`. The daemon polls indefinitely; stop it with SIGTERM (the handler in `src/baton_harness/chain/daemon.py` unlinks the `daemon.alive` marker and exits 0 cleanly) or Ctrl-C.
+For continuous operation, omit `--once`. The daemon polls indefinitely; stop it with SIGTERM (the handler in `src/codereeve/chain/daemon/poll.py` unlinks the `daemon.alive` marker and exits 0 cleanly) or Ctrl-C.
 
 Two common supervision patterns are shown below. Both are illustrative starting points — adapt them to your environment.
 
@@ -648,7 +648,7 @@ authority and does not currently exercise the real G3a gate; see the limitation 
 
 ### What it verifies and why it matters
 
-At every startup the daemon runs five checks (`src/baton_harness/chain/reconcile.py`):
+At every startup the daemon runs five checks (`src/codereeve/chain/reconcile.py`):
 
 | Gate | What it checks | Fatal? |
 |---|---|---|
@@ -762,8 +762,8 @@ Unlike `bin/verify-recovery.sh`, this script is **not** a decoy-only harness —
 
 1. the agent posts a clarifying question as an issue comment instead of guessing,
 2. the agent adds the `blocked` label to signal it cannot proceed,
-3. the daemon's post-turn label re-read (`src/baton_harness/chain/daemon.py`) sees `blocked` and takes the park path (`kind="block"`),
-4. `escalation.escalate()` (`src/baton_harness/chain/escalation.py`) posts a durable GitHub comment and, when configured, attempts a best-effort Slack ping.
+3. the daemon's post-turn label re-read (`src/codereeve/chain/daemon/work_unit.py`) sees `blocked` and takes the park path (`kind="block"`),
+4. `escalation.escalate()` (`src/codereeve/chain/escalation.py`) posts a durable GitHub comment and, when configured, attempts a best-effort Slack ping.
 
 **Where to find the agent's actual question — read this before you go looking for it in Slack.** The clarifying question the agent wrote lands **only** on the GitHub issue comment thread. If `BH_SLACK_WEBHOOK_URL` is configured, the Slack message that fires is the *daemon's* own park summary — a fixed string like `"Issue #N parked: blocked label set."` — not the agent's question text. Slack tells you *that* an issue parked; the GitHub issue comment tells you *why*. The script's own assertions reflect this split: it asserts a GitHub comment exists (assertion 4) but only asserts that a Slack POST was *attempted* (assertion 6) — it cannot inspect delivered Slack content at all.
 
@@ -857,5 +857,5 @@ The EXIT trap performs **best-effort** cleanup: it closes the seeded issue (with
 ### When to run it
 
 - As part of pre-release smoke testing, alongside the positive-path dispatch check (#168) and `bin/verify-recovery.sh`'s startup-recovery gates.
-- When validating the #239 self-block escalation chain after a change to `config/WORKFLOW.md`'s confidence/block rule, `src/baton_harness/chain/daemon.py`'s park path, or `src/baton_harness/chain/escalation.py`.
+- When validating the #239 self-block escalation chain after a change to `config/WORKFLOW.md`'s confidence/block rule, `src/codereeve/chain/daemon/work_unit.py`'s park path, or `src/codereeve/chain/escalation.py`.
 - Before enabling `BH_SLACK_WEBHOOK_URL` in a new deployment, to confirm the Slack-attempt path fires as expected.

@@ -30,7 +30,13 @@ from .selection import (
     verify_activation,
 )
 from .storage import FileSnapshot
-from .systemd import NEW_UNIT, OLD_UNIT, SystemdBackend
+from .systemd import (
+    NEW_ENABLEMENT,
+    NEW_ENABLEMENT_TARGET,
+    NEW_UNIT,
+    OLD_UNIT,
+    SystemdBackend,
+)
 
 
 def validate_units(journal: CutoverJournal) -> None:
@@ -306,12 +312,9 @@ def rollback(
             )
         journal.record("selection_restored", {})
         with effect(journal, "restore_enablement"):
-            for state in (snapshot.old, snapshot.new):
-                if state.load_state == "loaded":
-                    backend.set_enabled(
-                        state.name, state.enabled_state == "enabled"
-                    )
+            restore_enablement(journal, backend, snapshot)
     with effect(journal, "restore_activation"):
+        verify_enablement(backend, snapshot)
         backend.restore_activation(snapshot)
     journal.record("rolled_back", {})
     return CutoverResult("failed", journal.path, "complete")
@@ -584,23 +587,17 @@ def finish_rollback(
     pending = journal.pending
     if pending is not None:
         if pending["operation"] == "restore_enablement":
-            for state in (snapshot.old, snapshot.new):
-                if state.load_state == "loaded":
-                    backend.set_enabled(
-                        state.name, state.enabled_state == "enabled"
-                    )
+            restore_enablement(journal, backend, snapshot)
         elif pending["operation"] == "restore_activation":
+            verify_enablement(backend, snapshot)
             backend.restore_activation(snapshot)
         else:
             raise CutoverError("unexpected final restoration effect")
         journal.record("effect_done", pending)
     if "restore_enablement" not in journal.completed:
         with effect(journal, "restore_enablement"):
-            for state in (snapshot.old, snapshot.new):
-                if state.load_state == "loaded":
-                    backend.set_enabled(
-                        state.name, state.enabled_state == "enabled"
-                    )
+            restore_enablement(journal, backend, snapshot)
+    verify_enablement(backend, snapshot)
     if "restore_activation" not in journal.completed:
         with effect(journal, "restore_activation"):
             backend.restore_activation(snapshot)
@@ -608,3 +605,90 @@ def finish_rollback(
         backend.restore_activation(snapshot)
     journal.record("rolled_back", {})
     return CutoverResult("failed", journal.path, "complete")
+
+
+def verify_enablement(
+    backend: SystemdBackend, snapshot: ServiceSnapshot
+) -> None:
+    """Prove restored enablement remains valid immediately before activation.
+
+    Args:
+        backend: Independent manager and filesystem enablement observation.
+        snapshot: Verified original service selections.
+
+    Raises:
+        CutoverError: If restored old enablement or canonical absence drifted.
+    """
+    backend.verify_disabled(NEW_UNIT)
+    if snapshot.old.load_state == "loaded":
+        if (
+            backend.inspect(OLD_UNIT).enabled_state
+            != snapshot.old.enabled_state
+        ):
+            raise CutoverError("restored old enablement drifted")
+        if snapshot.old.enabled_state == "enabled":
+            return
+    backend.verify_disabled(OLD_UNIT)
+
+
+def restore_enablement(
+    journal: CutoverJournal,
+    backend: SystemdBackend,
+    snapshot: ServiceSnapshot,
+) -> None:
+    """Compensate only the prospective link owned by durable enable intent.
+
+    The generated unit has one persistent WantedBy link. Runtime and other
+    target links are never ours; validate all of them before any removal.
+    Intent remains authoritative across unlink/fsync interruptions even if
+    restoring the fragment has already made the unit disappear.
+
+    Args:
+        journal: Durable original selections and exact enablement intent.
+        backend: Complete persistent/runtime link observation boundary.
+        snapshot: Verified original unit selections for old enablement.
+
+    Raises:
+        CutoverError: If any link or the original state is ambiguous.
+    """
+    if snapshot.new.enabled_state not in {"", "disabled"}:
+        raise CutoverError("original canonical enablement is unsupported")
+    link = backend.target_path(linux_path(NEW_ENABLEMENT))
+    intents = [
+        event["metadata"]
+        for event in journal.events
+        if event["event"] == "effect_intent"
+        and event["metadata"].get("operation") == "enable_new"
+    ]
+    expected = {
+        "operation": "enable_new",
+        "path": str(link),
+        "digest": digest(NEW_ENABLEMENT_TARGET),
+    }
+    if intents and intents != [expected]:
+        raise CutoverError("canonical enablement authority is unproven")
+    links = backend.enablement_links(NEW_UNIT)
+    if links and (not intents or links != {link: NEW_ENABLEMENT_TARGET}):
+        raise CutoverError("canonical enablement links drifted")
+    journal.storage.safe(link, leaf_link=True)
+    if links:
+        identity = link.lstat()
+        if backend.enablement_links(NEW_UNIT) != links or (
+            link.lstat().st_dev,
+            link.lstat().st_ino,
+        ) != (identity.st_dev, identity.st_ino):
+            raise CutoverError("canonical enablement changed during cleanup")
+        link.unlink()
+    # Flush even when replay observes absence after an interrupted unlink.
+    parent = link.parent
+    while not parent.exists():
+        parent = parent.parent
+    journal.storage.safe(parent)
+    journal.storage.sync_directory(parent)
+    backend.verify_disabled(NEW_UNIT)
+    backend.reload()
+    if snapshot.old.load_state == "loaded":
+        backend.set_enabled(OLD_UNIT, snapshot.old.enabled_state == "enabled")
+    else:
+        backend.verify_disabled(OLD_UNIT)
+    backend.verify_disabled(NEW_UNIT)

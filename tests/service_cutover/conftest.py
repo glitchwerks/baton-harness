@@ -307,8 +307,11 @@ def cutover_context(
                             if line.startswith("User=")
                         ),
                         kill_mode="control-group",
-                        enabled_state=state.enabled_state
-                        if state.enabled_state in {"enabled", "disabled"}
+                        enabled_state="enabled"
+                        if (
+                            root / "etc/systemd/system/"
+                            "multi-user.target.wants" / name
+                        ).is_symlink()
                         else "disabled",
                     )
 
@@ -417,6 +420,13 @@ def cutover_context(
 
         def set_enabled(self, name: str, enabled: bool) -> UnitState:
             self.event("enable:" + name + ":" + str(enabled))
+            link = root / "etc/systemd/system/multi-user.target.wants" / name
+            if enabled:
+                link.parent.mkdir(parents=True, exist_ok=True)
+                if not link.is_symlink():
+                    link.symlink_to("/etc/systemd/system/" + name)
+            elif link.is_symlink():
+                link.unlink()
             state = self.states[name]
             if state.load_state == "loaded":
                 state = replace(
@@ -479,4 +489,9 @@ def upgrade_context(cutover_context: CutoverContext) -> CutoverContext:
         "",
         "/opt/old/bin/bh-daemon",
     )
+    link = (
+        root / "etc/systemd/system/multi-user.target.wants/bh-daemon.service"
+    )
+    link.parent.mkdir(parents=True)
+    link.symlink_to("/etc/systemd/system/bh-daemon.service")
     return spec, backend, storage

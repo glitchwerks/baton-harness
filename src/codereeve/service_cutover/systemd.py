@@ -41,6 +41,8 @@ from .render import render_unit
 
 OLD_UNIT = "bh-daemon.service"
 NEW_UNIT = "codereeve.service"
+NEW_ENABLEMENT = "/etc/systemd/system/multi-user.target.wants/" + NEW_UNIT
+NEW_ENABLEMENT_TARGET = "/etc/systemd/system/" + NEW_UNIT
 _PROPERTIES = (
     "Id",
     "LoadState",
@@ -1394,10 +1396,29 @@ class SystemdBackend:
 
     def verify_disabled(self, name: str) -> None:
         """Prove no persistent or runtime target enablement links remain."""
+        if self.enablement_links(name):
+            raise CutoverError("service enablement links remain")
+
+    def enablement_links(self, name: str) -> dict[Path, str]:
+        """Observe persistent/runtime link targets independently of fragments.
+
+        Args:
+            name: One of the two supported service identities.
+
+        Returns:
+            Exact link paths and literal targets, including dangling links.
+
+        Raises:
+            CutoverError: If visibility or a link type is ambiguous.
+        """
+        from .storage import Storage
+
         if name not in {OLD_UNIT, NEW_UNIT}:
             raise CutoverError("unsupported enablement identity")
+        links = {}
         for location in ("/etc/systemd/system", "/run/systemd/system"):
             root = self._target_path(location)
+            Storage().safe(root)
             if not root.exists():
                 continue
             entries = list(root.iterdir())
@@ -1410,4 +1431,9 @@ class SystemdBackend:
                     raise CutoverError("enablement visibility is unsupported")
                 link = directory / name
                 if link.exists() or link.is_symlink():
-                    raise CutoverError("service enablement links remain")
+                    if not link.is_symlink():
+                        raise CutoverError(
+                            "enablement link type is unsupported"
+                        )
+                    links[link] = link.readlink().as_posix()
+        return links

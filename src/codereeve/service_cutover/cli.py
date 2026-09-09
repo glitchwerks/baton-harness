@@ -197,19 +197,22 @@ def _installation_inputs(
         or bool(configured.config.bws_heartbeat_ping_url_secret_id)
     )
     selected_secrets: Path | None = None
+    existing_secrets: Path | None = None
     if bws_required:
         explicit_secrets = final_values.get("CODEREEVE_DAEMON_SECRETS_PATH")
         if explicit_secrets:
             selected_secrets = Path(explicit_secrets)
+            existing_secrets = selected_secrets
         else:
             service_layout = PathLayout.for_environment(
                 project, final_values, home=home
             )
-            selected_secrets = select_compatible_file(
+            existing_secrets = select_compatible_file(
                 service_layout.canonical_secrets,
                 service_layout.legacy_secrets,
                 label="service secrets",
             ).path
+            selected_secrets = service_layout.canonical_secrets
     spec = ServiceSpec(
         project_root=project,
         environment=candidate,
@@ -221,7 +224,7 @@ def _installation_inputs(
     fresh = _fresh_secrets(
         final_values,
         required=bws_required,
-        selected_path=selected_secrets,
+        selected_path=existing_secrets,
         render_only=args.print_unit,
     )
     return spec, fresh

@@ -46,7 +46,13 @@ from .selection import (
     writer_lock_authority,
 )
 from .storage import Storage
-from .systemd import NEW_UNIT, OLD_UNIT, SystemdBackend
+from .systemd import (
+    NEW_ENABLEMENT,
+    NEW_ENABLEMENT_TARGET,
+    NEW_UNIT,
+    OLD_UNIT,
+    SystemdBackend,
+)
 
 
 def render_only(spec: ServiceSpec) -> str:
@@ -304,7 +310,14 @@ def cutover(
                 if provenance != evidence.provenance:
                     raise CutoverError("candidate artifact identity changed")
                 journal.record("verified", {})
-                with effect(journal, "enable_new"):
+                backend.verify_disabled(NEW_UNIT)
+                with effect(
+                    journal,
+                    "enable_new",
+                    path=str(backend.target_path(linux_path(NEW_ENABLEMENT))),
+                    digest=digest(NEW_ENABLEMENT_TARGET),
+                ):
+                    backend.verify_disabled(NEW_UNIT)
                     backend.set_enabled(NEW_UNIT, True)
                 with effect(journal, "disable_old"):
                     backend.set_enabled(OLD_UNIT, False)
