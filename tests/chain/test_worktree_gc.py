@@ -94,6 +94,31 @@ def _porcelain_block(
     return f"worktree {worktree}\nHEAD abc123def456\nbranch {branch}\n\n"
 
 
+def test_parse_worktree_list_accepts_canonical_and_legacy_branches() -> None:
+    """Worktree recovery recognizes both supported branch namespaces."""
+    porcelain = _porcelain_block(
+        _WT_PATH_42, "refs/heads/codereeve/canonical-worker-42"
+    ) + _porcelain_block(
+        _WT_PATH_99, "refs/heads/baton/legacy-worker-99"
+    )
+
+    assert recovery_mod._parse_worktree_list(porcelain) == [
+        (_WT_PATH_42, 42),
+        (_WT_PATH_99, 99),
+    ]
+
+
+def test_parse_worktree_list_rejects_unrelated_branches() -> None:
+    """Worktree recovery ignores other namespaces and missing suffixes."""
+    porcelain = _porcelain_block(
+        _WT_PATH_42, "refs/heads/feature/canonical-worker-42"
+    ) + _porcelain_block(
+        _WT_PATH_99, "refs/heads/codereeve/no-issue-suffix"
+    )
+
+    assert recovery_mod._parse_worktree_list(porcelain) == []
+
+
 def _porcelain_bare_block(worktree: str) -> str:
     """Build a bare/detached porcelain block (no branch line)."""
     return f"worktree {worktree}\nHEAD abc123def456\ndetached\n\n"

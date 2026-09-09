@@ -39,6 +39,8 @@ from codereeve.chain.recovery import (
     RecoveryResult,
     _fetch_labels,
     _fetch_open_prs,
+    _fetch_provenance_merges,
+    _has_open_pr,
     reconstruct,
 )
 
@@ -82,7 +84,7 @@ def _pr_list_json(*branches: str) -> str:
 
 
 def _git_log_with_trailer(issue: int) -> str:
-    """Return git log output with a daemon-provenance trailer for issue N."""
+    """Return git log output with a legacy provenance trailer for issue N."""
     sha = "aabbccdd" * 5
     body = (
         f"Merge branch 'baton/my-milestone-{issue}'"
@@ -91,6 +93,55 @@ def _git_log_with_trailer(issue: int) -> str:
     )
     # Format: sha + unit-separator + body + record-separator
     return f"{sha}\x1f{body}\x1e"
+
+
+def _git_log_with_canonical_trailer(issue: int) -> str:
+    """Return git log output with a canonical provenance trailer."""
+    sha = "ccbbaa99" * 5
+    body = (
+        f"Merge branch 'codereeve/my-milestone-{issue}'"
+        f" into feature/my-milestone\n\n"
+        f"CodeReeve-Merge: issue-{issue} ci=green"
+    )
+    return f"{sha}\x1f{body}\x1e"
+
+
+@pytest.mark.parametrize(
+    "head",
+    [
+        "codereeve/my-milestone-42",
+        pytest.param("baton/my-milestone-42", id="legacy-baton-branch"),
+    ],
+)
+def test_open_pr_recognition_accepts_canonical_and_legacy_branches(
+    head: str,
+) -> None:
+    """Recovery recognizes both supported worker branch prefixes."""
+    assert _has_open_pr(42, [head]) is True
+
+
+@pytest.mark.parametrize(
+    "head",
+    [
+        "feature/my-milestone-42",
+        "codereeve/my-milestone-420",
+        "codereeve/my-milestone-41",
+    ],
+)
+def test_open_pr_recognition_rejects_unrelated_branches(head: str) -> None:
+    """Recovery retains namespace and exact issue-suffix checks."""
+    assert _has_open_pr(42, [head]) is False
+
+
+def test_provenance_reader_accepts_canonical_legacy_and_mixed_history(
+) -> None:
+    """Recovery reads new and legacy trailers in the same history."""
+    history = _git_log_with_canonical_trailer(41) + _git_log_with_trailer(42)
+
+    with patch.object(recovery_mod, "_run", return_value=_ok(history)):
+        found = _fetch_provenance_merges(_REPO, _FEATURE)
+
+    assert found == {41, 42}
 
 
 def _git_log_human_merge(issue: int) -> str:

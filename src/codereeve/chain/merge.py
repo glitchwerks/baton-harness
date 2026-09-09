@@ -74,7 +74,7 @@ Merge safety:
 Provenance (§11.5 / B-I2):
     On a green merge the module:
     1. Issues ``git merge --no-ff -m "<provenance-trailer> …"`` with a
-       structured trailer: ``Baton-Harness-Merge: issue-<N> ci=green``.
+       structured trailer: ``CodeReeve-Merge: issue-<N> ci=green``.
     2. Adds the ``agent-merged`` label to the issue.
     3. Posts a marker comment on the issue recording the CI-green-at-merge
        fact.
@@ -822,7 +822,7 @@ def merge_issue_branch(
         )
 
     # Build the provenance trailer (§11.5 / B-I2).
-    trailer = f"Baton-Harness-Merge: issue-{issue} ci=green"
+    trailer = f"CodeReeve-Merge: issue-{issue} ci=green"
     merge_message = (
         f"Merge branch '{issue_branch}' into {feature_branch}\n\n{trailer}"
     )

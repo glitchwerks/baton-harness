@@ -144,13 +144,14 @@ class WorkspaceManager:
             title: The issue title, used to derive a readable slug.
 
         Returns:
-            A branch name of the form ``baton/<slug>-<issue_number>``, or
-            ``baton/issue-<issue_number>`` if the title yields no slug.
+            A branch name of the form
+            ``codereeve/<slug>-<issue_number>``, or
+            ``codereeve/issue-<issue_number>`` if the title yields no slug.
         """
         slug = slugify(title)
         if slug:
-            return f"baton/{slug}-{issue_number}"
-        return f"baton/issue-{issue_number}"
+            return f"codereeve/{slug}-{issue_number}"
+        return f"codereeve/issue-{issue_number}"
 
     async def ensure_worktree(
         self, issue_number: int, title: str = ""

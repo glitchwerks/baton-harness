@@ -37,6 +37,7 @@ Coverage:
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -48,6 +49,7 @@ import pytest
 import codereeve.chain.daemon as daemon_mod
 import codereeve.chain.merge as merge_mod
 from codereeve.chain.daemon import run_daemon
+from codereeve.chain.daemon.gh_api_helpers import _find_issue_pr
 from codereeve.chain.failure_tally import FailureTally
 from codereeve.chain.heartbeat import LivenessState
 from codereeve.chain.label_ops import fetch_daemon_labels
@@ -168,6 +170,41 @@ def _fail(stderr: str = "error") -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(
         args=[], returncode=1, stdout="", stderr=stderr
     )
+
+
+@pytest.mark.parametrize(
+    "head",
+    [
+        "codereeve/canonical-worker-42",
+        pytest.param("baton/legacy-worker-42", id="legacy-baton-branch"),
+    ],
+)
+def test_find_issue_pr_accepts_canonical_and_legacy_branches(
+    head: str,
+) -> None:
+    """Daemon PR selection accepts both supported worker namespaces."""
+    payload = json.dumps(
+        [{"number": 1, "headRefName": head, "headRefOid": "abc123"}]
+    )
+    with patch.object(daemon_mod, "_run_gh", return_value=_ok(payload)):
+        assert _find_issue_pr(_OWNER, _REPO_NAME, 42) == (head, "abc123")
+
+
+@pytest.mark.parametrize(
+    "head",
+    [
+        "feature/canonical-worker-42",
+        "codereeve/canonical-worker-420",
+        "codereeve/canonical-worker-41",
+    ],
+)
+def test_find_issue_pr_rejects_unrelated_branches(head: str) -> None:
+    """Daemon PR selection retains namespace and issue-suffix checks."""
+    payload = json.dumps(
+        [{"number": 1, "headRefName": head, "headRefOid": "abc123"}]
+    )
+    with patch.object(daemon_mod, "_run_gh", return_value=_ok(payload)):
+        assert _find_issue_pr(_OWNER, _REPO_NAME, 42) == (None, None)
 
 
 def _green_required_jobs() -> list[dict[str, str | None]]:

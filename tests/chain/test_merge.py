@@ -2207,9 +2207,7 @@ class TestMergeIssueBranch:
 
         assert captured_messages, "Expected a -m message on the merge command"
         full_msg = " ".join(captured_messages)
-        assert "Baton-Harness-Merge" in full_msg, (
-            "Merge message must carry Baton-Harness-Merge trailer"
-        )
+        assert "CodeReeve-Merge: issue-44 ci=green" in full_msg
         assert "issue-44" in full_msg or "44" in full_msg, (
             "Merge message must reference the issue number"
         )
