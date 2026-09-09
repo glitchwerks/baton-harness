@@ -4,13 +4,46 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
+import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-BASH = Path("C:/Program Files/Git/usr/bin/bash.exe")
+GIT_BASH = Path("C:/Program Files/Git/usr/bin/bash.exe")
+
+
+def _bash_executable(
+    platform: str = sys.platform,
+    *,
+    search: Callable[[str], str | None] = shutil.which,
+) -> Path:
+    """Resolve Bash without binding POSIX CI to the Windows installation."""
+    if platform == "win32":
+        return GIT_BASH
+    executable = search("bash")
+    if executable is None:
+        pytest.skip("Bash is unavailable on this test host")
+    return Path(executable)
+
+
+BASH = _bash_executable()
+
+
+def test_bash_resolution_is_platform_correct() -> None:
+    """Windows selects Git Bash while POSIX preserves native discovery."""
+    assert (
+        _bash_executable(
+            "win32", search=lambda _name: pytest.fail("must not search")
+        )
+        == GIT_BASH
+    )
+    assert _bash_executable(
+        "linux", search=lambda name: f"/usr/bin/{name}"
+    ) == Path("/usr/bin/bash")
 
 
 @pytest.mark.parametrize(
@@ -26,9 +59,10 @@ def test_shell_help_uses_canonical_product_name(
 ) -> None:
     """Help output presents the canonical CodeReeve product name."""
     env = dict(os.environ)
-    env["PATH"] = os.pathsep.join(
-        [str(BASH.parent), os.environ.get("PATH", "")]
-    )
+    if sys.platform == "win32":
+        env["PATH"] = os.pathsep.join(
+            [str(BASH.parent), os.environ.get("PATH", "")]
+        )
     proc = subprocess.run(
         [str(BASH), str(ROOT / script), "--help"],
         cwd=ROOT,
@@ -82,6 +116,10 @@ def test_conflicting_bootstrap_venvs_fail_before_interpreter_effect(
     )
     fake_python.chmod(0o755)
     env = dict(os.environ)
+    if sys.platform == "win32":
+        env["PATH"] = os.pathsep.join(
+            [str(BASH.parent), os.environ.get("PATH", "")]
+        )
     env.update(
         {
             "CODEREEVE_VENV": str(tmp_path / "canonical"),
