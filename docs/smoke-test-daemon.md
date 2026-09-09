@@ -397,22 +397,26 @@ The default config is `config/WORKFLOW.md` in the harness repo root. To poll con
 
 ### What success looks like in the logs
 
+The exact fields vary by work unit. A current illustrative run looks like:
+
 ```
-baton-harness: checking required labels in <owner>/<repo>...
-baton-harness: all required labels present
-baton-harness: harness=...
-baton-harness: workflow=...
-baton-harness: repo=<owner>/<repo> at <CODEREEVE_PROJECT_ROOT>
-baton-harness: starting bh-daemon...
-INFO baton_harness.chain.daemon: bh-daemon: chdir to managed repo root: ...
-INFO baton_harness.chain.daemon: poll tick: fetching agent-ready issues
-INFO baton_harness.chain.daemon: selected work unit: ...
-INFO baton_harness.chain.daemon: dispatching issue #N ...
-INFO baton_harness.chain.daemon: agent run complete for issue #N
-INFO baton_harness.chain.daemon: CI gate: polling check-runs for sha=...
-INFO baton_harness.chain.daemon: merge outcome for issue #N: MERGED
-INFO baton_harness.chain.daemon: work unit complete; opening PR feature/... → main
+codereeve: checking required labels in <owner>/<repo>...
+codereeve: all required labels present
+codereeve: repo=<owner>/<repo> at <CODEREEVE_PROJECT_ROOT>
+codereeve: starting CodeReeve daemon...
+INFO codereeve.chain.daemon: poll tick: fetching agent-ready issues
+INFO codereeve.chain.daemon: selected work unit: ...
+INFO codereeve.chain.daemon: dispatching issue #N ...
+INFO codereeve.chain.daemon: agent run complete for issue #N
+INFO codereeve.chain.daemon: CI gate: polling check-runs for sha=...
+INFO codereeve.chain.daemon: merge outcome for issue #N: MERGED
+INFO codereeve.chain.daemon: work unit complete; opening PR feature/... → main
 ```
+
+This is an illustrative expectation derived from the current launcher and logger names;
+it is not a transcript of a fresh live run. Baton-era captured output belongs only in
+historical records and may still show `baton-harness`, `bh-daemon`, or
+`baton_harness.chain.daemon`.
 
 ---
 
@@ -448,7 +452,7 @@ To smoke-test the **full merge path**, add a GitHub Actions workflow to the sand
 - **`--once` mode**: the daemon exits on its own after one tick. No action needed.
 - **Continuous mode**: send Ctrl-C. The daemon catches `KeyboardInterrupt` and exits cleanly.
 - **Parked issues**: an issue that hit CI_TIMEOUT or a merge conflict carries the `blocked` label and an escalation comment on the GitHub issue. Inspect the daemon logs to see the exact outcome. Clear the `blocked` label and re-add `agent-ready` to re-queue an issue.
-- **Branches created**: the agent creates `baton/<slug>-<N>` per-issue branches and a `feature/<slug>` integration branch. Delete them when done: `git -C $CODEREEVE_PROJECT_ROOT branch -d <branch>` or via the GitHub UI.
+- **Branches created**: the agent creates `codereeve/<slug>-<N>` per-issue branches and a `feature/<slug>` integration branch. Delete them when done: `git -C $CODEREEVE_PROJECT_ROOT branch -d <branch>` or via the GitHub UI.
 
 ---
 
@@ -611,7 +615,7 @@ provisioning owns the source PEM and its lifecycle.
 Key points:
 - `Restart=on-failure` re-launches the daemon after an unexpected crash (SIGKILL, OOM). G2 at startup will detect and alert on the ungraceful exit.
 - Do NOT add `KillSignal=SIGKILL` — the default `KillSignal=SIGTERM` lets the handler clear the `daemon.alive` marker before exit.
-- Graceful shutdown: `systemctl stop bh-daemon` sends SIGTERM; the handler fires and exits 0.
+- Graceful shutdown: `systemctl stop codereeve` sends SIGTERM; the handler fires and exits 0.
 
 After a committed cutover, inspect the canonical service:
 
@@ -631,10 +635,10 @@ the resolved configuration needs it; all configuration comes from `.codereeve/co
 # export BWS_ACCESS_TOKEN=<bitwarden-machine-account-token>  # conditional
 
 # In a persistent tmux session:
-tmux new-session -d -s bh 'bin/run-daemon.sh >> /var/log/bh-daemon.log 2>&1'
+tmux new-session -d -s bh 'bin/run-daemon.sh >> /var/log/codereeve.log 2>&1'
 
 # Or with nohup:
-nohup bin/run-daemon.sh >> /var/log/bh-daemon.log 2>&1 &
+nohup bin/run-daemon.sh >> /var/log/codereeve.log 2>&1 &
 ```
 
 If `bin/setup-env.sh` was not run on this host (and therefore `host.env` does not exist), add `CODEREEVE_PROJECT_ROOT` as a shell export before the launcher call. All other per-deployment vars are read from `${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env` at daemon startup.
@@ -678,7 +682,7 @@ G3c connects directly to the OAuth credential volume mount described in §"Crede
 
 - `GH_TOKEN` or `GITHUB_TOKEN` must be set (fine-grained PAT; structural check only). With `BWS_GH_TOKEN_SECRET_ID` declared in `.codereeve/config.env` and `BWS_ACCESS_TOKEN` in the environment, the token is vault-fetched automatically. Otherwise export it directly.
 - `ANTHROPIC_API_KEY` must NOT be set (the script sets and unsets it temporarily for the G3b scenario; it aborts if the key is already present in the caller's shell).
-- `bh-daemon` must be on `PATH`.
+- `codereeve` must be on `PATH`; the verifier invokes `codereeve daemon`.
 
 **`~/.claude/.credentials.json` must be present and readable.** If the OAuth credential file is absent when the script is invoked, the G3c preflight at the top of `verify-recovery.sh` (L255–277) prints `RESULT: SKIPPED` and exits 0 — all five scenarios are silently skipped rather than run. This is intentional: with G3c absent, every daemon-startup scenario would immediately exit 1 at the G3c gate, producing five misleading `[FAIL]` lines. On a CI system without the OAuth volume mounted, `RESULT: SKIPPED` is the expected output. To exercise the full scenario suite, ensure the credential file is present before running the script.
 
@@ -698,7 +702,7 @@ Each scenario listed in the order the script runs them. "Alert text" refers to t
 |---|---|---|---|---|
 | G3b | `ANTHROPIC_API_KEY` set | Script sets `ANTHROPIC_API_KEY=dummy-value-for-test` inline | Non-zero (exit 1) | `ANTHROPIC_API_KEY must not be set` |
 | G3a (known verifier limitation) | Not the real G3a gate | Script replaces ambient `GH_TOKEN` with `ghp_BOGUS_TOKEN_FOR_TESTING`, but daemon G3a validates the App installation token passed by value. The ambient value can instead fail the optional worker-PAT preflight earlier. | Daemon: non-zero; verifier: non-zero | No `Startup credential check failed` G3a alert |
-| G2 | Stale `daemon.alive` marker | Script pre-creates `.baton-harness/daemon.alive` before starting daemon `--once` | 0 (non-fatal) | `Prior daemon run ended ungracefully` |
+| G2 | Stale `daemon.alive` marker | Script pre-creates `.codereeve/daemon.alive` before starting daemon `--once` | 0 (non-fatal) | `Prior daemon run ended ungracefully` |
 | G1 | Orphan `claude -p` process | Script spawns `sleep 999` with argv containing `claude -p` so `pgrep -f` matches it | 0 (non-fatal) | `Orphan claude processes detected at startup` |
 | SIGTERM | Graceful shutdown | Daemon starts in continuous mode; script waits for `daemon.alive` to appear, then sends SIGTERM | 0 (SystemExit(0) from handler) | Marker absent after exit |
 
@@ -711,7 +715,7 @@ Notes on specific scenarios:
   but it cannot produce the G3a `Startup credential check failed` alert expected by the
   script. Treat this scenario as a known verifier failure, not evidence that G3a was
   exercised; updating the verifier is outside this documentation fix.
-- **G2 marker path**: `$CODEREEVE_PROJECT_ROOT/.baton-harness/daemon.alive` — pre-created by the script, then re-written by the daemon on startup (non-fatal path). The marker is cleaned up by the script in an EXIT trap.
+- **G2 marker path**: `$CODEREEVE_PROJECT_ROOT/.codereeve/daemon.alive` — pre-created by the script, then re-written by the daemon on startup (non-fatal path). The marker is cleaned up by the script in an EXIT trap.
 - **G1 decoy**: the "orphan" process is `sleep 999` with its argv set to `sleep 999 claude -p`. No real Claude binary is invoked. The script reaps it immediately after the scenario.
 - **SIGTERM exit code**: Python's SIGTERM handler in `daemon.py` calls `raise SystemExit(0)`, so the daemon exits 0 — not 143 (which would indicate the process was killed externally without the handler firing).
 
@@ -720,17 +724,17 @@ Notes on specific scenarios:
 The script prints a per-scenario `[PASS]` or `[FAIL]` line as each scenario completes, then a summary:
 
 ```
-baton-harness: [PASS] G3b
-baton-harness: [FAIL] G3a — fatal alert text not found in daemon output
-baton-harness: [PASS] G2
-baton-harness: [PASS] G1
-baton-harness: [PASS] SIGTERM
-baton-harness: ==============================
-baton-harness: Recovery verification summary
-baton-harness: ==============================
-baton-harness:   PASSED: 4
-baton-harness:   FAILED: 1
-baton-harness: RESULT: FAIL
+codereeve: [PASS] G3b
+codereeve: [FAIL] G3a — fatal alert text not found in daemon output
+codereeve: [PASS] G2
+codereeve: [PASS] G1
+codereeve: [PASS] SIGTERM
+codereeve: ==============================
+codereeve: Recovery verification summary
+codereeve: ==============================
+codereeve:   PASSED: 4
+codereeve:   FAILED: 1
+codereeve: RESULT: FAIL
 ```
 
 A `[FAIL]` line includes the reason. `FAILED` scenarios are listed again in the summary.
@@ -741,8 +745,8 @@ pass.
 If the OAuth credential file is absent, you will see instead:
 
 ```
-baton-harness: G3c preflight: OAuth creds absent at /home/agent/.claude/.credentials.json — skipping all daemon-startup scenarios
-baton-harness: RESULT: SKIPPED
+codereeve: G3c preflight: OAuth creds absent at /home/agent/.claude/.credentials.json — skipping all daemon-startup scenarios
+codereeve: RESULT: SKIPPED
 ```
 
 This is not a failure — it is the script correctly detecting that the G3c gate would cause every scenario to fail. Mount the OAuth credential volume and re-run to exercise the full suite.
@@ -762,7 +766,7 @@ Issue #239 exercises the WORKFLOW.md "Confidence / block rule" end to end: an ag
 
 ### What it verifies and why it matters
 
-Unlike `bin/verify-recovery.sh`, this script is **not** a decoy-only harness — it dispatches one real `claude -p` agent turn against one seeded issue. It seeds a genuinely un-defaultable `agent-ready` issue: cache capacity is fixed at exactly one entry with no overflow storage, yet LRU eviction is required when full, `set("a", 1)`, `get("a")`, and `set("b", 2)` must succeed with `get("b")` returning `2`, and any read entry must never be evicted. Once `"a"` has been read, no single reasonable implementation can satisfy all of these requirements simultaneously. It then runs a single `bh-daemon --once` poll tick, and asserts that the full chain described in the WORKFLOW.md confidence/block rule (`config/WORKFLOW.md` §"Confidence / block rule") completed:
+Unlike `bin/verify-recovery.sh`, this script is **not** a decoy-only harness — it dispatches one real `claude -p` agent turn against one seeded issue. It seeds a genuinely un-defaultable `agent-ready` issue: cache capacity is fixed at exactly one entry with no overflow storage, yet LRU eviction is required when full, `set("a", 1)`, `get("a")`, and `set("b", 2)` must succeed with `get("b")` returning `2`, and any read entry must never be evicted. Once `"a"` has been read, no single reasonable implementation can satisfy all of these requirements simultaneously. It then runs a single `codereeve daemon --once` poll tick, and asserts that the full chain described in the WORKFLOW.md confidence/block rule (`config/WORKFLOW.md` §"Confidence / block rule") completed:
 
 1. the agent posts a clarifying question as an issue comment instead of guessing,
 2. the agent adds the `blocked` label to signal it cannot proceed,
@@ -784,7 +788,7 @@ Two related signals are logged by the daemon but not locally assertable by this 
 **Environment requirements:**
 
 - `CODEREEVE_REPO_OWNER`, `CODEREEVE_REPO_NAME`, `CODEREEVE_PROJECT_ROOT` — via `.codereeve/config.env` + `~/.config/codereeve/host.env`, or exported directly.
-- `bh-daemon` must be on `PATH`.
+- `codereeve` must be on `PATH`; the verifier invokes `codereeve daemon`.
 - `CODEREEVE_PROJECT_ROOT` must be a git repository.
 - `GH_TOKEN` or `GITHUB_TOKEN` must be set (fine-grained PAT; structural check only).
 - `ANTHROPIC_API_KEY` must **not** be set (G3b — OAuth/subscription deployment).
@@ -820,27 +824,27 @@ Notes on specific assertions:
 - **`BLOCK-agent-clarification-comment` uses a body-content heuristic, not author identity.** This smoke test has no GitHub-App/installation-token identity broker wired in, so author login is not a reliable discriminator between the agent's clarification and the daemon's park comment. Requiring a non-park comment containing `?` is only a proxy for a question, not a guarantee: a real agent could phrase a clarifying request without a literal `?`, producing a rare, otherwise-passing `[FAIL]` on this assertion even though the escalation chain itself succeeded.
 - **`BLOCK-slack-attempted` cannot see delivered content**, only that the daemon logged a POST attempt (success or failure), matched with the same single-line, bounded-issue-number `grep -E` as `BLOCK-escalation-logged`. It intentionally does not — and cannot — assert on what the Slack message says.
 - A `gh issue view` failure while re-fetching labels for the first two assertions is reported as its own failure (`BLOCK-labels-fetch`) rather than silently short-circuiting the rest of the assertions.
-- **`BLOCK-daemon-exit` and `BLOCK-labels-fetch` are failure-only outcomes** — they never appear as `[PASS]` in the assertion table above, only as `[FAIL]` when something goes wrong. They represent unexpected script/tooling failures rather than part of the scenario's expected pass path: `BLOCK-daemon-exit` fires if `bh-daemon --once` itself exits non-zero (park is expected to be non-fatal to the daemon, so a non-zero exit here means the daemon crashed instead of parking cleanly); `BLOCK-labels-fetch` fires if the `gh issue view` re-fetch of labels fails while checking `BLOCK-label-present` and `BLOCK-in-progress-cleared`.
+- **`BLOCK-daemon-exit` and `BLOCK-labels-fetch` are failure-only outcomes** — they never appear as `[PASS]` in the assertion table above, only as `[FAIL]` when something goes wrong. They represent unexpected script/tooling failures rather than part of the scenario's expected pass path: `BLOCK-daemon-exit` fires if `codereeve daemon --once` itself exits non-zero (park is expected to be non-fatal to the daemon, so a non-zero exit here means the daemon crashed instead of parking cleanly); `BLOCK-labels-fetch` fires if the `gh issue view` re-fetch of labels fails while checking `BLOCK-label-present` and `BLOCK-in-progress-cleared`.
 
 ### Reading the output
 
 A passing run looks like:
 
 ```text
-baton-harness: --- Assertions: block escalation chain for #142 ---
-baton-harness: [PASS] BLOCK-label-present
-baton-harness: [PASS] BLOCK-in-progress-cleared
-baton-harness: [PASS] BLOCK-escalation-logged
-baton-harness: [PASS] BLOCK-comment-posted
-baton-harness: [PASS] BLOCK-agent-clarification-comment
-baton-harness: [SKIPPED] BLOCK-slack-attempted — BH_SLACK_WEBHOOK_URL not set — Slack channel not exercised
-baton-harness: ==============================
-baton-harness: Block escalation verification summary
-baton-harness: ==============================
-baton-harness:   PASSED:  5
-baton-harness:   FAILED:  0
-baton-harness:   SKIPPED: 1
-baton-harness: RESULT: PASS
+codereeve: --- Assertions: block escalation chain for #142 ---
+codereeve: [PASS] BLOCK-label-present
+codereeve: [PASS] BLOCK-in-progress-cleared
+codereeve: [PASS] BLOCK-escalation-logged
+codereeve: [PASS] BLOCK-comment-posted
+codereeve: [PASS] BLOCK-agent-clarification-comment
+codereeve: [SKIPPED] BLOCK-slack-attempted — BH_SLACK_WEBHOOK_URL not set — Slack channel not exercised
+codereeve: ==============================
+codereeve: Block escalation verification summary
+codereeve: ==============================
+codereeve:   PASSED:  5
+codereeve:   FAILED:  0
+codereeve:   SKIPPED: 1
+codereeve: RESULT: PASS
 ```
 
 With `BH_SLACK_WEBHOOK_URL` set, the sixth line becomes a `[PASS]`/`[FAIL]` instead of `[SKIPPED]`, and the summary's `PASSED`/`SKIPPED` counts shift accordingly.
@@ -848,8 +852,8 @@ With `BH_SLACK_WEBHOOK_URL` set, the sixth line becomes a `[PASS]`/`[FAIL]` inst
 If the OAuth credential file is absent, the entire scenario is skipped before any issue is seeded:
 
 ```text
-baton-harness: G3c preflight: OAuth creds absent at /home/agent/.claude/.credentials.json — skipping the block-escalation scenario
-baton-harness: RESULT: SKIPPED
+codereeve: G3c preflight: OAuth creds absent at /home/agent/.claude/.credentials.json — skipping the block-escalation scenario
+codereeve: RESULT: SKIPPED
 ```
 
 This mirrors `verify-recovery.sh`'s G3c handling — it is not a failure, it is the script correctly detecting that the daemon would exit 1 before ever polling, which would otherwise produce six misleading `[FAIL]` lines instead of one clear `SKIPPED`.
