@@ -28,7 +28,7 @@ Context:
     number is inferred from ``basename($PWD)`` via
     ``codereeve._cli.resolve_issue_number`` (spike finding F2).
     Baton names worktrees ``<repo>/.symphony/worktrees/<issue>`` (a bare
-    integer); the harness's own convention is ``<repo>/.worktrees/<branch>``
+    integer); CodeReeve's convention is ``<repo>/.worktrees/<branch>``
     (``<prefix>-<issue>[-<slug>]``).  Both forms are accepted.
 
     All subprocess calls use ``encoding="utf-8"`` explicitly to avoid

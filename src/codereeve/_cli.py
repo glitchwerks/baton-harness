@@ -32,9 +32,9 @@ from pathlib import Path
 # Accepted forms:
 #   "2"                       → Baton bare-issue (symphony worktree)
 #   "12345"                   → Baton bare-issue (multi-digit)
-#   "feat-10-python-scaffold" → harness prefixed form with slug
-#   "fix-42-auth-bug"         → harness prefixed form with slug
-#   "chore-7"                 → harness prefixed form, no slug
+#   "feat-10-python-scaffold" → CodeReeve prefixed form with slug
+#   "fix-42-auth-bug"         → CodeReeve prefixed form with slug
+#   "chore-7"                 → CodeReeve prefixed form, no slug
 _ISSUE_RE = re.compile(r"^(?:[a-zA-Z][\w]*-)?(\d+)(?:-.*)?$")
 
 
@@ -55,9 +55,9 @@ def resolve_issue_number(path: Path | None = None) -> int | None:
     Examples::
 
         "2"                       → 2   (Baton bare-issue)
-        "feat-10-python-scaffold" → 10  (harness prefixed + slug)
-        "fix-42-auth-bug"         → 42  (harness prefixed + slug)
-        "chore-7"                 → 7   (harness prefixed, no slug)
+        "feat-10-python-scaffold" → 10  (CodeReeve prefixed + slug)
+        "fix-42-auth-bug"         → 42  (CodeReeve prefixed + slug)
+        "chore-7"                 → 7   (CodeReeve prefixed, no slug)
 
     Args:
         path: Directory whose ``basename`` is examined.  When ``None``,
