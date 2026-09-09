@@ -956,3 +956,66 @@ def test_public_staged_verifier_sanitizes_source_read_errors(
 
     apply_migration(context, operations=PublicVerifier())
     assert context.layout.canonical_config.exists()
+
+
+def test_borrowed_lease_survives_apply_and_restore(
+    context: MigrationContext,
+) -> None:
+    """Coordinator ownership excludes writers across both migration calls."""
+    lock = context.layout.canonical_state.parent / ".codereeve-migration.lock"
+    with WriterLease.acquire(lock, purpose="cutover") as lease:
+        result = apply_migration(
+            context, operations=PortableOperations(), lease=lease
+        )
+        assert probe_writer_lease(lock) is EvidenceState.BLOCKED
+        restored = restore_migration(
+            result.manifest_path, operations=PortableOperations(), lease=lease
+        )
+        assert restored.status is RestorationStatus.COMPLETE
+        assert probe_writer_lease(lock) is EvidenceState.BLOCKED
+    assert probe_writer_lease(lock) is EvidenceState.CLEAR
+
+
+@pytest.mark.parametrize("invalid", ["closed", "wrong_path"])
+def test_invalid_borrowed_lease_refuses_mutation(
+    context: MigrationContext, invalid: str
+) -> None:
+    """A closed or unrelated lock cannot authorize migration or restoration."""
+    lock = context.layout.canonical_state.parent / ".codereeve-migration.lock"
+    result = apply_migration(context, operations=PortableOperations())
+    with WriterLease.acquire(
+        lock if invalid == "closed" else lock.with_name("other.lock"),
+        purpose="test",
+    ) as lease:
+        if invalid == "closed":
+            lease.close()
+        restored = restore_migration(
+            result.manifest_path, operations=PortableOperations(), lease=lease
+        )
+        assert restored.status is RestorationStatus.INCOMPLETE
+    restore_migration(result.manifest_path, operations=PortableOperations())
+    with WriterLease.acquire(
+        lock if invalid == "closed" else lock.with_name("other.lock"),
+        purpose="test",
+    ) as lease:
+        if invalid == "closed":
+            lease.close()
+        with pytest.raises(MigrationError):
+            apply_migration(
+                context, operations=PortableOperations(), lease=lease
+            )
+        assert context.layout.legacy_state.exists()
+
+
+def test_borrowed_lease_does_not_replace_shutdown_authority(
+    context: MigrationContext,
+) -> None:
+    """Default quiescence still refuses even when caller owns the lock."""
+    lock = context.layout.canonical_state.parent / ".codereeve-migration.lock"
+    operations = PortableOperations()
+    operations.verify_quiescence = FileOperations().verify_quiescence
+    with WriterLease.acquire(lock, purpose="cutover") as lease:
+        with pytest.raises(MigrationError):
+            apply_migration(context, operations=operations, lease=lease)
+        assert probe_writer_lease(lock) is EvidenceState.BLOCKED
+        assert context.layout.legacy_state.exists()

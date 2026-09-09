@@ -474,12 +474,11 @@ checklist — what to install and export before a first run.
   `~/.local/bin`. Declining or running non-interactively without it prints conditional
   guidance and continues without downloading; verify with `bws --version` when your
   deployment uses BWS.
-- **`BWS_ACCESS_TOKEN`** only for those same BWS-backed configurations. Provide this
-  operator-supplied machine-account token in a root-readable-only file and never commit it.
-  `bin/install-daemon-service.sh` writes `/etc/bh-daemon/secrets.env` (mode `600`) and adds
-  `EnvironmentFile=` only when the resolved configuration needs BWS; file-only deployments
-  create neither. See [docs/smoke-test-daemon.md §"systemd unit
-  (recommended)"](docs/smoke-test-daemon.md).
+- **`BWS_ACCESS_TOKEN`** only for those same BWS-backed configurations. Supply this
+  operator machine-account token to the cutover command without committing it. The launcher
+  passes fresh bytes only to the transaction coordinator, which publishes the canonical
+  root-owned secrets file when one is required; file-only deployments create no BWS secrets
+  file. See the [service cutover runbook](docs/codereeve-service-cutover.md).
 - **GitHub App** created, installed on the target repo, with the required permissions
   configured **before** first run (table in [docs/authentication.md](docs/authentication.md)).
   `bin/run-daemon.sh` reads the App IDs from `${BH_PROJECT_ROOT}/.bh/config.env`;
@@ -729,12 +728,14 @@ bin/provision-ruleset.sh
 bin/run-daemon.sh --once
 ```
 
-Step 4 above is the bounded, single-tick smoke test. For continuous operation, install the
-compatibility-named `bh-daemon` systemd unit with `bin/install-daemon-service.sh`; it
-creates a secrets file
-only when BWS is needed — see
-[docs/smoke-test-daemon.md §"systemd unit (recommended)"](docs/smoke-test-daemon.md) for the
-one-command invocation, flags, and the manual/reference unit it generates.
+Step 4 above is the bounded, single-tick smoke test. For continuous operation,
+install a release wheel in a separate environment and use
+`bin/install-daemon-service.sh` to perform the recoverable cutover from
+`bh-daemon.service` to `codereeve.service`. Start with `--print-unit`; use
+`--no-start` for reversible installation without activation, or `--recover
+JOURNAL` after an interrupted transaction. See the
+[service cutover runbook](docs/codereeve-service-cutover.md) for prerequisites,
+commands, supported Linux limits, and disposable systemd acceptance.
 
 The runbook at [docs/smoke-test-daemon.md](docs/smoke-test-daemon.md) has the full
 walkthrough — expected log output, CI-gate subtleties, DAG dependency wiring, cleanup, and

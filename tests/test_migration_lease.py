@@ -132,3 +132,40 @@ def test_platform_backends_use_nonblocking_lock_and_unlock(
     assert calls == (
         [(fd, 2, 1), (fd, 0, 1)] if platform == "win32" else [(fd, 6), (fd, 8)]
     )
+
+
+def test_retained_identity_rejects_named_inode_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A borrowed lease proves the locked descriptor still names the lock."""
+    path = tmp_path / "writer.lock"
+    other = tmp_path / "other.lock"
+    other.write_bytes(b"")
+    original = Path.lstat
+    with WriterLease.acquire(path, purpose="identity") as lease:
+        assert lease.verify_identity() == path.lstat().st_ino
+        monkeypatch.setattr(
+            Path,
+            "lstat",
+            lambda selected: (
+                original(other) if selected == path else original(selected)
+            ),
+        )
+        with pytest.raises(LeaseError, match="identity"):
+            with WriterLease.hold(path, purpose="borrow", lease=lease):
+                pass
+    with pytest.raises(LeaseError):
+        lease.verify_identity()
+
+
+def test_retained_lease_flushes_without_reading_or_replacing(
+    tmp_path: Path,
+) -> None:
+    """A live locked descriptor can make new identity and metadata durable."""
+    path = tmp_path / "writer.lock"
+    with WriterLease.acquire(path, purpose="durability") as lease:
+        inode = lease.verify_identity()
+        lease.make_durable()
+        assert lease.verify_identity() == inode
+    with pytest.raises(LeaseError):
+        lease.make_durable()

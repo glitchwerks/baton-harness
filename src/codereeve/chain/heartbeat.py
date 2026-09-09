@@ -29,8 +29,10 @@ This module provides two concerns that are deliberately kept separate:
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 import os
+import re
 import tempfile
 import threading
 import urllib.parse
@@ -161,6 +163,9 @@ class LivenessState:
 def _write_heartbeat(path: Path, timestamp: str) -> None:
     """Write *timestamp* to *path* via a temp-file-then-replace strategy.
 
+    A valid systemd INVOCATION_ID also publishes an adjacent identity JSON
+    file. Ordinary launches retain the timestamp and remove stale identity.
+
     This is the **sole filesystem write surface** for liveness signals.
     Tests can patch this single symbol to intercept all heartbeat writes.
 
@@ -176,11 +181,40 @@ def _write_heartbeat(path: Path, timestamp: str) -> None:
         path: Target path for the heartbeat file.
         timestamp: ISO-8601 UTC timestamp string to write.
     """
+    _write_liveness_file(path, timestamp)
+    sidecar = Path(str(path) + ".identity.json")
+    invocation_id = os.environ.get("INVOCATION_ID", "")
+    if re.fullmatch(r"[0-9a-f]{32}", invocation_id) is None:
+        # A normal interactive launch has no systemd identity. Remove any
+        # evidence from an earlier invocation without disrupting its beat.
+        sidecar.unlink(missing_ok=True)
+        return
+    _write_liveness_file(
+        sidecar,
+        json.dumps(
+            {
+                "schema_version": 1,
+                "pid": os.getpid(),
+                "invocation_id": invocation_id,
+                "timestamp": timestamp,
+            },
+            sort_keys=True,
+        ),
+    )
+
+
+def _write_liveness_file(path: Path, content: str) -> None:
+    """Atomically publish one liveness artifact under the heartbeat seam.
+
+    Args:
+        path: Destination timestamp or structured identity artifact.
+        content: Complete UTF-8 payload to replace the previous artifact.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=".heartbeat-tmp-")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(timestamp)
+            fh.write(content)
         os.replace(tmp_path, path)
     except BaseException:
         # Clean up the temp file on any error (including KeyboardInterrupt).

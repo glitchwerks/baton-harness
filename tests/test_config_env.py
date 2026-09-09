@@ -431,3 +431,25 @@ def test_rewrite_assignments_rejects_conflicts_without_values() -> None:
     assert "CODEREEVE_REPO_NAME" in message
     assert "old" not in message
     assert "new" not in message
+
+
+@pytest.mark.parametrize("value", ["", "/secret/private-path"])
+def test_external_config_rejects_reserved_gate_value_free(value: str) -> None:
+    """Config/secrets cannot override or clear the unit-owned startup gate."""
+    from codereeve.config_env import parse_env_text
+
+    with pytest.raises(ValueError) as error:
+        parse_env_text(
+            f"CODEREEVE_CUTOVER_GATE={value}\n", source="external-config"
+        )
+    assert "CODEREEVE_CUTOVER_GATE" in str(error.value)
+    assert "external-config" in str(error.value)
+    assert "/secret/private-path" not in str(error.value)
+
+
+def test_unit_process_gate_is_preserved_without_legacy_alias() -> None:
+    """Runtime resolution preserves the canonical-only private control."""
+    from codereeve.config_env import runtime_environment
+
+    result = runtime_environment({"CODEREEVE_CUTOVER_GATE": "/run/receipt"})
+    assert result.values == {"CODEREEVE_CUTOVER_GATE": "/run/receipt"}

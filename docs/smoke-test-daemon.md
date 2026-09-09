@@ -423,7 +423,7 @@ When `required_checks` is not configured, the CI gate's green predicate requires
 - `Test (pytest)`
 - `Type check (mypy)`
 
-These names are a module constant in `src/baton_harness/chain/merge.py` (`REQUIRED_CHECKS`). If a required check is absent from the check-runs response, `evaluate_ci` treats it as NOT-YET and keeps polling until the 30-minute hard timeout elapses, then returns `CiResult.TIMEOUT` → `MergeOutcome.CI_TIMEOUT`. There is no vacuous pass: zero matching checks is a timeout, not green. The resulting park comment reports which required checks were never observed, plus the poll count and elapsed time (#353).
+These names are a module constant in `src/codereeve/chain/merge.py` (`REQUIRED_CHECKS`). If a required check is absent from the check-runs response, `evaluate_ci` treats it as NOT-YET and keeps polling until the 30-minute hard timeout elapses, then returns `CiResult.TIMEOUT` → `MergeOutcome.CI_TIMEOUT`. There is no vacuous pass: zero matching checks is a timeout, not green. The resulting park comment reports which required checks were never observed, plus the poll count and elapsed time (#353).
 
 **Practical consequence for a sandbox repo:**
 
@@ -484,51 +484,58 @@ This runs one poll-dispatch tick and exits, bounding blast radius.
 
 ### Process supervision (continuous mode)
 
-For continuous operation, omit `--once`. The daemon polls indefinitely; stop it with SIGTERM (the handler in `src/baton_harness/chain/daemon.py` unlinks the `daemon.alive` marker and exits 0 cleanly) or Ctrl-C.
+For continuous operation, omit `--once`. The daemon polls indefinitely; stop it with SIGTERM (the handler in `src/codereeve/chain/daemon/poll.py` unlinks the `daemon.alive` marker and exits 0 cleanly) or Ctrl-C.
 
 Two common supervision patterns are shown below. Both are illustrative starting points — adapt them to your environment.
 
 #### systemd unit (recommended)
 
-The recommended way to install the `bh-daemon` systemd unit is
-`bin/install-daemon-service.sh` (#208). It resolves the shared provider policy, writes
-`/etc/bh-daemon/secrets.env` (mode `600`) and `EnvironmentFile=` only when BWS is needed,
-writes `/etc/systemd/system/bh-daemon.service`, and optionally starts the service:
+The installer performs a recoverable cutover from `bh-daemon.service` to
+`codereeve.service`. Install the release wheel into a separate environment first;
+the installer never changes the old virtual environment. Render before activation:
 
 ```bash
-# Only for provider bws or configured optional BWS IDs; otherwise omit:
-# export BWS_ACCESS_TOKEN=<bitwarden-machine-account-token>
-bin/install-daemon-service.sh
+bin/install-daemon-service.sh --environment /opt/codereeve --print-unit \
+  --project-root /path/to/sandbox/clone --user codereeve
 ```
 
-For BWS-free file mode, install with `--no-start`, provision the worker PAT environment
-file and drop-in shown below, then run `sudo systemctl daemon-reload` and
-`sudo systemctl enable --now bh-daemon`. The installer does not provision the worker PAT.
+Use `--no-start` to publish the reversible canonical unit without enabling or
+starting it. Omit that flag for activation. If a transaction is interrupted,
+pass its reported path to `--recover JOURNAL`. See the
+[service cutover runbook](codereeve-service-cutover.md) for exact commands,
+Linux/cgroup requirements, retained backups, strict doctor phases, and the
+disposable systemd acceptance procedure.
 
 Useful flags:
 
 | Flag | Effect |
 |---|---|
-| `--print-unit` | Render the unit and, when needed, redacted `secrets.env`; no writes or `systemctl` calls |
-| `--no-start` | Write the unit and any required secrets file, then run `daemon-reload` only |
+| `--print-unit` | Render only the canonical unit; no secret resolution, writes, or systemd calls |
+| `--no-start` | Reversibly install without enabling or starting either service |
+| `--environment PATH` | Select the separate candidate environment (default `<harness>/.venv-codereeve`) |
+| `--recover JOURNAL` | Resume or roll back the exact retained transaction |
 | `--harness-dir PATH` | Override the auto-detected harness repo root |
-| `--project-root PATH` | Override the auto-detected `BH_PROJECT_ROOT` |
+| `--project-root PATH` | Override the resolved `CODEREEVE_PROJECT_ROOT` |
 | `--user NAME` | Override the auto-detected systemd `User=` |
 | `--help` / `-h` | Show usage |
 
-The script refuses to run if `ANTHROPIC_API_KEY` is set. For non-interactive installs,
-set `BH_SETUP_NO_PROMPT=1`; it then fails closed if `BH_PROJECT_ROOT`, or a conditionally
-required `BWS_ACCESS_TOKEN`, cannot be resolved. A file-only install neither reads nor
-creates, backs up, previews, or overwrites the secrets file.
+The candidate refuses activation if `ANTHROPIC_API_KEY` is set. For
+non-interactive installs, set `CODEREEVE_SETUP_NO_PROMPT=1` (the temporary
+`BH_SETUP_NO_PROMPT` alias remains supported). A conditionally required fresh
+`BWS_ACCESS_TOKEN` is passed only to the coordinator. File-only installation
+does not read or create a BWS secrets file.
 
 After it finishes, the script reminds you to run `bin/provision-ruleset.sh` once against the target repo — it does **not** run provisioning itself, and without a captured `.bh/ruleset-baseline.json` the preflight gate (issue #206) parks every issue as `NOT_PROVISIONED`.
 
-##### Manual / reference
+##### Legacy 0.3 reference
 
-`bin/install-daemon-service.sh` writes the provider-aware unit shape below. The
-installer-generated BWS `EnvironmentFile=` line and secrets file exist only for
-BWS-backed configurations. BWS-free deployments must separately provision the worker
-PAT environment file and drop-in below for the standard `bh-before-run` hook.
+The unit below documents the retained predecessor that the cutover coordinator
+recognizes. Do not use it for a new canonical installation.
+
+The retired 0.3 installer wrote the provider-aware unit shape below. Its BWS
+`EnvironmentFile=` line and secrets file existed only for BWS-backed
+configurations. BWS-free deployments had to separately provision the worker PAT
+environment file and drop-in below for the standard `bh-before-run` hook.
 
 `${BH_PROJECT_ROOT}/.bh/config.env` supplies the repo identity, App IDs, provider/source,
 and optional secret locators. Because this unit invokes `bh-daemon` directly, it carries
@@ -556,7 +563,8 @@ StandardError=journal
 WantedBy=multi-user.target
 ```
 
-When BWS is needed, `/etc/bh-daemon/secrets.env` (mode `600`, owner `root`) contains:
+For that legacy unit, `/etc/bh-daemon/secrets.env` (mode `600`, owner `root`)
+contained:
 
 ```
 BWS_ACCESS_TOKEN=<bitwarden-machine-account-token>
@@ -601,12 +609,12 @@ Key points:
 - Do NOT add `KillSignal=SIGKILL` — the default `KillSignal=SIGTERM` lets the handler clear the `daemon.alive` marker before exit.
 - Graceful shutdown: `systemctl stop bh-daemon` sends SIGTERM; the handler fires and exits 0.
 
-Enable and start (this is what `bin/install-daemon-service.sh` does for you):
+After a committed cutover, inspect the canonical service:
 
 ```bash
 systemctl daemon-reload
-systemctl enable --now bh-daemon
-journalctl -u bh-daemon -f   # stream logs
+systemctl status codereeve.service --no-pager
+journalctl -u codereeve.service -f
 ```
 
 #### tmux / nohup (lightweight alternative)
@@ -640,7 +648,7 @@ authority and does not currently exercise the real G3a gate; see the limitation 
 
 ### What it verifies and why it matters
 
-At every startup the daemon runs five checks (`src/baton_harness/chain/reconcile.py`):
+At every startup the daemon runs five checks (`src/codereeve/chain/reconcile.py`):
 
 | Gate | What it checks | Fatal? |
 |---|---|---|
@@ -754,8 +762,8 @@ Unlike `bin/verify-recovery.sh`, this script is **not** a decoy-only harness —
 
 1. the agent posts a clarifying question as an issue comment instead of guessing,
 2. the agent adds the `blocked` label to signal it cannot proceed,
-3. the daemon's post-turn label re-read (`src/baton_harness/chain/daemon.py`) sees `blocked` and takes the park path (`kind="block"`),
-4. `escalation.escalate()` (`src/baton_harness/chain/escalation.py`) posts a durable GitHub comment and, when configured, attempts a best-effort Slack ping.
+3. the daemon's post-turn label re-read (`src/codereeve/chain/daemon/work_unit.py`) sees `blocked` and takes the park path (`kind="block"`),
+4. `escalation.escalate()` (`src/codereeve/chain/escalation.py`) posts a durable GitHub comment and, when configured, attempts a best-effort Slack ping.
 
 **Where to find the agent's actual question — read this before you go looking for it in Slack.** The clarifying question the agent wrote lands **only** on the GitHub issue comment thread. If `BH_SLACK_WEBHOOK_URL` is configured, the Slack message that fires is the *daemon's* own park summary — a fixed string like `"Issue #N parked: blocked label set."` — not the agent's question text. Slack tells you *that* an issue parked; the GitHub issue comment tells you *why*. The script's own assertions reflect this split: it asserts a GitHub comment exists (assertion 4) but only asserts that a Slack POST was *attempted* (assertion 6) — it cannot inspect delivered Slack content at all.
 
@@ -849,5 +857,5 @@ The EXIT trap performs **best-effort** cleanup: it closes the seeded issue (with
 ### When to run it
 
 - As part of pre-release smoke testing, alongside the positive-path dispatch check (#168) and `bin/verify-recovery.sh`'s startup-recovery gates.
-- When validating the #239 self-block escalation chain after a change to `config/WORKFLOW.md`'s confidence/block rule, `src/baton_harness/chain/daemon.py`'s park path, or `src/baton_harness/chain/escalation.py`.
+- When validating the #239 self-block escalation chain after a change to `config/WORKFLOW.md`'s confidence/block rule, `src/codereeve/chain/daemon/work_unit.py`'s park path, or `src/codereeve/chain/escalation.py`.
 - Before enabling `BH_SLACK_WEBHOOK_URL` in a new deployment, to confirm the Slack-attempt path fires as expected.

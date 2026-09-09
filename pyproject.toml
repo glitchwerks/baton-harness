@@ -50,7 +50,20 @@ bh-verify-foundation = "codereeve.legacy_cli:verify_foundation_main"
 packages = ["src/codereeve", "src/baton_harness"]
 
 [tool.hatch.build.targets.sdist]
-exclude = ["/.baton-harness", "/.superpowers", "/.tmp", "/.venv-codereeve"]
+exclude = [
+    "/.baton-harness",
+    "/.superpowers",
+    "/.tmp",
+    "/.venv-codereeve",
+    "/.codereeve",
+    "/.codereeve-migration",
+    "/.codereeve-migration.lock",
+    "/.codereeve-cutover",
+    "/.codereeve-cutover.lock",
+    "**/.codereeve-cutover",
+    "**/.codereeve-cutover/**",
+    "**/.codereeve-cutover.lock",
+]
 
 [tool.hatch.metadata.hooks.custom]
 path = "hatch_build.py"

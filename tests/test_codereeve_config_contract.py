@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from codereeve.config_env import PRODUCT_ALIASES
+from codereeve.config_env import PRIVATE_PRODUCT_CONTROLS, PRODUCT_ALIASES
 from codereeve.paths import PathLayout
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,6 +44,16 @@ PATH_COMPATIBILITY = {
         "src/codereeve/migration/transaction.py",
         "_converted",
         "/etc/bh-daemon/secrets.env",
+    ),
+    (
+        "src/codereeve/service_cutover/selection.py",
+        "stage_secrets",
+        "/etc/bh-daemon/secrets.env",
+    ),
+    (
+        "src/codereeve/service_cutover/selection.py",
+        "verify_runtime_paths",
+        ".baton-harness",
     ),
 }
 
@@ -117,7 +127,7 @@ def test_all_product_environment_interfaces_are_registered() -> None:
         name
         for pair in PRODUCT_ALIASES
         for name in (pair.canonical, pair.legacy)
-    }
+    } | PRIVATE_PRODUCT_CONTROLS
     missing: set[tuple[str, str]] = set()
     consumed: set[str] = set()
     for path in _production_files():
@@ -150,7 +160,9 @@ def test_all_product_environment_interfaces_are_registered() -> None:
         for pair in PRODUCT_ALIASES
         if pair.canonical not in consumed and pair.canonical not in docs
     }
-    assert len(registered) == 2 * len(PRODUCT_ALIASES)
+    assert len(registered) == 2 * len(PRODUCT_ALIASES) + len(
+        PRIVATE_PRODUCT_CONTROLS
+    )
     assert not any(
         name.startswith(("BWS_", "GH_", "ANTHROPIC_")) for name in registered
     )
@@ -509,18 +521,8 @@ def test_execution_scan_inspects_expanding_heredoc() -> None:
 
 
 def test_shell_legacy_paths_reject_new_writers() -> None:
-    """Legacy default construction stays limited to #394 installer lines."""
-    # Exact executable lines, not a whole installer exemption; expiry 0.4.0.
-    allowed = {
-        (
-            "bin/install-daemon-service.sh",
-            'if [[ ! -f "${BH_PROJECT_ROOT}/.bh/config.env" ]]; then',
-        ),
-        (
-            "bin/install-daemon-service.sh",
-            'BH_DAEMON_SECRETS_PATH="${BH_DAEMON_SECRETS_PATH:-/etc/bh-daemon/secrets.env}"',
-        ),
-    }
+    """Shell launchers never construct legacy product path defaults."""
+    allowed: set[tuple[str, str]] = set()
     actual = {
         (path.relative_to(ROOT).as_posix(), line.strip())
         for path in _production_files()
@@ -1079,3 +1081,17 @@ def test_symphony_shell_operations_are_the_existing_gitignore_contract() -> (
         )
     }
     assert actual == expected, sorted(actual ^ expected)
+
+
+def test_private_control_catalog_is_exact_and_has_no_legacy_alias() -> None:
+    """New unit-owned controls must not gain fabricated historical names."""
+    import codereeve.config_env as module
+
+    assert getattr(module, "PRIVATE_PRODUCT_CONTROLS", None) == frozenset(
+        {"CODEREEVE_CUTOVER_GATE"}
+    )
+    assert not any(
+        "CUTOVER_GATE" in name
+        for pair in PRODUCT_ALIASES
+        for name in (pair.canonical, pair.legacy)
+    )

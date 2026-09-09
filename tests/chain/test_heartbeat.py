@@ -1350,3 +1350,37 @@ def test_shared_latch_rearms_after_mark_in_progress_worker_active_true(
             "mark_in_progress(worker_active=True) must re-arm the latch; "
             f"expected 2nd alert, got {len(alert_calls)} total"
         )
+
+
+def test_identity_sidecar_uses_runtime_identity_and_effective_path(
+    tmp_path: Path,
+) -> None:
+    """Identity evidence is adjacent to overrides and tied to this process."""
+    path = tmp_path / "custom" / "beat"
+    with patch.dict(os.environ, {"INVOCATION_ID": "a" * 32}):
+        _write_heartbeat(path, _utc(1000).isoformat())
+    assert path.read_text() == "1970-01-01T00:16:40+00:00"
+    sidecar = Path(str(path) + ".identity.json")
+    assert sidecar.exists(), "heartbeat identity evidence missing"
+    assert json.loads(sidecar.read_text()) == {
+        "schema_version": 1,
+        "pid": os.getpid(),
+        "invocation_id": "a" * 32,
+        "timestamp": "1970-01-01T00:16:40+00:00",
+    }
+
+
+def test_non_systemd_heartbeat_cannot_reuse_systemd_identity(
+    tmp_path: Path,
+) -> None:
+    """Invalid or absent systemd identity cannot leave stale valid evidence."""
+    path = tmp_path / "heartbeat"
+    sidecar = Path(str(path) + ".identity.json")
+    for value in ("", "not-an-invocation", "A" * 32):
+        sidecar.write_text('{"invocation_id":"' + "a" * 32 + '"}')
+        with patch.dict(os.environ, {"INVOCATION_ID": value}):
+            _write_heartbeat(path, _utc(1000).isoformat())
+        assert path.read_text() == "1970-01-01T00:16:40+00:00"
+        assert not sidecar.exists(), (
+            "invalid runtime retained stale systemd identity"
+        )

@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tarfile
 import types
+import zipfile
 from hashlib import sha256
 from pathlib import Path
 
@@ -22,10 +23,10 @@ REVISION = "0123456789abcdef0123456789abcdef01234567"
 LOCK_CONTENT = b"locked\n"
 
 
-def test_sdist_excludes_ignored_workspace_state(tmp_path: Path) -> None:
-    """An sdist excludes workspace state and the staged environment."""
+def test_archives_exclude_ignored_workspace_state(tmp_path: Path) -> None:
+    """Built archives exclude workspace state and the staged environment."""
     root = Path(__file__).resolve().parents[1]
-    marker_name = "sdist-boundary-sentinel.txt"
+    marker_name = "archive-boundary-sentinel.txt"
     markers = [
         root / directory / marker_name
         for directory in (
@@ -33,7 +34,14 @@ def test_sdist_excludes_ignored_workspace_state(tmp_path: Path) -> None:
             ".superpowers",
             ".tmp",
             ".venv-codereeve",
+            ".codereeve-cutover",
+            "tests/.codereeve-cutover",
+            "src/codereeve/.codereeve-cutover",
         )
+    ] + [
+        root / ".codereeve-cutover.lock",
+        root / "tests/.codereeve-cutover.lock",
+        root / "src/codereeve/.codereeve-cutover.lock",
     ]
     created_directories: list[Path] = []
     for marker in markers:
@@ -60,7 +68,6 @@ def test_sdist_excludes_ignored_workspace_state(tmp_path: Path) -> None:
             [
                 "uv",
                 "build",
-                "--sdist",
                 "--no-build-isolation",
                 "--out-dir",
                 str(output),
@@ -71,13 +78,25 @@ def test_sdist_excludes_ignored_workspace_state(tmp_path: Path) -> None:
         )
         (sdist,) = output.glob("codereeve-0.2.0.tar.gz")
         with tarfile.open(sdist) as archive:
-            members = archive.getnames()
+            sdist_members = archive.getnames()
+        (wheel,) = output.glob("codereeve-0.2.0-py3-none-any.whl")
+        with zipfile.ZipFile(wheel) as archive:
+            wheel_members = archive.namelist()
 
         for marker in markers:
             relative_marker = marker.relative_to(root).as_posix()
             assert not any(
-                member.endswith(f"/{relative_marker}") for member in members
+                member.endswith(f"/{relative_marker}")
+                for member in sdist_members
             ), f"sdist captured ignored workspace file {marker}"
+            wheel_markers = {relative_marker}
+            if relative_marker.startswith("src/"):
+                wheel_markers.add(relative_marker.removeprefix("src/"))
+            assert not any(
+                member == wheel_marker or member.endswith(f"/{wheel_marker}")
+                for member in wheel_members
+                for wheel_marker in wheel_markers
+            ), f"wheel captured ignored workspace file {marker}"
     finally:
         for marker in markers:
             marker.unlink(missing_ok=True)

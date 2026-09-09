@@ -28,6 +28,15 @@ class ConfigSyntaxError(ValueError):
         self.line = line
 
 
+class ReservedControlError(ConfigSyntaxError):
+    """External configuration attempted to supply a unit-owned control."""
+
+    def __init__(self, source: str, line: int, key: str) -> None:
+        """Identify only the reserved key and source, never its value."""
+        super().__init__(source, line)
+        self.args = (f"reserved environment control {key} at {source}:{line}",)
+
+
 class AliasConflictError(ValueError):
     """Raised when canonical and legacy environment spellings disagree."""
 
@@ -130,6 +139,10 @@ class ResolvedEnvironment:
     legacy_uses: tuple[LegacyUse, ...]
 
 
+# Unit-owned controls have no historical spelling and are never file inputs.
+PRIVATE_PRODUCT_CONTROLS = frozenset({"CODEREEVE_CUTOVER_GATE"})
+
+
 PRODUCT_ALIASES = (
     AliasSpec("CODEREEVE_ADMIN_ROLE_ID", "BH_ADMIN_ROLE_ID"),
     AliasSpec("CODEREEVE_APP_AUTH_JWT_CMD", "BH_APP_AUTH_JWT_CMD"),
@@ -218,6 +231,8 @@ def parse_env_text(text: str, *, source: str) -> tuple[Assignment, ...]:
         if parsed is None:
             pending_trivia.append(raw)
             continue
+        if parsed.key in PRIVATE_PRODUCT_CONTROLS:
+            raise ReservedControlError(source, line_number, parsed.key)
         if raw.endswith("\\") and line_number < len(physical_lines):
             raise ConfigSyntaxError(source, line_number)
         assignments.append(
