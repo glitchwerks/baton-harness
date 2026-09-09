@@ -1,4 +1,4 @@
-# bh-daemon: repository onboarding
+# CodeReeve: repository onboarding
 
 Assumes [docs/system-setup.md](system-setup.md) is already complete on this machine.
 
@@ -196,23 +196,23 @@ confirm the baseline file exists:
 cat "${BH_PROJECT_ROOT}/.bh/ruleset-baseline.json"
 ```
 
-## 5. `bh-daemon --doctor` / `--strict` — preflight before the first real run
+## 5. `codereeve doctor --strict` — preflight before the first real run
 
-`bh-daemon --doctor` runs selected checks without starting the poll loop or exporting
+`codereeve doctor` runs selected checks without starting the poll loop or exporting
 resolved config into the process environment. It does not source
-`~/.config/baton-harness/host.env`. Supply `--config PATH` to select a local file,
-or export `BH_PROJECT_ROOT` to select `$BH_PROJECT_ROOT/.bh/config.env`.
+`~/.config/codereeve/host.env`. Supply `--config PATH` to select a local file,
+or export `CODEREEVE_PROJECT_ROOT` to select `$CODEREEVE_PROJECT_ROOT/.codereeve/config.env`.
 An explicit path does not need that environment variable merely to locate the
 file; configuration checks still require a valid project root. Non-empty supported
 environment overrides take precedence over file values. Missing or malformed
 configuration is reported as a failed check.
 
 ```bash
-bh-daemon --version
-bh-daemon --provenance
-bh-daemon --doctor --phase installation --format json --strict
-bh-daemon --doctor --phase configuration --config /path/to/config.env --strict
-bh-daemon --doctor --phase live --strict
+codereeve --version
+codereeve provenance
+codereeve doctor --phase installation --format json --strict
+codereeve doctor --phase configuration --config /path/to/config.env --strict
+codereeve doctor --phase live --strict
 ```
 
 Use the installed venv's `bh-daemon` wrapper when the venv is not on PATH.
@@ -263,7 +263,7 @@ prerequisites become active. Live checks need the corresponding credential
 authority; use `--phase installation` for an offline package-only assessment.
 Standalone live checks do not perform the daemon's secret bootstrap.
 
-## 5a. `bh-daemon --check-vault` — opt-in App-key dry-run
+## 5a. `codereeve daemon --check-vault` — compatibility App-key dry-run
 
 `--check-vault` retains its legacy option name but is provider-aware. It runs one check
 from the live catalog: load the selected App key (`bws` fetch or secured file read) and
@@ -271,11 +271,11 @@ prove it can sign an App JWT, without making a GitHub request. On `PASS`, only t
 and title are printed; no provider, path, UUID, content, token, or byte count is reported.
 
 ```bash
-export BH_PROJECT_ROOT=<abs-path-to-local-sandbox-clone>   # if not already exported
+export CODEREEVE_PROJECT_ROOT=<abs-path-to-local-sandbox-clone>   # if not already exported
 # Only for provider bws:
 # export BWS_ACCESS_TOKEN=<your-bitwarden-machine-account-token>
 
-bh-daemon --check-vault
+codereeve daemon --check-vault
 ```
 
 ```text
@@ -307,9 +307,8 @@ With the sandbox provisioned, rulesets in place, and doctor passing, run one bou
 bin/run-daemon.sh --once
 ```
 
-`bin/run-daemon.sh` derives the venv location from `bh-daemon`'s own path, sources
-`~/.config/baton-harness/host.env` for `BH_PROJECT_ROOT`, then runs its own two preflights
-before ever invoking `bh-daemon`:
+`bin/run-daemon.sh` derives the environment from `codereeve`'s path and reads
+`~/.config/codereeve/host.env` through the shared literal-assignment parser before its preflights and `codereeve daemon`.
 
 1. **Label preflight** — confirms all six required labels exist in the target repo
    (created by step 2); aborts with the exact `gh label create` fix commands if not.
@@ -317,7 +316,7 @@ before ever invoking `bh-daemon`:
    in the target repo's `.gitignore` (seeded by step 2); aborts with "this repo is not
    ready for harness work" if not.
 
-It then `cd`s into `BH_PROJECT_ROOT` and execs `bh-daemon`. The daemon resolves
+It then changes to `CODEREEVE_PROJECT_ROOT` and execs `codereeve daemon`. The daemon resolves
 one config snapshot and runs the `installation` and `configuration` gates
 before applying config or bootstrapping secrets. It collects and renders every
 selected critical failure, then exits 1 if any failed. No failed gate proceeds

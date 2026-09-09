@@ -1,6 +1,6 @@
-# bh-daemon: system setup
+# CodeReeve: system setup
 
-This is the first of two setup walkthroughs for bringing up `bh-daemon` on a machine that
+This is the first of two setup walkthroughs for bringing up `codereeve daemon` on a machine that
 has never run it before — a fresh VM, a new laptop, or a freshly provisioned server. This
 doc covers **machine-level** setup: installing the required CLIs and creating the Python
 virtual environment. It answers "what do I run, in what order, and how do I know each step
@@ -60,7 +60,7 @@ What it does, in order:
    does not offer to auto-install)
 2. Checks optional `bws` on `PATH` and offers the pinned, checksum-verified v2.1.0 install
    in an interactive Linux/macOS terminal. Declining, input EOF, non-interactive mode, or
-   `BH_SETUP_NO_PROMPT=1` prints the conditional manual-install guidance and continues
+   `CODEREEVE_SETUP_NO_PROMPT=1` prints the conditional manual-install guidance and continues
    without a network call; provider selection happens later in `bin/init-sandbox.sh`.
 3. Requires `gh` and `claude` on `PATH`; in an interactive Linux/macOS terminal it offers
    to install them (`gh` v2.62.0 with checksum verification; the official installer for
@@ -68,11 +68,11 @@ What it does, in order:
    exits 1 with its manual-install link and makes no network call.
 4. Creates `.venv` (skipped if already present — safe to re-run)
 5. Syncs the package editably with the exact runtime and development
-   dependencies from `uv.lock`: `BH_BUILD_DEVELOPMENT=1 uv sync --locked --extra dev`
-6. Verifies `bh-daemon` is reachable inside the venv
+   dependencies from `uv.lock`: `CODEREEVE_BUILD_DEVELOPMENT=1 uv sync --locked --extra dev`
+6. Verifies `codereeve` is reachable inside the venv
 7. Prints the venv-activation hint
-8. In an interactive terminal, prompts for `BH_PROJECT_ROOT` (the absolute path to your
-   local sandbox clone) and writes it to `~/.config/baton-harness/host.env` (mode 600) —
+8. In an interactive terminal, prompts for `CODEREEVE_PROJECT_ROOT` (the absolute path to your
+   local sandbox clone) and writes it to `~/.config/codereeve/host.env` (mode 600) —
    `bin/run-daemon.sh` sources this automatically on every later launch
 9. Checks whether `BWS_ACCESS_TOKEN` is already set and prints a non-fatal notice if not.
    The notice is relevant only when the selected provider or optional secret locators use
@@ -81,31 +81,31 @@ What it does, in order:
 **Verify it worked:**
 
 ```bash
-# bh-daemon is on PATH inside the venv
-.venv/Scripts/bh-daemon --help   # Windows Git Bash
-.venv/bin/bh-daemon --help       # macOS/Linux
+# CodeReeve is on PATH inside the venv
+.venv/Scripts/codereeve.exe --help   # Windows Git Bash
+.venv/bin/codereeve --help           # macOS/Linux
 
 # Verify a runtime-only, non-editable wheel on Python 3.10 and 3.13
-.venv/Scripts/bh-verify-foundation.exe   # Windows Git Bash
-.venv/bin/bh-verify-foundation           # macOS/Linux
+.venv/Scripts/codereeve.exe verify   # Windows Git Bash
+.venv/bin/codereeve verify           # macOS/Linux
 
 # host.env was written (only if you answered the prompt)
-cat ~/.config/baton-harness/host.env
+cat ~/.config/codereeve/host.env
 ```
 
 ### Editable development versus immutable production
 
 `bin/setup-env.sh` creates a locked but editable development environment with
-`BH_BUILD_DEVELOPMENT=1 uv sync --locked --extra dev`. Source changes are immediately visible and the
+`CODEREEVE_BUILD_DEVELOPMENT=1 uv sync --locked --extra dev`. Source changes are immediately visible and the
 quality tools are installed. The editable version stays `0.1.0.dev0`; the build-time
 exact commit is recorded in `source_revision`.
 Production consumers pin immutable release tags and install verified standard
-artifacts. Release automation may derive `BH_BUILD_VERSION` (PEP 440) and
-`BH_BUILD_SOURCE_REVISION` (40 hex characters) from a selected tag. Standard builds
+artifacts. Release automation may derive `CODEREEVE_BUILD_VERSION` (PEP 440) and
+`CODEREEVE_BUILD_SOURCE_REVISION` (40 hex characters) from a selected tag. Standard builds
 without both assertions fail closed.
 
 Production installation is non-editable and contains runtime dependencies only.
-`bh-verify-foundation` is the executable production-installation reference: it
+`codereeve verify` is the executable production-installation reference: it
 checks `uv.lock` without modifying it, compares canonical package resources with
 their temporary `config/` mirrors, exports the locked runtime and development
 closures, and constrains the build backend to the hashed development resolution.
@@ -126,15 +126,15 @@ commit (which must match HEAD in a checkout). The hook validates these explicit
 assertions, not the tag name. Unset the development flag for a standard build:
 
 ```bash
-unset BH_BUILD_DEVELOPMENT
+unset CODEREEVE_BUILD_DEVELOPMENT BH_BUILD_DEVELOPMENT
 mkdir -p .tmp
 uv lock --check
 uv export --locked --no-emit-project --format requirements.txt \
   --output-file .tmp/runtime-requirements.txt
 uv export --locked --extra dev --no-emit-project --format requirements.txt \
   --output-file .tmp/build-requirements.txt
-BH_BUILD_VERSION=1.0.0 \
-BH_BUILD_SOURCE_REVISION=0123456789abcdef0123456789abcdef01234567 \
+CODEREEVE_BUILD_VERSION=1.0.0 \
+CODEREEVE_BUILD_SOURCE_REVISION=0123456789abcdef0123456789abcdef01234567 \
 uv build --build-constraints .tmp/build-requirements.txt --require-hashes \
   --sdist --wheel --out-dir .tmp/dist
 uv venv .tmp/runtime-venv --python 3.13
@@ -143,32 +143,32 @@ RUNTIME_PYTHON=.tmp/runtime-venv/Scripts/python.exe  # Windows Git Bash
 # RUNTIME_PYTHON=.tmp/runtime-venv/bin/python        # macOS/Linux
 uv pip sync --python "$RUNTIME_PYTHON" .tmp/runtime-requirements.txt
 uv pip install --python "$RUNTIME_PYTHON" --no-deps \
-  .tmp/dist/baton_harness-*.whl
+  .tmp/dist/codereeve-*.whl
 uv pip check --python "$RUNTIME_PYTHON"
 ```
 
 The `dev` export constrains the build backend; it is not synced into the runtime
-environment. Run `bh-verify-foundation` before promoting the wheel.
+environment. Run `codereeve verify` before promoting the wheel.
 
 Check the installed artifact and selected operational phases:
 
 ```bash
-bh-daemon --version
-bh-daemon --provenance
-bh-daemon --doctor --phase installation --format json --strict
-bh-daemon --doctor --phase configuration --config /path/to/config.env --strict
-bh-daemon --doctor --phase live --strict
+codereeve --version
+codereeve provenance
+codereeve doctor --phase installation --format json --strict
+codereeve doctor --phase configuration --config /path/to/config.env --strict
+codereeve doctor --phase live --strict
 ```
 
 Installation is offline and credential-free; configuration is local-only; live may
 use credentials and network calls. Repeat `--phase` as needed; omission runs all
 three. `--format` defaults to text. `--config` overrides the default
-`$BH_PROJECT_ROOT/.bh/config.env`; non-empty environment overrides still apply.
+`$CODEREEVE_PROJECT_ROOT/.codereeve/config.env`; non-empty environment overrides still apply.
 Doctor findings are advisory (exit 0) unless `--strict` finds a critical failure
 (exit 1). Unsafe rendering also exits 1; usage errors exit 2. Daemon startup always
 fails closed on critical results. `--check-vault` selects only the live App-key
 check and exits 0 only on PASS. See the
-[operator JSON contract](repository-onboarding.md#5-bh-daemon---doctor--strict--preflight-before-the-first-real-run)
+[operator JSON contract](repository-onboarding.md#5-codereeve-doctor--strict--preflight-before-the-first-real-run)
 for schema version 1 fields and config semantics.
 
 If `gh`, `bws`, or `claude` were auto-installed to `~/.local/bin` and are not yet visible
@@ -212,6 +212,6 @@ account. Follow [the service cutover runbook](codereeve-service-cutover.md) for
 the exact install, doctor, recovery, and disposable acceptance commands. The
 Windows tests do not claim live activation.
 
-Once `bh-daemon --help` runs inside the venv, this machine's tooling is ready. Continue to
+Once `codereeve --help` runs inside the venv, this machine's tooling is ready. Continue to
 [docs/repository-onboarding.md](repository-onboarding.md) to provision a sandbox repo and
 run the daemon for the first time.

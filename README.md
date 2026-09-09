@@ -1,4 +1,4 @@
-# baton-harness
+# CodeReeve
 
 A reusable policy and tooling layer for autonomous Claude Code agent runs. The harness
 owns the lifecycle hook modules, per-project workflow config, context templates, and the
@@ -35,12 +35,12 @@ new changes.
 ## Integration model [implemented]
 
 The daemon runs against a target GitHub repository. Repo identity and App IDs live in
-`${BH_PROJECT_ROOT}/.bh/config.env` (committed in the sandbox repo); the shell only
-needs `BH_PROJECT_ROOT`. The `baton start -w` external-process model from the spike is
+`${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env` (committed in the sandbox repo); the
+shell only needs `CODEREEVE_PROJECT_ROOT`. The `baton start -w` external-process model from the spike is
 retired.
 
 ```bash
-export BH_PROJECT_ROOT=/path/to/local/clone
+export CODEREEVE_PROJECT_ROOT=/path/to/local/clone
 
 bin/run-daemon.sh --once   # one poll-dispatch tick, then exit
 ```
@@ -48,7 +48,7 @@ bin/run-daemon.sh --once   # one poll-dispatch tick, then exit
 The daemon polls the target repo for `agent-ready` issues, groups them into dependency-
 ordered DAGs (milestones) or N=1 single-issue work units, calls `Orchestrator._run_worker(issue)`
 directly for each DAG-ready issue, CI-gates each agent's PR, and opens a single
-ready-for-review `feature/<slug> → main` PR when all issues in a work unit are done. It
+ready-for-review `codereeve/<slug> → main` PR when all issues in a work unit are done. It
 never merges to `main`.
 
 For a full walkthrough, see [docs/smoke-test-daemon.md](docs/smoke-test-daemon.md).
@@ -84,7 +84,7 @@ baton-harness/
 │       │   ├── daemon.py        # poll loop, work-unit selection, top-level orchestration
 │       │   ├── dag.py           # DAG construction (graphlib.TopologicalSorter)
 │       │   ├── scheduler.py     # ready-frontier tracking (done/parked/dispatched)
-│       │   ├── branches.py      # feature/<slug> branch creation and lifetime
+│       │   ├── branches.py      # codereeve/<slug> branch creation and lifetime
 │       │   ├── merge.py         # CI-gated --no-ff merge; REQUIRED_CHECKS constant
 │       │   ├── escalation.py    # Slack webhook + GitHub issue comment escalation
 │       │   ├── recovery.py      # crash recovery: reconstruct done/parked on start
@@ -598,7 +598,7 @@ code, commit, push branches, and open GitHub PRs autonomously. Before running:
 
 - **Use a throwaway sandbox repo** — never a real project. See [Prerequisites (runtime)](#prerequisites-runtime).
 - **Always start with `--once`** for a first run — one poll-dispatch tick, then exit.
-- **No-merge boundary** — the daemon opens `feature/<slug> → main` PRs ready for review
+- **No-merge boundary** — the daemon opens `codereeve/<slug> → main` PRs ready for review
   and never merges to `main`. A human reviews and merges.
 - **`ANTHROPIC_API_KEY` must not be set** — OAuth/subscription auth only; the key's presence
   triggers an immediate abort at startup.
@@ -611,7 +611,7 @@ code, commit, push branches, and open GitHub PRs autonomously. Before running:
 
 `codereeve daemon` is the always-on poll loop that watches a GitHub repo for `agent-ready`
 issues, runs Claude Code agents against them in dependency order, CI-gates each agent's
-PR, and opens a ready-for-review `feature/<slug> → main` PR when a work unit completes.
+PR, and opens a ready-for-review `codereeve/<slug> → main` PR when a work unit completes.
 It never merges to `main`.
 
 **Required shell variable:**

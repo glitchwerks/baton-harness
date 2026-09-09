@@ -61,13 +61,13 @@ PR number.
 
 ### 4. Hook binary (for vectors 1–4)
 
-The `bh-force-pr-not-merge` entry point must be installed in the harness venv:
+The canonical hook command must be installed in the CodeReeve development environment:
 
 ```bash
 uv pip install -e ".[dev]"
-# Verify:
-.venv/Scripts/bh-force-pr-not-merge.exe --help   # Windows
-.venv/bin/bh-force-pr-not-merge --help            # Linux/macOS
+# Verify that the command tree lists `hook force-pr-not-merge`:
+.venv/Scripts/codereeve.exe --help   # Windows
+.venv/bin/codereeve --help           # Linux/macOS
 ```
 
 ---
@@ -87,7 +87,7 @@ Optional:
 export BH_PROBE_DRY_RUN=1
 
 # Override hook script path (auto-detected from harness venv by default)
-export BH_PROBE_HOOK_SCRIPT="/custom/path/bh-force-pr-not-merge"
+export CODEREEVE_PROBE_HOOK_SCRIPT="/custom/path/to/codereeve"
 ```
 
 ---
@@ -109,7 +109,7 @@ Expected output snippet:
 
 ```
 ============================================================
-  baton-harness merge-denial probe  (slice 3c, #160)
+  CodeReeve merge-denial probe  (slice 3c, #160)
 ============================================================
   Sandbox repo : yourorg/harness-sandbox
   PR number    : 42
@@ -173,7 +173,7 @@ succeeded and requires investigation (see Troubleshooting below).
 | Vectors 5–7 return 200 / no 403 | Ruleset not provisioned or token is in bypass_actors | Run `bin/provision-ruleset.sh`; verify token identity is not an App actor |
 | `403` but no `harness-main-no-merge` in body | Different ruleset blocking the merge | GitHub's 403 body varies — may need to add the ruleset name check for your repo's actual response body |
 | Vector 5–7 FAIL even with ruleset active | Token still has merge permission via App bypass | Check `bypass_actors` in the ruleset config; the worker PAT must not be in the bypass list |
-| `bh-force-pr-not-merge.exe not found` on Windows | Entry point not compiled / PATH issue | Use `BH_PROBE_HOOK_SCRIPT=".venv/Scripts/bh-force-pr-not-merge.exe"` explicitly |
+| `codereeve.exe` not found on Windows | Entry point not installed or path issue | Use `CODEREEVE_PROBE_HOOK_SCRIPT=".venv/Scripts/codereeve.exe"` explicitly |
 
 ---
 

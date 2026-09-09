@@ -1,4 +1,4 @@
-# bh-daemon: first-run smoke-test guide
+# CodeReeve: first-run smoke-test guide
 
 This guide walks through the first live run of `bh-daemon`. The daemon has only ever been exercised by mocked unit tests; this is the procedure for its first real dispatch.
 
@@ -39,10 +39,10 @@ Before running:
 - The harness package installed into a venv with `bh-daemon` on `PATH`:
 
 ```bash
-# From the baton-harness repo root:
+# From the CodeReeve repository root (the remote still uses the pre-cutover slug):
 uv venv .venv
 uv pip install -e .
-# Activate so bh-daemon is on PATH for manual invocations:
+# Activate so codereeve is on PATH for manual invocations:
 source .venv/bin/activate   # Linux / macOS / Git Bash
 # .venv\Scripts\activate     # Windows cmd / PowerShell
 ```
@@ -91,7 +91,7 @@ If you are using `bin/init-sandbox.sh` to provision a throwaway sandbox, this is
 
 The daemon's environment is assembled from three sources in order, with explicit shell exports as an escape hatch for any layer. This section describes each source and what it supplies — for what each credential *is* and why it's required, see [docs/authentication.md](authentication.md).
 
-### Sandbox-committed constants — `.bh/config.env` in the sandbox repo
+### Sandbox-committed constants — `.codereeve/config.env` in the sandbox repo
 
 `${BH_PROJECT_ROOT}/.bh/config.env` is a plain `KEY=VAL` file committed in the **sandbox** repo (not the harness fork). This inverts the old model — per-deployment identity now lives alongside the code the daemon manages rather than in a file that had to be edited in the harness checkout on every new deploy.
 
@@ -170,7 +170,7 @@ Omitting `--phase` runs all three; repeat it to select multiple phases. Standalo
 findings are advisory unless `--strict` is supplied; daemon startup always rejects
 critical failures. `bh-daemon --check-vault` remains the single live App-key check.
 
-### Per-host config — set by `bin/setup-env.sh`
+### Per-host config — `~/.config/codereeve/host.env`, set by `bin/setup-env.sh`
 
 `bin/setup-env.sh` prompts for `BH_PROJECT_ROOT` (the absolute path to the local clone of the managed repo) and writes it to `~/.config/baton-harness/host.env` (mode 600, directory mode 700). `bin/run-daemon.sh` sources this file at startup. The XDG base directory convention is honoured: the file path follows `${XDG_CONFIG_HOME:-${HOME}/.config}/baton-harness/host.env`.
 
@@ -226,15 +226,15 @@ Any variable can be exported in the shell before invoking `bin/run-daemon.sh`; e
 
 ```bash
 # 1. Run the setup script — creates the venv, installs the package,
-#    and prompts for BH_PROJECT_ROOT (writes ~/.config/baton-harness/host.env).
+#    and prompts for CODEREEVE_PROJECT_ROOT (writes ~/.config/codereeve/host.env).
 bin/setup-env.sh
 
-# 2. Provision the sandbox repo. bin/init-sandbox.sh reads BH_REPO_OWNER,
-#    BH_REPO_NAME, and BH_PROJECT_ROOT from the environment — it does NOT
+# 2. Provision the sandbox repo. bin/init-sandbox.sh reads CODEREEVE_REPO_OWNER,
+#    CODEREEVE_REPO_NAME, and CODEREEVE_PROJECT_ROOT from the environment — it does NOT
 #    prompt for them. Export all three before running the script.
 #    It then prompts for both App IDs, the bws/file selector, only the selected
-#    key source, and two optional BWS secret IDs, then writes .bh/config.env.
-#    Use --scenario <name> (or BH_SCENARIO) to select hello (default),
+#    key source, and two optional BWS secret IDs, then writes .codereeve/config.env.
+#    Use --scenario <name> (or CODEREEVE_SCENARIO) to select hello (default),
 #    terminal-block (dual-labeled no-dispatch issue), recovery (no issues),
 #    clean-implement (green merge), block-ambiguity (self-block), or ci-fail
 #    (deterministic red CI). The last three require a real daemon, real agent
