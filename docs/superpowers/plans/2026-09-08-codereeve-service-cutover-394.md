@@ -32,6 +32,16 @@
 4. **Add process evidence without changing the old heartbeat.** Keep the timestamp file format; atomically write an adjacent structured heartbeat containing PID, systemd invocation ID, and timestamp. Match both identity fields to fresh systemd state, and require time after start. systemd defines INVOCATION_ID as a unique ID for a unit runtime cycle (`src/codereeve/chain/heartbeat.py:161`; https://raw.githubusercontent.com/systemd/systemd/main/man/systemd.exec.xml, fetched 2026-09-08).
 5. **Control the whole cgroup.** Require KillMode=control-group (or reject an unverifiable old unit), bounded stop, inactive state and empty complete cgroup subtree. Snapshot and hold an effective old-unit restart guard, verifying it through systemd; do not assume a runtime mask overrides a higher-priority unit. systemd documents that process/none can leave workers alive (https://raw.githubusercontent.com/systemd/systemd/main/man/systemd.kill.xml, fetched 2026-09-08; #394).
 
+## Reviewed execution status
+
+Tasks 1–5 are implemented and independently reviewed: rendering (`4a4e39f`), service backend (`9bf3c99`), journal/storage (`6fea1a6`), lease/heartbeat/readiness (`897e550`), and coordinator with reviewed recovery fixes (`0c6a5b6`). Task 6 and final branch review remain outstanding (#394).
+
+The coordinator records an install-only predecessor in its initial header to survive interruption before the explicit adoption event (`b462fae`). Original interpreter snapshots attest the resolved binary while activation rechecks its lexical virtualenv selection; the original environment is never a restoration target (`b462fae`).
+
+Review fixes add per-input restoration authority and validate all operator selections before writes; record writer-lock restoration ownership before first acquisition; and defer interrupted receipt release until current service health and selection are revalidated (`0c6a5b6`). These requirements also apply to recovery retries (#394).
+
+Automatic activation currently refuses cross-HOME input relocation, runtime outputs outside managed state roots, and revalidation of a later invocation without the persisted startup baseline (`b462fae`, `0c6a5b6`). Documentation must identify those limits. Portable injected tests do not establish native Linux systemd behavior or directory crash durability (#394; this plan's verification boundaries).
+
 ## File responsibilities
 
 New package `src/codereeve/service_cutover/`: `model.py` immutable inputs/results; `render.py` pure unit rendering; `systemd.py` bounded Linux command/control adapter; `health.py` strict result and fresh-heartbeat validation; `journal.py` private durable snapshots/event journal; `coordinator.py` forward/recovery policy; `cli.py` internal installer entry point; `__init__.py` narrow exports. Corresponding tests live under `tests/service_cutover/` with a shared deterministic fake backend in `conftest.py`.
