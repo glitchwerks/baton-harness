@@ -10,7 +10,7 @@
 # Arguments passed through to codereeve daemon:
 #   --once            Run one tick then exit (useful for smoke tests).
 #   --workflow PATH   Path to WORKFLOW.md.  Defaults to config/WORKFLOW.md
-#                     in the harness root.
+#                     in the CodeReeve repository root.
 #   --poll-interval N Override the outer-loop poll interval in seconds.
 #
 # Required environment variable:
@@ -20,7 +20,7 @@
 # ${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env at startup.
 #
 # Exported environment:
-#   CODEREEVE_ROOT  Absolute path to this harness repo root.
+#   CODEREEVE_ROOT  Absolute path to the CodeReeve repository root.
 #   CODEREEVE_VENV            Absolute path to the venv that contains codereeve daemon.
 
 set -euo pipefail
@@ -42,11 +42,12 @@ Required environment variable:
   CODEREEVE_PROJECT_ROOT    Absolute path to the local clone of the managed repo
 
 Sandbox config:
-  codereeve daemon reads ${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env at startup for
+  Launches the CodeReeve daemon, which reads
+  ${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env at startup for
   CODEREEVE_REPO_OWNER, CODEREEVE_REPO_NAME, CODEREEVE_GITHUB_APP_ID, and related BWS_* IDs.
 
 Exported to hooks:
-  CODEREEVE_ROOT  Absolute path to this harness repo root
+  CODEREEVE_ROOT  Absolute path to the CodeReeve repository root
   CODEREEVE_VENV            Absolute path to the venv containing codereeve daemon
 EOF
 }
@@ -61,7 +62,7 @@ fi
 # ---------------------------------------------------------------------------
 
 _codereeve_daemon_bin="$(command -v codereeve)" || {
-    echo "error: codereeve daemon not found on PATH — install the harness first" >&2
+    echo "error: codereeve daemon not found on PATH — install CodeReeve first" >&2
     echo "       pip install -e . (or uv pip install -e .)" >&2
     exit 1
 }
@@ -69,7 +70,7 @@ CODEREEVE_VENV="$(cd "$(dirname "${_codereeve_daemon_bin}")/.." && pwd)"
 export CODEREEVE_VENV
 
 # ---------------------------------------------------------------------------
-# Resolve harness root from the script's own location
+# Resolve CodeReeve root from the script's own location
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -150,7 +151,7 @@ else
     WORKFLOW_FILE="${CODEREEVE_ROOT}/config/WORKFLOW.md"
     if [[ ! -f "${WORKFLOW_FILE}" ]]; then
         echo "error: workflow config not found: ${WORKFLOW_FILE}" >&2
-        echo "       Create config/WORKFLOW.md in the harness repo." >&2
+        echo "       Create config/WORKFLOW.md in the CodeReeve repo." >&2
         exit 1
     fi
 fi
@@ -165,7 +166,7 @@ if [[ -z "${CODEREEVE_REPO_OWNER:-}" || -z "${CODEREEVE_REPO_NAME:-}" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Label preflight — verify required harness labels exist in the target repo
+# Label preflight — verify required CodeReeve labels exist in the target repo
 # ---------------------------------------------------------------------------
 
 _REQUIRED_LABELS=(
@@ -177,7 +178,7 @@ _REQUIRED_LABELS=(
 )
 
 _REPO_SLUG="${CODEREEVE_REPO_OWNER}/${CODEREEVE_REPO_NAME}"
-echo "baton-harness: checking required labels in ${_REPO_SLUG}..."
+echo "codereeve: checking required labels in ${_REPO_SLUG}..."
 
 _missing_labels=()
 _existing_labels="$(gh label list -R "${_REPO_SLUG}" --limit 200 --json name --jq '.[].name')"
@@ -201,31 +202,31 @@ if [[ ${#_missing_labels[@]} -gt 0 ]]; then
     exit 1
 fi
 
-echo "baton-harness: all required labels present"
+echo "codereeve: all required labels present"
 
 # ---------------------------------------------------------------------------
 # Gitignore preflight — verify .symphony/ is gitignored in the target repo
 # ---------------------------------------------------------------------------
 
-echo "baton-harness: checking .symphony/ is gitignored in ${CODEREEVE_PROJECT_ROOT}..."
+echo "codereeve: checking .symphony/ is gitignored in ${CODEREEVE_PROJECT_ROOT}..."
 
 if [[ ! -f "${CODEREEVE_PROJECT_ROOT}/.gitignore" ]] || ! grep -qxF '.symphony/' "${CODEREEVE_PROJECT_ROOT}/.gitignore"; then
-    echo "error: this repo is not ready for harness work — '.symphony/' is not gitignored in ${CODEREEVE_PROJECT_ROOT}" >&2
+    echo "error: this repo is not ready for CodeReeve work — '.symphony/' is not gitignored in ${CODEREEVE_PROJECT_ROOT}" >&2
     echo "  The daemon writes orchestrator state to .symphony/; it must be gitignored or gh pr create warns and the state file pollutes the tree." >&2
     echo "  fix: add a line '.symphony/' to ${CODEREEVE_PROJECT_ROOT}/.gitignore and commit it (bin/init-sandbox.sh does this automatically for sandboxes)." >&2
     exit 1
 fi
 
-echo "baton-harness: .symphony/ is gitignored"
+echo "codereeve: .symphony/ is gitignored"
 
 # ---------------------------------------------------------------------------
 # Launch the daemon
 # ---------------------------------------------------------------------------
 
-echo "baton-harness: harness=${CODEREEVE_ROOT}"
-echo "baton-harness: workflow=${WORKFLOW_FILE}"
-echo "baton-harness: repo=${CODEREEVE_REPO_OWNER}/${CODEREEVE_REPO_NAME} at ${CODEREEVE_PROJECT_ROOT}"
-echo "baton-harness: starting codereeve daemon..."
+echo "codereeve: root=${CODEREEVE_ROOT}"
+echo "codereeve: workflow=${WORKFLOW_FILE}"
+echo "codereeve: repo=${CODEREEVE_REPO_OWNER}/${CODEREEVE_REPO_NAME} at ${CODEREEVE_PROJECT_ROOT}"
+echo "codereeve: starting CodeReeve daemon..."
 
 # Change into the managed repo root so that any gh calls that rely on cwd
 # for repo resolution (e.g. vendored GitHubTracker) hit the right repo.

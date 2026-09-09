@@ -17,13 +17,13 @@ hooks:
 ---
 <!--
 NOTE on hook categories (slice 3b — issue #157):
-The `hooks:` block above lists the THREE Python-baton-hooks fired by the
+The `hooks:` block above lists the THREE Python-CodeReeve hooks fired by the
 daemon's worker turn loop (after_create / before_run / after_run).
 
 There is a SECOND category — Claude Code PreToolUse hooks — installed
 per-worktree by codereeve hook after-create via a generated .claude/settings.json.
 The current PreToolUse hook is `force-pr-not-merge`
-(`src/baton_harness/hooks/force_pr_not_merge.py`); it is paired with the
+(`src/codereeve/hooks/force_pr_not_merge.py`); it is paired with the
 branch ruleset provisioned via `bin/provision-ruleset.sh`. See
 docs/architecture-spec.md §3.5 for the canonical list.
 -->
@@ -74,7 +74,7 @@ reorder them.
    The PR body MUST contain the plain-text `Closes #{{ issue.number }}` so
    GitHub auto-closes the issue on merge. Report if this step fails and STOP.
 
-   **Do NOT merge any pull request.** Open a draft PR only; the harness owns
+   **Do NOT merge any pull request.** Open a draft PR only; CodeReeve owns
    all merges. Never run `gh pr merge` or any merge tool.
 
 If any step above fails, report exactly which step failed and what the error

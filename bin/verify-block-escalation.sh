@@ -29,7 +29,7 @@
 #   CODEREEVE_REPO_OWNER      GitHub repository owner (org or user login)
 #   CODEREEVE_REPO_NAME       GitHub repository name (without owner prefix)
 #   CODEREEVE_PROJECT_ROOT    Absolute path to the local clone of the managed sandbox repo
-#   codereeve daemon          Must be on PATH (install the harness first)
+#   codereeve daemon          Must be on PATH (install CodeReeve first)
 #
 # Hard prerequisites (checked at startup):
 #   1. codereeve daemon is on PATH
@@ -152,7 +152,7 @@ _FAILED_SCENARIOS=()
 pass() {
     local name="$1"
     _PASS=$(( _PASS + 1 ))
-    echo "baton-harness: [PASS] ${name}"
+    echo "codereeve: [PASS] ${name}"
 }
 
 fail() {
@@ -160,14 +160,14 @@ fail() {
     local reason="${2:-}"
     _FAIL=$(( _FAIL + 1 ))
     _FAILED_SCENARIOS+=("${name}")
-    echo "baton-harness: [FAIL] ${name}${reason:+ — ${reason}}" >&2
+    echo "codereeve: [FAIL] ${name}${reason:+ — ${reason}}" >&2
 }
 
 skipped() {
     local name="$1"
     local reason="${2:-}"
     _SKIPPED=$(( _SKIPPED + 1 ))
-    echo "baton-harness: [SKIPPED] ${name}${reason:+ — ${reason}}"
+    echo "codereeve: [SKIPPED] ${name}${reason:+ — ${reason}}"
 }
 
 # ---------------------------------------------------------------------------
@@ -194,7 +194,7 @@ for _var in CODEREEVE_REPO_OWNER CODEREEVE_REPO_NAME CODEREEVE_PROJECT_ROOT; do
 done
 
 if [[ ${#_missing_env[@]} -gt 0 ]]; then
-    echo "baton-harness: error: the following required environment variables are not set:" >&2
+    echo "codereeve: error: the following required environment variables are not set:" >&2
     for _var in "${_missing_env[@]}"; do
         echo "  missing: ${_var}" >&2
     done
@@ -211,7 +211,7 @@ fi
 # ---------------------------------------------------------------------------
 
 _codereeve_daemon_bin="$(command -v codereeve)" || {
-    echo "baton-harness: error: codereeve daemon not found on PATH — install the harness first" >&2
+    echo "codereeve: error: codereeve daemon not found on PATH — install CodeReeve first" >&2
     echo "               uv pip install -e ." >&2
     exit 1
 }
@@ -226,7 +226,7 @@ export CODEREEVE_ROOT
 
 WORKFLOW_FILE="${CODEREEVE_ROOT}/config/WORKFLOW.md"
 if [[ ! -f "${WORKFLOW_FILE}" ]]; then
-    echo "baton-harness: error: workflow config not found: ${WORKFLOW_FILE}" >&2
+    echo "codereeve: error: workflow config not found: ${WORKFLOW_FILE}" >&2
     exit 1
 fi
 
@@ -236,18 +236,18 @@ _REPO_SLUG="${CODEREEVE_REPO_OWNER}/${CODEREEVE_REPO_NAME}"
 # Preflight checks
 # ---------------------------------------------------------------------------
 
-echo "baton-harness: running preflight checks..."
+echo "codereeve: running preflight checks..."
 
 # CODEREEVE_PROJECT_ROOT must be a git repo
 if [[ ! -d "${CODEREEVE_PROJECT_ROOT}" ]]; then
-    echo "baton-harness: error: CODEREEVE_PROJECT_ROOT does not exist: ${CODEREEVE_PROJECT_ROOT}" >&2
+    echo "codereeve: error: CODEREEVE_PROJECT_ROOT does not exist: ${CODEREEVE_PROJECT_ROOT}" >&2
     exit 1
 fi
 if ! git -C "${CODEREEVE_PROJECT_ROOT}" rev-parse --git-dir &>/dev/null; then
-    echo "baton-harness: error: CODEREEVE_PROJECT_ROOT is not a git repository: ${CODEREEVE_PROJECT_ROOT}" >&2
+    echo "codereeve: error: CODEREEVE_PROJECT_ROOT is not a git repository: ${CODEREEVE_PROJECT_ROOT}" >&2
     exit 1
 fi
-echo "baton-harness: CODEREEVE_PROJECT_ROOT is a git repo: ${CODEREEVE_PROJECT_ROOT}"
+echo "codereeve: CODEREEVE_PROJECT_ROOT is a git repo: ${CODEREEVE_PROJECT_ROOT}"
 
 # GH_TOKEN / GITHUB_TOKEN must be set (structural presence only — value never inspected)
 _token_env_set=0
@@ -258,23 +258,23 @@ if [[ -n "${GITHUB_TOKEN:-}" ]]; then
     _token_env_set=1
 fi
 if [[ "${_token_env_set}" -eq 0 ]]; then
-    echo "baton-harness: error: neither GH_TOKEN nor GITHUB_TOKEN is set." >&2
+    echo "codereeve: error: neither GH_TOKEN nor GITHUB_TOKEN is set." >&2
     echo "               A valid fine-grained PAT is required to seed the issue and run the daemon." >&2
     exit 1
 fi
-echo "baton-harness: GitHub token env var present (structural check only)"
+echo "codereeve: GitHub token env var present (structural check only)"
 
 # ANTHROPIC_API_KEY must NOT be set (G3b) — the daemon refuses to start
 # otherwise, and unlike verify-recovery.sh this script does not need to
 # exercise that gate, so it simply requires the caller to have it unset.
 if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
-    echo "baton-harness: error: ANTHROPIC_API_KEY is set in your environment." >&2
+    echo "codereeve: error: ANTHROPIC_API_KEY is set in your environment." >&2
     echo "  The daemon refuses to start (G3b) while this key is present" >&2
     echo "  (OAuth/subscription deployment expects it to be absent)." >&2
     echo "  Unset it before running: unset ANTHROPIC_API_KEY" >&2
     exit 1
 fi
-echo "baton-harness: ANTHROPIC_API_KEY is unset (G3b precondition OK)"
+echo "codereeve: ANTHROPIC_API_KEY is unset (G3b precondition OK)"
 
 # Safety gate: assert the sandbox has exactly the expected open agent-ready
 # issues. Before seeding that means zero; immediately before the daemon tick it
@@ -288,7 +288,7 @@ _assert_agent_ready_isolation() {
     local _found_numbers="none"
     local -a _ready_numbers=()
 
-    echo "baton-harness: checking sandbox for open agent-ready issues (safety gate)..."
+    echo "codereeve: checking sandbox for open agent-ready issues (safety gate)..."
     # Fail CLOSED: if gh cannot run (auth error, network error, wrong repo,
     # etc.) we must NOT proceed — a failed query cannot prove isolation.
     if ! _ready_out="$(gh issue list \
@@ -297,7 +297,7 @@ _assert_agent_ready_isolation() {
         --state open \
         --json number \
         --jq '.[].number' 2>&1)"; then
-        echo "baton-harness: ABORT: gh issue list failed — cannot prove sandbox isolation" >&2
+        echo "codereeve: ABORT: gh issue list failed — cannot prove sandbox isolation" >&2
         echo "  Refusing to seed a new issue or run the daemon." >&2
         echo "  Check CODEREEVE_REPO_OWNER/CODEREEVE_REPO_NAME, GH_TOKEN, and network." >&2
         echo "  gh output: ${_ready_out}" >&2
@@ -307,7 +307,7 @@ _assert_agent_ready_isolation() {
     if [[ -n "${_ready_out}" ]]; then
         while IFS= read -r _ready_number; do
             if ! [[ "${_ready_number}" =~ ^[0-9]+$ ]]; then
-                echo "baton-harness: ABORT: gh issue list returned non-integer output '${_ready_out}'" >&2
+                echo "codereeve: ABORT: gh issue list returned non-integer output '${_ready_out}'" >&2
                 echo "  Cannot prove sandbox isolation — refusing to proceed." >&2
                 exit 1
             fi
@@ -321,21 +321,21 @@ _assert_agent_ready_isolation() {
     fi
 
     if [[ "${_ready_count}" -ne "${_expected_count}" ]]; then
-        echo "baton-harness: ABORT: expected ${_expected_count} open agent-ready issue(s), found ${_ready_count} (${_found_numbers})." >&2
+        echo "codereeve: ABORT: expected ${_expected_count} open agent-ready issue(s), found ${_ready_count} (${_found_numbers})." >&2
         echo "  The single --once poll tick could dispatch the wrong issue or multiple issues." >&2
         exit 1
     fi
 
     if [[ -n "${_expected_issue_num}" && "${_ready_numbers[0]}" != "${_expected_issue_num}" ]]; then
-        echo "baton-harness: ABORT: expected seeded issue #${_expected_issue_num} to be the sole open agent-ready issue, found #${_ready_numbers[0]}." >&2
+        echo "codereeve: ABORT: expected seeded issue #${_expected_issue_num} to be the sole open agent-ready issue, found #${_ready_numbers[0]}." >&2
         echo "  Refusing to run codereeve daemon --once against the wrong issue." >&2
         exit 1
     fi
 
     if [[ "${_expected_count}" -eq 0 ]]; then
-        echo "baton-harness: safety gate OK — zero open agent-ready issues"
+        echo "codereeve: safety gate OK — zero open agent-ready issues"
     else
-        echo "baton-harness: safety gate OK — seeded issue #${_expected_issue_num} is the sole open agent-ready issue"
+        echo "codereeve: safety gate OK — seeded issue #${_expected_issue_num} is the sole open agent-ready issue"
     fi
 }
 
@@ -343,7 +343,7 @@ _assert_agent_ready_isolation 0
 
 # Required-labels preflight (mirrors bin/run-daemon.sh) — this script both
 # seeds `agent-ready` and asserts on `blocked` / `agent-in-progress`.
-echo "baton-harness: checking required labels in ${_REPO_SLUG}..."
+echo "codereeve: checking required labels in ${_REPO_SLUG}..."
 _required_labels=(agent-ready agent-in-progress blocked)
 _missing_labels=()
 _existing_labels="$(gh label list -R "${_REPO_SLUG}" --limit 200 --json name --jq '.[].name')"
@@ -353,16 +353,16 @@ for _label in "${_required_labels[@]}"; do
     fi
 done
 if [[ ${#_missing_labels[@]} -gt 0 ]]; then
-    echo "baton-harness: error: the following required labels are missing from ${_REPO_SLUG}:" >&2
+    echo "codereeve: error: the following required labels are missing from ${_REPO_SLUG}:" >&2
     for _label in "${_missing_labels[@]}"; do
         echo "  missing: ${_label}" >&2
         echo "  fix:     gh label create \"${_label}\" -R \"${_REPO_SLUG}\" --color 0075ca" >&2
     done
     exit 1
 fi
-echo "baton-harness: all required labels present"
+echo "codereeve: all required labels present"
 
-echo "baton-harness: preflight checks passed"
+echo "codereeve: preflight checks passed"
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -380,12 +380,12 @@ echo ""
 _cred_path="${HOME}/.claude/.credentials.json"
 
 if [[ ! -r "${_cred_path}" ]]; then
-    echo "baton-harness: G3c preflight: OAuth creds absent at ${_cred_path} — skipping the block-escalation scenario"
-    echo "baton-harness: RESULT: SKIPPED"
+    echo "codereeve: G3c preflight: OAuth creds absent at ${_cred_path} — skipping the block-escalation scenario"
+    echo "codereeve: RESULT: SKIPPED"
     exit 0
 fi
 
-echo "baton-harness: OAuth creds present (structural check only): ${_cred_path}"
+echo "codereeve: OAuth creds present (structural check only): ${_cred_path}"
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -410,12 +410,12 @@ _cleanup() {
         if [[ "${_FAIL}" -eq 0 ]]; then
             rm -f "${_DAEMON_OUTPUT_FILE}" || true
         else
-            echo "baton-harness: cleanup: preserving daemon output (assertion failure(s) occurred): ${_DAEMON_OUTPUT_FILE}" >&2
+            echo "codereeve: cleanup: preserving daemon output (assertion failure(s) occurred): ${_DAEMON_OUTPUT_FILE}" >&2
         fi
     fi
 
     if [[ -n "${_ISSUE_NUM}" ]]; then
-        echo "baton-harness: cleanup: closing and de-labeling issue #${_ISSUE_NUM}" >&2
+        echo "codereeve: cleanup: closing and de-labeling issue #${_ISSUE_NUM}" >&2
 
         # Defect #242 (3): close FIRST, then remove labels. Closing an
         # issue never depends on its label state, but the reverse order
@@ -431,14 +431,14 @@ _cleanup() {
             --repo "${_REPO_SLUG}" \
             --comment "Closed automatically by bin/verify-block-escalation.sh cleanup." \
             2>&1)"; then
-            echo "baton-harness: cleanup: warning: gh issue close failed for #${_ISSUE_NUM}: ${_close_out}" >&2
+            echo "codereeve: cleanup: warning: gh issue close failed for #${_ISSUE_NUM}: ${_close_out}" >&2
         fi
 
         if ! _label_out="$(gh issue edit "${_ISSUE_NUM}" \
             --repo "${_REPO_SLUG}" \
             --remove-label "agent-ready,agent-in-progress,blocked,agent-done" \
             2>&1)"; then
-            echo "baton-harness: cleanup: warning: gh issue edit (remove-label) failed for #${_ISSUE_NUM}: ${_label_out}" >&2
+            echo "codereeve: cleanup: warning: gh issue edit (remove-label) failed for #${_ISSUE_NUM}: ${_label_out}" >&2
         fi
     fi
 }
@@ -458,7 +458,7 @@ trap '_cleanup' EXIT
 # block rule requires the agent to stop and ask rather than pick one.
 # ---------------------------------------------------------------------------
 
-echo "baton-harness: --- Seeding ambiguous agent-ready issue ---"
+echo "codereeve: --- Seeding ambiguous agent-ready issue ---"
 
 _ISSUE_TITLE="Add a small in-memory cache utility with eviction and retention guarantees"
 _ISSUE_BODY="$(cat <<'EOF'
@@ -493,7 +493,7 @@ if ! _issue_url="$(gh issue create \
     --title "${_ISSUE_TITLE}" \
     --body "${_ISSUE_BODY}" \
     --label agent-ready 2>&1)"; then
-    echo "baton-harness: error: gh issue create failed:" >&2
+    echo "codereeve: error: gh issue create failed:" >&2
     echo "${_issue_url}" >&2
     exit 1
 fi
@@ -508,8 +508,8 @@ if ! [[ "${_ISSUE_NUM}" =~ ^[0-9]+$ ]]; then
     # next run. Preserve every scrap of context an operator needs to find
     # and delete it by hand.
     echo "" >&2
-    echo "baton-harness: *** ORPHAN ISSUE WARNING — MANUAL CLEANUP REQUIRED ***" >&2
-    echo "baton-harness: error: gh issue create succeeded but its output could not" >&2
+    echo "codereeve: *** ORPHAN ISSUE WARNING — MANUAL CLEANUP REQUIRED ***" >&2
+    echo "codereeve: error: gh issue create succeeded but its output could not" >&2
     echo "  be parsed for an issue number, so this script cannot identify the" >&2
     echo "  issue to clean it up automatically (the EXIT trap needs a numeric" >&2
     echo "  issue number to remove labels / close it)." >&2
@@ -522,7 +522,7 @@ if ! [[ "${_ISSUE_NUM}" =~ ^[0-9]+$ ]]; then
     exit 1
 fi
 
-echo "baton-harness: seeded issue #${_ISSUE_NUM} (${_issue_url})"
+echo "codereeve: seeded issue #${_ISSUE_NUM} (${_issue_url})"
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -537,7 +537,7 @@ echo ""
 # ---------------------------------------------------------------------------
 
 _assert_agent_ready_isolation 1 "${_ISSUE_NUM}"
-echo "baton-harness: --- Running codereeve daemon --once (dispatches real agent turn) ---"
+echo "codereeve: --- Running codereeve daemon --once (dispatches real agent turn) ---"
 
 _DAEMON_OUTPUT_FILE="$(mktemp "${TMPDIR:-/tmp}/bh-verify-block.XXXXXX")"
 _BLOCK_TIMEOUT_SECS="${CODEREEVE_VERIFY_BLOCK_TIMEOUT_SECS:-600}"
@@ -552,9 +552,9 @@ timeout "${_BLOCK_TIMEOUT_SECS}" \
 if [[ "${_daemon_exit}" -ne 0 ]]; then
     fail "BLOCK-daemon-exit" "codereeve daemon --once exited ${_daemon_exit} (expected 0 — park is non-fatal)"
     if [[ "${_daemon_exit}" -eq 124 ]]; then
-        echo "baton-harness: warning: exit 124 means the ${_BLOCK_TIMEOUT_SECS}s timeout fired" >&2
+        echo "codereeve: warning: exit 124 means the ${_BLOCK_TIMEOUT_SECS}s timeout fired" >&2
     fi
-    echo "baton-harness: --- last 40 lines of daemon output ---" >&2
+    echo "codereeve: --- last 40 lines of daemon output ---" >&2
     tail -40 "${_DAEMON_OUTPUT_FILE}" >&2 || true
 fi
 
@@ -564,7 +564,7 @@ echo ""
 # Assertions
 # ---------------------------------------------------------------------------
 
-echo "baton-harness: --- Assertions: block escalation chain for #${_ISSUE_NUM} ---"
+echo "codereeve: --- Assertions: block escalation chain for #${_ISSUE_NUM} ---"
 
 # Re-fetch current labels on the seeded issue.
 _final_labels="$(gh issue view "${_ISSUE_NUM}" \
@@ -662,17 +662,17 @@ echo ""
 # Summary
 # ===========================================================================
 
-echo "baton-harness: =============================="
-echo "baton-harness: Block escalation verification summary"
-echo "baton-harness: =============================="
-echo "baton-harness:   PASSED:  ${_PASS}"
-echo "baton-harness:   FAILED:  ${_FAIL}"
-echo "baton-harness:   SKIPPED: ${_SKIPPED}"
+echo "codereeve: =============================="
+echo "codereeve: Block escalation verification summary"
+echo "codereeve: =============================="
+echo "codereeve:   PASSED:  ${_PASS}"
+echo "codereeve:   FAILED:  ${_FAIL}"
+echo "codereeve:   SKIPPED: ${_SKIPPED}"
 
 if [[ ${_FAIL} -gt 0 ]]; then
-    echo "baton-harness:   Failed assertions:" >&2
+    echo "codereeve:   Failed assertions:" >&2
     for _s in "${_FAILED_SCENARIOS[@]}"; do
-        echo "baton-harness:     - ${_s}" >&2
+        echo "codereeve:     - ${_s}" >&2
     done
     echo "" >&2
 
@@ -682,20 +682,20 @@ if [[ ${_FAIL} -gt 0 ]]; then
     # on a non-zero daemon exit — so a daemon that exited 0 with failed
     # assertions left the operator with no evidence at all.
     if [[ -n "${_DAEMON_OUTPUT_FILE}" && -f "${_DAEMON_OUTPUT_FILE}" ]]; then
-        echo "baton-harness: --- daemon output (last 40 lines) — assertion failure ---" >&2
+        echo "codereeve: --- daemon output (last 40 lines) — assertion failure ---" >&2
         tail -40 "${_DAEMON_OUTPUT_FILE}" >&2 || true
 
         _preserved_log="${CODEREEVE_PROJECT_ROOT}/verify-block-escalation-daemon-${_ISSUE_NUM}.log"
         if cp "${_DAEMON_OUTPUT_FILE}" "${_preserved_log}" 2>/dev/null; then
-            echo "baton-harness: full daemon output preserved at: ${_preserved_log}" >&2
+            echo "codereeve: full daemon output preserved at: ${_preserved_log}" >&2
         else
-            echo "baton-harness: warning: failed to preserve daemon output to ${_preserved_log}" >&2
+            echo "codereeve: warning: failed to preserve daemon output to ${_preserved_log}" >&2
         fi
     fi
 
-    echo "baton-harness: RESULT: FAIL" >&2
+    echo "codereeve: RESULT: FAIL" >&2
     exit 1
 fi
 
-echo "baton-harness: RESULT: PASS"
+echo "codereeve: RESULT: PASS"
 exit 0

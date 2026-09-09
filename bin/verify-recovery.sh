@@ -22,7 +22,7 @@
 #   CODEREEVE_REPO_OWNER      GitHub repository owner (org or user login)
 #   CODEREEVE_REPO_NAME       GitHub repository name (without owner prefix)
 #   CODEREEVE_PROJECT_ROOT    Absolute path to the local clone of the managed sandbox repo
-#   codereeve daemon          Must be on PATH (install the harness first)
+#   codereeve daemon          Must be on PATH (install CodeReeve first)
 #
 # Hard prerequisites (checked at startup):
 #   1. codereeve daemon is on PATH
@@ -118,7 +118,7 @@ _FAILED_SCENARIOS=()
 pass() {
     local name="$1"
     _PASS=$(( _PASS + 1 ))
-    echo "baton-harness: [PASS] ${name}"
+    echo "codereeve: [PASS] ${name}"
 }
 
 fail() {
@@ -126,7 +126,7 @@ fail() {
     local reason="${2:-}"
     _FAIL=$(( _FAIL + 1 ))
     _FAILED_SCENARIOS+=("${name}")
-    echo "baton-harness: [FAIL] ${name}${reason:+ — ${reason}}" >&2
+    echo "codereeve: [FAIL] ${name}${reason:+ — ${reason}}" >&2
 }
 
 # ---------------------------------------------------------------------------
@@ -153,7 +153,7 @@ for _var in CODEREEVE_REPO_OWNER CODEREEVE_REPO_NAME CODEREEVE_PROJECT_ROOT; do
 done
 
 if [[ ${#_missing_env[@]} -gt 0 ]]; then
-    echo "baton-harness: error: the following required environment variables are not set:" >&2
+    echo "codereeve: error: the following required environment variables are not set:" >&2
     for _var in "${_missing_env[@]}"; do
         echo "  missing: ${_var}" >&2
     done
@@ -170,7 +170,7 @@ fi
 # ---------------------------------------------------------------------------
 
 _codereeve_daemon_bin="$(command -v codereeve)" || {
-    echo "baton-harness: error: codereeve daemon not found on PATH — install the harness first" >&2
+    echo "codereeve: error: codereeve daemon not found on PATH — install CodeReeve first" >&2
     echo "               uv pip install -e ." >&2
     exit 1
 }
@@ -185,7 +185,7 @@ export CODEREEVE_ROOT
 
 WORKFLOW_FILE="${CODEREEVE_ROOT}/config/WORKFLOW.md"
 if [[ ! -f "${WORKFLOW_FILE}" ]]; then
-    echo "baton-harness: error: workflow config not found: ${WORKFLOW_FILE}" >&2
+    echo "codereeve: error: workflow config not found: ${WORKFLOW_FILE}" >&2
     exit 1
 fi
 
@@ -197,18 +197,18 @@ MARKER_PATH="${_codereeve_state_directory}/daemon.alive"
 # Preflight checks
 # ---------------------------------------------------------------------------
 
-echo "baton-harness: running preflight checks..."
+echo "codereeve: running preflight checks..."
 
 # CODEREEVE_PROJECT_ROOT must be a git repo
 if [[ ! -d "${CODEREEVE_PROJECT_ROOT}" ]]; then
-    echo "baton-harness: error: CODEREEVE_PROJECT_ROOT does not exist: ${CODEREEVE_PROJECT_ROOT}" >&2
+    echo "codereeve: error: CODEREEVE_PROJECT_ROOT does not exist: ${CODEREEVE_PROJECT_ROOT}" >&2
     exit 1
 fi
 if ! git -C "${CODEREEVE_PROJECT_ROOT}" rev-parse --git-dir &>/dev/null; then
-    echo "baton-harness: error: CODEREEVE_PROJECT_ROOT is not a git repository: ${CODEREEVE_PROJECT_ROOT}" >&2
+    echo "codereeve: error: CODEREEVE_PROJECT_ROOT is not a git repository: ${CODEREEVE_PROJECT_ROOT}" >&2
     exit 1
 fi
-echo "baton-harness: CODEREEVE_PROJECT_ROOT is a git repo: ${CODEREEVE_PROJECT_ROOT}"
+echo "codereeve: CODEREEVE_PROJECT_ROOT is a git repo: ${CODEREEVE_PROJECT_ROOT}"
 
 # GH_TOKEN / GITHUB_TOKEN must be set (structural presence only — value never inspected)
 _token_env_set=0
@@ -219,16 +219,16 @@ if [[ -n "${GITHUB_TOKEN:-}" ]]; then
     _token_env_set=1
 fi
 if [[ "${_token_env_set}" -eq 0 ]]; then
-    echo "baton-harness: error: neither GH_TOKEN nor GITHUB_TOKEN is set." >&2
+    echo "codereeve: error: neither GH_TOKEN nor GITHUB_TOKEN is set." >&2
     echo "               A valid fine-grained PAT is required for the G3a pass path." >&2
     exit 1
 fi
-echo "baton-harness: GitHub token env var present (structural check only)"
+echo "codereeve: GitHub token env var present (structural check only)"
 
 # Safety gate: abort if the sandbox has open agent-ready issues.
 # Any such issues could be dispatched by the daemon in scenarios that
 # reach the poll loop (G2, G1, SIGTERM).
-echo "baton-harness: checking sandbox for open agent-ready issues (safety gate)..."
+echo "codereeve: checking sandbox for open agent-ready issues (safety gate)..."
 _ready_count=0
 # Fail CLOSED: if gh cannot run (auth error, network error, wrong repo, etc.)
 # we must NOT proceed — a failed query cannot prove the sandbox is empty, so
@@ -240,7 +240,7 @@ if ! _ready_out="$(gh issue list \
     --state open \
     --json number \
     --jq 'length' 2>&1)"; then
-    echo "baton-harness: ABORT: gh issue list failed — cannot prove sandbox has zero" >&2
+    echo "codereeve: ABORT: gh issue list failed — cannot prove sandbox has zero" >&2
     echo "  agent-ready issues; refusing to run recovery scenarios that reach the" >&2
     echo "  poll loop.  Check CODEREEVE_REPO_OWNER/CODEREEVE_REPO_NAME, GH_TOKEN, and network." >&2
     echo "  gh output: ${_ready_out}" >&2
@@ -248,22 +248,22 @@ if ! _ready_out="$(gh issue list \
 fi
 # Guard against non-numeric output (e.g. jq parse error)
 if ! [[ "${_ready_out}" =~ ^[0-9]+$ ]]; then
-    echo "baton-harness: ABORT: gh issue list returned non-integer output '${_ready_out}'" >&2
+    echo "codereeve: ABORT: gh issue list returned non-integer output '${_ready_out}'" >&2
     echo "  Cannot prove sandbox has zero agent-ready issues — refusing to proceed." >&2
     exit 1
 fi
 _ready_count="${_ready_out}"
 
 if [[ "${_ready_count}" -gt 0 ]]; then
-    echo "baton-harness: ABORT: sandbox has ${_ready_count} open agent-ready issue(s)." >&2
+    echo "codereeve: ABORT: sandbox has ${_ready_count} open agent-ready issue(s)." >&2
     echo "  Scenarios G2, G1, and SIGTERM start the daemon in continuous mode and" >&2
     echo "  WILL dispatch agents against any agent-ready issue they find." >&2
     echo "  Close or re-label all agent-ready issues before running this script." >&2
     exit 1
 fi
-echo "baton-harness: safety gate OK — zero open agent-ready issues"
+echo "codereeve: safety gate OK — zero open agent-ready issues"
 
-echo "baton-harness: preflight checks passed"
+echo "codereeve: preflight checks passed"
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -285,12 +285,12 @@ echo ""
 _cred_path="${HOME}/.claude/.credentials.json"
 
 if [[ ! -r "${_cred_path}" ]]; then
-    echo "baton-harness: G3c preflight: OAuth creds absent at ${_cred_path} — skipping all daemon-startup scenarios"
-    echo "baton-harness: RESULT: SKIPPED"
+    echo "codereeve: G3c preflight: OAuth creds absent at ${_cred_path} — skipping all daemon-startup scenarios"
+    echo "codereeve: RESULT: SKIPPED"
     exit 0
 fi
 
-echo "baton-harness: OAuth creds present (structural check only): ${_cred_path}"
+echo "codereeve: OAuth creds present (structural check only): ${_cred_path}"
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -333,9 +333,9 @@ trap '_cleanup' EXIT
 
 # Guard: if ANTHROPIC_API_KEY is already set in the caller's env, the daemon
 # would refuse to start even for pass-path scenarios.  Abort early so the
-# operator knows to unset it before running the harness.
+# operator knows to unset it before running CodeReeve.
 if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
-    echo "baton-harness: error: ANTHROPIC_API_KEY is already set in your environment." >&2
+    echo "codereeve: error: ANTHROPIC_API_KEY is already set in your environment." >&2
     echo "  This script sets and unsets it as needed for scenario G3b." >&2
     echo "  Unset it before running: unset ANTHROPIC_API_KEY" >&2
     exit 1
@@ -412,7 +412,7 @@ _start_daemon_bg() {
 #
 # NOT locally assertable: runlog event, Slack notification.
 
-echo "baton-harness: --- Scenario G3b: ANTHROPIC_API_KEY set ---"
+echo "codereeve: --- Scenario G3b: ANTHROPIC_API_KEY set ---"
 
 _WE_SET_ANTHROPIC_API_KEY=1
 _g3b_out=""
@@ -456,7 +456,7 @@ echo ""
 #
 # NOT locally assertable: runlog event, Slack notification.
 
-echo "baton-harness: --- Scenario G3a: bogus GH_TOKEN → token validation fatal ---"
+echo "codereeve: --- Scenario G3a: bogus GH_TOKEN → token validation fatal ---"
 
 # Temporarily replace GH_TOKEN with a classic-PAT-prefixed bogus value.
 # _SAVED_GH_TOKEN holds the real token so we can restore it after.
@@ -513,7 +513,7 @@ echo ""
 #
 # NOT locally assertable: runlog event, Slack notification.
 
-echo "baton-harness: --- Scenario G2: stale daemon.alive marker ---"
+echo "codereeve: --- Scenario G2: stale daemon.alive marker ---"
 
 # Pre-create marker
 mkdir -p "$(dirname "${MARKER_PATH}")"
@@ -571,7 +571,7 @@ echo ""
 #
 # NOT locally assertable: runlog event, Slack notification.
 
-echo "baton-harness: --- Scenario G1: decoy 'claude -p' process → orphan sweep ---"
+echo "codereeve: --- Scenario G1: decoy 'claude -p' process → orphan sweep ---"
 
 # Spawn decoy: a long sleep whose argv includes "claude -p" so pgrep -f matches.
 # We use a shell wrapper so the argv of the child contains "claude -p".
@@ -638,7 +638,7 @@ echo ""
 #
 # NOT locally assertable: runlog daemon_start / daemon_stop events, Slack.
 
-echo "baton-harness: --- Scenario SIGTERM: graceful shutdown clears daemon.alive ---"
+echo "codereeve: --- Scenario SIGTERM: graceful shutdown clears daemon.alive ---"
 
 # Temp file to collect background daemon output
 _SIGTERM_OUTPUT_FILE="$(mktemp /tmp/bh-verify-sigterm.XXXXXX)"
@@ -669,7 +669,7 @@ if [[ "${_marker_appeared}" -eq 0 ]]; then
     rm -f "${_SIGTERM_OUTPUT_FILE}" || true
     echo ""
 else
-    echo "baton-harness:   daemon.alive marker appeared — sending SIGTERM to PID ${_sigterm_daemon_pid}"
+    echo "codereeve:   daemon.alive marker appeared — sending SIGTERM to PID ${_sigterm_daemon_pid}"
 
     # Send SIGTERM and wait for daemon to exit
     kill -TERM "${_sigterm_daemon_pid}" 2>/dev/null || true
@@ -712,21 +712,21 @@ _MARKER_WAS_CREATED_BY_US=0
 # Summary
 # ===========================================================================
 
-echo "baton-harness: =============================="
-echo "baton-harness: Recovery verification summary"
-echo "baton-harness: =============================="
-echo "baton-harness:   PASSED: ${_PASS}"
-echo "baton-harness:   FAILED: ${_FAIL}"
+echo "codereeve: =============================="
+echo "codereeve: Recovery verification summary"
+echo "codereeve: =============================="
+echo "codereeve:   PASSED: ${_PASS}"
+echo "codereeve:   FAILED: ${_FAIL}"
 
 if [[ ${_FAIL} -gt 0 ]]; then
-    echo "baton-harness:   Failed scenarios:" >&2
+    echo "codereeve:   Failed scenarios:" >&2
     for _s in "${_FAILED_SCENARIOS[@]}"; do
-        echo "baton-harness:     - ${_s}" >&2
+        echo "codereeve:     - ${_s}" >&2
     done
     echo "" >&2
-    echo "baton-harness: RESULT: FAIL" >&2
+    echo "codereeve: RESULT: FAIL" >&2
     exit 1
 fi
 
-echo "baton-harness: RESULT: PASS"
+echo "codereeve: RESULT: PASS"
 exit 0

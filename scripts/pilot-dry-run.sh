@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pilot-dry-run.sh — baton-harness pilot validation (tracks baton-harness#6)
+# pilot-dry-run.sh — retired external-Baton pilot validation (historical #6)
 #
 # Approach A handoff: this script does the FULL bootstrap + preflight, then
 # guides the three measurements in issue #6 against cbeaulieu-gt/promptsmith:
@@ -31,16 +31,16 @@ set -euo pipefail
 # Config — override via env
 # --------------------------------------------------------------------------
 WORKDIR="${WORKDIR:-$HOME/baton-pilot}"
-HARNESS_REPO="${HARNESS_REPO:-glitchwerks/baton-harness}"   # private
+CODEREEVE_REPO="${CODEREEVE_REPO:-glitchwerks/baton-harness}" # pre-cutover slug
 PROJECT_REPO="${PROJECT_REPO:-cbeaulieu-gt/promptsmith}"
 BATON_REPO="${BATON_REPO:-mraza007/baton}"
 
-HARNESS_DIR="$WORKDIR/baton-harness"
+CODEREEVE_DIR="$WORKDIR/codereeve"
 PROJECT_DIR="$WORKDIR/promptsmith"
 BATON_DIR="$WORKDIR/baton"
 LOG_DIR="$WORKDIR/logs"
 BATON_LOG="$LOG_DIR/baton.log"
-VENV="$WORKDIR/.venv"   # baton + bh-* installed here; auto-activated below
+VENV="$WORKDIR/.venv"   # historical Baton pilot environment
 
 SA_ISSUE=2     # promptsmith#2  — Scenario A (clean: Project scaffolding)
 T2_ISSUE=18    # promptsmith#18 — T2 (ambiguous: render formatting)
@@ -50,7 +50,7 @@ ok()   { printf '\033[1;32m  ok:\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mWARN:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
-# Activate the pilot venv if it exists, so baton + bh-* + their hook
+# Activate the historical pilot venv if it exists, so Baton and its hooks
 # subprocesses all resolve from $VENV/bin. Load-bearing for hook firing.
 activate_venv() {
   if [[ -f "$VENV/bin/activate" ]]; then
@@ -99,7 +99,7 @@ bootstrap() {
   local PIP="pip"; command -v uv >/dev/null && PIP="uv pip"
 
   clone_or_update "$BATON_REPO"   "$BATON_DIR"
-  clone_or_update "$HARNESS_REPO" "$HARNESS_DIR"
+  clone_or_update "$CODEREEVE_REPO" "$CODEREEVE_DIR"
   clone_or_update "$PROJECT_REPO" "$PROJECT_DIR"
 
   say "Installing Baton (editable) into venv"
@@ -107,12 +107,10 @@ bootstrap() {
   command -v baton >/dev/null || die "baton not on PATH after install"
   ok "baton: $(command -v baton)"
 
-  say "Installing baton-harness (editable) — provides bh-* console scripts"
-  ( cd "$HARNESS_DIR" && $PIP install -e . ) || die "harness install failed"
-  for s in bh-after-create bh-before-run bh-after-run; do
-    command -v "$s" >/dev/null || die "$s not on PATH (harness install incomplete)"
-  done
-  ok "bh-after-create / bh-before-run / bh-after-run on PATH"
+  say "Installing CodeReeve (editable) — provides the codereeve command"
+  ( cd "$CODEREEVE_DIR" && $PIP install -e . ) || die "CodeReeve install failed"
+  command -v codereeve >/dev/null || die "codereeve not on PATH after install"
+  ok "codereeve on PATH"
 
   say "Bootstrap complete"
   cat <<EOF
@@ -139,11 +137,12 @@ run() {
   # This 'run' subcommand targeted the retired external-baton / baton-start
   # invocation path (T1/T2 in the original pilot plan).  The new daemon no
   # longer accepts a project-path positional argument; it reads repo
-  # coordinates from BH_REPO_OWNER / BH_REPO_NAME / BH_PROJECT_ROOT env vars.
+  # coordinates from CODEREEVE_REPO_OWNER / CODEREEVE_REPO_NAME /
+  # CODEREEVE_PROJECT_ROOT environment variables.
   # Use bin/run-daemon.sh directly instead.
   die "The 'run' subcommand is retired (bin/run.sh was deleted in P3). " \
-      "Set BH_REPO_OWNER, BH_REPO_NAME, BH_PROJECT_ROOT and run: " \
-      "$HARNESS_DIR/bin/run-daemon.sh"
+      "Set CODEREEVE_REPO_OWNER, CODEREEVE_REPO_NAME, CODEREEVE_PROJECT_ROOT and run: " \
+      "$CODEREEVE_DIR/bin/run-daemon.sh"
 }
 
 # --------------------------------------------------------------------------

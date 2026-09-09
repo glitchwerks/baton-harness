@@ -36,7 +36,7 @@ Coverage:
 - Compare-keys config missing: falls back to historic literal set OR
   raises RulesetConfigError.  # SPEC-AMBIGUITY: see test docstring.
 - Compare-keys config malformed: non-JSON or non-list content.
-- Placeholder substitution: feature ruleset ``__BH_GITHUB_APP_ID__``
+- Placeholder substitution: feature ruleset ``__CODEREEVE_GITHUB_APP_ID__``
   substituted with ``int(app_id)`` before compare.
 - HTTP-status edge: stderr containing "404" but stdout HTTP 200 does NOT
   trigger ABSENT (stderr ignored; only stdout status line matters).
@@ -956,7 +956,7 @@ def test_compare_keys_config_empty_list_does_not_silently_match(
 
 
 def test_placeholder_substituted_with_int_app_id_before_compare() -> None:
-    """Placeholder ``__BH_GITHUB_APP_ID__`` is replaced with int(app_id).
+    """Placeholder ``__CODEREEVE_GITHUB_APP_ID__`` becomes int(app_id).
 
     Passing ``app_id="111"`` (a string) must result in MATCH when the live
     feature ruleset has numeric 111 in bypass_actors[0].actor_id.
@@ -2125,7 +2125,6 @@ def test_provisioner_embedded_writer_uses_real_lease(
                 '{"updated_at":"t"}',
                 "2",
                 '{"updated_at":"t"}',
-                str(destination),
                 str(tmp_path),
             ],
             capture_output=True,

@@ -612,7 +612,7 @@ def test_already_synced_default_branch_still_commits_and_pushes_workflow(
     proc = _run_init_sandbox(tmp_path, project_root, default_branch="main")
 
     assert (
-        "baton-harness:   ci.yml committed and pushed to sandbox"
+            "codereeve:   ci.yml committed and pushed to sandbox"
         in proc.stdout
     ), (
         "the CI workflow must still be committed and pushed on the "

@@ -2,7 +2,7 @@
 # bin/init-sandbox.sh — Target sandbox repo initialisation (smoke-test ready)
 #
 # Prepares a throwaway sandbox GitHub repository for a codereeve daemon smoke test:
-#   - Creates the six required harness labels (idempotent)
+#   - Creates the six required CodeReeve labels (idempotent)
 #   - Seeds scenario-specific issues (the default hello scenario creates the
 #     existing trivial trigger + hello-feature DAG milestone)
 #   - Writes a stub CI workflow to the sandbox repo and pushes it
@@ -54,7 +54,7 @@ usage() {
     cat <<'EOF'
 Usage: bin/init-sandbox.sh [--scenario <name>] [--help|-h]
 
-Prepares a throwaway sandbox GitHub repository for a codereeve daemon smoke test.
+Prepares a throwaway sandbox GitHub repository for a CodeReeve daemon smoke test.
 
 Options:
   --scenario <name>  Seed one of the scenarios below. Overrides CODEREEVE_SCENARIO.
@@ -109,7 +109,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --scenario)
             if [[ $# -lt 2 || -z "$2" ]]; then
-                echo "baton-harness: error: --scenario requires a name" >&2
+                echo "codereeve: error: --scenario requires a name" >&2
                 echo "  Valid scenarios: hello, terminal-block, recovery, clean-implement," >&2
                 echo "    block-ambiguity, ci-fail" >&2
                 exit 1
@@ -122,7 +122,7 @@ while [[ $# -gt 0 ]]; do
             exit 0
             ;;
         *)
-            echo "baton-harness: error: unknown option: $1" >&2
+            echo "codereeve: error: unknown option: $1" >&2
             usage >&2
             exit 1
             ;;
@@ -133,7 +133,7 @@ case "${SCENARIO}" in
     hello|terminal-block|recovery|clean-implement|block-ambiguity|ci-fail)
         ;;
     *)
-        echo "baton-harness: error: unknown scenario '${SCENARIO}'" >&2
+        echo "codereeve: error: unknown scenario '${SCENARIO}'" >&2
         echo "  Valid scenarios: hello, terminal-block, recovery, clean-implement," >&2
         echo "    block-ambiguity, ci-fail" >&2
         exit 1
@@ -167,7 +167,7 @@ for _var in CODEREEVE_REPO_OWNER CODEREEVE_REPO_NAME CODEREEVE_PROJECT_ROOT; do
 done
 
 if [[ ${#_missing_env[@]} -gt 0 ]]; then
-    echo "baton-harness: error: the following required environment variables are not set:" >&2
+    echo "codereeve: error: the following required environment variables are not set:" >&2
     for _var in "${_missing_env[@]}"; do
         echo "  missing: ${_var}" >&2
     done
@@ -190,15 +190,15 @@ REPO_SLUG="${CODEREEVE_REPO_OWNER}/${CODEREEVE_REPO_NAME}"
 # Preflight checks
 # ---------------------------------------------------------------------------
 
-echo "baton-harness: running preflight checks..."
+echo "codereeve: running preflight checks..."
 
 # gh auth
 if ! gh auth status &>/dev/null; then
-    echo "baton-harness: error: gh auth status failed — authenticate first:" >&2
+    echo "codereeve: error: gh auth status failed — authenticate first:" >&2
     echo "  gh auth login" >&2
     exit 1
 fi
-echo "baton-harness: gh auth OK"
+echo "codereeve: gh auth OK"
 
 # gh auth setup-git — `gh auth login` authenticates the gh CLI only; it does
 # NOT install a git credential helper, so a bare `git push` later fails with
@@ -206,38 +206,38 @@ echo "baton-harness: gh auth OK"
 # (#219). `gh auth setup-git` configures git to use gh's credential helper,
 # which reads the already-authenticated token.
 if ! gh auth setup-git &>/dev/null; then
-    echo "baton-harness: error: gh auth setup-git failed — could not configure" >&2
+    echo "codereeve: error: gh auth setup-git failed — could not configure" >&2
     echo "  a git credential helper for gh. Re-run manually to see the error:" >&2
     echo "  gh auth setup-git" >&2
     exit 1
 fi
-echo "baton-harness: gh auth setup-git OK (git credential helper configured)"
+echo "codereeve: gh auth setup-git OK (git credential helper configured)"
 
 # git available
 if ! command -v git &>/dev/null; then
-    echo "baton-harness: error: git not found on PATH" >&2
+    echo "codereeve: error: git not found on PATH" >&2
     exit 1
 fi
-echo "baton-harness: git OK"
+echo "codereeve: git OK"
 
 # CODEREEVE_PROJECT_ROOT exists and is a git repo
 if [[ ! -d "${CODEREEVE_PROJECT_ROOT}" ]]; then
-    echo "baton-harness: error: CODEREEVE_PROJECT_ROOT does not exist: ${CODEREEVE_PROJECT_ROOT}" >&2
+    echo "codereeve: error: CODEREEVE_PROJECT_ROOT does not exist: ${CODEREEVE_PROJECT_ROOT}" >&2
     exit 1
 fi
 if ! git -C "${CODEREEVE_PROJECT_ROOT}" rev-parse --git-dir &>/dev/null; then
-    echo "baton-harness: error: CODEREEVE_PROJECT_ROOT is not a git repository: ${CODEREEVE_PROJECT_ROOT}" >&2
+    echo "codereeve: error: CODEREEVE_PROJECT_ROOT is not a git repository: ${CODEREEVE_PROJECT_ROOT}" >&2
     exit 1
 fi
-echo "baton-harness: CODEREEVE_PROJECT_ROOT is a git repo: ${CODEREEVE_PROJECT_ROOT}"
+echo "codereeve: CODEREEVE_PROJECT_ROOT is a git repo: ${CODEREEVE_PROJECT_ROOT}"
 
-echo "baton-harness: target repo: ${REPO_SLUG}"
+echo "codereeve: target repo: ${REPO_SLUG}"
 
 # ---------------------------------------------------------------------------
 # Create required labels (idempotent — check-then-act; skip if present)
 # ---------------------------------------------------------------------------
 
-echo "baton-harness: creating required labels in ${REPO_SLUG} ..."
+echo "codereeve: creating required labels in ${REPO_SLUG} ..."
 
 _create_label() {
     local name="$1"
@@ -253,17 +253,17 @@ _create_label() {
         --include 2>/dev/null | head -n1)" || true
     probe_status="$(printf '%s' "${probe_out}" | awk '{print $2}')"
     if [[ "${probe_status}" == "200" ]]; then
-        echo "baton-harness:   label exists, skipping: ${name}"
+        echo "codereeve:   label exists, skipping: ${name}"
     elif [[ "${probe_status}" == "404" ]]; then
         # Absent — create it; any failure here is a genuine error.
         gh label create "${name}" -R "${REPO_SLUG}" --color "${color}" || {
-            echo "baton-harness: error: gh label create failed for '${name}'" >&2
+            echo "codereeve: error: gh label create failed for '${name}'" >&2
             exit 1
         }
-        echo "baton-harness:   label created: ${name}"
+        echo "codereeve:   label created: ${name}"
     else
         # Unexpected HTTP status (5xx, network failure, auth error, etc.) — fatal.
-        echo "baton-harness: error: unexpected HTTP status '${probe_status}' probing label '${name}' in ${REPO_SLUG}" >&2
+        echo "codereeve: error: unexpected HTTP status '${probe_status}' probing label '${name}' in ${REPO_SLUG}" >&2
         echo "  (expected 200 or 404 — check gh auth, repo name, and network)" >&2
         exit 1
     fi
@@ -276,7 +276,7 @@ _create_label "blocked"           "e4e669"
 _create_label "agent-in-progress" "d93f0b"
 _create_label "agent-merged"      "5319e7"
 
-echo "baton-harness: all required labels present"
+echo "codereeve: all required labels present"
 
 # ---------------------------------------------------------------------------
 # Idempotency helpers
@@ -306,7 +306,7 @@ _create_issue_checked() {
     for ((index = 0; index < ${#args[@]}; index++)); do
         if [[ "${args[index]}" == "--label" ]]; then
             if ((index + 1 >= ${#args[@]})); then
-                echo "baton-harness: error: _create_issue_checked received --label without a value" >&2
+                echo "codereeve: error: _create_issue_checked received --label without a value" >&2
                 exit 1
             fi
             requested_labels+=("${args[index + 1]}")
@@ -315,20 +315,20 @@ _create_issue_checked() {
     done
 
     if [[ ${#requested_labels[@]} -eq 0 ]]; then
-        echo "baton-harness: error: _create_issue_checked requires at least one --label value" >&2
+        echo "codereeve: error: _create_issue_checked requires at least one --label value" >&2
         exit 1
     fi
 
     issue_url="$(gh issue create --repo "${REPO_SLUG}" "${args[@]}")"
     issue_number="${issue_url##*/}"
     if [[ -z "${issue_number}" || ! "${issue_number}" =~ ^[0-9]+$ ]]; then
-        echo "baton-harness: error: failed to extract created issue number from URL (got: '${issue_url}')" >&2
+        echo "codereeve: error: failed to extract created issue number from URL (got: '${issue_url}')" >&2
         exit 1
     fi
 
     actual_labels="$(gh issue view "${issue_number}" --repo "${REPO_SLUG}" \
         --json labels --jq '.labels[].name' 2>&1)" || {
-        echo "baton-harness: error: failed to verify labels on created issue #${issue_number}: ${actual_labels}" >&2
+        echo "codereeve: error: failed to verify labels on created issue #${issue_number}: ${actual_labels}" >&2
         exit 1
     }
 
@@ -339,7 +339,7 @@ _create_issue_checked() {
     done
 
     if [[ ${#missing_labels[@]} -gt 0 ]]; then
-        echo "baton-harness: error: issue #${issue_number} was created, but requested label(s) failed to attach:" >&2
+        echo "codereeve: error: issue #${issue_number} was created, but requested label(s) failed to attach:" >&2
         for label in "${missing_labels[@]}"; do
             echo "  missing: ${label}" >&2
         done
@@ -362,18 +362,18 @@ hello)
 # dedup against it and will create a fresh trivial issue. Sandboxes are
 # disposable — tear down and re-seed from clean rather than relying on
 # reuse across a title change.
-echo "baton-harness: creating trivial trigger issue ..."
+echo "codereeve: creating trivial trigger issue ..."
 
 _trivial_title="add a greet() function"
 TRIVIAL_ISSUE_URL="$(_find_open_issue_url "${_trivial_title}")" || true
 if [[ -n "${TRIVIAL_ISSUE_URL}" ]]; then
-    echo "baton-harness:   trivial issue exists, reusing: ${TRIVIAL_ISSUE_URL}"
+    echo "codereeve:   trivial issue exists, reusing: ${TRIVIAL_ISSUE_URL}"
 else
     TRIVIAL_ISSUE_URL="$(_create_issue_checked \
         --title "${_trivial_title}" \
         --body "Add a Python file (greet.py) with a greet() function that prints 'greetings'." \
         --label "agent-ready")"
-    echo "baton-harness:   trivial issue created: ${TRIVIAL_ISSUE_URL}"
+    echo "codereeve:   trivial issue created: ${TRIVIAL_ISSUE_URL}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -381,7 +381,7 @@ fi
 # ---------------------------------------------------------------------------
 
 MILESTONE_TITLE="hello-feature"
-echo "baton-harness: creating hello-feature milestone ..."
+echo "codereeve: creating hello-feature milestone ..."
 
 # Idempotent: look up existing milestone by title first; create only if absent.
 # Assign via intermediate variable to avoid set -o pipefail + head -n1 SIGPIPE.
@@ -393,44 +393,44 @@ if [[ -z "${MILESTONE_NUMBER}" ]]; then
         --method POST \
         -f title="${MILESTONE_TITLE}" \
         --jq '.number')"
-    echo "baton-harness:   milestone created: ${MILESTONE_TITLE} (#${MILESTONE_NUMBER})"
+    echo "codereeve:   milestone created: ${MILESTONE_TITLE} (#${MILESTONE_NUMBER})"
 else
-    echo "baton-harness:   milestone exists, reusing: ${MILESTONE_TITLE} (#${MILESTONE_NUMBER})"
+    echo "codereeve:   milestone exists, reusing: ${MILESTONE_TITLE} (#${MILESTONE_NUMBER})"
 fi
 if [[ -z "${MILESTONE_NUMBER}" || ! "${MILESTONE_NUMBER}" =~ ^[0-9]+$ ]]; then
-    echo "baton-harness: error: failed to extract milestone number (got: '${MILESTONE_NUMBER}')" >&2
+    echo "codereeve: error: failed to extract milestone number (got: '${MILESTONE_NUMBER}')" >&2
     exit 1
 fi
 
 # Issue A (prerequisite — no blocker)
-echo "baton-harness: creating issue A (add hello() function) ..."
+echo "codereeve: creating issue A (add hello() function) ..."
 _issue_a_title="add hello() function"
 ISSUE_A_URL="$(_find_open_issue_url "${_issue_a_title}")" || true
 if [[ -n "${ISSUE_A_URL}" ]]; then
-    echo "baton-harness:   issue A exists, reusing: ${ISSUE_A_URL}"
+    echo "codereeve:   issue A exists, reusing: ${ISSUE_A_URL}"
 else
     ISSUE_A_URL="$(_create_issue_checked \
         --title "${_issue_a_title}" \
         --body "Add hello.py with a hello() function." \
         --label "agent-ready" \
         --milestone "${MILESTONE_TITLE}")"
-    echo "baton-harness:   issue A created: ${ISSUE_A_URL}"
+    echo "codereeve:   issue A created: ${ISSUE_A_URL}"
 fi
 
 # Extract issue number from URL (last path segment)
 ISSUE_A_NUMBER="${ISSUE_A_URL##*/}"
 if [[ -z "${ISSUE_A_NUMBER}" || ! "${ISSUE_A_NUMBER}" =~ ^[0-9]+$ ]]; then
-    echo "baton-harness: error: failed to extract issue A number from URL (got: '${ISSUE_A_NUMBER}')" >&2
+    echo "codereeve: error: failed to extract issue A number from URL (got: '${ISSUE_A_NUMBER}')" >&2
     exit 1
 fi
-echo "baton-harness:   issue A: #${ISSUE_A_NUMBER} — ${ISSUE_A_URL}"
+echo "codereeve:   issue A: #${ISSUE_A_NUMBER} — ${ISSUE_A_URL}"
 
 # Issue B (blocked by A)
-echo "baton-harness: creating issue B (add tests for hello()) ..."
+echo "codereeve: creating issue B (add tests for hello()) ..."
 _issue_b_title="add tests for hello()"
 ISSUE_B_URL="$(_find_open_issue_url "${_issue_b_title}")" || true
 if [[ -n "${ISSUE_B_URL}" ]]; then
-    echo "baton-harness:   issue B exists, reusing: ${ISSUE_B_URL}"
+    echo "codereeve:   issue B exists, reusing: ${ISSUE_B_URL}"
 else
     # The blocked_by marker documents the intended dependency for
     # readers, but B also gets a native dependency edge wired below —
@@ -442,32 +442,32 @@ else
         --body "Add pytest tests for the hello() function from the prior issue. blocked_by #${ISSUE_A_NUMBER}" \
         --label "agent-ready" \
         --milestone "${MILESTONE_TITLE}")"
-    echo "baton-harness:   issue B created: ${ISSUE_B_URL}"
+    echo "codereeve:   issue B created: ${ISSUE_B_URL}"
 fi
 
 ISSUE_B_NUMBER="${ISSUE_B_URL##*/}"
 if [[ -z "${ISSUE_B_NUMBER}" || ! "${ISSUE_B_NUMBER}" =~ ^[0-9]+$ ]]; then
-    echo "baton-harness: error: failed to extract issue B number from URL (got: '${ISSUE_B_NUMBER}')" >&2
+    echo "codereeve: error: failed to extract issue B number from URL (got: '${ISSUE_B_NUMBER}')" >&2
     exit 1
 fi
-echo "baton-harness:   issue B: #${ISSUE_B_NUMBER} — ${ISSUE_B_URL}"
+echo "codereeve:   issue B: #${ISSUE_B_NUMBER} — ${ISSUE_B_URL}"
 
 # Fetch database IDs (the /dependencies API requires database IDs, not issue numbers)
-echo "baton-harness: fetching database IDs for dependency wiring ..."
+echo "codereeve: fetching database IDs for dependency wiring ..."
 
 ISSUE_A_DB_ID="$(gh api "repos/${REPO_SLUG}/issues/${ISSUE_A_NUMBER}" --jq '.id')"
 if [[ -z "${ISSUE_A_DB_ID}" || ! "${ISSUE_A_DB_ID}" =~ ^[0-9]+$ ]]; then
-    echo "baton-harness: error: failed to extract issue A database ID (got: '${ISSUE_A_DB_ID}')" >&2
+    echo "codereeve: error: failed to extract issue A database ID (got: '${ISSUE_A_DB_ID}')" >&2
     exit 1
 fi
 ISSUE_B_DB_ID="$(gh api "repos/${REPO_SLUG}/issues/${ISSUE_B_NUMBER}" --jq '.id')"
 if [[ -z "${ISSUE_B_DB_ID}" || ! "${ISSUE_B_DB_ID}" =~ ^[0-9]+$ ]]; then
-    echo "baton-harness: error: failed to extract issue B database ID (got: '${ISSUE_B_DB_ID}')" >&2
+    echo "codereeve: error: failed to extract issue B database ID (got: '${ISSUE_B_DB_ID}')" >&2
     exit 1
 fi
 
-echo "baton-harness:   issue A database ID: ${ISSUE_A_DB_ID}"
-echo "baton-harness:   issue B database ID: ${ISSUE_B_DB_ID}"
+echo "codereeve:   issue A database ID: ${ISSUE_A_DB_ID}"
+echo "codereeve:   issue B database ID: ${ISSUE_B_DB_ID}"
 
 # Wire B blocked_by A (check-then-act — idempotency keys on real edge state)
 #
@@ -483,39 +483,39 @@ echo "baton-harness:   issue B database ID: ${ISSUE_B_DB_ID}"
 # Empty GET output (no edges yet) is the normal first-run case — the API
 # returns an empty array with exit 0, so set -e / pipefail do not abort.
 # A genuine non-zero GET failure IS caught by the || { … exit 1; } handler.
-echo "baton-harness: wiring dependency: issue B blocked_by issue A ..."
+echo "codereeve: wiring dependency: issue B blocked_by issue A ..."
 _dep_existing=""
 _dep_existing="$(gh api "repos/${REPO_SLUG}/issues/${ISSUE_B_NUMBER}/dependencies/blocked_by" \
     --jq ".[].number" 2>&1)" || {
-    echo "baton-harness: error: pre-POST GET /dependencies/blocked_by failed: ${_dep_existing}" >&2
+    echo "codereeve: error: pre-POST GET /dependencies/blocked_by failed: ${_dep_existing}" >&2
     exit 1
 }
 
 if printf '%s' "${_dep_existing}" | grep -qx "${ISSUE_A_NUMBER}"; then
-    echo "baton-harness:   dependency already present, skipping"
+    echo "codereeve:   dependency already present, skipping"
 else
     _dep_output=""
     _dep_output="$(gh api "repos/${REPO_SLUG}/issues/${ISSUE_B_NUMBER}/dependencies/blocked_by" \
         --method POST \
         -F "issue_id=${ISSUE_A_DB_ID}" 2>&1)" || {
-        echo "baton-harness: error wiring dependency: ${_dep_output}" >&2
+        echo "codereeve: error wiring dependency: ${_dep_output}" >&2
         exit 1
     }
-    echo "baton-harness:   dependency wired (B blocked_by A)"
+    echo "codereeve:   dependency wired (B blocked_by A)"
 
     # Verify the edge round-trips: GET blocked_by must contain issue A.
     # This catches any silent no-op (wrong token scope, API limitation, etc.).
-    echo "baton-harness: verifying dependency edge via GET ..."
+    echo "codereeve: verifying dependency edge via GET ..."
     _dep_verify=""
     _dep_verify="$(gh api "repos/${REPO_SLUG}/issues/${ISSUE_B_NUMBER}/dependencies/blocked_by" \
         --jq ".[].number" 2>&1)" || {
-        echo "baton-harness: error: GET /dependencies/blocked_by failed: ${_dep_verify}" >&2
+        echo "codereeve: error: GET /dependencies/blocked_by failed: ${_dep_verify}" >&2
         exit 1
     }
     if printf '%s' "${_dep_verify}" | grep -qx "${ISSUE_A_NUMBER}"; then
-        echo "baton-harness:   dependency verified: #${ISSUE_B_NUMBER} is blocked_by #${ISSUE_A_NUMBER}"
+        echo "codereeve:   dependency verified: #${ISSUE_B_NUMBER} is blocked_by #${ISSUE_A_NUMBER}"
     else
-        echo "baton-harness: error: dependency POST appeared to succeed but GET returned no edge." >&2
+        echo "codereeve: error: dependency POST appeared to succeed but GET returned no edge." >&2
         echo "  B (#${ISSUE_B_NUMBER}) blocked_by list: [$(printf '%s' "${_dep_verify}" | tr '\n' ' ')]" >&2
         echo "  Expected issue A number: ${ISSUE_A_NUMBER}" >&2
         echo "  Check: token scope, repo-level issue-dependencies feature, API request shape." >&2
@@ -531,41 +531,41 @@ fi
 # same body marker but deliberately gets NO native dependency edge wired,
 # so the daemon must fall back to scanning the issue body to discover the
 # edge — the one thing this seed is meant to demonstrate.
-echo "baton-harness: creating issue C (add docs for hello(), fallback-only) ..."
+echo "codereeve: creating issue C (add docs for hello(), fallback-only) ..."
 _issue_c_title="add docs for hello()"
 ISSUE_C_URL="$(_find_open_issue_url "${_issue_c_title}")" || true
 if [[ -n "${ISSUE_C_URL}" ]]; then
-    echo "baton-harness:   issue C exists, reusing: ${ISSUE_C_URL}"
+    echo "codereeve:   issue C exists, reusing: ${ISSUE_C_URL}"
 else
     ISSUE_C_URL="$(_create_issue_checked \
         --title "${_issue_c_title}" \
         --body "Document the hello() function from the prior issue. blocked_by #${ISSUE_A_NUMBER}" \
         --label "agent-ready" \
         --milestone "${MILESTONE_TITLE}")"
-    echo "baton-harness:   issue C created: ${ISSUE_C_URL}"
+    echo "codereeve:   issue C created: ${ISSUE_C_URL}"
 fi
 
 ISSUE_C_NUMBER="${ISSUE_C_URL##*/}"
 if [[ -z "${ISSUE_C_NUMBER}" || ! "${ISSUE_C_NUMBER}" =~ ^[0-9]+$ ]]; then
-    echo "baton-harness: error: failed to extract issue C number from URL (got: '${ISSUE_C_NUMBER}')" >&2
+    echo "codereeve: error: failed to extract issue C number from URL (got: '${ISSUE_C_NUMBER}')" >&2
     exit 1
 fi
-echo "baton-harness:   issue C: #${ISSUE_C_NUMBER} — ${ISSUE_C_URL} (blocked_by A via body marker only, no native edge)"
+echo "codereeve:   issue C: #${ISSUE_C_NUMBER} — ${ISSUE_C_URL} (blocked_by A via body marker only, no native edge)"
     ;;
 terminal-block)
-    echo "baton-harness: creating terminal-block scenario issue ..."
+    echo "codereeve: creating terminal-block scenario issue ..."
     _terminal_block_title="terminal-block scenario"
     TERMINAL_BLOCK_ISSUE_URL="$(_find_open_issue_url "${_terminal_block_title}")" || true
     if [[ -n "${TERMINAL_BLOCK_ISSUE_URL}" ]]; then
         TERMINAL_BLOCK_ISSUE_NUMBER="${TERMINAL_BLOCK_ISSUE_URL##*/}"
         if [[ -z "${TERMINAL_BLOCK_ISSUE_NUMBER}" || ! "${TERMINAL_BLOCK_ISSUE_NUMBER}" =~ ^[0-9]+$ ]]; then
-            echo "baton-harness: error: failed to extract terminal-block issue number from URL (got: '${TERMINAL_BLOCK_ISSUE_NUMBER}')" >&2
+            echo "codereeve: error: failed to extract terminal-block issue number from URL (got: '${TERMINAL_BLOCK_ISSUE_NUMBER}')" >&2
             exit 1
         fi
 
         _terminal_block_actual_labels="$(gh issue view "${TERMINAL_BLOCK_ISSUE_NUMBER}" --repo "${REPO_SLUG}" \
             --json labels --jq '.labels[].name' 2>&1)" || {
-            echo "baton-harness: error: failed to verify labels on terminal-block issue #${TERMINAL_BLOCK_ISSUE_NUMBER} (${TERMINAL_BLOCK_ISSUE_URL}): ${_terminal_block_actual_labels}" >&2
+            echo "codereeve: error: failed to verify labels on terminal-block issue #${TERMINAL_BLOCK_ISSUE_NUMBER} (${TERMINAL_BLOCK_ISSUE_URL}): ${_terminal_block_actual_labels}" >&2
             exit 1
         }
 
@@ -577,7 +577,7 @@ terminal-block)
         done
 
         if [[ ${#_terminal_block_missing_labels[@]} -gt 0 ]]; then
-            echo "baton-harness: error: existing terminal-block issue #${TERMINAL_BLOCK_ISSUE_NUMBER} (${TERMINAL_BLOCK_ISSUE_URL}) is missing required label(s):" >&2
+            echo "codereeve: error: existing terminal-block issue #${TERMINAL_BLOCK_ISSUE_NUMBER} (${TERMINAL_BLOCK_ISSUE_URL}) is missing required label(s):" >&2
             for _terminal_block_label in "${_terminal_block_missing_labels[@]}"; do
                 echo "  missing: ${_terminal_block_label}" >&2
             done
@@ -585,32 +585,32 @@ terminal-block)
             exit 1
         fi
 
-        echo "baton-harness:   terminal-block issue exists, reusing: ${TERMINAL_BLOCK_ISSUE_URL}"
+        echo "codereeve:   terminal-block issue exists, reusing: ${TERMINAL_BLOCK_ISSUE_URL}"
     else
         TERMINAL_BLOCK_ISSUE_URL="$(_create_issue_checked \
             --title "${_terminal_block_title}" \
             --body "No-dispatch fixture for the terminal-block scenario. This issue is intentionally both agent-ready and blocked and must never be worked." \
             --label "agent-ready" \
             --label "blocked")"
-        echo "baton-harness:   terminal-block issue created: ${TERMINAL_BLOCK_ISSUE_URL}"
+        echo "codereeve:   terminal-block issue created: ${TERMINAL_BLOCK_ISSUE_URL}"
     fi
     ;;
 clean-implement)
-    echo "baton-harness: creating clean-implement scenario issue ..."
+    echo "codereeve: creating clean-implement scenario issue ..."
     _clean_implement_title="clean-implement scenario: add a greet() function"
     CLEAN_IMPLEMENT_ISSUE_URL="$(_find_open_issue_url "${_clean_implement_title}")" || true
     if [[ -n "${CLEAN_IMPLEMENT_ISSUE_URL}" ]]; then
-        echo "baton-harness:   clean-implement issue exists, reusing: ${CLEAN_IMPLEMENT_ISSUE_URL}"
+        echo "codereeve:   clean-implement issue exists, reusing: ${CLEAN_IMPLEMENT_ISSUE_URL}"
     else
         CLEAN_IMPLEMENT_ISSUE_URL="$(_create_issue_checked \
             --title "${_clean_implement_title}" \
             --body "Add a Python file (greet.py) with a greet() function that prints 'greetings'." \
             --label "agent-ready")"
-        echo "baton-harness:   clean-implement issue created: ${CLEAN_IMPLEMENT_ISSUE_URL}"
+        echo "codereeve:   clean-implement issue created: ${CLEAN_IMPLEMENT_ISSUE_URL}"
     fi
     ;;
 block-ambiguity)
-    echo "baton-harness: creating block-ambiguity scenario issue ..."
+    echo "codereeve: creating block-ambiguity scenario issue ..."
     _block_ambiguity_title="block-ambiguity scenario: Add a small in-memory cache utility with eviction and retention guarantees"
     _block_ambiguity_body="$(cat <<'EOF'
 Add a small in-memory cache utility to this project: a function or class
@@ -640,45 +640,45 @@ EOF
 )"
     BLOCK_AMBIGUITY_ISSUE_URL="$(_find_open_issue_url "${_block_ambiguity_title}")" || true
     if [[ -n "${BLOCK_AMBIGUITY_ISSUE_URL}" ]]; then
-        echo "baton-harness:   block-ambiguity issue exists, reusing: ${BLOCK_AMBIGUITY_ISSUE_URL}"
+        echo "codereeve:   block-ambiguity issue exists, reusing: ${BLOCK_AMBIGUITY_ISSUE_URL}"
     else
         BLOCK_AMBIGUITY_ISSUE_URL="$(_create_issue_checked \
             --title "${_block_ambiguity_title}" \
             --body "${_block_ambiguity_body}" \
             --label "agent-ready")"
-        echo "baton-harness:   block-ambiguity issue created: ${BLOCK_AMBIGUITY_ISSUE_URL}"
+        echo "codereeve:   block-ambiguity issue created: ${BLOCK_AMBIGUITY_ISSUE_URL}"
     fi
     ;;
 ci-fail)
-    echo "baton-harness: creating ci-fail scenario issue ..."
+    echo "codereeve: creating ci-fail scenario issue ..."
     _ci_fail_title="ci-fail scenario: add a greet() function"
     CI_FAIL_ISSUE_URL="$(_find_open_issue_url "${_ci_fail_title}")" || true
     if [[ -n "${CI_FAIL_ISSUE_URL}" ]]; then
-        echo "baton-harness:   ci-fail issue exists, reusing: ${CI_FAIL_ISSUE_URL}"
+        echo "codereeve:   ci-fail issue exists, reusing: ${CI_FAIL_ISSUE_URL}"
     else
         CI_FAIL_ISSUE_URL="$(_create_issue_checked \
             --title "${_ci_fail_title}" \
             --body "Add a Python file (greet.py) with a greet() function that prints 'greetings'." \
             --label "agent-ready")"
-        echo "baton-harness:   ci-fail issue created: ${CI_FAIL_ISSUE_URL}"
+        echo "codereeve:   ci-fail issue created: ${CI_FAIL_ISSUE_URL}"
     fi
     ;;
 recovery)
-    echo "baton-harness: recovery scenario seeds no agent-ready issues or milestones"
+    echo "codereeve: recovery scenario seeds no agent-ready issues or milestones"
     ;;
 esac
 
 # ---------------------------------------------------------------------------
 # Write stub CI workflow to the sandbox repo
 #
-# Job names MUST match REQUIRED_CHECKS in src/baton_harness/chain/merge.py:
+# Job names MUST match REQUIRED_CHECKS in src/codereeve/chain/merge.py:
 #   - "Lint (ruff)"
 #   - "Lint (shellcheck)"
 #   - "Test (pytest)"
 #   - "Type check (mypy)"
 # ---------------------------------------------------------------------------
 
-echo "baton-harness: writing stub CI workflow to sandbox repo ..."
+echo "codereeve: writing stub CI workflow to sandbox repo ..."
 
 # Resolve default branch of the sandbox repo
 DEFAULT_BRANCH_FROM_GH=0
@@ -692,12 +692,12 @@ fi
 if [[ -z "${DEFAULT_BRANCH}" ]]; then
     DEFAULT_BRANCH="main"
 fi
-echo "baton-harness:   target branch: ${DEFAULT_BRANCH}"
+echo "codereeve:   target branch: ${DEFAULT_BRANCH}"
 
 # Guard: abort if the local clone is in detached-HEAD state
 # symbolic-ref -q HEAD: exit 0 on a normal OR unborn branch; non-zero only on detached HEAD.
 if ! git -C "${CODEREEVE_PROJECT_ROOT}" symbolic-ref -q HEAD >/dev/null 2>&1; then
-    echo "baton-harness: error: CODEREEVE_PROJECT_ROOT is in detached-HEAD state — check out a branch before running this script" >&2
+    echo "codereeve: error: CODEREEVE_PROJECT_ROOT is in detached-HEAD state — check out a branch before running this script" >&2
     echo "  Example: git -C \"${CODEREEVE_PROJECT_ROOT}\" checkout ${DEFAULT_BRANCH}" >&2
     exit 1
 fi
@@ -705,32 +705,32 @@ fi
 if [[ "${DEFAULT_BRANCH_FROM_GH}" == 1 ]]; then
     _git_output=""
     _git_output="$(git -C "${CODEREEVE_PROJECT_ROOT}" fetch origin "+${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}" 2>&1)" || {
-        echo "baton-harness: error: failed to fetch origin/${DEFAULT_BRANCH}: ${_git_output}" >&2
+        echo "codereeve: error: failed to fetch origin/${DEFAULT_BRANCH}: ${_git_output}" >&2
         exit 1
     }
 
     _current_branch=""
     _current_branch="$(git -C "${CODEREEVE_PROJECT_ROOT}" symbolic-ref --short HEAD 2>&1)" || {
-        echo "baton-harness: error: failed to determine the current branch: ${_current_branch}" >&2
+        echo "codereeve: error: failed to determine the current branch: ${_current_branch}" >&2
         exit 1
     }
 
     if [[ "${_current_branch}" != "${DEFAULT_BRANCH}" ]]; then
         _local_default_branch=""
         _local_default_branch="$(git -C "${CODEREEVE_PROJECT_ROOT}" branch --list --format='%(refname:short)' -- "${DEFAULT_BRANCH}" 2>&1)" || {
-            echo "baton-harness: error: failed to inspect local branch '${DEFAULT_BRANCH}': ${_local_default_branch}" >&2
+            echo "codereeve: error: failed to inspect local branch '${DEFAULT_BRANCH}': ${_local_default_branch}" >&2
             exit 1
         }
 
         _git_output=""
         if [[ -n "${_local_default_branch}" ]]; then
             _git_output="$(git -C "${CODEREEVE_PROJECT_ROOT}" checkout "${DEFAULT_BRANCH}" 2>&1)" || {
-                echo "baton-harness: error: failed to check out default branch '${DEFAULT_BRANCH}': ${_git_output}" >&2
+                echo "codereeve: error: failed to check out default branch '${DEFAULT_BRANCH}': ${_git_output}" >&2
                 exit 1
             }
         else
             _git_output="$(git -C "${CODEREEVE_PROJECT_ROOT}" checkout -b "${DEFAULT_BRANCH}" "origin/${DEFAULT_BRANCH}" 2>&1)" || {
-                echo "baton-harness: error: failed to create default branch '${DEFAULT_BRANCH}' tracking origin/${DEFAULT_BRANCH}: ${_git_output}" >&2
+                echo "codereeve: error: failed to create default branch '${DEFAULT_BRANCH}' tracking origin/${DEFAULT_BRANCH}: ${_git_output}" >&2
                 exit 1
             }
         fi
@@ -738,13 +738,13 @@ if [[ "${DEFAULT_BRANCH_FROM_GH}" == 1 ]]; then
 
     _git_output=""
     _git_output="$(git -C "${CODEREEVE_PROJECT_ROOT}" merge-base --is-ancestor HEAD "origin/${DEFAULT_BRANCH}" 2>&1)" || {
-        echo "baton-harness: error: local '${DEFAULT_BRANCH}' contains commits not present in origin/${DEFAULT_BRANCH}: ${_git_output}" >&2
+        echo "codereeve: error: local '${DEFAULT_BRANCH}' contains commits not present in origin/${DEFAULT_BRANCH}: ${_git_output}" >&2
         exit 1
     }
 
     _git_output=""
     _git_output="$(git -C "${CODEREEVE_PROJECT_ROOT}" merge --ff-only "origin/${DEFAULT_BRANCH}" 2>&1)" || {
-        echo "baton-harness: error: failed to fast-forward '${DEFAULT_BRANCH}' to origin/${DEFAULT_BRANCH}: ${_git_output}" >&2
+        echo "codereeve: error: failed to fast-forward '${DEFAULT_BRANCH}' to origin/${DEFAULT_BRANCH}: ${_git_output}" >&2
         exit 1
     }
 fi
@@ -757,7 +757,7 @@ WORKFLOW_FILE="${WORKFLOW_DIR}/ci.yml"
 if [[ "${SCENARIO}" == "ci-fail" ]]; then
     read -r -d '' WORKFLOW_CONTENT <<'YAML' || true
 # Stub CI workflow for codereeve daemon smoke testing.
-# Job names must match REQUIRED_CHECKS in baton_harness/chain/merge.py exactly.
+# Job names must match REQUIRED_CHECKS in codereeve/chain/merge.py exactly.
 # Every job exits 0 EXCEPT Test (pytest), which intentionally exits 1
 # to produce a deterministic CI_FAILED outcome for the ci-fail scenario.
 name: CI
@@ -794,7 +794,7 @@ YAML
 else
     read -r -d '' WORKFLOW_CONTENT <<'YAML' || true
 # Stub CI workflow for codereeve daemon smoke testing.
-# Job names must match REQUIRED_CHECKS in baton_harness/chain/merge.py exactly.
+# Job names must match REQUIRED_CHECKS in codereeve/chain/merge.py exactly.
 # Each job exits 0 — sufficient for the CI gate to pass.
 name: CI
 
@@ -834,11 +834,11 @@ printf '%s\n' "${WORKFLOW_CONTENT}" > "${WORKFLOW_FILE}"
 
 git -C "${CODEREEVE_PROJECT_ROOT}" add ".github/workflows/ci.yml"
 if git -C "${CODEREEVE_PROJECT_ROOT}" diff --cached --quiet -- ".github/workflows/ci.yml"; then
-    echo "baton-harness:   ci.yml unchanged, skipping commit"
+    echo "codereeve:   ci.yml unchanged, skipping commit"
 else
     git -C "${CODEREEVE_PROJECT_ROOT}" commit -m "chore: add stub CI workflow for codereeve daemon smoke test" -- .github/workflows/ci.yml  # -- <path>: never sweep a pre-staged index into the seed commit
     git -C "${CODEREEVE_PROJECT_ROOT}" push -u origin HEAD:"${DEFAULT_BRANCH}"
-    echo "baton-harness:   ci.yml committed and pushed to sandbox"
+    echo "codereeve:   ci.yml committed and pushed to sandbox"
 fi
 
 # ---------------------------------------------------------------------------
@@ -848,46 +848,46 @@ fi
 # this entry, `gh pr create` emits "Warning: 1 uncommitted change".
 # ---------------------------------------------------------------------------
 
-echo "baton-harness: seeding .symphony/ into sandbox .gitignore ..."
+echo "codereeve: seeding .symphony/ into sandbox .gitignore ..."
 
 GITIGNORE_FILE="${CODEREEVE_PROJECT_ROOT}/.gitignore"
 GITIGNORE_SEEDED=0
 
 if [[ ! -f "${GITIGNORE_FILE}" ]]; then
     printf '.symphony/\n' > "${GITIGNORE_FILE}"
-    echo "baton-harness:   .gitignore created with .symphony/ entry"
+    echo "codereeve:   .gitignore created with .symphony/ entry"
     GITIGNORE_SEEDED=1
 elif grep -qxF '.symphony/' "${GITIGNORE_FILE}"; then
-    echo "baton-harness:   .symphony/ already in .gitignore, skipping"
+    echo "codereeve:   .symphony/ already in .gitignore, skipping"
 else
     if [[ -s "${GITIGNORE_FILE}" && -n "$(tail -c1 "${GITIGNORE_FILE}")" ]]; then
         printf '\n' >> "${GITIGNORE_FILE}"
     fi
     printf '%s\n' '.symphony/' >> "${GITIGNORE_FILE}"
-    echo "baton-harness:   .symphony/ appended to .gitignore"
+    echo "codereeve:   .symphony/ appended to .gitignore"
     GITIGNORE_SEEDED=1
 fi
 
 # Also seed .codereeve/ (runlog dir) into the sandbox .gitignore.
 if grep -qxF '.codereeve/' "${GITIGNORE_FILE}"; then
-    echo "baton-harness:   .codereeve/ already in .gitignore, skipping"
+    echo "codereeve:   .codereeve/ already in .gitignore, skipping"
 else
     if [[ -s "${GITIGNORE_FILE}" && -n "$(tail -c1 "${GITIGNORE_FILE}")" ]]; then
         printf '\n' >> "${GITIGNORE_FILE}"
     fi
     printf '%s\n' '.codereeve/' >> "${GITIGNORE_FILE}"
-    echo "baton-harness:   .codereeve/ appended to .gitignore"
+    echo "codereeve:   .codereeve/ appended to .gitignore"
     GITIGNORE_SEEDED=1
 fi
 
 if [[ "${GITIGNORE_SEEDED}" == 1 ]]; then
     git -C "${CODEREEVE_PROJECT_ROOT}" add ".gitignore"
     if git -C "${CODEREEVE_PROJECT_ROOT}" diff --cached --quiet -- ".gitignore"; then
-        echo "baton-harness:   .gitignore unchanged, skipping commit"
+        echo "codereeve:   .gitignore unchanged, skipping commit"
     else
         git -C "${CODEREEVE_PROJECT_ROOT}" commit -m "chore: gitignore .symphony/ daemon state" -- .gitignore  # -- <path>: never sweep a pre-staged index into the seed commit
         git -C "${CODEREEVE_PROJECT_ROOT}" push -u origin HEAD:"${DEFAULT_BRANCH}"
-        echo "baton-harness:   .gitignore committed and pushed to sandbox"
+        echo "codereeve:   .gitignore committed and pushed to sandbox"
     fi
 fi
 
@@ -896,10 +896,10 @@ fi
 # ---------------------------------------------------------------------------
 
 _bh_prompt_and_write_sandbox_config() {
-    echo "baton-harness: writing sandbox config to ${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env ..."
+    echo "codereeve: writing sandbox config to ${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env ..."
 
     if [[ "${CODEREEVE_SETUP_NO_PROMPT:-0}" == "1" || ! -t 0 || ! -t 1 ]]; then
-        echo "baton-harness: error: interactive prompts required to write .codereeve/config.env" >&2
+        echo "codereeve: error: interactive prompts required to write .codereeve/config.env" >&2
         echo "  Re-run in a terminal with stdin/stdout attached and without CODEREEVE_SETUP_NO_PROMPT=1." >&2
         exit 1
     fi
@@ -908,40 +908,40 @@ _bh_prompt_and_write_sandbox_config() {
     read -r -p "  CODEREEVE_GITHUB_APP_INSTALLATION_ID (GitHub App installation numeric ID): " _bh_github_app_installation_id
     while true; do
         if ! read -r -p "  CODEREEVE_GITHUB_APP_KEY_PROVIDER (bws/file): " _bh_app_key_provider; then
-            echo "baton-harness: error: could not read App private-key provider" >&2
+            echo "codereeve: error: could not read App private-key provider" >&2
             return 1
         fi
         case "${_bh_app_key_provider}" in
             bws|file) break ;;
-            *) echo "baton-harness: error: App private-key provider must be bws or file" >&2 ;;
+            *) echo "codereeve: error: App private-key provider must be bws or file" >&2 ;;
         esac
     done
     if [[ "${_bh_app_key_provider}" == bws ]]; then
         local _bh_uuid_re='^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'
         while true; do
             if ! read -r -p "  BWS_PEM_SECRET_ID (UUID of GitHub App PEM secret in BWS): " _bws_pem_secret_id; then
-                echo "baton-harness: error: could not read BWS PEM secret UUID" >&2
+                echo "codereeve: error: could not read BWS PEM secret UUID" >&2
                 return 1
             fi
             if [[ "${_bws_pem_secret_id}" =~ ${_bh_uuid_re} ]]; then
                 break
             fi
-            echo "baton-harness: error: BWS_PEM_SECRET_ID must be a valid UUID" >&2
+            echo "codereeve: error: BWS_PEM_SECRET_ID must be a valid UUID" >&2
         done
         _bh_app_key_source="export BWS_PEM_SECRET_ID='${_bws_pem_secret_id}'"
     else
         while true; do
             if ! read -r -p "  CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE (absolute path to secured PEM file): " _bh_app_key_file; then
-                echo "baton-harness: error: could not read App private-key file path" >&2
+                echo "codereeve: error: could not read App private-key file path" >&2
                 return 1
             fi
             case "${_bh_app_key_file}" in
                 *"'"*)
-                    echo "baton-harness: error: App private-key file path must not contain a single quote" >&2
+                    echo "codereeve: error: App private-key file path must not contain a single quote" >&2
                     ;;
                 /*) break ;;
                 *)
-                    echo "baton-harness: error: App private-key file must be an absolute path beginning with '/'" >&2
+                    echo "codereeve: error: App private-key file must be an absolute path beginning with '/'" >&2
                     ;;
             esac
         done
@@ -952,7 +952,7 @@ _bh_prompt_and_write_sandbox_config() {
 
     mkdir -p "${CODEREEVE_PROJECT_ROOT}/.codereeve"
     cat > "${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env" <<EOF
-# .codereeve/config.env — Sandbox configuration for baton-harness.
+# .codereeve/config.env — Sandbox configuration for CodeReeve.
 # Generated by bin/init-sandbox.sh. Edit as needed.
 # Required:
 export CODEREEVE_REPO_OWNER=${CODEREEVE_REPO_OWNER}
@@ -968,7 +968,7 @@ export BWS_GH_TOKEN_SECRET_ID=${_bws_gh_token_secret_id}
 export BWS_HEARTBEAT_PING_URL_SECRET_ID=${_bws_heartbeat_ping_url_secret_id}
 EOF
 
-    echo "baton-harness: .codereeve/config.env written to ${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env"
+    echo "codereeve: .codereeve/config.env written to ${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env"
 }
 
 if ! _bh_resolve_config_with_reuse_prompt "${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env" _bh_prompt_and_write_sandbox_config; then
@@ -980,7 +980,7 @@ fi
 # ---------------------------------------------------------------------------
 
 echo ""
-echo "baton-harness: sandbox initialisation complete."
+echo "codereeve: sandbox initialisation complete."
 echo ""
 echo "  Sandbox repo:    ${REPO_SLUG}"
 echo "  Local clone:     ${CODEREEVE_PROJECT_ROOT}"

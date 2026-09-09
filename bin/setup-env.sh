@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# bin/setup-env.sh — Harness-side environment setup
+# bin/setup-env.sh — CodeReeve environment setup
 #
-# Creates the Python venv and installs the baton-harness package so that
+# Creates the Python venv and installs the CodeReeve package so that
 # codereeve daemon is available.  Safe to re-run (idempotent).
 #
 # Usage:
@@ -28,8 +28,8 @@ usage() {
     cat <<'EOF'
 Usage: bin/setup-env.sh [--help|-h]
 
-Sets up the Python virtual environment and installs the baton-harness
-package (including codereeve daemon entry point) using uv.
+Sets up the Python virtual environment and installs the CodeReeve package
+(including the codereeve daemon entry point) using uv.
 
 Steps performed:
   1. Checks that uv is on PATH
@@ -82,7 +82,7 @@ if [[ "${1-}" == "--help" || "${1-}" == "-h" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Resolve the harness repo root from the script's own location
+# Resolve the CodeReeve repo root from the script's own location
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -97,7 +97,7 @@ _codereeve_bootstrap_alias CODEREEVE_SETUP_NO_PROMPT BH_SETUP_NO_PROMPT
 # ---------------------------------------------------------------------------
 
 if ! command -v uv &>/dev/null; then
-    echo "baton-harness: error: uv not found on PATH" >&2
+    echo "codereeve: error: uv not found on PATH" >&2
     echo "  Install uv with:" >&2
     echo "    curl -LsSf https://astral.sh/uv/install.sh | sh" >&2
     echo "  Then restart your shell and re-run this script." >&2
@@ -111,7 +111,7 @@ fi
 _bws_manual_url="https://bitwarden.com/help/secrets-manager-cli/"
 
 _print_optional_bws_guidance() {
-    echo "baton-harness: warning: bws not found on PATH; continuing because BWS is optional until a provider is selected." >&2
+    echo "codereeve: warning: bws not found on PATH; continuing because BWS is optional until a provider is selected." >&2
     echo "  Install bws v${BWS_INSTALL_VERSION} only when CODEREEVE_GITHUB_APP_KEY_PROVIDER=bws or an optional PAT/heartbeat BWS secret locator is configured." >&2
     echo "  Install bws manually: ${_bws_manual_url}" >&2
 }
@@ -129,7 +129,7 @@ _install_bws() {
         command -v shasum &>/dev/null || _missing_tools+=("shasum")
     fi
     if [[ "${#_missing_tools[@]}" -gt 0 ]]; then
-        echo "baton-harness: error: bws install requires: ${_missing_tools[*]}" >&2
+        echo "codereeve: error: bws install requires: ${_missing_tools[*]}" >&2
         echo "  Install the missing tool(s) and re-run this script." >&2
         exit 1
     fi
@@ -146,7 +146,7 @@ _install_bws() {
                 aarch64|arm64)
                     _asset_stem="bws-aarch64-unknown-linux-gnu" ;;
                 *)
-                    echo "baton-harness: error: unsupported Linux architecture: ${_arch}" >&2
+                    echo "codereeve: error: unsupported Linux architecture: ${_arch}" >&2
                     echo "  Install bws manually: ${_bws_manual_url}" >&2
                     exit 1 ;;
             esac
@@ -154,7 +154,7 @@ _install_bws() {
         Darwin)
             _asset_stem="bws-macos-universal" ;;
         *)
-            echo "baton-harness: error: auto-install supported only on Linux/macOS" >&2
+            echo "codereeve: error: auto-install supported only on Linux/macOS" >&2
             echo "  Install bws manually: ${_bws_manual_url}" >&2
             exit 1 ;;
     esac
@@ -174,16 +174,16 @@ _install_bws() {
     local _zip_path="${_tmpdir}/${_asset_name}"
     local _checksum_path="${_tmpdir}/bws-sha256-checksums-${_ver}.txt"
 
-    echo "baton-harness: downloading bws v${_ver} ..."
+    echo "codereeve: downloading bws v${_ver} ..."
     curl -fSL --proto '=https' --tlsv1.2 -o "${_zip_path}" "${_zip_url}"
     curl -fSL --proto '=https' --tlsv1.2 -o "${_checksum_path}" "${_checksum_url}"
 
-    echo "baton-harness: verifying checksum ..."
+    echo "codereeve: verifying checksum ..."
     # Extract the matching line; guard grep exit so we can give a clear error.
     local _checksum_line
     _checksum_line="$(grep -F "${_asset_name}" "${_checksum_path}" || true)"
     if [[ -z "${_checksum_line}" ]]; then
-        echo "baton-harness: error: checksum entry for ${_asset_name} not found in checksums file" >&2
+        echo "codereeve: error: checksum entry for ${_asset_name} not found in checksums file" >&2
         exit 1
     fi
     local _checksum_verify_line="${_checksum_line%"${_asset_name}"}${_zip_path}"
@@ -193,7 +193,7 @@ _install_bws() {
         printf '%s' "${_checksum_verify_line}" | shasum -a 256 -c - >/dev/null
     fi
 
-    echo "baton-harness: installing bws to ~/.local/bin ..."
+    echo "codereeve: installing bws to ~/.local/bin ..."
     unzip -q "${_zip_path}" -d "${_tmpdir}"
     mkdir -p "${HOME}/.local/bin"
     mv "${_tmpdir}/bws" "${HOME}/.local/bin/bws"
@@ -202,7 +202,7 @@ _install_bws() {
     # Clear bash's command-name cache before PATH check.
     hash -r 2>/dev/null || true
     if ! command -v bws &>/dev/null; then
-        echo "baton-harness: ~/.local/bin/bws installed, but ~/.local/bin is not on your PATH." >&2
+        echo "codereeve: ~/.local/bin/bws installed, but ~/.local/bin is not on your PATH." >&2
         echo "  Add to your shell rc:" >&2
         echo "    export PATH=\"\$HOME/.local/bin:\$PATH\"" >&2
         echo "  Then re-run bin/setup-env.sh." >&2
@@ -212,22 +212,22 @@ _install_bws() {
     # Final sanity check.
     local _bws_ver
     _bws_ver="$(bws --version 2>&1)" || {
-        echo "baton-harness: error: bws installed but 'bws --version' failed" >&2
+        echo "codereeve: error: bws installed but 'bws --version' failed" >&2
         exit 1
     }
-    echo "baton-harness: bws installed successfully (${_bws_ver})"
+    echo "codereeve: bws installed successfully (${_bws_ver})"
 }
 
 if command -v bws &>/dev/null; then
-    echo "baton-harness: bws already on PATH ($(bws --version 2>&1))"
+    echo "codereeve: bws already on PATH ($(bws --version 2>&1))"
 elif [[ -t 0 && -t 1 && "${CODEREEVE_SETUP_NO_PROMPT:-0}" != "1" ]]; then
     echo ""
-    read -r -p "baton-harness: bws not found. Install Bitwarden Secrets CLI v${BWS_INSTALL_VERSION} to ~/.local/bin? [Y/n] " _bws_reply || _bws_reply="n"
+    read -r -p "codereeve: bws not found. Install Bitwarden Secrets CLI v${BWS_INSTALL_VERSION} to ~/.local/bin? [Y/n] " _bws_reply || _bws_reply="n"
     case "${_bws_reply}" in
         [Yy]|"")
             _install_bws ;;
         *)
-            echo "baton-harness: bws install declined." >&2
+            echo "codereeve: bws install declined." >&2
             _print_optional_bws_guidance ;;
     esac
 else
@@ -253,7 +253,7 @@ _install_gh() {
         command -v shasum &>/dev/null || _missing_tools+=("shasum")
     fi
     if [[ "${#_missing_tools[@]}" -gt 0 ]]; then
-        echo "baton-harness: error: gh install requires: ${_missing_tools[*]}" >&2
+        echo "codereeve: error: gh install requires: ${_missing_tools[*]}" >&2
         echo "  Install the missing tool(s) and re-run this script." >&2
         exit 1
     fi
@@ -270,7 +270,7 @@ _install_gh() {
                 aarch64|arm64)
                     _asset_stem="linux_arm64" ;;
                 *)
-                    echo "baton-harness: error: unsupported Linux architecture: ${_arch}" >&2
+                    echo "codereeve: error: unsupported Linux architecture: ${_arch}" >&2
                     echo "  Install gh manually: ${_gh_manual_url}" >&2
                     exit 1 ;;
             esac
@@ -284,7 +284,7 @@ _install_gh() {
             esac
             ;;
         *)
-            echo "baton-harness: error: gh auto-install supported only on Linux/macOS" >&2
+            echo "codereeve: error: gh auto-install supported only on Linux/macOS" >&2
             echo "  Install gh manually: ${_gh_manual_url}" >&2
             exit 1 ;;
     esac
@@ -304,15 +304,15 @@ _install_gh() {
     local _tar_path="${_tmpdir}/${_asset_name}"
     local _checksum_path="${_tmpdir}/gh_${_ver}_checksums.txt"
 
-    echo "baton-harness: downloading gh v${_ver} ..."
+    echo "codereeve: downloading gh v${_ver} ..."
     curl -fSL --proto '=https' --tlsv1.2 -o "${_tar_path}" "${_tar_url}"
     curl -fSL --proto '=https' --tlsv1.2 -o "${_checksum_path}" "${_checksum_url}"
 
-    echo "baton-harness: verifying checksum ..."
+    echo "codereeve: verifying checksum ..."
     local _checksum_line
     _checksum_line="$(grep -F "${_asset_name}" "${_checksum_path}" || true)"
     if [[ -z "${_checksum_line}" ]]; then
-        echo "baton-harness: error: checksum entry for ${_asset_name} not found in checksums file" >&2
+        echo "codereeve: error: checksum entry for ${_asset_name} not found in checksums file" >&2
         exit 1
     fi
     local _checksum_verify_line="${_checksum_line%"${_asset_name}"}${_tar_path}"
@@ -322,13 +322,13 @@ _install_gh() {
         printf '%s' "${_checksum_verify_line}" | shasum -a 256 -c - >/dev/null
     fi
 
-    echo "baton-harness: installing gh to ~/.local/bin ..."
+    echo "codereeve: installing gh to ~/.local/bin ..."
     tar -xzf "${_tar_path}" -C "${_tmpdir}"
     # The tarball extracts to gh_<ver>_<plat>/bin/gh — locate the binary.
     local _gh_binary
     _gh_binary="${_tmpdir}/gh_${_ver}_${_asset_stem}/bin/gh"
     if [[ ! -f "${_gh_binary}" ]]; then
-        echo "baton-harness: error: expected binary not found at ${_gh_binary}" >&2
+        echo "codereeve: error: expected binary not found at ${_gh_binary}" >&2
         exit 1
     fi
     mkdir -p "${HOME}/.local/bin"
@@ -338,7 +338,7 @@ _install_gh() {
     # Clear bash's command-name cache before PATH check.
     hash -r 2>/dev/null || true
     if ! command -v gh &>/dev/null; then
-        echo "baton-harness: ~/.local/bin/gh installed, but ~/.local/bin is not on your PATH." >&2
+        echo "codereeve: ~/.local/bin/gh installed, but ~/.local/bin is not on your PATH." >&2
         echo "  Add to your shell rc:" >&2
         echo "    export PATH=\"\$HOME/.local/bin:\$PATH\"" >&2
         echo "  Then re-run bin/setup-env.sh." >&2
@@ -348,27 +348,27 @@ _install_gh() {
     # Final sanity check.
     local _gh_ver
     _gh_ver="$(gh --version 2>&1 | head -1)" || {
-        echo "baton-harness: error: gh installed but 'gh --version' failed" >&2
+        echo "codereeve: error: gh installed but 'gh --version' failed" >&2
         exit 1
     }
-    echo "baton-harness: gh installed successfully (${_gh_ver})"
+    echo "codereeve: gh installed successfully (${_gh_ver})"
 }
 
 if command -v gh &>/dev/null; then
-    echo "baton-harness: gh already on PATH ($(gh --version 2>&1 | head -1))"
+    echo "codereeve: gh already on PATH ($(gh --version 2>&1 | head -1))"
 elif [[ -t 0 && -t 1 && "${CODEREEVE_SETUP_NO_PROMPT:-0}" != "1" ]]; then
     echo ""
-    read -r -p "baton-harness: gh not found. Install GitHub CLI v${GH_INSTALL_VERSION} to ~/.local/bin? [Y/n] " _gh_reply || _gh_reply="n"
+    read -r -p "codereeve: gh not found. Install GitHub CLI v${GH_INSTALL_VERSION} to ~/.local/bin? [Y/n] " _gh_reply || _gh_reply="n"
     case "${_gh_reply}" in
         [Yy]|"")
             _install_gh ;;
         *)
-            echo "baton-harness: gh install declined." >&2
+            echo "codereeve: gh install declined." >&2
             echo "  Install gh manually: ${_gh_manual_url}" >&2
             exit 1 ;;
     esac
 else
-    echo "baton-harness: error: gh not found on PATH" >&2
+    echo "codereeve: error: gh not found on PATH" >&2
     echo "  Install gh manually: ${_gh_manual_url}" >&2
     exit 1
 fi
@@ -382,18 +382,18 @@ _claude_manual_url="https://docs.claude.com/en/docs/claude-code/setup"
 _install_claude() {
     # Preflight: required tools
     if ! command -v curl &>/dev/null; then
-        echo "baton-harness: error: claude install requires: curl" >&2
+        echo "codereeve: error: claude install requires: curl" >&2
         echo "  Install curl and re-run this script." >&2
         exit 1
     fi
 
-    echo "baton-harness: installing claude via official installer ..."
+    echo "codereeve: installing claude via official installer ..."
     curl -fsSL https://claude.ai/install.sh | bash
 
     # Clear bash's command-name cache before PATH check.
     hash -r 2>/dev/null || true
     if ! command -v claude &>/dev/null; then
-        echo "baton-harness: claude installer ran, but claude is not on your PATH." >&2
+        echo "codereeve: claude installer ran, but claude is not on your PATH." >&2
         echo "  The installer typically places claude in ~/.local/bin or ~/.claude/local." >&2
         echo "  Add the appropriate directory to your PATH:" >&2
         echo "    export PATH=\"\$HOME/.local/bin:\$HOME/.claude/local:\$PATH\"" >&2
@@ -404,27 +404,27 @@ _install_claude() {
     # Final sanity check.
     local _claude_ver
     _claude_ver="$(claude --version 2>&1)" || {
-        echo "baton-harness: error: claude installed but 'claude --version' failed" >&2
+        echo "codereeve: error: claude installed but 'claude --version' failed" >&2
         exit 1
     }
-    echo "baton-harness: claude installed successfully (${_claude_ver})"
+    echo "codereeve: claude installed successfully (${_claude_ver})"
 }
 
 if command -v claude &>/dev/null; then
-    echo "baton-harness: claude already on PATH ($(claude --version 2>&1))"
+    echo "codereeve: claude already on PATH ($(claude --version 2>&1))"
 elif [[ -t 0 && -t 1 && "${CODEREEVE_SETUP_NO_PROMPT:-0}" != "1" ]]; then
     echo ""
-    read -r -p "baton-harness: claude not found. Install Claude Code CLI via official installer? [Y/n] " _claude_reply || _claude_reply="n"
+    read -r -p "codereeve: claude not found. Install Claude Code CLI via official installer? [Y/n] " _claude_reply || _claude_reply="n"
     case "${_claude_reply}" in
         [Yy]|"")
             _install_claude ;;
         *)
-            echo "baton-harness: claude install declined." >&2
+            echo "codereeve: claude install declined." >&2
             echo "  Install claude manually: ${_claude_manual_url}" >&2
             exit 1 ;;
     esac
 else
-    echo "baton-harness: error: claude not found on PATH" >&2
+    echo "codereeve: error: claude not found on PATH" >&2
     echo "  Install claude manually: ${_claude_manual_url}" >&2
     exit 1
 fi
@@ -436,9 +436,9 @@ fi
 VENV_DIR="${CODEREEVE_ROOT}/.venv"
 
 if [[ -d "${VENV_DIR}" ]]; then
-    echo "baton-harness: venv already present, skipping creation"
+    echo "codereeve: venv already present, skipping creation"
 else
-    echo "baton-harness: creating venv at ${VENV_DIR} ..."
+    echo "codereeve: creating venv at ${VENV_DIR} ..."
     uv venv "${VENV_DIR}"
 fi
 
@@ -446,7 +446,7 @@ fi
 # Install the package (always run — uv is idempotent here)
 # ---------------------------------------------------------------------------
 
-echo "baton-harness: syncing locked editable package with dev extras ..."
+echo "codereeve: syncing locked editable package with dev extras ..."
 CODEREEVE_BUILD_DEVELOPMENT=1 uv sync --project "${CODEREEVE_ROOT}" --locked --extra dev
 
 # ---------------------------------------------------------------------------
@@ -454,10 +454,10 @@ CODEREEVE_BUILD_DEVELOPMENT=1 uv sync --project "${CODEREEVE_ROOT}" --locked --e
 # ---------------------------------------------------------------------------
 
 if command -v prek &>/dev/null; then
-    echo "baton-harness: installing git pre-commit hook with prek ..."
+    echo "codereeve: installing git pre-commit hook with prek ..."
     prek install
 else
-    echo "baton-harness: warning: prek not found on PATH; skipping git pre-commit hook installation" >&2
+    echo "codereeve: warning: prek not found on PATH; skipping git pre-commit hook installation" >&2
     echo "  Install prek with pip, cargo, npm, or a supported package manager:" >&2
     echo "    https://github.com/j178/prek#installation" >&2
     echo "  Then restart your shell and re-run this script." >&2
@@ -476,7 +476,7 @@ if [[ -f "${_codereeve_daemon_win}" ]]; then
 elif [[ -f "${_codereeve_daemon_posix}" ]]; then
     _codereeve_daemon_found="${_codereeve_daemon_posix}"
 else
-    echo "baton-harness: error: codereeve daemon not found after install" >&2
+    echo "codereeve: error: codereeve daemon not found after install" >&2
     echo "  Expected one of:" >&2
     echo "    ${_codereeve_daemon_win}" >&2
     echo "    ${_codereeve_daemon_posix}" >&2
@@ -486,14 +486,14 @@ else
     exit 1
 fi
 
-echo "baton-harness: codereeve daemon found at ${_codereeve_daemon_found}"
+echo "codereeve: codereeve daemon found at ${_codereeve_daemon_found}"
 
 # ---------------------------------------------------------------------------
 # Print activation hint
 # ---------------------------------------------------------------------------
 
 echo ""
-echo "baton-harness: setup complete."
+echo "codereeve: setup complete."
 echo ""
 echo "  Activate the venv before running codereeve daemon manually:"
 echo ""
@@ -521,12 +521,12 @@ unset _codereeve_load_config
 
 _bh_prompt_and_write_host_config() {
     if [[ "${CODEREEVE_SETUP_NO_PROMPT:-0}" == "1" || ! -t 0 || ! -t 1 ]]; then
-        echo "baton-harness: per-host config setup requires an interactive terminal; skipping host.env." >&2
+        echo "codereeve: per-host config setup requires an interactive terminal; skipping host.env." >&2
         return 0
     fi
     local _bh_project_root
     echo ""
-    echo "baton-harness: setting up per-host config at ${HOST_ENV}"
+    echo "codereeve: setting up per-host config at ${HOST_ENV}"
     read -r -p "  CODEREEVE_PROJECT_ROOT (absolute path to local sandbox clone): " _bh_project_root
     if [[ -z "${_bh_project_root}" ]]; then
         echo "  skipped — re-run bin/setup-env.sh to set it, or export CODEREEVE_PROJECT_ROOT manually"
@@ -534,7 +534,7 @@ _bh_prompt_and_write_host_config() {
         mkdir -p "${HOST_CONFIG_DIR}"
         chmod 700 "${HOST_CONFIG_DIR}"
         cat > "${HOST_ENV}" <<EOF
-# baton-harness per-host config — written by bin/setup-env.sh
+# CodeReeve per-host config — written by bin/setup-env.sh
 # Sourced automatically by bin/run-daemon.sh at startup.
 export CODEREEVE_PROJECT_ROOT="${_bh_project_root}"
 EOF
@@ -550,7 +550,7 @@ _bh_resolve_config_with_reuse_prompt "${HOST_ENV}" _bh_prompt_and_write_host_con
 # ---------------------------------------------------------------------------
 
 if [[ -n "${BWS_ACCESS_TOKEN:-}" ]]; then
-    echo "baton-harness: BWS_ACCESS_TOKEN already set in environment; it is used only when the selected App-key provider or optional PAT/heartbeat secret locators use BWS"
+    echo "codereeve: BWS_ACCESS_TOKEN already set in environment; it is used only when the selected App-key provider or optional PAT/heartbeat secret locators use BWS"
 else
-    echo "baton-harness: warning: BWS_ACCESS_TOKEN not set — needed only when the selected App-key provider or optional PAT/heartbeat secret locators use BWS. When needed, export it for manual bin/run-daemon.sh runs or place it in /etc/bh-daemon/secrets.env (mode 600) for systemd. Do not store it in ~/.config/codereeve/host.env. A file-only deployment needs neither bws nor this token." >&2
+    echo "codereeve: warning: BWS_ACCESS_TOKEN not set — needed only when the selected App-key provider or optional PAT/heartbeat secret locators use BWS. When needed, export it for manual bin/run-daemon.sh runs or place it in /etc/bh-daemon/secrets.env (mode 600) for systemd. Do not store it in ~/.config/codereeve/host.env. A file-only deployment needs neither bws nor this token." >&2
 fi

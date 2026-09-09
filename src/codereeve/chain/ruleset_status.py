@@ -139,7 +139,7 @@ class RulesetConfigError(Exception):
     """Raised when the compare-keys config is missing, malformed, or empty.
 
     Fail-fast posture: an absent or invalid compare-keys config means the
-    harness cannot safely determine ruleset drift, so the preflight gate
+    CodeReeve cannot safely determine ruleset drift, so the preflight gate
     refuses to proceed rather than silently over-approving.
     """
 
@@ -341,7 +341,7 @@ def _render_main_config(admin_role_id: int) -> dict[str, object]:
         admin_role_id: Numeric RepositoryRole id for the admin bypass actor.
 
     Returns:
-        Parsed dict with ``__BH_ADMIN_ROLE_ID__`` placeholder replaced.
+        Parsed dict with ``__CODEREEVE_ADMIN_ROLE_ID__`` placeholder replaced.
     """
     body: dict[str, object] = json.loads(_MAIN_CFG.read_text(encoding="utf-8"))
     body["bypass_actors"][0]["actor_id"] = admin_role_id  # type: ignore[index]
@@ -352,7 +352,7 @@ def _render_feature_config(app_id: str) -> dict[str, object]:
     """Load the feature ruleset config and substitute the app-id placeholder.
 
     The config stores the placeholder as the JSON string
-    ``"__BH_GITHUB_APP_ID__"``; this function replaces it with the
+    ``"__CODEREEVE_GITHUB_APP_ID__"``; this function replaces it with the
     numeric integer value so comparisons against the live API response
     work correctly.
 
@@ -360,7 +360,8 @@ def _render_feature_config(app_id: str) -> dict[str, object]:
         app_id: Numeric GitHub App ID as a string (e.g. ``"111"``).
 
     Returns:
-        Parsed dict with ``__BH_GITHUB_APP_ID__`` replaced by ``int(app_id)``.
+        Parsed dict with ``__CODEREEVE_GITHUB_APP_ID__`` replaced by
+        ``int(app_id)``.
     """
     body: dict[str, object] = json.loads(
         _FEATURE_CFG.read_text(encoding="utf-8")
