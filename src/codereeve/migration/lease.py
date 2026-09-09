@@ -118,10 +118,27 @@ class WriterLease:
         if lease is not None:
             if lease._fd is None or lease.path != path.absolute():
                 raise LeaseError("invalid borrowed writer lease")
+            lease.verify_identity()
             yield lease
         else:
             with cls.acquire(path, purpose=purpose) as owned:
                 yield owned
+
+    def verify_identity(self) -> int:
+        """Prove the retained descriptor still owns the named regular inode."""
+        if self._fd is None:
+            raise LeaseError("closed writer lease identity")
+        try:
+            actual = os.fstat(self._fd)
+            named = self.path.lstat()
+            if not stat.S_ISREG(named.st_mode) or (
+                actual.st_dev,
+                actual.st_ino,
+            ) != (named.st_dev, named.st_ino):
+                raise LeaseError("writer lease identity changed")
+            return actual.st_ino
+        except OSError:
+            raise LeaseError("writer lease identity unavailable") from None
 
     def close(self) -> None:
         """Release ownership even when the explicit unlock operation fails."""

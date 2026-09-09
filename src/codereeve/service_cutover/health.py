@@ -13,7 +13,7 @@ from pathlib import Path
 from codereeve.chain.doctor import CATALOG, CheckStatus, Phase, Severity
 from codereeve.provenance import Provenance, validate_provenance
 
-from .model import CutoverError
+from .model import CutoverError, service_path
 
 
 def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -240,7 +240,7 @@ def probe_service_context(
         expected = {
             "HOME": home,
             "CODEREEVE_PROJECT_ROOT": project,
-            "PATH": environment + "/bin:/usr/local/bin:/usr/bin:/bin",
+            "PATH": service_path(environment, home),
         }
         if (
             selection not in {"compatible", "canonical"}
@@ -311,6 +311,9 @@ def probe_service_context(
             "schema_version": 1,
             "uid": uid,
             "heartbeat_path": sidecar.absolute().as_posix(),
+            "runtime_paths": sorted(
+                {p.absolute().as_posix() for p in (*paths, sidecar)}
+            ),
             "state_path": state.absolute().as_posix(),
             "config_path": context.config_path.absolute().as_posix(),
         }

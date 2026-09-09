@@ -949,3 +949,60 @@ def test_quarantine_flushes_runtime_files_and_tree_before_completion(
     journal.record = check_completion
     journal.restore_publication()
     assert (target / "log").read_bytes() == b"runtime writes"
+
+
+@pytest.mark.parametrize("operation", ["stage_secrets", "prepare_gate"])
+def test_private_preparation_effects_are_journaled_before_mutation(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    """Allow private staging before canonical publication."""
+    journal = make_journal(tmp_path)
+    if operation == "prepare_gate":
+        advance(journal, "migrated")
+    metadata = {
+        "operation": operation,
+        "path": str(tmp_path / "owned"),
+        "digest": "a" * 64,
+    }
+    journal.record("effect_intent", metadata)
+    opened = module.CutoverJournal.open(journal.path, storage=journal.storage)
+    assert opened.pending == metadata
+    opened.record("effect_done", metadata)
+
+
+def test_original_effective_selection_attestation_is_retained(
+    tmp_path: Path,
+) -> None:
+    """Persist full loaded environment evidence as a digest without values."""
+    from dataclasses import replace
+
+    assert "environment_digest" in model.UnitState.__dataclass_fields__
+    journal = make_journal(tmp_path)
+    old = model.UnitState(
+        "bh-daemon.service", "not-found", "inactive", "", 0, "", "", "", ()
+    )
+    old = replace(old, environment_digest="a" * 64)
+    new = replace(old, name="codereeve.service")
+    root = tmp_path / "other"
+    root.mkdir()
+    created = module.CutoverJournal.create(
+        root,
+        journal.spec,
+        model.ServiceSnapshot(old, new),
+        storage=journal.storage,
+    )
+    opened = module.CutoverJournal.open(created.path, storage=journal.storage)
+    assert opened.header["old"]["environment_digest"] == "a" * 64
+
+
+@pytest.mark.parametrize("invalid", [0, False, None])
+def test_environment_digest_requires_a_string(
+    tmp_path: Path, invalid: object
+) -> None:
+    """Falsy nonstrings cannot weaken original environment attestation."""
+    journal = make_journal(tmp_path)
+    selected = dict(journal.header["old"])
+    selected["environment_digest"] = invalid
+    with pytest.raises(CutoverError):
+        module._validate_unit(selected)

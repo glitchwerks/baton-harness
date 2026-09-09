@@ -47,7 +47,7 @@ def test_render_unit_emits_canonical_service_contract() -> None:
         'Environment="CODEREEVE_PROJECT_ROOT=/srv/managed project"\n'
         'Environment="HOME=/home/runner home"\n'
         'Environment="PATH=/opt/codereeve environment/bin:'
-        '/usr/local/bin:/usr/bin:/bin"\n'
+        '/home/runner home/.local/bin:/usr/local/bin:/usr/bin:/bin"\n'
         "EnvironmentFile=/etc/codereeve/secrets.env\n"
         'ExecStart=":/opt/codereeve environment/bin/codereeve" '
         '"daemon" "--workflow" "/srv/managed project/WORKFLOW.md"\n'

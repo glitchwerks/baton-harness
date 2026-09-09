@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePath, PurePosixPath
 
 _RUN_USER_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*\Z")
@@ -143,6 +143,7 @@ class UnitState:
     sub_state: str = ""
     job: str = ""
     exec_start_argv: str = ""
+    environment_digest: str = ""
 
 
 @dataclass(frozen=True)
@@ -156,3 +157,89 @@ class ServiceSnapshot:
     old: UnitState
     new: UnitState
     files: tuple[Path, ...] = ()
+
+
+def service_path(environment: str, home: str) -> str:
+    """Derive the shared daemon and probe executable search path.
+
+    Args:
+        environment: Absolute selected installation environment.
+        home: Actual selected service home, including user-installed BWS.
+
+    Returns:
+        The identical PATH selection for service and strict probes.
+    """
+    return f"{environment}/bin:{home}/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+
+@dataclass(frozen=True)
+class StartEvidence:
+    """Validated actual service start identity and UTC nanosecond baseline."""
+
+    pid: int
+    invocation_id: str
+    started_ns: int
+
+    def __post_init__(self) -> None:
+        """Reject malformed persisted identity before recovery uses it."""
+        if (
+            type(self.pid) is not int
+            or self.pid <= 0
+            or type(self.started_ns) is not int
+            or self.started_ns <= 0
+            or not isinstance(self.invocation_id, str)
+            or re.fullmatch(r"[0-9a-f]{32}", self.invocation_id) is None
+        ):
+            raise CutoverError("invalid persisted start evidence")
+
+
+@dataclass(frozen=True)
+class FreshSecrets:
+    """Ephemeral encoded literal assignments, excluded from all metadata.
+
+    Only unique uppercase variable names with unquoted ASCII token values
+    are accepted. This deliberately shared subset has identical semantics
+    in systemd EnvironmentFile and the literal config parser. Values may
+    contain alphanumerics and ``_./+:=@%-``. No whitespace, comments, shell
+    escapes, private controls, or service selection overrides are accepted.
+    """
+
+    content: bytes = field(repr=False)
+
+    def __post_init__(self) -> None:
+        """Bound and validate encoded assignments with value-free errors."""
+        try:
+            if (
+                type(self.content) is not bytes
+                or not 0 < len(self.content) <= 65536
+            ):
+                raise ValueError
+            text = self.content.decode("ascii")
+            keys = set()
+            reserved = {
+                "HOME",
+                "PATH",
+                "XDG_CONFIG_HOME",
+                "CODEREEVE_PROJECT_ROOT",
+                "BH_PROJECT_ROOT",
+                "CODEREEVE_CUTOVER_GATE",
+                "INVOCATION_ID",
+            }
+            for line in text.splitlines():
+                if (
+                    re.fullmatch(
+                        r"[A-Z_][A-Z0-9_]*=[A-Za-z0-9_./+:=@%~-]+", line
+                    )
+                    is None
+                ):
+                    raise ValueError
+                key = line.partition("=")[0]
+                if key in keys or key in reserved:
+                    raise ValueError
+                keys.add(key)
+            if not keys or any(ord(c) < 32 and c != "\n" for c in text):
+                raise ValueError
+        except (ValueError, UnicodeError, TypeError):
+            raise CutoverError(
+                "fresh secrets require literal assignments"
+            ) from None

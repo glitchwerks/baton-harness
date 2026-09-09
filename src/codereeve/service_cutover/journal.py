@@ -39,16 +39,24 @@ _VERIFICATION_PHASES = {
     "committed",
 }
 _OPERATIONS = {
+    "stage_secrets": {"created"},
+    "prepare_gate": {"migrated"},
     "capture_publication": {"migrated"},
     "quarantine": {"all_writers_stopped"},
     "restore_publication": {"all_writers_stopped"},
     "verify_job": _VERIFICATION_PHASES,
     "cleanup_job": _VERIFICATION_PHASES | {"aborting", "rolling_back"},
     "stop_old": {"preflight_passed"},
-    "guard_old": {"stopped"},
+    "guard_old": {"stopped", "rolling_back"},
+    "guard_new": {"rolling_back"},
     "stage_canonical": {"stopped", "guarded"},
     "migrate": {"guarded"},
-    "ownership": {"migrated", "published", "rolling_back"},
+    "ownership": {
+        "migrated",
+        "published",
+        "rolling_back",
+        "filesystem_restored",
+    },
     "publish_unit": {"created", "migrated", "published", "committed"},
     "publish_secrets": {"created", "migrated"},
     "reload": {
@@ -166,9 +174,19 @@ def _validate_unit(value: object) -> None:
         "user",
         "sub_state",
         "selection_digest",
+        "environment_digest",
     }
     if not isinstance(value, dict) or set(value) != keys:
         raise CutoverError("invalid service snapshot")
+    if (
+        not isinstance(value["environment_digest"], str)
+        or value["environment_digest"]
+        and (
+            not isinstance(value["environment_digest"], str)
+            or not _HEX.fullmatch(value["environment_digest"])
+        )
+    ):
+        raise CutoverError("invalid effective environment digest")
     allowed = {
         "name": {"bh-daemon.service", "codereeve.service"},
         "load_state": {"loaded", "masked", "not-found"},
@@ -376,10 +394,22 @@ class CutoverJournal:
         *,
         storage: Storage | None = None,
         mode: str = "cutover",
+        predecessor: Path | None = None,
     ) -> CutoverJournal:
         """Retain original inputs privately before any service mutation."""
         store = storage or Storage()
         try:
+            if predecessor is not None:
+                prior = cls.open(predecessor, storage=store)
+                if (
+                    mode != "cutover"
+                    or prior.phase != "installed"
+                    or prior.spec != spec
+                    or prior.header["project"] != str(root)
+                ):
+                    raise CutoverError(
+                        "installation adoption authority is invalid"
+                    )
             if mode not in {"cutover", "install_only"}:
                 raise CutoverError("unknown service transaction mode")
             base = root / ".codereeve-cutover"
@@ -411,6 +441,9 @@ class CutoverJournal:
                 "old": _unit(snapshot.old),
                 "new": _unit(snapshot.new),
                 "original": original,
+                "predecessor": str(predecessor)
+                if predecessor is not None
+                else None,
             }
             journal = cls(directory / "journal.jsonl", store)
             store.write(journal.path, b"")
@@ -532,6 +565,7 @@ class CutoverJournal:
                     "old",
                     "new",
                     "original",
+                    "predecessor",
                 }
                 or type(metadata["version"]) is not int
                 or metadata["version"] != 1
@@ -539,6 +573,20 @@ class CutoverJournal:
             ):
                 raise CutoverError("unknown journal manifest")
             _path(metadata["project"])
+            predecessor = metadata["predecessor"]
+            if predecessor is not None:
+                _path(predecessor)
+                selected = Path(predecessor)
+                if (
+                    metadata["mode"] != "cutover"
+                    or selected.name != "journal.jsonl"
+                    or selected.parent.parent
+                    != Path(metadata["project"]) / ".codereeve-cutover"
+                    or selected == self.path
+                    or re.fullmatch(r"[0-9a-f]{32}", selected.parent.name)
+                    is None
+                ):
+                    raise CutoverError("invalid installation predecessor")
             if not isinstance(
                 metadata["spec_digest"], str
             ) or not _HEX.fullmatch(metadata["spec_digest"]):
@@ -562,10 +610,36 @@ class CutoverJournal:
                 "created",
             )
             return
+        if event == "revalidation_intent":
+            if (
+                self.phase != "finalized"
+                or metadata
+                or self.pending
+                or self.interrupted
+                or self.jobs
+            ):
+                raise CutoverError("unsafe finalized revalidation")
+            self.phase = "committed"
+            self.completed.clear()
+            return
         if not self.phase or self.phase in _TERMINAL:
             raise CutoverError("terminal or uninitialized service journal")
         if event in {"effect_intent", "effect_done", "effect_cancelled"}:
             self._effect(event, metadata)
+            return
+        if event == "adopt_installation":
+            if (
+                self.phase != "created"
+                or self.mode != "cutover"
+                or self.pending
+                or set(metadata) != {"path"}
+            ):
+                raise CutoverError("invalid installation adoption")
+            _path(metadata["path"])
+            if metadata["path"] != self.header["predecessor"]:
+                raise CutoverError("installation adoption selection differs")
+            if any(e["event"] == "adopt_installation" for e in self.events):
+                raise CutoverError("duplicate installation adoption")
             return
         if event == "effect_resolved":
             resolved = dict(metadata)
@@ -748,13 +822,30 @@ class CutoverJournal:
             "verify_job": {"unit"},
             "cleanup_job": {"unit"},
             "migrate": {"path"},
+            "stage_secrets": {"path", "digest"},
+            "prepare_gate": {"path", "digest"},
             "ownership": {"path", "uid", "gid", "mode", "inode"},
         }
         required |= fields.get(operation, set())
+        previous = {"previous_mode", "previous_uid", "previous_gid"}
+        if operation == "ownership" and previous & set(metadata):
+            required |= previous
+        if operation == "ownership" and {
+            "lock_restore_uid",
+            "lock_restore_gid",
+        } & set(metadata):
+            required |= {"lock_restore_uid", "lock_restore_gid"}
+            if Path(
+                metadata["path"]
+            ).name != ".codereeve-migration.lock" or not previous <= set(
+                metadata
+            ):
+                raise CutoverError("invalid new lock restoration authority")
         if operation in {
             "publish_unit",
             "publish_secrets",
             "guard_old",
+            "guard_new",
             "stage_canonical",
             "release_gate",
         } and ({"path", "digest"} & set(metadata)):
@@ -780,6 +871,11 @@ class CutoverJournal:
                 "gid",
                 "mode",
                 "inode",
+                "previous_mode",
+                "previous_uid",
+                "previous_gid",
+                "lock_restore_uid",
+                "lock_restore_gid",
             } and not _integer(value):
                 raise CutoverError("invalid ownership effect")
         if event == "effect_intent":
@@ -788,12 +884,14 @@ class CutoverJournal:
             if (
                 self.phase == "created"
                 and self.mode == "cutover"
-                and operation not in {"verify_job", "cleanup_job"}
+                and operation
+                not in {"verify_job", "cleanup_job", "stage_secrets"}
             ):
                 raise CutoverError(
                     "service mutation requires preflight shutdown"
                 )
             if self.mode == "install_only" and operation not in {
+                "stage_secrets",
                 "restore_selection",
                 "publish_unit",
                 "publish_secrets",

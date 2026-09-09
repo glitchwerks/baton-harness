@@ -202,6 +202,9 @@ def verification_outputs() -> list[str]:
                 ),
                 "state_path": "/srv/project/.baton-harness",
                 "config_path": "/srv/project/.bh/config.env",
+                "runtime_paths": [
+                    "/srv/project/.baton-harness/heartbeat.identity.json"
+                ],
             }
         ),
     ]
@@ -341,6 +344,9 @@ def test_health_requires_fresh_heartbeat_and_stable_invocation(
                 ),
                 "state_path": "/srv/project/.codereeve",
                 "config_path": "/srv/project/.codereeve/config.env",
+                "runtime_paths": [
+                    "/srv/project/.codereeve/heartbeat.identity.json"
+                ],
             }
         ),
     ]
@@ -837,3 +843,255 @@ def test_unsupported_console_script_evidence_fails_closed(
     ):
         backend.preflight(spec)
     assert not any(call[0] == "systemd-run" for call in runner.calls)
+
+
+def test_verification_lifecycle_precedes_launch_and_follows_cleanup(
+    backend: SystemdBackend,
+    runner: FakeRunner,
+    spec: ServiceSpec,
+) -> None:
+    """Require durable intent before manager work, completion after stop."""
+    assert hasattr(backend, "verification_lifecycle")
+    events = []
+
+    def record(name: str, completed: bool) -> None:
+        events.append((name, completed, tuple(runner.calls)))
+
+    runner.transient_outputs = ["ok"]
+    with backend.verification_lifecycle(record):
+        backend._verification_job(
+            spec, ("/opt/new/bin/codereeve", "provenance")
+        )
+    assert len(events) == 2
+    assert not events[0][1] and not events[0][2]
+    assert events[1][1] and any("show" in c for c in events[1][2])
+    assert events[0][0] == events[1][0]
+    assert backend.pending_verification_units == ()
+
+
+def test_recovery_adopts_only_exact_durable_verification_identity(
+    backend: SystemdBackend,
+) -> None:
+    """A new backend must clean a recorded job without daemon-name power."""
+    assert hasattr(backend, "cleanup_verification")
+    name = "codereeve-verify-" + "a" * 32 + ".service"
+    backend.cleanup_verification(name)
+    assert backend.pending_verification_units == ()
+    with pytest.raises(CutoverError):
+        backend.cleanup_verification("bh-daemon.service")
+
+
+def test_reload_and_enablement_are_bounded_and_verified(
+    backend: SystemdBackend,
+    runner: FakeRunner,
+) -> None:
+    """Enablement verifies manager state without starting services."""
+    assert hasattr(backend, "reload") and hasattr(backend, "set_enabled")
+    backend.reload()
+    assert "daemon-reload" in runner.calls[-1]
+    with pytest.raises(CutoverError):
+        backend.set_enabled("bh-daemon.service", False)
+    runner.units["bh-daemon.service"]["UnitFileState"] = "disabled"
+    assert (
+        backend.set_enabled("bh-daemon.service", False).enabled_state
+        == "disabled"
+    )
+    assert not any("--now" in c or "start" in c for c in runner.calls)
+
+
+def test_start_identity_survives_new_backend_instance(
+    backend: SystemdBackend,
+    runner: FakeRunner,
+    spec: ServiceSpec,
+) -> None:
+    """Persist the actual pre-command UTC baseline without guessing time."""
+    assert hasattr(backend, "start_evidence")
+    prepare_start(backend, runner)
+    started = backend.start(spec)
+    evidence = backend.start_evidence(started)
+    backend._starts.clear()
+    backend.adopt_start(evidence)
+    assert backend.start_evidence(started) == evidence
+    assert evidence.started_ns == 1788868810000000000
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        None,
+        "argv",
+        "HOME",
+        "PATH",
+        "WorkingDirectory",
+        "EnvironmentFiles",
+        "gate",
+    ],
+)
+def test_effective_selection_checks_complete_loaded_daemon(
+    backend: SystemdBackend,
+    runner: FakeRunner,
+    spec: ServiceSpec,
+    field: str | None,
+) -> None:
+    """Reject correct executable paired with a different loaded selection."""
+    assert hasattr(backend, "verify_selection")
+    prepare_start(backend, runner)
+    unit = runner.units["codereeve.service"]
+    unit["ExecStart"] = unit["ExecStart"].replace(
+        "argv[]=/opt/new/bin/codereeve ;",
+        "argv[]=/opt/new/bin/codereeve daemon ;",
+    )
+    extra = {
+        "Environment": (
+            "HOME=/home/runner CODEREEVE_PROJECT_ROOT=/srv/"
+            "project PATH=/opt/new/bin:/home/runner/.local/"
+            "bin:/usr/local/bin:/usr/bin:/bin"
+        ),
+        "WorkingDirectory": "/srv/project",
+        "EnvironmentFiles": "/etc/codereeve/secrets.env (ignore_errors=no)",
+    }
+    if field in {"HOME", "PATH"}:
+        extra["Environment"] = extra["Environment"].replace(
+            field + "=", field + "=wrong"
+        )
+    elif field == "gate":
+        extra["Environment"] += " CODEREEVE_CUTOVER_GATE=/wrong"
+    elif field == "argv":
+        unit["ExecStart"] = unit["ExecStart"].replace(
+            " daemon ;", " daemon --workflow /wrong ;"
+        )
+    elif field:
+        extra[field] = "/wrong"
+    original = backend.runner
+
+    def selected(
+        argv: tuple[str, ...], *, timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        if "--property=Environment,WorkingDirectory,EnvironmentFiles" in argv:
+            return subprocess.CompletedProcess(
+                argv, 0, "\n".join(f"{k}={v}" for k, v in extra.items()), ""
+            )
+        return original(argv, timeout=timeout)
+
+    backend.runner = selected
+    if field:
+        with pytest.raises(CutoverError):
+            backend.verify_selection(spec, gate=None)
+    else:
+        backend.verify_selection(spec, gate=None)
+
+
+def test_restore_activation_uses_typed_original_snapshot(
+    backend: SystemdBackend,
+    runner: FakeRunner,
+) -> None:
+    """Restoration starts only the prior active selection."""
+    from codereeve.service_cutover.model import ServiceSnapshot
+
+    assert hasattr(backend, "restore_activation")
+    original = backend.inspect("bh-daemon.service")
+    absent = backend.inspect("codereeve.service")
+    path = group(backend.cgroup_root, "bh-daemon.service")
+    runner.units["bh-daemon.service"].update(
+        ActiveState="inactive", SubState="dead", MainPID="0", ControlGroup=""
+    )
+    runner.after_start = lambda: (path / "cgroup.procs").write_text(
+        "51\n", encoding="utf-8"
+    )
+    backend.restore_activation(ServiceSnapshot(original, absent))
+    assert backend.inspect("bh-daemon.service").active_state == "active"
+    assert not any(
+        "start" in c and c[-1] == "codereeve.service" for c in runner.calls
+    )
+    backend.restore_activation(ServiceSnapshot(original, absent))
+    assert sum("start" in c for c in runner.calls) == 1
+
+
+def test_account_and_legacy_environment_have_public_verified_apis(
+    backend: SystemdBackend,
+) -> None:
+    """Expose actual old environment and account evidence to policy."""
+    assert hasattr(backend, "legacy_environment") and hasattr(
+        backend, "account"
+    )
+    assert (
+        backend.legacy_environment(backend.inspect("bh-daemon.service"))
+        == backend.filesystem_root / "opt/old"
+    )
+    with pytest.raises(CutoverError):
+        backend.account("root")
+
+
+def test_readonly_shutdown_proof_does_not_issue_stop(
+    backend: SystemdBackend, runner: FakeRunner
+) -> None:
+    """Inventory callbacks observe services without stopping them."""
+    assert hasattr(backend, "verify_shutdown")
+    backend.verify_shutdown("codereeve.service")
+    assert not any("stop" in c for c in runner.calls)
+    with pytest.raises(CutoverError):
+        backend.verify_shutdown("bh-daemon.service")
+
+
+def test_masked_old_disable_requires_removed_enablement_links(
+    backend: SystemdBackend, runner: FakeRunner
+) -> None:
+    """Masked state cannot prove enablement links were removed."""
+    values = runner.units["bh-daemon.service"]
+    values.update(
+        LoadState="masked",
+        ActiveState="inactive",
+        SubState="dead",
+        MainPID="0",
+        ControlGroup="",
+        UnitFileState="masked",
+        ExecStart="",
+        User="",
+    )
+    wants = (
+        backend.filesystem_root / "etc/systemd/system/multi-user.target.wants"
+    )
+    wants.mkdir(parents=True)
+    link = wants / "bh-daemon.service"
+    link.write_bytes(b"enabled link fixture")
+    with pytest.raises(CutoverError):
+        backend.set_enabled("bh-daemon.service", False)
+    link.unlink()
+    assert (
+        backend.set_enabled("bh-daemon.service", False).enabled_state
+        == "masked"
+    )
+    assert not any("unmask" in c or "--now" in c for c in runner.calls)
+
+
+def test_owned_installation_preflight_compares_effective_snapshot(
+    backend: SystemdBackend,
+    runner: FakeRunner,
+    spec: ServiceSpec,
+) -> None:
+    """An attested inactive canonical unit can continue preflight."""
+    from dataclasses import replace
+
+    from conftest import properties
+
+    from codereeve.service_cutover.model import ServiceSnapshot
+
+    group(backend.cgroup_root, "bh-daemon.service", "51\n")
+    runner.units["codereeve.service"] = properties("codereeve.service")
+    from codereeve.service_cutover.selection import digest
+
+    raw = {
+        "Environment": "HOME=/home/runner",
+        "WorkingDirectory": "/srv/project",
+        "EnvironmentFiles": "",
+    }
+    backend.effective_environment = lambda _: raw
+    new = replace(
+        backend.inspect("codereeve.service"), environment_digest=digest(raw)
+    )
+    snapshot = ServiceSnapshot(backend.inspect("bh-daemon.service"), new)
+    runner.transient_outputs = verification_outputs()
+    assert (
+        backend.preflight(spec, owned_snapshot=snapshot).new.load_state
+        == "loaded"
+    )

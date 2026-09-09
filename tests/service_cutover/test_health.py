@@ -213,13 +213,22 @@ def test_service_probe_checks_actual_access_and_effective_context(
     (project / ".bh").mkdir()
     config = project / ".bh/config.env"
     config.write_text(
-        "CODEREEVE_GITHUB_APP_KEY_PROVIDER=bws\nBH_REPO_OWNER=my-org\nBH_REPO_NAME=repo\nBH_GITHUB_APP_ID=123\nBH_GITHUB_APP_INSTALLATION_ID=456\nBWS_PEM_SECRET_ID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\n",
+        (
+            "CODEREEVE_GITHUB_APP_KEY_PROVIDER=bws\nBH_REPO_"
+            "OWNER=my-org\nBH_REPO_NAME=repo\nBH_GITHUB_APP_I"
+            "D=123\nBH_GITHUB_APP_INSTALLATION_ID=456\nBWS_PE"
+            "M_SECRET_ID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeee"
+            "ee\n"
+        ),
         encoding="utf-8",
     )
     values = {
         "HOME": home.as_posix(),
         "CODEREEVE_PROJECT_ROOT": project.as_posix(),
-        "PATH": environment.as_posix() + "/bin:/usr/local/bin:/usr/bin:/bin",
+        "PATH": environment.as_posix()
+        + "/bin:"
+        + home.as_posix()
+        + "/.local/bin:/usr/local/bin:/usr/bin:/bin",
     }
     if mutation in {"home", "path", "project", "gate"}:
         values[
@@ -262,3 +271,7 @@ def test_service_probe_checks_actual_access_and_effective_context(
             else state / "heartbeat.identity.json"
         )
         assert result["heartbeat_path"] == expected.as_posix()
+        assert expected.as_posix() in result["runtime_paths"]
+        assert (state / "session-report.json").as_posix() in result[
+            "runtime_paths"
+        ]

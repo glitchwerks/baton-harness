@@ -7,17 +7,21 @@ This adapter never treats a process scan or an idle main PID as shutdown proof.
 from __future__ import annotations
 
 import ast
+import hashlib
+import json
 import os
 import re
+import shlex
 import stat
 import subprocess
 import sys
 import tempfile
 import time
 import uuid
-from collections.abc import Callable
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Protocol
 
@@ -25,7 +29,14 @@ from codereeve.chain.doctor import Phase
 from codereeve.provenance import Provenance, validate_provenance
 
 from .health import evidence_document, validate_doctor, validate_heartbeat
-from .model import CutoverError, ServiceSpec, UnitState
+from .model import (
+    CutoverError,
+    ServiceSnapshot,
+    ServiceSpec,
+    StartEvidence,
+    UnitState,
+    service_path,
+)
 from .render import render_unit
 
 OLD_UNIT = "bh-daemon.service"
@@ -303,6 +314,7 @@ class SystemdBackend:
         self._known_groups: dict[str, str] = {}
         self._starts: dict[tuple[int, str], datetime] = {}
         self._owned_jobs: set[str] = set()
+        self._job_observer: Callable[[str, bool], None] | None = None
 
     def _command(
         self, argv: tuple[str, ...], *, timeout: float | None = None
@@ -656,6 +668,8 @@ class SystemdBackend:
     ) -> str:
         """Run one bounded job and verify cleanup after client failure."""
         name = "codereeve-verify-" + uuid.uuid4().hex + ".service"
+        if self._job_observer is not None:
+            self._job_observer(name, False)
         self._owned_jobs.add(name)
         group = f"/system.slice/{name}"
         timeout = min(spec.timeout_s, self.timeout_s)
@@ -682,8 +696,9 @@ class SystemdBackend:
                     "HOME=" + spec.home.as_posix(),
                     "CODEREEVE_PROJECT_ROOT=" + spec.project_root.as_posix(),
                     "PATH="
-                    + spec.environment.as_posix()
-                    + "/bin:/usr/local/bin:/usr/bin:/bin",
+                    + service_path(
+                        spec.environment.as_posix(), spec.home.as_posix()
+                    ),
                 )
             ),
         ]
@@ -703,16 +718,26 @@ class SystemdBackend:
                     "verification cleanup is unproven"
                 ) from None
             self._owned_jobs.remove(name)
+            if self._job_observer is not None:
+                self._job_observer(name, True)
             raise
         self.stop_and_verify(name)
         self._verify_group_empty(group)
         self._owned_jobs.remove(name)
+        if self._job_observer is not None:
+            self._job_observer(name, True)
         return output
 
-    def preflight(self, spec: ServiceSpec) -> PreflightEvidence:
+    def preflight(
+        self,
+        spec: ServiceSpec,
+        *,
+        owned_snapshot: ServiceSnapshot | None = None,
+    ) -> PreflightEvidence:
         """Verify supported containment and candidate installation before stop.
 
         Args:
+            owned_snapshot: Verified prior inactive installation authority.
             spec: Candidate context, selecting compatible source secrets.
 
         Returns:
@@ -731,7 +756,24 @@ class SystemdBackend:
             raise CutoverError(
                 "masked old service identity requires recovery metadata"
             )
-        if new.load_state != "not-found":
+        if owned_snapshot is not None and new.load_state == "loaded":
+            raw = self.effective_environment(NEW_UNIT)
+            new = replace(
+                new,
+                environment_digest=hashlib.sha256(
+                    json.dumps(
+                        raw,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    ).encode()
+                ).hexdigest(),
+            )
+        if new.load_state != "not-found" and (
+            owned_snapshot is None
+            or new.active_state != "inactive"
+            or new != owned_snapshot.new
+        ):
             raise CutoverError("canonical service already exists")
         uids = {self.uid_for_user(spec.run_user)}
         for state in (old, new):
@@ -772,14 +814,14 @@ class SystemdBackend:
             )
         executable = spec.environment.as_posix() + "/bin/codereeve"
         self._verification_job(spec, (executable, "verify", "--installed"))
-        raw = evidence_document(
+        provenance_document = evidence_document(
             self._verification_job(spec, (executable, "provenance"))
         )
         try:
-            version = raw["package_version"]
+            version = provenance_document["package_version"]
             if not isinstance(version, str):
                 raise ValueError
-            provenance = validate_provenance(raw, version)
+            provenance = validate_provenance(provenance_document, version)
             if provenance.development:
                 raise ValueError
         except (KeyError, TypeError, ValueError):
@@ -923,6 +965,7 @@ class SystemdBackend:
                 "heartbeat_path",
                 "state_path",
                 "config_path",
+                "runtime_paths",
             }
             or type(raw.get("schema_version")) is not int
             or raw.get("schema_version") != 1
@@ -937,6 +980,20 @@ class SystemdBackend:
                 or not PurePosixPath(value).is_absolute()
             ):
                 raise CutoverError("service context is unproven")
+        paths = raw.get("runtime_paths")
+        if (
+            not isinstance(paths, list)
+            or not paths
+            or any(
+                not isinstance(p, str)
+                or not PurePosixPath(p).is_absolute()
+                or ".." in PurePosixPath(p).parts
+                for p in paths
+            )
+            or len(set(paths)) != len(paths)
+            or raw["heartbeat_path"] not in paths
+        ):
+            raise CutoverError("runtime publication paths are unproven")
         return raw
 
     def start(self, spec: ServiceSpec) -> UnitState:
@@ -992,7 +1049,9 @@ class SystemdBackend:
         self._starts[(started.main_pid, started.invocation_id)] = started_at
         return started
 
-    def verify_health(self, spec: ServiceSpec, started: UnitState) -> None:
+    def verify_health(
+        self, spec: ServiceSpec, started: UnitState
+    ) -> Provenance:
         """Require strict live doctor and a fresh stable invocation heartbeat.
 
         Args:
@@ -1020,7 +1079,7 @@ class SystemdBackend:
                 "json",
             ),
         )
-        validate_doctor(report, (Phase.LIVE,))
+        provenance = validate_doctor(report, (Phase.LIVE,))
         context = self.service_context(spec, canonical=True)
         heartbeat_path = context["heartbeat_path"]
         if not isinstance(heartbeat_path, str):
@@ -1060,5 +1119,295 @@ class SystemdBackend:
                 )
             if self.clock() >= deadline:
                 break
-            return
+            return provenance
         raise CutoverError("candidate health deadline expired")
+
+    @contextmanager
+    def verification_lifecycle(
+        self, observer: Callable[[str, bool], None]
+    ) -> Iterator[None]:
+        """Record exact job intent before launch and completion after cleanup.
+
+        Args:
+            observer: Durable callback; true means cleanup was proven.
+
+        Yields:
+            Control while all verification jobs have durable callbacks.
+        """
+        if self._job_observer is not None:
+            raise CutoverError("verification lifecycle already bound")
+        self._job_observer = observer
+        try:
+            yield
+        finally:
+            self._job_observer = None
+
+    def cleanup_verification(self, name: str) -> None:
+        """Adopt an exact journal-owned job solely for bounded cleanup."""
+        if (
+            re.fullmatch(r"codereeve-verify-[a-z0-9-]{1,80}\.service", name)
+            is None
+        ):
+            raise CutoverError("invalid verification cleanup identity")
+        self._owned_jobs.add(name)
+        self.stop_and_verify(name)
+        self._verify_group_empty(f"/system.slice/{name}")
+        self._owned_jobs.remove(name)
+
+    def target_path(self, logical: Path) -> Path:
+        """Map a Linux selection onto the explicit filesystem root."""
+        return self._target_path(logical.as_posix())
+
+    def reload(self) -> None:
+        """Reload the system manager with bounded root-validated control."""
+        self.platform_check()
+        self._command(("systemctl", "--system", "--no-pager", "daemon-reload"))
+
+    def set_enabled(self, name: str, enabled: bool) -> UnitState:
+        """Change only known-unit persistent enablement and verify it."""
+        self.platform_check()
+        if name not in {OLD_UNIT, NEW_UNIT} or type(enabled) is not bool:
+            raise CutoverError("invalid service enablement selection")
+        self._command(
+            (
+                "systemctl",
+                "--system",
+                "--no-pager",
+                "enable" if enabled else "disable",
+                "--",
+                name,
+            )
+        )
+        state = self.inspect(name)
+        expected = "enabled" if enabled else "disabled"
+        if not enabled:
+            self.verify_disabled(name)
+        if state.enabled_state != expected and not (
+            not enabled and state.load_state in {"masked", "not-found"}
+        ):
+            raise CutoverError("service enablement is unproven")
+        return state
+
+    def start_evidence(self, state: UnitState) -> StartEvidence:
+        """Export the actual pre-command UTC lower bound for persistence."""
+        baseline = self._starts.get((state.main_pid, state.invocation_id))
+        if baseline is None or baseline.tzinfo is None:
+            raise CutoverError("candidate start evidence is unavailable")
+        delta = baseline - datetime(1970, 1, 1, tzinfo=timezone.utc)
+        nanoseconds = (
+            (delta.days * 86400 + delta.seconds) * 1000000 + delta.microseconds
+        ) * 1000
+        return StartEvidence(state.main_pid, state.invocation_id, nanoseconds)
+
+    def adopt_start(self, evidence: StartEvidence) -> None:
+        """Restore a validated durable start baseline in a fresh backend."""
+        try:
+            baseline = datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(
+                microseconds=evidence.started_ns // 1000
+            )
+        except OverflowError:
+            raise CutoverError("invalid persisted start evidence") from None
+        self._starts[(evidence.pid, evidence.invocation_id)] = baseline
+
+    def effective_environment(self, name: str) -> dict[str, str]:
+        """Read the complete loaded manager environment selection.
+
+        Args:
+            name: One of the two supported daemon units.
+
+        Returns:
+            Raw selected fields for ephemeral comparison, never logging.
+        """
+        self.platform_check()
+        if name not in {OLD_UNIT, NEW_UNIT}:
+            raise CutoverError("unsupported service selection")
+        raw = self._command(
+            (
+                "systemctl",
+                "--system",
+                "--no-pager",
+                "show",
+                "--all",
+                "--property=Environment,WorkingDirectory,EnvironmentFiles",
+                "--",
+                name,
+            )
+        )
+        result: dict[str, str] = {}
+        for line in raw.splitlines():
+            key, separator, value = line.partition("=")
+            if not separator or key in result or "\\" in value:
+                raise CutoverError(
+                    "effective service selection is unsupported"
+                )
+            result[key] = value
+        if set(result) != {
+            "Environment",
+            "WorkingDirectory",
+            "EnvironmentFiles",
+        }:
+            raise CutoverError("effective service selection is incomplete")
+        return result
+
+    def verify_selection(
+        self, spec: ServiceSpec, *, gate: Path | None
+    ) -> UnitState:
+        """Compare every loaded daemon argument and environment selection.
+
+        Args:
+            spec: Exact published canonical service selection.
+            gate: Expected private gate, absent for the permanent unit.
+
+        Returns:
+            Fresh state matching all intended loaded selections.
+        """
+        state = self.inspect(NEW_UNIT)
+        self.trusted_unit(state)
+        raw = self.effective_environment(NEW_UNIT)
+        expected = {
+            "HOME": spec.home.as_posix(),
+            "CODEREEVE_PROJECT_ROOT": spec.project_root.as_posix(),
+            "PATH": service_path(
+                spec.environment.as_posix(), spec.home.as_posix()
+            ),
+        }
+        if gate is not None:
+            expected["CODEREEVE_CUTOVER_GATE"] = gate.as_posix()
+        command = [spec.environment.as_posix() + "/bin/codereeve", "daemon"]
+        if spec.workflow is not None:
+            command.extend(("--workflow", spec.workflow.as_posix()))
+        try:
+            assignments = shlex.split(raw["Environment"])
+            environment = {}
+            for assignment in assignments:
+                key, separator, value = assignment.partition("=")
+                if not separator or key in environment:
+                    raise ValueError
+                environment[key] = value
+            files = (
+                spec.secrets.as_posix() + " (ignore_errors=no)"
+                if spec.secrets
+                else ""
+            )
+            if (
+                state.load_state != "loaded"
+                or state.dropin_paths
+                or state.user != spec.run_user
+                or state.kill_mode != "control-group"
+                or state.exec_start != command[0]
+                or "\\" in state.exec_start_argv
+                or shlex.split(state.exec_start_argv) != command
+                or environment != expected
+                or raw["WorkingDirectory"] != spec.project_root.as_posix()
+                or raw["EnvironmentFiles"] != files
+            ):
+                raise ValueError
+        except ValueError:
+            raise CutoverError("effective service selection differs") from None
+        return state
+
+    def restore_activation(self, snapshot: ServiceSnapshot) -> None:
+        """Restore activation after verifying original selected files.
+
+        Args:
+            snapshot: Typed original manager state, with restored executable
+                and argument evidence, never an inferred candidate identity.
+        """
+        states = (snapshot.old, snapshot.new)
+        if sum(s.active_state == "active" for s in states) > 1:
+            raise CutoverError("original service activation overlaps")
+        for expected in states:
+            actual = self.inspect(expected.name)
+            self.trusted_unit(actual)
+            if (
+                actual.load_state != expected.load_state
+                or actual.dropin_paths != expected.dropin_paths
+                or actual.fragment_path != expected.fragment_path
+                or actual.user != expected.user
+                or actual.exec_start != expected.exec_start
+                or actual.exec_start_argv != expected.exec_start_argv
+                or actual.kill_mode != expected.kill_mode
+                or actual.active_state
+                not in {"inactive", expected.active_state}
+            ):
+                raise CutoverError("restored service selection is unproven")
+        for expected in states:
+            if expected.active_state != "active":
+                continue
+            present = self.inspect(expected.name)
+            if present.active_state == "active":
+                if present.main_pid not in self.cgroup_pids(
+                    present.control_group
+                ):
+                    raise CutoverError(
+                        "restored activation containment is unproven"
+                    )
+                continue
+            self._command(
+                (
+                    "systemctl",
+                    "--system",
+                    "--no-pager",
+                    "start",
+                    "--",
+                    expected.name,
+                )
+            )
+            actual = self.inspect(expected.name)
+            if (
+                actual.active_state != "active"
+                or actual.main_pid
+                not in self.cgroup_pids(actual.control_group)
+            ):
+                raise CutoverError("original activation is unproven")
+
+    def account(self, user: str) -> tuple[int, int, Path]:
+        """Resolve the actual nonroot UID, primary GID, and account home."""
+        if sys.platform == "win32":
+            raise CutoverError("Linux service identity required")
+        import pwd
+
+        try:
+            account = pwd.getpwnam(user)
+            if (
+                account.pw_uid <= 0
+                or account.pw_gid < 0
+                or not Path(account.pw_dir).is_absolute()
+            ):
+                raise ValueError
+            return account.pw_uid, account.pw_gid, Path(account.pw_dir)
+        except (KeyError, ValueError):
+            raise CutoverError(
+                "dedicated non-root service account required"
+            ) from None
+
+    def legacy_environment(self, state: UnitState) -> Path:
+        """Return attested old virtualenv without executing or changing it."""
+        return self._legacy_environment(state)
+
+    def verify_shutdown(self, name: str) -> None:
+        """Prove inactive state and empty complete cgroup without mutation."""
+        state = self.inspect(name)
+        if state.active_state != "inactive" or state.main_pid or state.job:
+            raise CutoverError("service shutdown is unproven")
+        self._verify_group_empty(f"/system.slice/{name}")
+
+    def verify_disabled(self, name: str) -> None:
+        """Prove no persistent or runtime target enablement links remain."""
+        if name not in {OLD_UNIT, NEW_UNIT}:
+            raise CutoverError("unsupported enablement identity")
+        for location in ("/etc/systemd/system", "/run/systemd/system"):
+            root = self._target_path(location)
+            if not root.exists():
+                continue
+            entries = list(root.iterdir())
+            if len(entries) > 10000:
+                raise CutoverError("enablement visibility is unsupported")
+            for directory in entries:
+                if not directory.name.endswith((".wants", ".requires")):
+                    continue
+                if directory.is_symlink() or not directory.is_dir():
+                    raise CutoverError("enablement visibility is unsupported")
+                link = directory / name
+                if link.exists() or link.is_symlink():
+                    raise CutoverError("service enablement links remain")

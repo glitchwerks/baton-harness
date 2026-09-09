@@ -5,9 +5,12 @@ from __future__ import annotations
 from decimal import Decimal
 from pathlib import Path
 
-from .model import CutoverError, ServiceSpec, _validated_path_text
-
-_SYSTEM_PATH = "/usr/local/bin:/usr/bin:/bin"
+from .model import (
+    CutoverError,
+    ServiceSpec,
+    _validated_path_text,
+    service_path,
+)
 
 
 def _quote_systemd_token(value: str) -> str:
@@ -106,7 +109,7 @@ def render_unit(spec: ServiceSpec, *, gate: Path | None = None) -> str:
         + _quote_systemd_token(f"CODEREEVE_PROJECT_ROOT={project_root}"),
         f"Environment={_quote_systemd_token(f'HOME={home}')}",
         "Environment="
-        + _quote_systemd_token(f"PATH={environment}/bin:{_SYSTEM_PATH}"),
+        + _quote_systemd_token("PATH=" + service_path(environment, home)),
     ]
     if gate_text is not None:
         lines.append(
