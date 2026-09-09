@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -12,7 +14,36 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "bin/install-daemon-service.sh"
 GIT_BASH = Path("C:/Program Files/Git/usr/bin/bash.exe")
-BASH = str(GIT_BASH) if sys.platform == "win32" else "bash"
+
+
+def _bash_executable(
+    platform: str = sys.platform,
+    *,
+    search: Callable[[str], str | None] = shutil.which,
+) -> Path:
+    """Resolve Bash before tests narrow PATH for injected executables."""
+    if platform == "win32":
+        return GIT_BASH
+    executable = search("bash")
+    if executable is None:
+        pytest.skip("Bash is unavailable on this test host")
+    return Path(executable)
+
+
+BASH = _bash_executable()
+
+
+def test_bash_resolution_is_platform_correct() -> None:
+    """Windows selects Git Bash while POSIX preserves native discovery."""
+    assert (
+        _bash_executable(
+            "win32", search=lambda _name: pytest.fail("must not search")
+        )
+        == GIT_BASH
+    )
+    assert _bash_executable(
+        "linux", search=lambda name: f"/usr/bin/{name}"
+    ) == Path("/usr/bin/bash")
 
 
 def _candidate(tmp_path: Path, *, status: int = 0) -> tuple[Path, Path]:
@@ -55,14 +86,14 @@ def _run(
     environment = {
         **os.environ,
         "PATH": os.pathsep.join(
-            (str(stub_dir), str(GIT_BASH.parent), os.environ.get("PATH", ""))
+            (str(stub_dir), str(BASH.parent), os.environ.get("PATH", ""))
         ),
         "CANDIDATE_ARGV_LOG": str(log),
         "SYSTEMCTL_LOG": str(systemctl_log),
     }
     if extra_environment:
         environment.update(extra_environment)
-    command = [BASH]
+    command = [str(BASH)]
     if trace:
         command.append("-x")
     command.extend(
@@ -110,14 +141,14 @@ def test_missing_candidate_fails_before_any_service_effect(
     missing = tmp_path / "missing"
     process = subprocess.run(
         [
-            BASH,
+            str(BASH),
             str(SCRIPT),
             "--environment",
             missing.as_posix(),
             "--harness-dir",
             tmp_path.as_posix(),
         ],
-        env={**os.environ, "PATH": str(GIT_BASH.parent)},
+        env={**os.environ, "PATH": str(BASH.parent)},
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -133,10 +164,10 @@ def test_bootstrap_alias_conflict_fails_before_candidate_discovery(
 ) -> None:
     """Different root aliases fail before checking an environment."""
     process = subprocess.run(
-        [BASH, str(SCRIPT)],
+        [str(BASH), str(SCRIPT)],
         env={
             **os.environ,
-            "PATH": str(GIT_BASH.parent),
+            "PATH": str(BASH.parent),
             "CODEREEVE_ROOT": "/one",
             "BATON_HARNESS_DIR": "/two",
         },

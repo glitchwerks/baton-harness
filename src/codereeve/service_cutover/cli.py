@@ -117,8 +117,13 @@ def _fresh_secrets(
         raise CutoverError("required service secrets path is unavailable")
     if path_exists(selected_path):
         return None
-    token = environment.get("BWS_ACCESS_TOKEN", "")
+    values = runtime_environment(environment).values
+    token = values.get("BWS_ACCESS_TOKEN", "")
     if not token:
+        if values.get("CODEREEVE_SETUP_NO_PROMPT") == "1":
+            raise CutoverError(
+                "BWS_ACCESS_TOKEN is required when prompts are disabled"
+            )
         if not interactive():
             raise CutoverError(
                 "BWS_ACCESS_TOKEN is required in a non-interactive session"

@@ -6,7 +6,7 @@ virtual environment. Install a release wheel into a separate environment first:
 
 ```bash
 uv venv /opt/codereeve --python 3.13
-uv pip install --python /opt/codereeve/bin/python --no-deps ./codereeve-*.whl
+uv pip install --python /opt/codereeve/bin/python ./codereeve-*.whl
 /opt/codereeve/bin/codereeve doctor --phase installation --strict
 /opt/codereeve/bin/codereeve doctor --phase configuration --strict
 ```

@@ -202,6 +202,54 @@ def test_fresh_bws_token_is_encoded_only_for_coordinator() -> None:
     assert secret == FreshSecrets(b"BWS_ACCESS_TOKEN=fixture:token+value=\n")
 
 
+@pytest.mark.parametrize(
+    "no_prompt_name",
+    ["CODEREEVE_SETUP_NO_PROMPT", "BH_SETUP_NO_PROMPT"],
+)
+def test_no_prompt_missing_token_fails_before_prompt_or_coordinator(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    no_prompt_name: str,
+) -> None:
+    """Both no-prompt names refuse a missing token without any effects."""
+    module = importlib.import_module("codereeve.service_cutover.cli")
+    environment = {no_prompt_name: "1"}
+
+    monkeypatch.setattr(module, "_is_interactive", lambda: True)
+    monkeypatch.setattr(
+        module.getpass,
+        "getpass",
+        lambda _prompt: pytest.fail("no-prompt mode must not request a token"),
+    )
+
+    def installation_inputs(
+        _args: object, values: dict[str, str]
+    ) -> tuple[ServiceSpec, FreshSecrets | None]:
+        fresh = module._fresh_secrets(
+            values,
+            required=True,
+            selected_path=Path("/etc/codereeve/secrets.env"),
+            render_only=False,
+            path_exists=lambda _path: False,
+            interactive=lambda: True,
+        )
+        return _spec(), fresh
+
+    monkeypatch.setattr(module, "_installation_inputs", installation_inputs)
+    monkeypatch.setattr(
+        module,
+        "cutover",
+        lambda *_args, **_kwargs: pytest.fail(
+            "coordinator must not run without a required token"
+        ),
+    )
+
+    assert module.main([], environment=environment) == 1
+    output = capsys.readouterr()
+    assert "BWS_ACCESS_TOKEN is required" in output.err
+    assert "status:" not in output.out
+
+
 def test_file_provider_never_reads_or_creates_fresh_secrets() -> None:
     """A configuration without BWS passes no secret content downstream."""
     module = importlib.import_module("codereeve.service_cutover.cli")
