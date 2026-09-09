@@ -1,4 +1,4 @@
-"""Durable re-dispatch-loop detection for the baton-harness daemon.
+"""Durable re-dispatch-loop detection for the CodeReeve daemon.
 
 Provides two public symbols:
 
@@ -62,7 +62,7 @@ def exceeds_threshold(
     ``(current_tick - window_ticks, current_tick]`` -- the lower bound is
     **excluded**, the upper bound is **included**.
 
-    Semantics: ``BH_REDISPATCH_MAX = N`` permits N redispatches and
+    Semantics: ``CODEREEVE_REDISPATCH_MAX = N`` permits N redispatches and
     breaches on the (N+1)th attempt.  ``record_and_check`` is called
     before each dispatch, so:
 

@@ -1,4 +1,4 @@
-"""Startup reconciliation sweep for the baton-harness daemon.
+"""Startup reconciliation sweep for the CodeReeve daemon.
 
 Runs startup checks at daemon startup (issues #40, #108, #219):
 

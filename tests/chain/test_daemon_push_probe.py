@@ -13,7 +13,7 @@ Proposed seam (code-writer adopts this name/signature in Phase 2)::
 Contract for ``_probe_worker_push_denied``:
 
 1. Attempts a git push to a UNIQUE throwaway ref under ``feature/`` (e.g.
-   ``feature/__bh-probe-<random>``), authenticated with the **WORKER**
+   ``feature/__codereeve-probe-<random>``), authenticated with the **WORKER**
    identity (``env_for(Identity.WORKER)``) — never ``_authed_git_push``,
    never an App installation token / credential helper. Uses the existing
    ``daemon._run(cmd, env=None)`` subprocess seam (the same one
@@ -189,11 +189,11 @@ _WEBHOOK = "https://hooks.slack.com/services/T00/B00/secret"
 # A denial signal a real GitHub push-protection rejection carries.
 _DENIAL_STDERR = (
     "remote: error: GH006: Protected branch update failed for "
-    "refs/heads/feature/__bh-probe-abc123\n"
+    "refs/heads/feature/__codereeve-probe-abc123\n"
     "remote: Cannot push to this protected branch\n"
     "To github.com:glitchwerks/baton-harness.git\n"
-    " ! [remote rejected] feature/__bh-probe-abc123 -> "
-    "feature/__bh-probe-abc123 (protected branch hook declined)\n"
+    " ! [remote rejected] feature/__codereeve-probe-abc123 -> "
+    "feature/__codereeve-probe-abc123 (protected branch hook declined)\n"
     "error: failed to push some refs to "
     "'github.com:glitchwerks/baton-harness.git'"
 )
@@ -737,7 +737,8 @@ def test_launch_proceeds_when_probe_denies_despite_comparator_drift(
 # ---------------------------------------------------------------------------
 
 _ACCEPTED_PUSH_DETAIL = (
-    "probe push to feature/__bh-probe-abc123 was ACCEPTED (returncode=0) "
+    "probe push to feature/__codereeve-probe-abc123 was ACCEPTED "
+    "(returncode=0) "
     "— push-protection boundary breached"
 )
 
@@ -1216,7 +1217,7 @@ def test_probe_reports_cleanup_failed_when_delete_returns_nonzero(
             stdout="",
             stderr=(
                 "error: unable to delete "
-                "'refs/heads/feature/__bh-probe-abc123': remote ref "
+                "'refs/heads/feature/__codereeve-probe-abc123': remote ref "
                 "does not exist"
             ),
         ),

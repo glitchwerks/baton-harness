@@ -1,4 +1,4 @@
-"""Observability configuration for the baton-harness daemon.
+"""Observability configuration for the CodeReeve daemon.
 
 Reads ``CODEREEVE_*`` environment variables and constructs an ``ObsConfig``
 frozen dataclass.  This module reads ``CODEREEVE_*`` env vars directly and does

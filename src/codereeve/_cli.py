@@ -10,7 +10,7 @@ This module provides two utilities that every hook needs:
    * **Baton (symphony) form** — the directory name is a bare integer,
      e.g. ``.symphony/worktrees/2``.  This is Baton's default: it names
      worktrees after the plain issue number.
-   * **Harness prefixed form** — ``<prefix>-<issue>[-<slug>]``, e.g.
+   * **CodeReeve prefixed form** — ``<prefix>-<issue>[-<slug>]``, e.g.
      ``.worktrees/feat-10-python-scaffold`` or ``.worktrees/chore-7``.
      Used by this project's own worktree convention.
 
@@ -22,6 +22,7 @@ This module provides two utilities that every hook needs:
 from __future__ import annotations
 
 import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -48,8 +49,8 @@ def resolve_issue_number(path: Path | None = None) -> int | None:
     * **Baton (symphony) form** — the directory name is a bare integer.
       Baton names worktrees ``<repo>/.symphony/worktrees/<issue>``, so
       ``basename(path)`` is just the issue number (e.g. ``"2"``).
-    * **Harness prefixed form** — ``<prefix>-<issue>[-<slug>]``.  Used by
-      this project's own ``.worktrees/<branch>`` convention.
+    * **CodeReeve prefixed form** — ``<prefix>-<issue>[-<slug>]``. Used by
+      this project's ``.worktrees/<branch>`` convention.
 
     Examples::
 
@@ -112,34 +113,38 @@ def claude_settings_json_for_worktree(venv_root: Path) -> dict[str, object]:
     GitHub Ruleset would have denied it at the API.
 
     POSIX ``bin/`` is preferred when it exists; Windows ``Scripts/`` (with
-    or without the ``.exe`` suffix) is used as a fallback.
+    or without the ``.exe`` suffix) is used as a fallback. The executable
+    path is normalized for its platform and quoted for the hook shell before
+    the canonical subcommand is appended.
 
     Args:
         venv_root: Absolute path to the venv that contains the
-            ``bh-force-pr-not-merge`` console script.  Both Windows
+            ``codereeve`` console script.  Both Windows
             (``Scripts/``) and POSIX (``bin/``) layouts are probed.
 
     Returns:
         A dict ready to ``json.dumps`` into ``.claude/settings.json``.
     """
-    posix = venv_root / "bin" / "bh-force-pr-not-merge"
-    win = venv_root / "Scripts" / "bh-force-pr-not-merge"
+    posix = venv_root / "bin" / "codereeve"
+    win = venv_root / "Scripts" / "codereeve"
     win_exe = win.with_suffix(".exe")
 
     if posix.exists():
-        cmd = str(posix)
+        executable = shlex.quote(str(posix))
     elif win_exe.exists():
-        cmd = str(win_exe)
+        executable = shlex.quote(str(win_exe).replace("\\", "/"))
     elif win.exists():
-        cmd = str(win)
+        executable = shlex.quote(str(win).replace("\\", "/"))
     elif (venv_root / "Scripts").exists():
         # Scripts/ dir present but no script yet (e.g. not yet installed);
         # fall back to the non-.exe form so the path is deterministic.
-        cmd = str(win)
+        executable = shlex.quote(str(win).replace("\\", "/"))
     else:
         # Neither layout found — default to POSIX form; operator will notice
         # when the hook fails at runtime.
-        cmd = str(posix)
+        executable = shlex.quote(str(posix))
+
+    cmd = f"{executable} hook force-pr-not-merge"
 
     return {
         "hooks": {

@@ -1289,13 +1289,15 @@ class TestReconcileLabelsWorkerTriedMerge:
     ) -> None:
         """Missing repo identity logs loudly instead of alerting with blanks.
 
-        Issue #159 Charge 5: missing ``BH_REPO_OWNER`` / ``BH_REPO_NAME``
+        Missing ``CODEREEVE_REPO_OWNER`` / ``CODEREEVE_REPO_NAME``
         must not silently degrade into ``alert("", "", ...)``. The hook
         should skip the alert call, log an explicit failure, and continue
         the blocked-label path without raising.
         """
         monkeypatch.delenv("BH_REPO_OWNER", raising=False)
         monkeypatch.delenv("BH_REPO_NAME", raising=False)
+        monkeypatch.delenv("CODEREEVE_REPO_OWNER", raising=False)
+        monkeypatch.delenv("CODEREEVE_REPO_NAME", raising=False)
 
         monkeypatch.setattr(
             after_run, "_current_labels", lambda issue: ["agent-ready"]
@@ -1327,7 +1329,7 @@ class TestReconcileLabelsWorkerTriedMerge:
         assert err_calls[-1][0] == "after-run"
         assert err_calls[-1][1] == 42
         assert "escalation alert failed" in err_calls[-1][2]
-        assert "BH_REPO_OWNER" in err_calls[-1][2]
+        assert "CODEREEVE_REPO_OWNER" in err_calls[-1][2]
 
     def test_reconcile_worker_tried_merge_current_labels_none_alert_fires(
         self,

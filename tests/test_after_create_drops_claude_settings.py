@@ -1,8 +1,8 @@
-"""Tests for bh-after-create .claude/settings.json drop (slice 3b task 5).
+"""Tests for CodeReeve after-create settings generation.
 
 Verifies that after_create writes .claude/settings.json with the
-force-pr-not-merge PreToolUse hook registered, pointing at
-$BH_VENV/{Scripts,bin}/bh-force-pr-not-merge.
+force-pr-not-merge PreToolUse hook registered through the canonical
+``codereeve hook force-pr-not-merge`` command.
 
 C4: BH_VENV absence is FATAL — _write_claude_settings_if_configured
 returns non-zero and must log via err() (not log()), and must NOT create
@@ -28,6 +28,10 @@ errors.
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -46,7 +50,7 @@ class TestClaudeSettingsJsonShape:
 
         venv = tmp_path / "venv"
         (venv / "Scripts").mkdir(parents=True)
-        (venv / "Scripts" / "bh-force-pr-not-merge").touch()
+        (venv / "Scripts" / "codereeve").touch()
 
         settings = claude_settings_json_for_worktree(venv)
 
@@ -58,7 +62,7 @@ class TestClaudeSettingsJsonShape:
 
         venv = tmp_path / "venv"
         (venv / "Scripts").mkdir(parents=True)
-        (venv / "Scripts" / "bh-force-pr-not-merge").touch()
+        (venv / "Scripts" / "codereeve").touch()
 
         settings = claude_settings_json_for_worktree(venv)
         pre = settings["hooks"]["PreToolUse"]
@@ -71,7 +75,7 @@ class TestClaudeSettingsJsonShape:
 
         venv = tmp_path / "venv"
         (venv / "Scripts").mkdir(parents=True)
-        (venv / "Scripts" / "bh-force-pr-not-merge").touch()
+        (venv / "Scripts" / "codereeve").touch()
 
         settings = claude_settings_json_for_worktree(venv)
         pre = settings["hooks"]["PreToolUse"]
@@ -84,7 +88,7 @@ class TestClaudeSettingsJsonShape:
 
         venv = tmp_path / "venv"
         (venv / "Scripts").mkdir(parents=True)
-        (venv / "Scripts" / "bh-force-pr-not-merge").touch()
+        (venv / "Scripts" / "codereeve").touch()
 
         settings = claude_settings_json_for_worktree(venv)
         entry = settings["hooks"]["PreToolUse"][0]
@@ -97,7 +101,7 @@ class TestClaudeSettingsJsonShape:
 
         venv = tmp_path / "venv"
         (venv / "Scripts").mkdir(parents=True)
-        (venv / "Scripts" / "bh-force-pr-not-merge").touch()
+        (venv / "Scripts" / "codereeve").touch()
 
         settings = claude_settings_json_for_worktree(venv)
         nested = settings["hooks"]["PreToolUse"][0]["hooks"]
@@ -106,23 +110,23 @@ class TestClaudeSettingsJsonShape:
         assert len(nested) == 1
         assert nested[0]["type"] == "command"
 
-    def test_command_ends_with_bh_force_pr_not_merge(
+    def test_windows_command_uses_canonical_subcommand(
         self, tmp_path: Path
     ) -> None:
-        """The command path ends with the bh-force-pr-not-merge script."""
+        """Windows settings invoke the canonical executable and hook route."""
         from codereeve._cli import claude_settings_json_for_worktree
 
-        venv = tmp_path / "venv"
+        venv = tmp_path / "venv with spaces & hooks"
         (venv / "Scripts").mkdir(parents=True)
-        (venv / "Scripts" / "bh-force-pr-not-merge").touch()
+        (venv / "Scripts" / "codereeve.exe").touch()
 
         settings = claude_settings_json_for_worktree(venv)
         cmd = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
 
-        # Accept both bare name (POSIX) and .exe suffix (Windows).
-        assert cmd.endswith("bh-force-pr-not-merge") or cmd.endswith(
-            "bh-force-pr-not-merge.exe"
+        executable = str(venv / "Scripts" / "codereeve.exe").replace(
+            "\\", "/"
         )
+        assert cmd == f"'{executable}' hook force-pr-not-merge"
 
     def test_command_references_venv_scripts_or_bin(
         self, tmp_path: Path
@@ -132,7 +136,7 @@ class TestClaudeSettingsJsonShape:
 
         venv = tmp_path / "venv"
         (venv / "Scripts").mkdir(parents=True)
-        (venv / "Scripts" / "bh-force-pr-not-merge").touch()
+        (venv / "Scripts" / "codereeve").touch()
 
         settings = claude_settings_json_for_worktree(venv)
         cmd = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
@@ -146,7 +150,7 @@ class TestClaudeSettingsJsonShape:
 
         venv = tmp_path / "venv"
         (venv / "Scripts").mkdir(parents=True)
-        (venv / "Scripts" / "bh-force-pr-not-merge").touch()
+        (venv / "Scripts" / "codereeve").touch()
 
         settings = claude_settings_json_for_worktree(venv)
         cmd = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
@@ -160,32 +164,52 @@ class TestClaudeSettingsJsonShape:
         """When bin/ layout exists it is preferred (POSIX consistency)."""
         from codereeve._cli import claude_settings_json_for_worktree
 
-        venv = tmp_path / "venv"
+        venv = tmp_path / "venv with spaces & hooks"
         (venv / "bin").mkdir(parents=True)
-        (venv / "bin" / "bh-force-pr-not-merge").touch()
+        (venv / "bin" / "codereeve").touch()
 
         settings = claude_settings_json_for_worktree(venv)
         cmd = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
 
-        # POSIX bin/ must appear in the command.
-        assert "/bin/" in cmd.replace("\\", "/")
+        assert cmd == (
+            f"'{str(venv / 'bin' / 'codereeve')}' "
+            "hook force-pr-not-merge"
+        )
 
-    def test_windows_scripts_exe_is_accepted(self, tmp_path: Path) -> None:
-        """Windows .exe variant accepted when Scripts/*.exe is the only form.
-
-        The helper must not hard-fail if Scripts/bh-force-pr-not-merge.exe
-        is the only script present.
-        """
+    @pytest.mark.skipif(os.name != "nt", reason="Windows launcher test")
+    def test_windows_generated_command_preserves_hook_contract(
+        self, tmp_path: Path
+    ) -> None:
+        """The generated command runs the installed canonical hook launcher."""
         from codereeve._cli import claude_settings_json_for_worktree
 
-        venv = tmp_path / "venv"
+        venv = tmp_path / "venv with spaces"
         (venv / "Scripts").mkdir(parents=True)
-        (venv / "Scripts" / "bh-force-pr-not-merge.exe").touch()
+        source = Path(sys.executable).parent / "codereeve.exe"
+        shutil.copy2(source, venv / "Scripts" / "codereeve.exe")
 
         settings = claude_settings_json_for_worktree(venv)
         cmd = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
 
-        assert "bh-force-pr-not-merge" in cmd
+        bash = Path("C:/Program Files/Git/usr/bin/bash.exe")
+        if not bash.exists():
+            pytest.skip("Git Bash is unavailable")
+        result = subprocess.run(
+            [str(bash), "-lc", cmd],
+            input=json.dumps(
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "gh pr merge 42"},
+                }
+            ),
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            check=False,
+        )
+
+        assert result.returncode == 2
+        assert result.stderr.startswith("BH_WORKER_TRIED_MERGE:")
 
 
 # ---------------------------------------------------------------------------

@@ -939,7 +939,7 @@ def _persist_ci_green(
 
     # Post marker comment with the CI-green SHA.
     marker = (
-        f"baton-harness: CI-green-at-merge sha={sha}"
+        f"CodeReeve: CI-green-at-merge sha={sha}"
         f" issue={issue} label=agent-merged"
     )
     comment_proc = _run(

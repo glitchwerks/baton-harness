@@ -145,7 +145,7 @@ def warn_if_async_escalation_unconfigured(obs: ObsConfig) -> None:
 
     Checks two async failure-signal channels at daemon startup:
 
-    - ``BH_SLACK_WEBHOOK_URL`` environment variable (unset or empty string
+    - ``CODEREEVE_SLACK_WEBHOOK_URL`` environment variable (unset or empty
       counts as unconfigured).
     - ``obs.heartbeat_ping_url`` (``None`` counts as unconfigured).
 
@@ -1075,7 +1075,7 @@ async def _poll_and_run(
     #
     # Scans git worktrees for entries whose issue is terminal and has no
     # live work.  Guarded: exceptions never escape to the daemon loop.
-    # Mode is "detect" by default; set BH_WORKTREE_GC=reclaim to opt
+    # Mode is "detect" by default; set CODEREEVE_WORKTREE_GC=reclaim to opt
     # in to cleanup.
     # ------------------------------------------------------------------
     worktree_gc_mode = obs.worktree_gc if obs is not None else "detect"

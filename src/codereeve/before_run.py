@@ -17,11 +17,11 @@ worktree to a clean state before returning non-zero.  Baton sees the
 non-zero exit and can surface the failure rather than leaving the
 worktree in a mid-rebase limbo.
 
-Entry point: ``bh-before-run`` (defined in ``pyproject.toml``).
+Canonical command: ``codereeve hook before-run``.
 
 WORKFLOW.md hook line (issue #5)::
 
-    before_run: bh-before-run
+    before_run: codereeve hook before-run
 
 Context:
     The hook runs with ``$PWD`` set to the worktree directory.  The issue
@@ -102,7 +102,7 @@ def _run_capture(cmd: list[str]) -> subprocess.CompletedProcess[str]:
 
 
 def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
-    """Entry point for the ``bh-before-run`` console script.
+    """Run the ``codereeve hook before-run`` command.
 
     Performs a branch sync in up to four steps:
 
@@ -154,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
         print(
             f"[{_HOOK}] error: could not derive issue number from cwd — "
             "expected a bare integer (Baton: .symphony/worktrees/<issue>) "
-            "or <prefix>-<issue>[-<slug>] (harness: .worktrees/<branch>)",
+            "or <prefix>-<issue>[-<slug>] (CodeReeve: .worktrees/<branch>)",
             file=sys.stderr,
             flush=True,
         )

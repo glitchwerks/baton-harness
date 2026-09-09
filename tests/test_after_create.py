@@ -472,7 +472,8 @@ class TestWriteClaudeSettingsExclude:
 
         When ``.claude/settings.json`` already exists (tracked or untracked),
         ``_write_claude_settings`` must copy it to
-        ``.claude/settings.json.bh-backup`` before writing the harness version.
+        ``.claude/settings.json.codereeve-backup`` before writing the
+        CodeReeve version.
         """
         worktree = tmp_path / "feat-99-test"
         worktree.mkdir()
@@ -494,9 +495,9 @@ class TestWriteClaudeSettingsExclude:
         )
 
         assert rc == 0
-        backup_path = claude_dir / "settings.json.bh-backup"
+        backup_path = claude_dir / "settings.json.codereeve-backup"
         assert backup_path.exists(), (
-            ".claude/settings.json.bh-backup was not created"
+            ".claude/settings.json.codereeve-backup was not created"
         )
         backed_up = backup_path.read_text(encoding="utf-8")
         assert backed_up == original_content, (
@@ -838,7 +839,9 @@ class TestWriteClaudeSettingsTrackedFileFatal:
             venv_root=tmp_path / "fakevenv",
         )
 
-        backup_path = worktree / ".claude" / "settings.json.bh-backup"
+        backup_path = (
+            worktree / ".claude" / "settings.json.codereeve-backup"
+        )
         assert not backup_path.exists(), (
             "backup file should NOT be created in the tracked-file FATAL path"
         )
