@@ -70,7 +70,7 @@ Key behaviors:
 - Milestone work unit: `feature/<milestone-slug>` (slug derived from milestone title).
 - Un-milestoned N=1 unit: `feature/issue-<N>` (issue number is collision-free by construction).
 
-The feature branch is created off `origin/main` and pushed before dispatch. The agent's `gh pr create --base "$BH_FEATURE_BRANCH"` uses the retained hook protocol variable and requires the base remotely.
+The feature branch is created off `origin/main` and pushed before dispatch. The agent's `gh pr create --base "$CODEREEVE_FEATURE_BRANCH"` uses the canonical runtime variable and requires the base remotely. `BH_FEATURE_BRANCH` remains its compatibility alias through 0.3.x and is removed in 0.4.
 
 **Per-issue branches** use `codereeve/<slug>-<N>`. Legacy `baton/<slug>-<N>` branches remain recognized for recovery through 0.3.x and are removed in 0.4.
 
@@ -110,7 +110,7 @@ Step 2: while scheduler.is_active():
                 record cut_point
                 label: agent-ready → agent-in-progress  (C1)
                 set CHAIN_BASE_BRANCH = cut_point
-                set BH_FEATURE_BRANCH = branch_name
+                set CODEREEVE_FEATURE_BRANCH = branch_name
                 worker_result = await orch._run_worker(issue)
                 re-read labels (after_run may have set blocked)
                 apply §7 outcome protocol

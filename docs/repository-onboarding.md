@@ -218,12 +218,12 @@ codereeve doctor --phase configuration --config /path/to/config.env --strict
 codereeve doctor --phase live --strict
 ```
 
-Use the installed venv's `bh-daemon` wrapper when the venv is not on PATH.
-`--version` reports installed distribution metadata. `--provenance` emits the
+Use the installed environment's `codereeve` executable when it is not on PATH.
+`codereeve --version` reports installed distribution metadata. `codereeve provenance` emits the
 validated packaged record, including `schema_version: 1`, `package_version`,
 the exact `source_revision`, `lock_identity` (SHA-256 of the exact lock bytes),
 and boolean `development`. Neither command needs config or credentials, and
-runtime provenance never reads Git. Invalid provenance makes `--provenance`
+runtime provenance never reads Git. Invalid provenance makes `codereeve provenance`
 exit 1 with a safe stderr diagnostic.
 
 | Phase | Checks and authority |

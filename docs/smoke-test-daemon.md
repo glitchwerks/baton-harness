@@ -99,7 +99,7 @@ The daemon's environment is assembled from three sources in order, with explicit
 
 `${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env` is a plain `KEY=VAL` file committed in the **sandbox** repo (not the harness fork). This inverts the old model — per-deployment identity now lives alongside the code the daemon manages rather than in a file that had to be edited in the harness checkout on every new deploy.
 
-`bin/run-daemon.sh` sources `host.env` for `CODEREEVE_PROJECT_ROOT`, then reads `.codereeve/config.env` for the repo slug to run its label and `.symphony/`-gitignore preflights. `bh-daemon` itself then authoritatively parses and validates `.codereeve/config.env` via `sandbox_config.read_and_validate` before the registry loads.
+`bin/run-daemon.sh` parses `host.env` for `CODEREEVE_PROJECT_ROOT`, then reads `.codereeve/config.env` for the repo slug to run its label and `.symphony/`-gitignore preflights. `codereeve daemon` then authoritatively parses and validates `.codereeve/config.env` via `sandbox_config.read_and_validate` before the registry loads.
 
 `bin/init-sandbox.sh` writes this file interactively at provision time. To create it by
 hand, add the common values and exactly one provider block to
@@ -121,7 +121,7 @@ BWS_PEM_SECRET_ID=<uuid>
 ```bash
 # BWS-free file deployment
 CODEREEVE_GITHUB_APP_KEY_PROVIDER=file
-CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE=/run/credentials/bh-daemon/app.pem
+CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE=/run/credentials/codereeve/app.pem
 ```
 
 Optional locator lines may follow either provider block:
@@ -176,7 +176,7 @@ critical failures. `codereeve daemon --check-vault` remains the single live App-
 
 ### Per-host config — `~/.config/codereeve/host.env`, set by `bin/setup-env.sh`
 
-`bin/setup-env.sh` prompts for `CODEREEVE_PROJECT_ROOT` (the absolute path to the local clone of the managed repo) and writes it to `~/.config/codereeve/host.env` (mode 600, directory mode 700). `bin/run-daemon.sh` sources this file at startup. The XDG base directory convention is honoured: the file path follows `${XDG_CONFIG_HOME:-${HOME}/.config}/baton-harness/host.env`.
+`bin/setup-env.sh` prompts for `CODEREEVE_PROJECT_ROOT` (the absolute path to the local clone of the managed repo) and writes it to `~/.config/codereeve/host.env` (mode 600, directory mode 700). `bin/run-daemon.sh` parses this file at startup without evaluating shell expressions. The XDG base directory convention is honoured: the file path follows `${XDG_CONFIG_HOME:-${HOME}/.config}/codereeve/host.env`.
 
 | Variable | How it is set | Purpose |
 |---|---|---|
@@ -525,11 +525,11 @@ Useful flags:
 
 The candidate refuses activation if `ANTHROPIC_API_KEY` is set. For
 non-interactive installs, set `CODEREEVE_SETUP_NO_PROMPT=1` (the temporary
-`CODEREEVE_SETUP_NO_PROMPT` alias remains supported). A conditionally required fresh
+`BH_SETUP_NO_PROMPT` alias remains supported through 0.3.x and is removed in 0.4). A conditionally required fresh
 `BWS_ACCESS_TOKEN` is passed only to the coordinator. File-only installation
 does not read or create a BWS secrets file.
 
-After it finishes, the script reminds you to run `bin/provision-ruleset.sh` once against the target repo — it does **not** run provisioning itself, and without a captured `.bh/ruleset-baseline.json` the preflight gate (issue #206) parks every issue as `NOT_PROVISIONED`.
+After it finishes, the script reminds you to run `bin/provision-ruleset.sh` once against the target repo — it does **not** run provisioning itself, and without a captured `.codereeve/ruleset-baseline.json` the preflight gate (issue #206) parks every issue as `NOT_PROVISIONED`.
 
 ##### Legacy 0.3 reference
 
@@ -541,9 +541,9 @@ The retired 0.3 installer wrote the provider-aware unit shape below. Its BWS
 configurations. BWS-free deployments had to separately provision the worker PAT
 environment file and drop-in below for the standard `bh-before-run` hook.
 
-`${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env` supplies the repo identity, App IDs, provider/source,
+`${BH_PROJECT_ROOT}/.bh/config.env` supplies the repo identity, App IDs, provider/source,
 and optional secret locators. Because this unit invokes `bh-daemon` directly, it carries
-`CODEREEVE_PROJECT_ROOT` explicitly. When BWS is needed, keep the environment file root-readable
+`BH_PROJECT_ROOT` explicitly. When BWS is needed, keep the environment file root-readable
 only (`chmod 600`). Never place `ANTHROPIC_API_KEY` in either location.
 
 ```ini
@@ -554,9 +554,9 @@ After=network.target
 [Service]
 Type=simple
 User=agent
-Environment=CODEREEVE_PROJECT_ROOT=/path/to/sandbox/clone
+Environment=BH_PROJECT_ROOT=/path/to/sandbox/clone
 # Include only when the resolved configuration needs BWS:
-# EnvironmentFile=/etc/codereeve/secrets.env
+# EnvironmentFile=/etc/bh-daemon/secrets.env
 ExecStart=/path/to/harness/.venv/bin/bh-daemon --workflow /path/to/harness/config/WORKFLOW.md
 Restart=on-failure
 RestartSec=15
@@ -567,7 +567,7 @@ StandardError=journal
 WantedBy=multi-user.target
 ```
 
-For that legacy unit, `/etc/codereeve/secrets.env` (mode `600`, owner `root`)
+For that legacy unit, `/etc/bh-daemon/secrets.env` (mode `600`, owner `root`)
 contained:
 
 ```

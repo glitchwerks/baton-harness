@@ -297,7 +297,7 @@ local-only; live checks may use credentials and network access. Repeat `--phase`
 to select multiple phases; omission runs all three. Text is the default format.
 `--config` selects an explicit file; otherwise selection uses
 `$CODEREEVE_PROJECT_ROOT/.codereeve/config.env`, with non-empty environment overrides.
-An explicit `<root>/.codereeve/config.env` infers the project root when `BH_PROJECT_ROOT`
+An explicit `<root>/.codereeve/config.env` infers the project root when `CODEREEVE_PROJECT_ROOT`
 is unset or empty; daemon startup applies that root after the readiness gate.
 
 Doctor is advisory (exit 0) unless `--strict` finds a critical failure (exit 1).
