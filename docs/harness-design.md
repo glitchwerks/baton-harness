@@ -209,7 +209,7 @@ The architecture spec (§3.4) described the orchestration layer abstractly. This
 ## 10. Always-on daemon: dependency-ordered work units [implemented (v1, serial)]
 
 **Status:** Implemented as issue #27, P3.  The v1 serial daemon is live in
-`src/codereeve/chain/daemon.py`.  Launcher: `bin/run-daemon.sh`.  CLI
+`src/codereeve/chain/daemon/__init__.py`.  Launcher: `bin/run-daemon.sh`.  CLI
 entry point: `codereeve daemon` (see `pyproject.toml`).  The implementation spec that
 drove P0–P3 was retired after merge (issue #53); its durable design rationale is
 preserved in this §10, and the implementation history is in issue #27 and

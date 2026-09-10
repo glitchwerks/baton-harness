@@ -41,7 +41,11 @@ from codereeve._cli import (
     resolve_issue_number,
 )
 from codereeve.chain.subproc import run_cmd
-from codereeve.config_env import runtime_environment
+from codereeve.config_env import (
+    AliasConflictError,
+    ResolvedEnvironment,
+    runtime_environment,
+)
 
 #: Short name used in log/err prefixes.
 _HOOK = "after-create"
@@ -363,12 +367,16 @@ def _write_claude_settings(issue: int, cwd: Path, venv_root: Path) -> int:
     return 0
 
 
-def _write_claude_settings_if_configured(issue: int, cwd: Path) -> int:
+def _write_claude_settings_if_configured(
+    issue: int, cwd: Path, environment: ResolvedEnvironment | None = None
+) -> int:
     """Drop settings or fail loudly if ``CODEREEVE_VENV`` is absent.
 
     Args:
         issue: Issue number (used in log prefix).
         cwd: The freshly-created worktree directory.
+        environment: Validated hook snapshot; resolve current values when
+            called directly without a snapshot.
 
     Returns:
         ``0`` on success; non-zero on misconfiguration or write failure.
@@ -378,9 +386,9 @@ def _write_claude_settings_if_configured(issue: int, cwd: Path) -> int:
         the operator MUST notice at first worktree creation rather than at
         first merge attempt.
     """
-    venv_root_env = runtime_environment(os.environ).values.get(
-        "CODEREEVE_VENV"
-    )
+    if environment is None:
+        environment = runtime_environment(os.environ)
+    venv_root_env = environment.values.get("CODEREEVE_VENV")
     if not venv_root_env:
         err(
             _HOOK,
@@ -412,6 +420,12 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
         ``CODEREEVE_VENV`` is absent or unset (workers without the
         force-pr-not-merge hook lose defense-in-depth).
     """
+    try:
+        environment = runtime_environment(os.environ)
+    except AliasConflictError as exc:
+        print(f"[{_HOOK}] error: {exc}", file=sys.stderr, flush=True)
+        return 1
+
     issue = resolve_issue_number()
     if issue is None:
         print(
@@ -447,7 +461,9 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
     # worker-side `gh pr merge` is stopped before the ruleset would have
     # denied it at the API layer. CODEREEVE_VENV absence is fatal — a
     # silent skip would ship workers without defense-in-depth.
-    rc_settings = _write_claude_settings_if_configured(issue=issue, cwd=cwd)
+    rc_settings = _write_claude_settings_if_configured(
+        issue=issue, cwd=cwd, environment=environment
+    )
     if rc_settings != 0:
         return rc_settings
 

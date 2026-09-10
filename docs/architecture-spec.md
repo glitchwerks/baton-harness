@@ -114,7 +114,7 @@ Transitions are owned by the orchestrator (Layer 4); the human owns initial `age
 
 **Current model [implemented (v1, serial)]:** The always-on daemon + vendored symphony model. The external-process Baton model (pilot) is superseded. The orchestration layer is split into two components with distinct responsibilities.
 
-**Orchestrator = custom always-on daemon [implemented].** A persistent CodeReeve process that never exits between work units or on a block (`src/codereeve/chain/daemon.py`). It watches for ready work units, builds and schedules the DAG (`graphlib.TopologicalSorter`), owns the `feature/<slug>` branch lifecycle and ready-for-review `feature/<slug> → main` PR, drives Slack escalation, and parks or resumes sub-trees.
+**Orchestrator = custom always-on daemon [implemented].** A persistent CodeReeve process that never exits between work units or on a block (`src/codereeve/chain/daemon/__init__.py`). It watches for ready work units, builds and schedules the DAG (`graphlib.TopologicalSorter`), owns the `feature/<slug>` branch lifecycle and ready-for-review `feature/<slug> → main` PR, drives Slack escalation, and parks or resumes sub-trees.
 
 **Worker = vendored `symphony._run_worker` [implemented].** Called by the daemon as a library function per issue (`src/codereeve/vendor/symphony/`). `.symphony/worktrees/<N>` remains the engine-owned worktree layout. New worker branches use `codereeve/<slug>-<N>`; legacy `baton/<slug>-<N>` branches remain recognized for recovery through 0.3.x and are removed in 0.4.
 

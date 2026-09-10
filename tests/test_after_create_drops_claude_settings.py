@@ -552,3 +552,74 @@ class TestWriteClaudeSettingsIdempotency:
 
         assert rc1 == 0
         assert rc2 == 0
+
+
+@pytest.mark.parametrize(
+    "project", ["package.json", "requirements.txt", "pyproject.toml"]
+)
+def test_canonical_hook_rejects_alias_conflicts_before_effects(
+    project: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Alias conflicts prevent dependency installation and settings writes."""
+    from unittest.mock import Mock
+
+    from codereeve import after_create, cli
+    from codereeve.config_env import PRODUCT_ALIASES
+
+    alias = next(s for s in PRODUCT_ALIASES if s.canonical == "CODEREEVE_VENV")
+    monkeypatch.setenv(alias.canonical, "canonical-secret-sentinel")
+    monkeypatch.setenv(alias.legacy, "legacy-secret-sentinel")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / project).touch()
+    monkeypatch.setattr(after_create, "resolve_issue_number", lambda: 395)
+    effects = Mock(return_value=0)
+    for name in (
+        "_install_npm",
+        "_install_requirements",
+        "_install_pyproject",
+        "_write_claude_settings",
+    ):
+        monkeypatch.setattr(after_create, name, effects)
+
+    assert cli.main(["hook", "after-create"]) != 0
+    effects.assert_not_called()
+    output = capsys.readouterr().err
+    assert alias.canonical in output and alias.legacy in output
+    assert "canonical-secret-sentinel" not in output
+    assert "legacy-secret-sentinel" not in output
+
+
+@pytest.mark.parametrize("spelling", ["canonical", "legacy"])
+def test_canonical_hook_uses_validated_snapshot(
+    spelling: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Either spelling works even if installation changes the environment."""
+    from unittest.mock import Mock
+
+    from codereeve import after_create, cli
+    from codereeve.config_env import PRODUCT_ALIASES
+
+    alias = next(s for s in PRODUCT_ALIASES if s.canonical == "CODEREEVE_VENV")
+    monkeypatch.delenv(alias.canonical, raising=False)
+    monkeypatch.delenv(alias.legacy, raising=False)
+    venv = tmp_path / "original-venv"
+    monkeypatch.setenv(getattr(alias, spelling), str(venv))
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "requirements.txt").touch()
+    monkeypatch.setattr(after_create, "resolve_issue_number", lambda: 395)
+
+    def install(issue: int) -> int:
+        """Simulate an installer changing environment after validation."""
+        monkeypatch.setenv(getattr(alias, spelling), str(tmp_path / "changed"))
+        return 0
+
+    monkeypatch.setattr(after_create, "_install_requirements", install)
+    writer = Mock(return_value=0)
+    monkeypatch.setattr(after_create, "_write_claude_settings", writer)
+    assert cli.main(["hook", "after-create"]) == 0
+    writer.assert_called_once_with(issue=395, cwd=tmp_path, venv_root=venv)

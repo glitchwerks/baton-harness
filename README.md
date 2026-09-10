@@ -530,8 +530,10 @@ export BWS_PEM_SECRET_ID=<uuid>
 
 ```bash
 # BWS-free file deployment
+# Replace the absolute placeholder below: provision the PEM for the chosen
+# execution identity, owned by that identity with mode 0600; never commit it.
 export CODEREEVE_GITHUB_APP_KEY_PROVIDER=file
-export CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE=/run/credentials/codereeve/app.pem
+export CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE=/absolute/path/to/secured/github-app.pem
 ```
 
 `BWS_ACCESS_TOKEN` is a shell/service bootstrap secret, not provider configuration. Never
@@ -778,8 +780,10 @@ export CODEREEVE_GITHUB_APP_KEY_PROVIDER=bws
 export BWS_PEM_SECRET_ID=<bws-secret-id-for-app-private-key>
 export BWS_ACCESS_TOKEN=<bws-access-token>
 # Or file (unset BWS_PEM_SECRET_ID; no BWS token unless an optional BWS ID is set):
+# Replace the absolute placeholder below: provision the PEM for the chosen
+# execution identity, owned by that identity with mode 0600; never commit it.
 # export CODEREEVE_GITHUB_APP_KEY_PROVIDER=file
-# export CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE=/run/credentials/codereeve/app.pem
+# export CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE=/absolute/path/to/secured/github-app.pem
 # Optional: override the RepositoryRole admin actor_id (default 5).
 # Only needed if your org has remapped role ids.
 # export CODEREEVE_ADMIN_ROLE_ID=5

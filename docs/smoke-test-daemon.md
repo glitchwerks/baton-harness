@@ -120,8 +120,10 @@ BWS_PEM_SECRET_ID=<uuid>
 
 ```bash
 # BWS-free file deployment
+# Replace the absolute placeholder below: provision the PEM for the chosen
+# execution identity, owned by that identity with mode 0600; never commit it.
 CODEREEVE_GITHUB_APP_KEY_PROVIDER=file
-CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE=/run/credentials/codereeve/app.pem
+CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE=/absolute/path/to/secured/github-app.pem
 ```
 
 Optional locator lines may follow either provider block:
@@ -589,8 +591,8 @@ rotation:
 ```ini
 [Service]
 LoadCredential=app.pem:/externally/provisioned/github-app.pem
-Environment=CODEREEVE_GITHUB_APP_KEY_PROVIDER=file
-Environment=CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE=%d/app.pem
+Environment=BH_GITHUB_APP_KEY_PROVIDER=file
+Environment=BH_GITHUB_APP_PRIVATE_KEY_FILE=%d/app.pem
 EnvironmentFile=/etc/bh-daemon/worker.env
 ```
 

@@ -234,3 +234,78 @@ def test_smoke_migration_guidance_names_real_compatibility_inputs(
     )
     deprecated = re.search(r"\(the temporary\s+`([^`]+)` alias", text)
     assert deprecated and deprecated.group(1) == alias
+
+
+@pytest.mark.parametrize(
+    "document", ["README.md", "docs/smoke-test-daemon.md"]
+)
+def test_ordinary_file_provider_requires_operator_provisioning(
+    document: str,
+) -> None:
+    """Ordinary setup must name an operator-provisioned secured PEM."""
+    text = (ROOT / document).read_text(encoding="utf-8")
+    ordinary = text.split("##### Legacy 0.3 reference")[0]
+    blocks = "\n".join(re.findall(r"```bash\n(.*?)```", ordinary, re.S))
+    paths = re.findall(r"CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE=(\S+)", blocks)
+    assert paths
+    assert all(
+        path == "/absolute/path/to/secured/github-app.pem" for path in paths
+    )
+    assert "provision" in ordinary and "execution identity" in ordinary
+    assert "0600" in ordinary
+
+
+def test_legacy_unit_and_file_provider_dropin_are_consistent() -> None:
+    """The complete predecessor example uses its original environment keys."""
+    from codereeve.config_env import PRODUCT_ALIASES
+
+    text = (ROOT / "docs/smoke-test-daemon.md").read_text(encoding="utf-8")
+    legacy = text.split("##### Legacy 0.3 reference", 1)[1]
+    unit, dropin = re.findall(r"```ini\n(.*?)```", legacy, re.S)[:2]
+    aliases = {s.canonical: s.legacy for s in PRODUCT_ALIASES}
+    prefix = aliases["CODEREEVE_PROJECT_ROOT"].removesuffix("PROJECT_ROOT")
+    old_command = prefix.lower().replace("_", "-") + "daemon"
+    assert (
+        f"ExecStart=/path/to/harness/.venv/bin/{old_command} "
+        "--workflow /path/to/harness/config/WORKFLOW.md"
+    ) in unit
+    assert (
+        f"Environment={aliases['CODEREEVE_PROJECT_ROOT']}="
+        "/path/to/sandbox/clone"
+    ) in unit
+    assert "User=agent" in unit
+    assert (
+        "LoadCredential=app.pem:/externally/provisioned/github-app.pem"
+        in dropin
+    )
+    assert (
+        f"Environment={aliases['CODEREEVE_GITHUB_APP_KEY_PROVIDER']}=file"
+        in dropin
+    )
+    assert (
+        f"Environment={aliases['CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE']}="
+        "%d/app.pem"
+    ) in dropin
+    assert f"EnvironmentFile=/etc/{old_command}/worker.env" in dropin
+    assert "CODEREEVE_" not in unit + dropin
+
+
+@pytest.mark.parametrize(
+    "document", ["docs/architecture-spec.md", "docs/harness-design.md"]
+)
+def test_current_daemon_references_are_tracked(document: str) -> None:
+    """Current daemon implementation references resolve in the Git tree."""
+    text = (ROOT / document).read_text(encoding="utf-8")
+    references = re.findall(r"src/codereeve/chain/daemon[^`\s):]*", text)
+    assert references
+    for reference in references:
+        result = subprocess.run(
+            ["git", "ls-tree", "HEAD", "--", reference],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert result.stdout.strip(), (
+            f"untracked daemon reference: {reference}"
+        )
