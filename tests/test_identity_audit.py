@@ -61,9 +61,9 @@ def test_legacy_scanner(token: str) -> None:
 
 
 def test_unapproved_reference_does_not_echo_runtime_values() -> None:
-    """Diagnostics identify the token without disclosing surrounding data."""
+    """Diagnostics identify the location without disclosing matched data."""
     errors = _audit().audit({"x.env": "BH_TOKEN=secret-value"}, [])
-    assert errors and "BH_TOKEN" in errors[0]
+    assert errors and "x.env:1: legacy identity" in errors[0]
     assert "secret-value" not in str(errors)
 
 
@@ -163,3 +163,21 @@ def test_catalog_text_is_explicitly_excluded() -> None:
     """Catalog examples do not need self-allowances."""
     module = _audit()
     assert not module.audit({module.CATALOG: "Baton"}, [])
+
+
+@pytest.mark.parametrize(
+    "credential",
+    ["bh-privatecredential", "BH_PRIVATECREDENTIAL"],
+)
+def test_legacy_match_inside_credential_stays_private(credential: str) -> None:
+    """Legacy-looking credential bytes must not appear in diagnostics."""
+    value = f"https://example.test/{credential}"
+    errors = _audit().audit(
+        {"example.env": f"CODEREEVE_HEARTBEAT_PING_URL={value}"},
+        [],
+    )
+    assert errors
+    output = "\n".join(errors)
+    assert value not in output
+    assert credential not in output
+    assert "privatecredential" not in output.lower()

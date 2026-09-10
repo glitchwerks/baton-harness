@@ -1,14 +1,16 @@
 """Validate maintained command examples through real parsers before effects.
 
-Only doctor gates and installer forms are executed here. Other Bash runbook
-commands remain outside this deliberately bounded executable contract.
+Doctor gates, installer forms, and build-mode cleanup are checked here.
+Other Bash runbook commands remain outside this bounded contract.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shlex
+import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -175,3 +177,60 @@ def test_unknown_documented_command_fails(
     """An unknown canonical command cannot bypass parser interception."""
     with pytest.raises(AssertionError, match="before argument validation"):
         _parse(["codereeve", "unknown-command"], monkeypatch)
+
+
+@pytest.mark.parametrize("document", ["README.md", "docs/system-setup.md"])
+def test_standard_build_recipe_clears_both_development_switches(
+    document: str,
+) -> None:
+    """Execute the documented unset with both development flags inherited."""
+    from tests.test_shell_identity import _bash_executable
+
+    text = (ROOT / document).read_text(encoding="utf-8")
+    commands = re.findall(
+        r"^unset CODEREEVE_BUILD_DEVELOPMENT[^\n]*$", text, re.M
+    )
+    assert len(commands) == 1
+    words = shlex.split(commands[0])
+    switches = {"CODEREEVE_BUILD_DEVELOPMENT", "BH_BUILD_DEVELOPMENT"}
+    assert set(words[1:]) <= switches
+    environment = dict(os.environ)
+    environment.update(dict.fromkeys(switches, "1"))
+    process = subprocess.run(
+        [
+            str(_bash_executable()),
+            "--noprofile",
+            "--norc",
+            "-c",
+            commands[0]
+            + '\ntest -z "${CODEREEVE_BUILD_DEVELOPMENT+x}"'
+            + ' && test -z "${BH_BUILD_DEVELOPMENT+x}"',
+        ],
+        env=environment,
+        check=False,
+        capture_output=True,
+        timeout=15,
+    )
+    assert process.returncode == 0, "recipe retained a development switch"
+
+
+@pytest.mark.parametrize("contract", ["predecessor", "alias"])
+def test_smoke_migration_guidance_names_real_compatibility_inputs(
+    contract: str,
+) -> None:
+    """Migration guidance names supported runtime compatibility inputs."""
+    from codereeve.config_env import PRODUCT_ALIASES
+    from codereeve.service_cutover.systemd import OLD_UNIT
+
+    text = (ROOT / "docs/smoke-test-daemon.md").read_text(encoding="utf-8")
+    predecessor = re.search(r"recoverable cutover from `([^`]+)`", text)
+    if contract == "predecessor":
+        assert predecessor and predecessor.group(1) == OLD_UNIT
+        return
+    alias = next(
+        spec.legacy
+        for spec in PRODUCT_ALIASES
+        if spec.canonical == "CODEREEVE_SETUP_NO_PROMPT"
+    )
+    deprecated = re.search(r"\(the temporary\s+`([^`]+)` alias", text)
+    assert deprecated and deprecated.group(1) == alias

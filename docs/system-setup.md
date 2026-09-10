@@ -126,7 +126,7 @@ commit (which must match HEAD in a checkout). The hook validates these explicit
 assertions, not the tag name. Unset the development flag for a standard build:
 
 ```bash
-unset CODEREEVE_BUILD_DEVELOPMENT CODEREEVE_BUILD_DEVELOPMENT
+unset CODEREEVE_BUILD_DEVELOPMENT BH_BUILD_DEVELOPMENT
 mkdir -p .tmp
 uv lock --check
 uv export --locked --no-emit-project --format requirements.txt \

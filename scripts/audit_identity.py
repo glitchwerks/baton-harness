@@ -37,7 +37,7 @@ def audit(
         catalog: Parsed JSON list of exact occurrence exceptions.
 
     Returns:
-        Safe diagnostics containing locations and tokens, never whole lines.
+        Safe diagnostics containing locations and a fixed identity label.
     """
     errors: list[str] = []
     if not isinstance(catalog, list):
@@ -87,7 +87,7 @@ def audit(
                 continue
             key = (path, kind, text)
             found[key] += 1
-            locations[key] = f"{path}:{line}: {', '.join(matched)}"
+            locations[key] = f"{path}:{line}: legacy identity"
     for key, count in found.items():
         if count != allowed.get(key, 0):
             errors.append(

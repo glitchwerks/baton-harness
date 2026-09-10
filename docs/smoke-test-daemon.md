@@ -498,7 +498,7 @@ Two common supervision patterns are shown below. Both are illustrative starting 
 
 #### systemd unit (recommended)
 
-The installer performs a recoverable cutover from `codereeve daemon.service` to
+The installer performs a recoverable cutover from `bh-daemon.service` to
 `codereeve.service`. Install the release wheel into a separate environment first;
 the installer never changes the old virtual environment. Render before activation:
 
@@ -529,7 +529,7 @@ Useful flags:
 
 The candidate refuses activation if `ANTHROPIC_API_KEY` is set. For
 non-interactive installs, set `CODEREEVE_SETUP_NO_PROMPT=1` (the temporary
-`CODEREEVE_SETUP_NO_PROMPT` alias remains supported through 0.3.x and is removed in 0.4). A conditionally required fresh
+`BH_SETUP_NO_PROMPT` alias remains supported through 0.3.x and is removed in 0.4). A conditionally required fresh
 `BWS_ACCESS_TOKEN` is passed only to the coordinator. File-only installation
 does not read or create a BWS secrets file.
 
