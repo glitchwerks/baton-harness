@@ -37,7 +37,7 @@ from codereeve.vendor.symphony.config import WorkflowConfig
 # ---------------------------------------------------------------------------
 
 _OWNER = "glitchwerks"
-_REPO_NAME = "baton-harness"
+_REPO_NAME = "codereeve"
 
 
 def _ok(stdout: str = "") -> subprocess.CompletedProcess[str]:

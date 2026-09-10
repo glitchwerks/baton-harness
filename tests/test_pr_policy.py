@@ -44,7 +44,7 @@ def _write_event(
     event_path.write_text(
         json.dumps(
             {
-                "repository": {"full_name": "glitchwerks/baton-harness"},
+                "repository": {"full_name": "glitchwerks/codereeve"},
                 "pull_request": {
                     "body": body,
                     "head": {"ref": head_ref},
@@ -63,7 +63,7 @@ def test_load_pull_request_event(tmp_path: Path) -> None:
     assert load_pull_request_event(event_path) == PullRequestEvent(
         head_ref="feature/365-workflow",
         body="Closes #365",
-        repository="glitchwerks/baton-harness",
+        repository="glitchwerks/codereeve",
     )
 
 
@@ -130,10 +130,10 @@ def test_fetch_issue_has_milestone(monkeypatch: pytest.MonkeyPatch) -> None:
         request_json,
     )
 
-    assert fetch_issue_has_milestone("glitchwerks/baton-harness", 365, token)
+    assert fetch_issue_has_milestone("glitchwerks/codereeve", 365, token)
     assert observed == {
         "method": "GET",
-        "url": "https://api.github.com/repos/glitchwerks/baton-harness/issues/365",
+        "url": "https://api.github.com/repos/glitchwerks/codereeve/issues/365",
         "accept": "application/vnd.github+json",
         "authorization_is_expected": True,
         "api_version": "2022-11-28",
@@ -148,9 +148,7 @@ def test_fetch_issue_has_no_milestone(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda request: {"milestone": None},
     )
 
-    assert not fetch_issue_has_milestone(
-        "glitchwerks/baton-harness", 365, "token"
-    )
+    assert not fetch_issue_has_milestone("glitchwerks/codereeve", 365, "token")
 
 
 @pytest.mark.parametrize(
@@ -174,9 +172,7 @@ def test_fetch_issue_has_milestone_rejects_invalid_metadata(
     monkeypatch.setattr(pr_policy, "_request_json", lambda request: metadata)
 
     with pytest.raises(pr_policy.PolicyRuntimeError, match=message):
-        fetch_issue_has_milestone(
-            "glitchwerks/baton-harness", 365, "test-token"
-        )
+        fetch_issue_has_milestone("glitchwerks/codereeve", 365, "test-token")
 
 
 def test_main_reports_unverified_issue_for_invalid_utf8_api_json(
@@ -451,8 +447,8 @@ def test_parse_branch_issue(branch: str, expected: int | None) -> None:
 
 def test_parse_closing_issues_accepts_local_and_qualified_references() -> None:
     """Parse local and same-repository qualified closing references."""
-    body = "Closes #365\nFixes glitchwerks/baton-harness#366"
-    assert parse_closing_issues(body, "glitchwerks/baton-harness") == (
+    body = "Closes #365\nFixes glitchwerks/codereeve#366"
+    assert parse_closing_issues(body, "glitchwerks/codereeve") == (
         365,
         366,
     )
@@ -461,7 +457,7 @@ def test_parse_closing_issues_accepts_local_and_qualified_references() -> None:
 def test_parse_closing_issues_ignores_plain_and_foreign_references() -> None:
     """Ignore references without directives and foreign repositories."""
     body = "Related: #365\nCloses another/repository#99"
-    assert parse_closing_issues(body, "glitchwerks/baton-harness") == ()
+    assert parse_closing_issues(body, "glitchwerks/codereeve") == ()
 
 
 def test_evaluate_pr_policy_accepts_compliant_pull_request() -> None:
@@ -470,7 +466,7 @@ def test_evaluate_pr_policy_accepts_compliant_pull_request() -> None:
         evaluate_pr_policy(
             "feature/365-good",
             "Closes #365",
-            "glitchwerks/baton-harness",
+            "glitchwerks/codereeve",
             {365: True},
         )
         == []
@@ -501,7 +497,7 @@ def test_evaluate_pr_policy_reports_each_violation(
     assert any(
         message in error
         for error in evaluate_pr_policy(
-            head, body, "glitchwerks/baton-harness", milestones
+            head, body, "glitchwerks/codereeve", milestones
         )
     )
 
@@ -511,7 +507,7 @@ def test_evaluate_pr_policy_reports_all_missing_milestones() -> None:
     errors = evaluate_pr_policy(
         "feature/365-good",
         "Closes #365\nResolves #366",
-        "glitchwerks/baton-harness",
+        "glitchwerks/codereeve",
         {365: False, 366: False},
     )
     assert errors == [
@@ -527,7 +523,7 @@ def test_evaluate_pr_policy_reports_unverified_milestone_for_absent_issue() -> (
     errors = evaluate_pr_policy(
         "feature/365-good",
         "Closes #365",
-        "glitchwerks/baton-harness",
+        "glitchwerks/codereeve",
         {},
     )
     assert errors == ["unable to verify milestone for closing issue #365"]
@@ -540,7 +536,7 @@ def test_evaluate_pr_policy_orders_invalid_branch_before_missing_directive() -> 
     errors = evaluate_pr_policy(
         "topic/365-bad",
         "Related #365",
-        "glitchwerks/baton-harness",
+        "glitchwerks/codereeve",
         {},
     )
     assert errors == [
@@ -554,7 +550,7 @@ def test_evaluate_pr_policy_orders_mismatch_before_milestone_errors() -> None:
     errors = evaluate_pr_policy(
         "feature/365-good",
         "Closes #366\nResolves #367",
-        "glitchwerks/baton-harness",
+        "glitchwerks/codereeve",
         {366: False, 367: False},
     )
     assert errors == [

@@ -28,7 +28,7 @@
     returncode errors so that ``_reconcile_labels`` aborts with zero
     label mutations, preserving the single-state invariant (MAJOR 2).
 
-Invoked by Baton after each agent run turn completes.  Responsible for:
+Invoked by symphony after each agent run turn completes.  Responsible for:
 
 1. Classifying the run outcome into one of the states defined in
    ``docs/harness-design.md §5``:
@@ -54,7 +54,7 @@ Context:
     The hook runs with ``$PWD`` set to the worktree directory.  The issue
     number is inferred from ``basename($PWD)`` via
     ``codereeve._cli.resolve_issue_number`` (spike finding F2).
-    Baton names worktrees ``<repo>/.symphony/worktrees/<issue>`` (a bare
+    symphony names worktrees ``<repo>/.symphony/worktrees/<issue>`` (a bare
     integer); CodeReeve's convention is ``<repo>/.worktrees/<branch>``
     (``<prefix>-<issue>[-<slug>]``).  Both forms are accepted.
 
@@ -65,7 +65,7 @@ Context:
     All subprocess calls use ``encoding="utf-8"`` explicitly (Windows
     cp1252 footgun — see Python skill notes).
 
-    This hook must finish under the 60 s timeout enforced by Baton
+    This hook must finish under the 60 s timeout enforced by symphony
     (spike finding F11).
 """
 
@@ -624,11 +624,11 @@ def main(argv: list[str] | None = None) -> int:
     Transient failure handling (#32): if ``_classify`` returns
     ``TRANSIENT_ERROR`` (all ``gh pr list`` attempts exhausted), this
     function returns ``1`` after reconciling labels as a no-op.  The
-    non-zero exit signals the daemon/Baton that the hook did not complete
+    non-zero exit signals the daemon/symphony that the hook did not complete
     successfully, without altering the issue's label state.
 
     Args:
-        argv: Unused; reserved for future CLI argument support.  Baton
+        argv: Unused; reserved for future CLI argument support.  symphony
             passes no env-var context to hooks (spike finding F2), so
             all context is derived from the worktree directory name.
 
@@ -641,7 +641,7 @@ def main(argv: list[str] | None = None) -> int:
     if issue is None:
         print(
             f"[{_HOOK}] error: could not derive issue number from cwd — "
-            "expected a bare integer (Baton: .symphony/worktrees/<issue>) "
+            "expected a bare integer (symphony: .symphony/worktrees/<issue>) "
             "or <prefix>-<issue>[-<slug>] (CodeReeve: .worktrees/<branch>)",
             file=sys.stderr,
             flush=True,

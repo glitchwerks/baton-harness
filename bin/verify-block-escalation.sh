@@ -539,7 +539,7 @@ echo ""
 _assert_agent_ready_isolation 1 "${_ISSUE_NUM}"
 echo "codereeve: --- Running codereeve daemon --once (dispatches real agent turn) ---"
 
-_DAEMON_OUTPUT_FILE="$(mktemp "${TMPDIR:-/tmp}/bh-verify-block.XXXXXX")"
+_DAEMON_OUTPUT_FILE="$(mktemp "${TMPDIR:-/tmp}/codereeve-verify-block.XXXXXX")"
 _BLOCK_TIMEOUT_SECS="${CODEREEVE_VERIFY_BLOCK_TIMEOUT_SECS:-600}"
 
 _daemon_exit=0

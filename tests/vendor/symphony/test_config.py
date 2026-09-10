@@ -11,8 +11,8 @@ Seam choice (documented, not guessed):
     The router's briefing frames this as a ``RepoConfig``
     (``chain/registry.py``) field "parsed from ``config/WORKFLOW.md``".
     As of this writing ``RepoConfig.``/``load_registry()`` is sourced
-    ENTIRELY from environment variables (``BH_REPO_OWNER`` /
-    ``BH_REPO_NAME`` / ``BH_PROJECT_ROOT``) — it never reads
+    ENTIRELY from environment variables (``CODEREEVE_REPO_OWNER`` /
+    ``CODEREEVE_REPO_NAME`` / ``CODEREEVE_PROJECT_ROOT``) — it never reads
     ``WORKFLOW.md``.  The actual WORKFLOW.md front-matter parser is
     ``vendor.symphony.config.load_workflow``, which already produces the
     ``WorkflowConfig`` threaded into the daemon's per-work-unit runner

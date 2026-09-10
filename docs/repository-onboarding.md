@@ -140,7 +140,7 @@ export BWS_ACCESS_TOKEN
 ```
 
 **Never print, log, or commit the actual token value.** This walkthrough only checks its
-*presence* and *shape* (non-empty), never its content — the same discipline `bh-daemon
+*presence* and *shape* (non-empty), never its content — the same discipline `codereeve daemon
 --doctor` follows (see step 5).
 
 For a first interactive BWS-backed run, the shell export is sufficient through steps
@@ -177,7 +177,7 @@ What it does:
      only a human merges it)
    - `harness-feature-daemon-only` — restricts pushes to `feature/*` branches to the
      harness App only
-5. **Pins a ruleset baseline** at `${CODEREEVE_PROJECT_ROOT}/.bh/ruleset-baseline.json` (ruleset
+5. **Pins a ruleset baseline** at `${CODEREEVE_PROJECT_ROOT}/.codereeve/ruleset-baseline.json` (ruleset
    ID + `updated_at` for each ruleset) — this is not optional bookkeeping: without it, the
    daemon's per-launch preflight parks every issue as `NOT_PROVISIONED`. The baseline
    capture only warns and skips (rather than failing the whole script) if
@@ -196,7 +196,7 @@ You should see both `harness-main-no-merge` and `harness-feature-daemon-only`. A
 confirm the baseline file exists:
 
 ```bash
-cat "${CODEREEVE_PROJECT_ROOT}/.bh/ruleset-baseline.json"
+cat "${CODEREEVE_PROJECT_ROOT}/.codereeve/ruleset-baseline.json"
 ```
 
 ## 5. `codereeve doctor --strict` — preflight before the first real run
@@ -350,7 +350,7 @@ operation on a server (systemd unit, tmux/nohup), see
 ## 7. Troubleshooting
 
 Start with the failing step's own output — every script in this walkthrough prints an
-`error:` (or `provision-ruleset:` / `baton-harness:`-prefixed) line with a specific fix
+`error:` (or `provision-ruleset:` / `codereeve:`-prefixed) line with a specific fix
 when a preflight fails, rather than a bare stack trace. If the failure is inside the
 daemon's startup preflight rather than one of the `bin/*.sh` scripts, `codereeve doctor`
 (step 5) will name the exact check that fails, with a secret-safe `detail:` explaining

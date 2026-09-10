@@ -519,16 +519,16 @@ if [[ -f "${_codereeve_load_config}" ]]; then
 fi
 unset _codereeve_load_config
 
-_bh_prompt_and_write_host_config() {
+_codereeve_prompt_and_write_host_config() {
     if [[ "${CODEREEVE_SETUP_NO_PROMPT:-0}" == "1" || ! -t 0 || ! -t 1 ]]; then
         echo "codereeve: per-host config setup requires an interactive terminal; skipping host.env." >&2
         return 0
     fi
-    local _bh_project_root
+    local _codereeve_project_root
     echo ""
     echo "codereeve: setting up per-host config at ${HOST_ENV}"
-    read -r -p "  CODEREEVE_PROJECT_ROOT (absolute path to local sandbox clone): " _bh_project_root
-    if [[ -z "${_bh_project_root}" ]]; then
+    read -r -p "  CODEREEVE_PROJECT_ROOT (absolute path to local sandbox clone): " _codereeve_project_root
+    if [[ -z "${_codereeve_project_root}" ]]; then
         echo "  skipped — re-run bin/setup-env.sh to set it, or export CODEREEVE_PROJECT_ROOT manually"
     else
         mkdir -p "${HOST_CONFIG_DIR}"
@@ -536,14 +536,14 @@ _bh_prompt_and_write_host_config() {
         cat > "${HOST_ENV}" <<EOF
 # CodeReeve per-host config — written by bin/setup-env.sh
 # Sourced automatically by bin/run-daemon.sh at startup.
-export CODEREEVE_PROJECT_ROOT="${_bh_project_root}"
+export CODEREEVE_PROJECT_ROOT="${_codereeve_project_root}"
 EOF
         chmod 600 "${HOST_ENV}"
         echo "  wrote ${HOST_ENV} (mode 600)"
     fi
 }
 
-_bh_resolve_config_with_reuse_prompt "${HOST_ENV}" _bh_prompt_and_write_host_config || true
+_codereeve_resolve_config_with_reuse_prompt "${HOST_ENV}" _codereeve_prompt_and_write_host_config || true
 
 # ---------------------------------------------------------------------------
 # Runtime preflight notice: BWS_ACCESS_TOKEN
@@ -552,5 +552,5 @@ _bh_resolve_config_with_reuse_prompt "${HOST_ENV}" _bh_prompt_and_write_host_con
 if [[ -n "${BWS_ACCESS_TOKEN:-}" ]]; then
     echo "codereeve: BWS_ACCESS_TOKEN already set in environment; it is used only when the selected App-key provider or optional PAT/heartbeat secret locators use BWS"
 else
-    echo "codereeve: warning: BWS_ACCESS_TOKEN not set — needed only when the selected App-key provider or optional PAT/heartbeat secret locators use BWS. When needed, export it for manual bin/run-daemon.sh runs or place it in /etc/bh-daemon/secrets.env (mode 600) for systemd. Do not store it in ~/.config/codereeve/host.env. A file-only deployment needs neither bws nor this token." >&2
+    echo "codereeve: warning: BWS_ACCESS_TOKEN not set — needed only when the selected App-key provider or optional PAT/heartbeat secret locators use BWS. When needed, export it for manual bin/run-daemon.sh runs or place it in /etc/codereeve/secrets.env (mode 600) for systemd. Do not store it in ~/.config/codereeve/host.env. A file-only deployment needs neither bws nor this token." >&2
 fi

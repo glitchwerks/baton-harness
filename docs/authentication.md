@@ -14,7 +14,7 @@ Single reference for every external service `codereeve daemon` authenticates to:
 | [GitHub fine-grained PAT](#github-fine-grained-pat-fallback) | required by the standard `codereeve hook before-run` worker hook; never daemon authority | Vault or externally supplied `GH_TOKEN` |
 | [Bitwarden Secrets Manager (`BWS_ACCESS_TOKEN`)](#bitwarden-secrets-manager) | conditional daemon startup / secret bootstrap (`app_auth.py`) | User Setup when any BWS-backed source is configured (this credential itself is never vaulted) |
 | [Anthropic / Claude Code OAuth](#anthropic--claude-code) | Claude Code worker subprocess — `Identity.WORKER` | Web auth (interactive `claude` login, produces `~/.claude/.credentials.json`) |
-| [Slack webhook (`BH_SLACK_WEBHOOK_URL`)](#slack) | daemon escalation notifications (`escalation.py`) | User Setup (plain env var, no vault form exists for it) |
+| [Slack webhook (`CODEREEVE_SLACK_WEBHOOK_URL`)](#slack) | daemon escalation notifications (`escalation.py`) | User Setup (plain env var, no vault form exists for it) |
 
 ## Operator `gh auth login` (not a runtime credential)
 
@@ -116,7 +116,7 @@ at <https://github.com/settings/personal-access-tokens/new> under a dedicated bo
 account — never a personal account.
 
 The daemon threads this PAT by value only into `Orchestrator.hook_env` for the
-`bh-before-run` subprocess. That hook validates the PAT, fetches the branch base, and
+`codereeve hook before-run` subprocess. That hook validates the PAT, fetches the branch base, and
 rebases locally. Daemon pushes, labels, pull requests, ruleset reads/bypass, and CI reads
 continue to use the separately minted App installation token under `Identity.APP`.
 
@@ -161,7 +161,7 @@ success or failure path. Worker subprocesses cannot inherit it.
 |---|---|---|
 | `BWS_PEM_SECRET_ID` | Required only for provider `bws` | The GitHub App's RSA private key (PEM) |
 | `BWS_GH_TOKEN_SECRET_ID` | Optional | A fine-grained PAT — vault-fetched into `GH_TOKEN` when set and `GH_TOKEN` is not already in the environment (see [GitHub fine-grained PAT](#github-fine-grained-pat-fallback) above) |
-| `BWS_HEARTBEAT_PING_URL_SECRET_ID` | Optional | The dead-man's-switch heartbeat ping URL — vault-fetched into `BH_HEARTBEAT_PING_URL` when set and that variable is not already in the environment. This is **not** the Slack webhook URL: `BH_HEARTBEAT_PING_URL` is a GET target polled once per heartbeat tick by `src/codereeve/chain/daemon/poll.py`, distinct from `BH_SLACK_WEBHOOK_URL` (a POST target, see [Slack](#slack) below), which has no Bitwarden-vaulted form — it is supplied directly as an env var only. |
+| `BWS_HEARTBEAT_PING_URL_SECRET_ID` | Optional | The dead-man's-switch heartbeat ping URL — vault-fetched into `CODEREEVE_HEARTBEAT_PING_URL` when set and that variable is not already in the environment. This is **not** the Slack webhook URL: `CODEREEVE_HEARTBEAT_PING_URL` is a GET target polled once per heartbeat tick by `src/codereeve/chain/daemon/poll.py`, distinct from `CODEREEVE_SLACK_WEBHOOK_URL` (a POST target, see [Slack](#slack) below), which has no Bitwarden-vaulted form — it is supplied directly as an env var only. |
 
 Bootstrap resolves and validates the complete provider matrix before mutating the
 environment or making a GitHub request. It fetches configured optional PAT/heartbeat
@@ -205,10 +205,10 @@ The full two-identity broker model — `Identity.APP` vs. `Identity.WORKER`, the
 
 ## Slack
 
-**What's implemented today (v1):** a plain incoming webhook, nothing more. `BH_SLACK_WEBHOOK_URL` is an optional env var; when set, `src/codereeve/chain/escalation.py` POSTs a plain-text message to it as a best-effort notification. There is **no bot auth, no OAuth scopes, no Socket Mode connection** — none of that exists in the current implementation.
+**What's implemented today (v1):** a plain incoming webhook, nothing more. `CODEREEVE_SLACK_WEBHOOK_URL` is an optional env var; when set, `src/codereeve/chain/escalation.py` POSTs a plain-text message to it as a best-effort notification. There is **no bot auth, no OAuth scopes, no Socket Mode connection** — none of that exists in the current implementation.
 
 - The GitHub issue comment is the durable record and is always attempted first; Slack is notification-only. Any Slack POST failure is logged at WARNING and does not affect the return value or block the durable record.
-- When `BH_SLACK_WEBHOOK_URL` is unset, Slack is silently skipped at escalation time — not fatal. If it and `BH_HEARTBEAT_PING_URL` are *both* unset, the daemon logs a one-time startup WARNING (`src/codereeve/chain/daemon/poll.py`) that async failure-signal escalation is entirely unconfigured.
+- When `CODEREEVE_SLACK_WEBHOOK_URL` is unset, Slack is silently skipped at escalation time — not fatal. If it and `CODEREEVE_HEARTBEAT_PING_URL` are *both* unset, the daemon logs a one-time startup WARNING (`src/codereeve/chain/daemon/poll.py`) that async failure-signal escalation is entirely unconfigured.
 - No Bitwarden-vaulted form exists for the webhook URL itself (see the [Bitwarden Secrets Manager](#bitwarden-secrets-manager) table above) — it is supplied directly as an env var.
 
 **What's designed but deferred (v2, not implemented):** [docs/architecture-spec.md](architecture-spec.md) describes a two-way Slack Bolt bot over Socket Mode — bot/app tokens, OAuth scopes, an outbound WebSocket connection, Block Kit interactive decision cards, and thread-reply handling. **None of this exists yet.** A reader following `architecture-spec.md` alone would look for bot tokens and OAuth scopes that are not part of the current implementation; treat that document's Slack sections as the aspirational v2 design, not a description of what a deployment needs to configure today. See `architecture-spec.md` §10 item 2 for the tracked status of that gap.

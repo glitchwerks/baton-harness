@@ -8,7 +8,8 @@ Coverage:
 - ``exceeds_threshold``: empty list, at/below/above max_count, boundary
   inclusivity (mark == current_tick - window_ticks is EXCLUDED,
   mark == current_tick is INCLUDED), mixed in/out-window marks.
-- ``exceeds_threshold`` off-by-one semantics (Fix A): ``BH_REDISPATCH_MAX``
+- ``exceeds_threshold`` off-by-one semantics (Fix A):
+``CODEREEVE_REDISPATCH_MAX``
   means the MAXIMUM NUMBER OF REDISPATCHES ALLOWED. ``record_and_check``
   is called BEFORE each dispatch. Therefore:
     - count == max_count -> False  (the Nth redispatch is still permitted)
@@ -55,7 +56,7 @@ def test_exceeds_threshold_empty_marks_returns_false() -> None:
 def test_exceeds_threshold_at_max_count_is_allowed_returns_false() -> None:
     """Exactly max_count marks inside the window returns False.
 
-    BH_REDISPATCH_MAX is the MAXIMUM NUMBER ALLOWED.  When count equals
+    CODEREEVE_REDISPATCH_MAX is the MAXIMUM NUMBER ALLOWED.  When count equals
     max_count the Nth redispatch is still permitted — park only on
     the (N+1)th.  Correct semantics: count > max_count, NOT >=.
     """
@@ -293,7 +294,7 @@ def test_record_and_check_at_max_count_still_allowed_returns_false(
 ) -> None:
     """record_and_check returns False when the Nth (==max_count) mark lands.
 
-    BH_REDISPATCH_MAX is the number of redispatches ALLOWED.  When the
+    CODEREEVE_REDISPATCH_MAX is the number of redispatches ALLOWED.  When the
     accumulated count equals max_count the issue is still allowed through;
     only the (max_count+1)th call returns True and parks the issue.
     """

@@ -46,7 +46,7 @@ from codereeve.vendor.symphony.config import WorkflowConfig
 # ---------------------------------------------------------------------------
 
 _OWNER = "glitchwerks"
-_REPO_NAME = "baton-harness"
+_REPO_NAME = "codereeve"
 
 
 def _ok(stdout: str = "") -> subprocess.CompletedProcess[str]:
@@ -136,7 +136,7 @@ def _make_orphan_run_side_effect(
     *,
     agent_ready_issues: list[dict[str, Any]],
     orphan_issues: list[dict[str, Any]],
-    issue_branch: str = "baton/orphan-milestone-10",
+    issue_branch: str = "codereeve/orphan-milestone-10",
     pr_head_sha: str = "abc123",
 ) -> Any:  # noqa: ANN401
     """Build a ``_run`` side-effect for orphan-scan tests.
@@ -261,15 +261,15 @@ def test_lone_orphan_milestone_triggers_reconstruct_and_tally(
         tmp_path: pytest tmp directory for the counts file.
         monkeypatch: env isolation fixture.
     """
-    monkeypatch.setenv("BH_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("CODEREEVE_PROJECT_ROOT", str(tmp_path))
     for var in (
-        "BH_RUNLOG_PATH",
-        "BH_HEARTBEAT_FILE",
-        "BH_REDISPATCH_WINDOW_TICKS",
-        "BH_REDISPATCH_MAX",
-        "BH_HEARTBEAT_STALL_S",
-        "BH_HEARTBEAT_PING_URL",
-        "BH_REDISPATCH_COUNTS_PATH",
+        "CODEREEVE_RUNLOG_PATH",
+        "CODEREEVE_HEARTBEAT_FILE",
+        "CODEREEVE_REDISPATCH_WINDOW_TICKS",
+        "CODEREEVE_REDISPATCH_MAX",
+        "CODEREEVE_HEARTBEAT_STALL_S",
+        "CODEREEVE_HEARTBEAT_PING_URL",
+        "CODEREEVE_REDISPATCH_COUNTS_PATH",
     ):
         monkeypatch.delenv(var, raising=False)
 
@@ -510,15 +510,15 @@ def test_lone_orphan_populates_liveness_state(
         tmp_path: pytest tmp directory.
         monkeypatch: env isolation fixture.
     """
-    monkeypatch.setenv("BH_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("CODEREEVE_PROJECT_ROOT", str(tmp_path))
     for var in (
-        "BH_RUNLOG_PATH",
-        "BH_HEARTBEAT_FILE",
-        "BH_REDISPATCH_WINDOW_TICKS",
-        "BH_REDISPATCH_MAX",
-        "BH_HEARTBEAT_STALL_S",
-        "BH_HEARTBEAT_PING_URL",
-        "BH_REDISPATCH_COUNTS_PATH",
+        "CODEREEVE_RUNLOG_PATH",
+        "CODEREEVE_HEARTBEAT_FILE",
+        "CODEREEVE_REDISPATCH_WINDOW_TICKS",
+        "CODEREEVE_REDISPATCH_MAX",
+        "CODEREEVE_HEARTBEAT_STALL_S",
+        "CODEREEVE_HEARTBEAT_PING_URL",
+        "CODEREEVE_REDISPATCH_COUNTS_PATH",
     ):
         monkeypatch.delenv(var, raising=False)
 

@@ -195,20 +195,20 @@ def _write_config_env(project_root: Path, content: str) -> None:
         project_root: Directory to write under.
         content: File content.
     """
-    bh_dir = project_root / ".bh"
-    bh_dir.mkdir(parents=True, exist_ok=True)
-    (bh_dir / "config.env").write_text(
+    codereeve_dir = project_root / ".bh"
+    codereeve_dir.mkdir(parents=True, exist_ok=True)
+    (codereeve_dir / "config.env").write_text(
         content.replace("\\", "/"), encoding="utf-8"
     )
 
 
 _VALID_CONFIG_ENV = textwrap.dedent(
     """\
-    BH_REPO_OWNER=my-org
-    BH_REPO_NAME=my-sandbox
-    BH_GITHUB_APP_ID=12345
-    BH_GITHUB_APP_INSTALLATION_ID=67890
-    BH_GITHUB_APP_KEY_PROVIDER=bws
+    CODEREEVE_REPO_OWNER=my-org
+    CODEREEVE_REPO_NAME=my-sandbox
+    CODEREEVE_GITHUB_APP_ID=12345
+    CODEREEVE_GITHUB_APP_INSTALLATION_ID=67890
+    CODEREEVE_GITHUB_APP_KEY_PROVIDER=bws
     BWS_PEM_SECRET_ID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
     """
 )
@@ -234,10 +234,11 @@ def app_private_key_pem() -> str:
 def _file_provider_config(path: Path) -> str:
     """Build file-provider settings with no BWS consumer."""
     return _VALID_CONFIG_ENV.replace(
-        "BH_GITHUB_APP_KEY_PROVIDER=bws", "BH_GITHUB_APP_KEY_PROVIDER=file"
+        "CODEREEVE_GITHUB_APP_KEY_PROVIDER=bws",
+        "CODEREEVE_GITHUB_APP_KEY_PROVIDER=file",
     ).replace(
         "BWS_PEM_SECRET_ID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-        f"BH_GITHUB_APP_PRIVATE_KEY_FILE={path}",
+        f"CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE={path}",
     )
 
 
@@ -300,7 +301,7 @@ def test_invalid_provider_matrix_fails_cfg_required_keys(
     _write_config_env(
         tmp_path,
         _VALID_CONFIG_ENV
-        + f"BH_GITHUB_APP_PRIVATE_KEY_FILE={tmp_path / 'app.pem'}\n",
+        + f"CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE={tmp_path / 'app.pem'}\n",
     )
     fetch = Mock()
     result = _get_check("CFG_REQUIRED_KEYS")(
@@ -320,9 +321,9 @@ def test_bws_key_probe_fetches_without_exposing_secret(
     resolved_id = "11111111-2222-3333-4444-555555555555"
     ctx.env.update(
         {
-            "BH_GITHUB_APP_KEY_PROVIDER": "",
+            "CODEREEVE_GITHUB_APP_KEY_PROVIDER": "",
             "BWS_PEM_SECRET_ID": resolved_id,
-            "BH_GITHUB_APP_ID": "54321",
+            "CODEREEVE_GITHUB_APP_ID": "54321",
         }
     )
     with patch.object(
@@ -1168,11 +1169,11 @@ def test_live_repository_checks_use_explicit_resolved_config_only(
     config_path = tmp_path / "selected.env"
     config_path.write_text(_VALID_CONFIG_ENV, encoding="utf-8")
     config_keys = (
-        "BH_REPO_OWNER",
-        "BH_REPO_NAME",
-        "BH_GITHUB_APP_ID",
-        "BH_GITHUB_APP_INSTALLATION_ID",
-        "BH_GITHUB_APP_KEY_PROVIDER",
+        "CODEREEVE_REPO_OWNER",
+        "CODEREEVE_REPO_NAME",
+        "CODEREEVE_GITHUB_APP_ID",
+        "CODEREEVE_GITHUB_APP_INSTALLATION_ID",
+        "CODEREEVE_GITHUB_APP_KEY_PROVIDER",
         "BWS_PEM_SECRET_ID",
     )
     for key in config_keys:
@@ -1247,7 +1248,7 @@ def test_create_context_selects_canonical_config_before_legacy_fallback(
     canonical_dir = tmp_path / ".codereeve"
     canonical_dir.mkdir()
     (canonical_dir / "config.env").write_text(
-        _VALID_CONFIG_ENV.replace("BH_", "CODEREEVE_"), encoding="utf-8"
+        _VALID_CONFIG_ENV.replace("CODEREEVE_", "CODEREEVE_"), encoding="utf-8"
     )
 
     ctx = doctor.create_context(
@@ -1271,7 +1272,7 @@ def test_create_context_accepts_legacy_only_config_during_transition(
     _write_config_env(tmp_path, _VALID_CONFIG_ENV)
 
     ctx = doctor.create_context(
-        env={"BH_PROJECT_ROOT": str(tmp_path)},
+        env={"CODEREEVE_PROJECT_ROOT": str(tmp_path)},
         home_dir=str(tmp_path / "home"),
         which=_unused_which,
         runner=_unused_runner,
@@ -1315,7 +1316,7 @@ def test_config_check_gives_canonical_remediation_for_legacy_config(
     """Doctor reports compatibility use with 0.2 remediation paths."""
     _write_config_env(tmp_path, _VALID_CONFIG_ENV)
     ctx = doctor.create_context(
-        env={"BH_PROJECT_ROOT": str(tmp_path)},
+        env={"CODEREEVE_PROJECT_ROOT": str(tmp_path)},
         home_dir=str(tmp_path / "home"),
         which=_unused_which,
         runner=_unused_runner,
@@ -1628,10 +1629,10 @@ def test_cli_on_path_check_reports_failure_when_binary_missing(
 
 
 class TestEnvProjectRoot:
-    """BH_PROJECT_ROOT set and is a directory."""
+    """CODEREEVE_PROJECT_ROOT set and is a directory."""
 
     def test_fails_when_unset(self) -> None:
-        """Empty project_root (unset BH_PROJECT_ROOT) FAILs."""
+        """Empty project_root (unset CODEREEVE_PROJECT_ROOT) FAILs."""
         check = _get_check("ENV_PROJECT_ROOT")
         result = check(_make_ctx(project_root=""))
         assert result.status == CheckStatus.FAIL
@@ -1657,7 +1658,7 @@ class TestEnvProjectRoot:
 
 
 class TestEnvHostEnv:
-    """~/.config/baton-harness/host.env presence (WARNING)."""
+    """~/.config/codereeve/host.env presence (WARNING)."""
 
     def test_warns_when_host_env_absent(self, tmp_path: Path) -> None:
         """No host.env file under home_dir WARNs."""
@@ -1669,10 +1670,10 @@ class TestEnvHostEnv:
     def test_passes_when_host_env_present(self, tmp_path: Path) -> None:
         """host.env present under home_dir PASSes."""
         check = _get_check("ENV_HOST_ENV")
-        host_env_dir = tmp_path / ".config" / "baton-harness"
+        host_env_dir = tmp_path / ".config" / "codereeve"
         host_env_dir.mkdir(parents=True)
         (host_env_dir / "host.env").write_text(
-            "BH_PROJECT_ROOT=/x\n", encoding="utf-8"
+            "CODEREEVE_PROJECT_ROOT=/x\n", encoding="utf-8"
         )
         result = check(_make_ctx(home_dir=str(tmp_path)))
         assert result.status == CheckStatus.PASS
@@ -1711,7 +1712,7 @@ class TestCfgConfigEnv:
     def test_passes_when_config_env_present(self, tmp_path: Path) -> None:
         """A present .bh/config.env PASSes regardless of content."""
         check = _get_check("CFG_CONFIG_ENV")
-        _write_config_env(tmp_path, "BH_REPO_OWNER=x\n")
+        _write_config_env(tmp_path, "CODEREEVE_REPO_OWNER=x\n")
         result = check(_make_ctx(project_root=str(tmp_path)))
         assert result.status == CheckStatus.PASS
 
@@ -1799,7 +1800,8 @@ class TestCfgRequiredKeys:
         """A malformed required value (non-numeric app id) FAILs."""
         check = _get_check("CFG_REQUIRED_KEYS")
         content = _VALID_CONFIG_ENV.replace(
-            "BH_GITHUB_APP_ID=12345", "BH_GITHUB_APP_ID=not-a-number"
+            "CODEREEVE_GITHUB_APP_ID=12345",
+            "CODEREEVE_GITHUB_APP_ID=not-a-number",
         )
         _write_config_env(tmp_path, content)
         result = check(_make_ctx(project_root=str(tmp_path)))
@@ -2229,8 +2231,8 @@ class TestGitCredHelper:
 # ---------------------------------------------------------------------------
 
 _PHASE_4_ENV = {
-    "BH_REPO_OWNER": "my-org",
-    "BH_REPO_NAME": "my-sandbox",
+    "CODEREEVE_REPO_OWNER": "my-org",
+    "CODEREEVE_REPO_NAME": "my-sandbox",
 }
 
 _EXPECTED_PHASE_4_CHECK_IDS = {
@@ -2322,8 +2324,8 @@ class TestRulesetChecks:
     ``codereeve.chain.doctor.ruleset_is_provisioned`` -- flagged in
     the return summary.
 
-    Every test supplies BOTH ``ctx.env`` (``BH_REPO_OWNER``/
-    ``BH_REPO_NAME``/``BH_GITHUB_APP_ID``) and an equivalent
+    Every test supplies BOTH ``ctx.env`` (``CODEREEVE_REPO_OWNER``/
+    ``CODEREEVE_REPO_NAME``/``CODEREEVE_GITHUB_APP_ID``) and an equivalent
     ``.bh/config.env`` file so the test is satisfiable regardless of
     which source the implementation reads owner/repo/app_id from -- the
     plan does not specify this internal detail.
@@ -2342,7 +2344,7 @@ class TestRulesetChecks:
             result = check(
                 _make_ctx(
                     project_root=str(tmp_path),
-                    env={**_PHASE_4_ENV, "BH_GITHUB_APP_ID": "12345"},
+                    env={**_PHASE_4_ENV, "CODEREEVE_GITHUB_APP_ID": "12345"},
                 )
             )
 
@@ -2375,7 +2377,7 @@ class TestRulesetChecks:
             result = check(
                 _make_ctx(
                     project_root=str(tmp_path),
-                    env={**_PHASE_4_ENV, "BH_GITHUB_APP_ID": "12345"},
+                    env={**_PHASE_4_ENV, "CODEREEVE_GITHUB_APP_ID": "12345"},
                 )
             )
 
@@ -2406,7 +2408,7 @@ class TestRulesetChecks:
             result = check(
                 _make_ctx(
                     project_root=str(tmp_path),
-                    env={**_PHASE_4_ENV, "BH_GITHUB_APP_ID": "12345"},
+                    env={**_PHASE_4_ENV, "CODEREEVE_GITHUB_APP_ID": "12345"},
                 )
             )
 
@@ -2839,3 +2841,18 @@ class TestVaultPemDryrun:
         assert "bws provider" in result.detail
         assert "bws exited non-zero" not in result.detail
         assert result.remediation == check.fix
+
+
+@pytest.mark.fast
+def test_missing_config_remediation_uses_canonical_path(
+    tmp_path: Path,
+) -> None:
+    """Configuration failures direct operators to the canonical config file."""
+    ctx = _make_ctx(
+        project_root=str(tmp_path),
+        config_path=tmp_path / ".codereeve" / "config.env",
+    )
+    required = doctor._check_required_keys(ctx)
+    optional = doctor._check_optional_secret_ids(ctx)
+    assert ".codereeve/config.env" in required.remediation
+    assert ".codereeve/config.env" in optional.detail

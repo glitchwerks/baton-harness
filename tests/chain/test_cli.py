@@ -1,4 +1,4 @@
-"""Unit tests for codereeve.chain.cli (``bh-daemon`` entry point).
+"""Unit tests for codereeve.chain.cli (``codereeve daemon`` entry point).
 
 Coverage:
 - ``--once`` path: daemon invoked with ``once=True``.
@@ -202,7 +202,7 @@ def test_provenance_reports_invalid_record_before_config_access(
     assert "Traceback" not in captured.err
 
 
-def test_injected_legacy_prog_preserves_bh_daemon_display(
+def test_injected_legacy_prog_preserves_codereeve_daemon_display(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """The compatibility entry point can retain its legacy display name."""
@@ -232,7 +232,11 @@ def test_main_registry_unset_exits_1() -> None:
     """Missing registry env vars produce a clean error and return 1."""
     env_backup = {
         k: os.environ.pop(k, None)
-        for k in ("BH_REPO_OWNER", "BH_REPO_NAME", "BH_PROJECT_ROOT")
+        for k in (
+            "CODEREEVE_REPO_OWNER",
+            "CODEREEVE_REPO_NAME",
+            "CODEREEVE_PROJECT_ROOT",
+        )
     }
     try:
         # We still need a workflow file to exist; patch load_workflow to
@@ -246,7 +250,8 @@ def test_main_registry_unset_exits_1() -> None:
                 "codereeve.chain.cli.load_registry",
                 side_effect=ValueError(
                     "Registry is not configured. "
-                    "Set BH_REPO_OWNER, BH_REPO_NAME, and BH_PROJECT_ROOT"
+                    "Set CODEREEVE_REPO_OWNER, "
+                    "CODEREEVE_REPO_NAME, and CODEREEVE_PROJECT_ROOT"
                 ),
             ),
         ):
@@ -344,7 +349,7 @@ def test_main_chdirs_into_project_root_before_run_daemon(
 
     The vendored GitHubTracker calls ``gh`` without ``--repo``, so those
     calls resolve against the process cwd.  The daemon MUST set cwd to
-    ``BH_PROJECT_ROOT`` before the event loop starts.
+    ``CODEREEVE_PROJECT_ROOT`` before the event loop starts.
     """
     project_root = tmp_path
     chdir_calls: list[object] = []
@@ -397,10 +402,10 @@ def test_main_chdirs_into_project_root_before_run_daemon(
 def test_main_invalid_project_root_exits_1_no_traceback(
     tmp_path: Path,
 ) -> None:
-    """Non-existent BH_PROJECT_ROOT → clean exit 1, no raised exception.
+    """Non-existent CODEREEVE_PROJECT_ROOT → clean exit 1, no raised exception.
 
     Regression guard for the uncaught ``FileNotFoundError`` from
-    ``os.chdir`` when ``BH_PROJECT_ROOT`` points at a path that doesn't
+    ``os.chdir`` when ``CODEREEVE_PROJECT_ROOT`` points at a path that doesn't
     exist.
     """
     nonexistent_root = tmp_path / "does_not_exist"

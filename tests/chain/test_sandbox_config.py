@@ -1276,7 +1276,7 @@ class TestDerivedTwinKeysInFile:
         assert result.github_app_id == _APP_ID
         assert result.github_app_installation_id == _INSTALL_ID
 
-    def test_derived_twins_in_env_reflect_bh_keys_not_file_values(
+    def test_derived_twins_in_env_reflect_codereeve_keys_not_file_values(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,

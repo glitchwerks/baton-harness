@@ -641,7 +641,7 @@ echo ""
 echo "codereeve: --- Scenario SIGTERM: graceful shutdown clears daemon.alive ---"
 
 # Temp file to collect background daemon output
-_SIGTERM_OUTPUT_FILE="$(mktemp /tmp/bh-verify-sigterm.XXXXXX)"
+_SIGTERM_OUTPUT_FILE="$(mktemp /tmp/codereeve-verify-sigterm.XXXXXX)"
 
 # Start daemon in continuous mode (background)
 _start_daemon_bg "${_SIGTERM_OUTPUT_FILE}"

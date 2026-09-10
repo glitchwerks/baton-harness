@@ -37,7 +37,7 @@ Charge 8 — HTTP status from stdout, not stderr:
        so the App token sees its OWN bypass verdict.  The expected
        verdict is derived from the checked-in config's ``bypass_actors``
        via ``_expected_bypass_verdict`` (never from ruleset name).
-    2. ``updated_at`` — pinned in ``.bh/ruleset-baseline.json`` by
+    2. ``updated_at`` — pinned in ``.codereeve/ruleset-baseline.json`` by
        ``bin/provision-ruleset.sh``'s baseline-capture step.  Any
        mutation invisible to the other two signals (e.g. a third
        bypass actor added by someone else) still bumps this timestamp.
@@ -159,7 +159,8 @@ class RulesetStatus(Enum):
         ABSENT: One or both rulesets are missing.
         ERROR: A gh call failed with a non-404 error (network, auth, 5xx).
         NOT_PROVISIONED: #206 addition.  ``check_ruleset_signals`` has no
-            pinned ``.bh/ruleset-baseline.json`` entry for the repo, so it
+            pinned ``.codereeve/ruleset-baseline.json`` entry for
+            the repo, so it
             cannot safely assert "no drift" (fail-closed).  Distinct from
             DRIFT — this means "never provisioned/pinned", not "drifted
             from a known-good state".  Never returned by

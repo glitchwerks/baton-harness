@@ -50,7 +50,7 @@ from codereeve.chain.recovery import (
 
 _REPO = Path("/fake/repo")
 _OWNER = "glitchwerks"
-_REPO_NAME = "baton-harness"
+_REPO_NAME = "codereeve"
 _FEATURE = "feature/my-milestone"
 
 

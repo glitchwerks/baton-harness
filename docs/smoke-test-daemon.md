@@ -67,7 +67,7 @@ gh label create "agent-in-progress"  -R <owner>/<repo> --color d93f0b
 gh label create "agent-merged"       -R <owner>/<repo> --color 5319e7
 ```
 
-Replace `<owner>/<repo>` with your sandbox repo slug (e.g. `alice/sandbox-baton`).
+Replace `<owner>/<repo>` with your sandbox repo slug (e.g. `alice/codereeve-sandbox`).
 
 ---
 
@@ -141,7 +141,7 @@ BWS_HEARTBEAT_PING_URL_SECRET_ID=<uuid>
 | `BWS_PEM_SECRET_ID` | Bitwarden Secrets UUID of the RSA PEM private key; required only for `bws` and forbidden for `file` |
 | `CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE` | Absolute secured PEM path; required only for `file` and forbidden for `bws` |
 | `BWS_GH_TOKEN_SECRET_ID` | Bitwarden Secrets UUID for a GitHub fine-grained PAT. When set and `GH_TOKEN` is absent, `bootstrap_secrets()` fetches the PAT at startup. Leave empty to supply `GH_TOKEN` directly (backward-compat). |
-| `BWS_HEARTBEAT_PING_URL_SECRET_ID` | Bitwarden Secrets UUID for the dead-man's-switch heartbeat ping URL (`BH_HEARTBEAT_PING_URL` — not the Slack webhook URL, which has no vaulted form; see [docs/authentication.md § Slack](authentication.md#slack)). When set and `BH_HEARTBEAT_PING_URL` is absent, the URL is vault-fetched at startup. Leave empty to supply the URL directly or to omit it. |
+| `BWS_HEARTBEAT_PING_URL_SECRET_ID` | Bitwarden Secrets UUID for the dead-man's-switch heartbeat ping URL (`CODEREEVE_HEARTBEAT_PING_URL` — not the Slack webhook URL, which has no vaulted form; see [docs/authentication.md § Slack](authentication.md#slack)). When set and `CODEREEVE_HEARTBEAT_PING_URL` is absent, the URL is vault-fetched at startup. Leave empty to supply the URL directly or to omit it. |
 
 `BWS_APP_ID` and `BWS_INSTALLATION_ID` are **derived** by the parser from `CODEREEVE_GITHUB_APP_ID` and `CODEREEVE_GITHUB_APP_INSTALLATION_ID` — do not set them. Missing or malformed values produce per-key errors with line numbers and cause an immediate exit.
 
@@ -196,7 +196,7 @@ token from `os.environ` in a `finally` block on every success or failure path. T
 GitHub PAT is held in a module-global and threaded through `Orchestrator.hook_env` to the
 `before_run` hook subprocess only; it is never written to the daemon's ambient environment.
 
-The standard `bh-before-run` hook requires a worker PAT with either App-key provider.
+The standard `codereeve hook before-run` hook requires a worker PAT with either App-key provider.
 Its BWS locator is optional: without `BWS_GH_TOKEN_SECRET_ID`, supply `GH_TOKEN` through
 the daemon's externally provisioned environment. The GitHub App remains mandatory for
 daemon operations; neither credential substitutes for the other.
@@ -204,7 +204,7 @@ daemon operations; neither credential substitutes for the other.
 **Vault-fetched at startup when a locator and `BWS_ACCESS_TOKEN` are supplied:**
 
 - `GH_TOKEN` — the GitHub fine-grained PAT used by the `before_run` hook subprocess. If `BWS_GH_TOKEN_SECRET_ID` is set in `.codereeve/config.env` and `GH_TOKEN` is not already in the environment, `bootstrap_secrets()` fetches it from the vault, holds it in a module-global, and threads it through `Orchestrator.hook_env` to that subprocess only. It is never written to the daemon's ambient environment. If `GH_TOKEN` is already set (shell export, CI env), the vault is not called — operator override wins.
-- `BH_HEARTBEAT_PING_URL` — the dead-man's-switch heartbeat ping URL for per-launch preflight alerts (#144); a distinct credential from the Slack webhook URL (`BH_SLACK_WEBHOOK_URL`, see [docs/authentication.md § Slack](authentication.md#slack)). Same skip logic: vault-fetch only when `BWS_HEARTBEAT_PING_URL_SECRET_ID` is declared and the URL is not already in the environment. If neither source supplies the URL, no alerts are sent — preflight refusals log to daemon stderr only.
+- `CODEREEVE_HEARTBEAT_PING_URL` — the dead-man's-switch heartbeat ping URL for per-launch preflight alerts (#144); a distinct credential from the Slack webhook URL (`CODEREEVE_SLACK_WEBHOOK_URL`, see [docs/authentication.md § Slack](authentication.md#slack)). Same skip logic: vault-fetch only when `BWS_HEARTBEAT_PING_URL_SECRET_ID` is declared and the URL is not already in the environment. If neither source supplies the URL, no alerts are sent — preflight refusals log to daemon stderr only.
 
 Vault errors propagate as `BwsClientError` — fail-closed, never swallowed.
 
@@ -219,8 +219,8 @@ minted. The loaded PEM passes an RS256 JWT-signing proof during bootstrap.
 
 | Variable | How it is set | Purpose |
 |---|---|---|
-| `BATON_HARNESS_DIR` | Derived from the script's own location | Harness repo root; available to hook scripts |
-| `BH_VENV` | Derived from the `bh-daemon` binary location | Hooks self-activate via `. "$BH_VENV/bin/activate"` |
+| `CODEREEVE_ROOT` | Derived from the script's own location | Harness repo root; available to hook scripts |
+| `CODEREEVE_VENV` | Derived from the `codereeve daemon` binary location | Hooks self-activate via `. "$CODEREEVE_VENV/bin/activate"` |
 
 ### Operator override
 
@@ -416,7 +416,7 @@ INFO codereeve.chain.daemon: work unit complete; opening PR feature/... → main
 This is an illustrative expectation derived from the current launcher and logger names;
 it is not a transcript of a fresh live run. Baton-era captured output belongs only in
 historical records and may still show `baton-harness`, `bh-daemon`, or
-`baton_harness.chain.daemon`.
+`codereeve.chain.daemon`.
 
 ---
 
@@ -467,8 +467,8 @@ What each credential is, why it's required, and which startup gate validates it 
   PEM loaded once through provider `bws` or `file`. BWS provider configuration needs
   `BWS_ACCESS_TOKEN` in the host/systemd environment. File-only configuration needs
   neither BWS prerequisite. Optional BWS PAT/heartbeat IDs independently restore both;
-  direct `GH_TOKEN` / `BH_HEARTBEAT_PING_URL` values avoid those optional fetches.
-- The standard `bh-before-run` hook also requires its fine-grained worker PAT. In
+  direct `GH_TOKEN` / `CODEREEVE_HEARTBEAT_PING_URL` values avoid those optional fetches.
+- The standard `codereeve hook before-run` hook also requires its fine-grained worker PAT. In
   BWS-free file mode, externally provision `GH_TOKEN` using the systemd environment-file
   example below. A shell export is not automatically inherited by a system service.
 - `git` must be configured with a username and email in the daemon's environment.
@@ -480,7 +480,7 @@ Follow the same `--once` safe-first-run approach described in the [Run it](#run-
 
 ```bash
 # ${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env carries CODEREEVE_REPO_OWNER, CODEREEVE_REPO_NAME,
-# BH_GITHUB_APP_*, the selected App-key source, and optional BWS secret IDs.
+# CODEREEVE_GITHUB_APP_*, the selected App-key source, and optional BWS secret IDs.
 # bin/setup-env.sh wrote CODEREEVE_PROJECT_ROOT to ~/.config/codereeve/host.env.
 # Supply this only when the resolved configuration uses BWS:
 # export BWS_ACCESS_TOKEN=<bitwarden-machine-account-token>
@@ -498,7 +498,7 @@ Two common supervision patterns are shown below. Both are illustrative starting 
 
 #### systemd unit (recommended)
 
-The installer performs a recoverable cutover from `bh-daemon.service` to
+The installer performs a recoverable cutover from `codereeve daemon.service` to
 `codereeve.service`. Install the release wheel into a separate environment first;
 the installer never changes the old virtual environment. Render before activation:
 
@@ -529,7 +529,7 @@ Useful flags:
 
 The candidate refuses activation if `ANTHROPIC_API_KEY` is set. For
 non-interactive installs, set `CODEREEVE_SETUP_NO_PROMPT=1` (the temporary
-`BH_SETUP_NO_PROMPT` alias remains supported through 0.3.x and is removed in 0.4). A conditionally required fresh
+`CODEREEVE_SETUP_NO_PROMPT` alias remains supported through 0.3.x and is removed in 0.4). A conditionally required fresh
 `BWS_ACCESS_TOKEN` is passed only to the coordinator. File-only installation
 does not read or create a BWS secrets file.
 
@@ -773,7 +773,7 @@ Unlike `bin/verify-recovery.sh`, this script is **not** a decoy-only harness —
 3. the daemon's post-turn label re-read (`src/codereeve/chain/daemon/work_unit.py`) sees `blocked` and takes the park path (`kind="block"`),
 4. `escalation.escalate()` (`src/codereeve/chain/escalation.py`) posts a durable GitHub comment and, when configured, attempts a best-effort Slack ping.
 
-**Where to find the agent's actual question — read this before you go looking for it in Slack.** The clarifying question the agent wrote lands **only** on the GitHub issue comment thread. If `BH_SLACK_WEBHOOK_URL` is configured, the Slack message that fires is the *daemon's* own park summary — a fixed string like `"Issue #N parked: blocked label set."` — not the agent's question text. Slack tells you *that* an issue parked; the GitHub issue comment tells you *why*. The script's own assertions reflect this split: it asserts a GitHub comment exists (assertion 4) but only asserts that a Slack POST was *attempted* (assertion 6) — it cannot inspect delivered Slack content at all.
+**Where to find the agent's actual question — read this before you go looking for it in Slack.** The clarifying question the agent wrote lands **only** on the GitHub issue comment thread. If `CODEREEVE_SLACK_WEBHOOK_URL` is configured, the Slack message that fires is the *daemon's* own park summary — a fixed string like `"Issue #N parked: blocked label set."` — not the agent's question text. Slack tells you *that* an issue parked; the GitHub issue comment tells you *why*. The script's own assertions reflect this split: it asserts a GitHub comment exists (assertion 4) but only asserts that a Slack POST was *attempted* (assertion 6) — it cannot inspect delivered Slack content at all.
 
 Two related signals are logged by the daemon but not locally assertable by this script: the runlog JSONL `escalation` event (written to `obs.runlog_path`), and the literal content actually delivered to Slack. Check those manually if you need to confirm delivery beyond "a POST was attempted."
 
@@ -797,7 +797,7 @@ Two related signals are logged by the daemon but not locally assertable by this 
 
 **`~/.claude/.credentials.json` must be present and readable.** As with `verify-recovery.sh`, if the OAuth credential file is absent, the G3c preflight prints `RESULT: SKIPPED` and exits 0 before seeding any issue — this avoids a misleading `[FAIL]` on every assertion when the daemon would exit 1 at startup regardless of the block-escalation behavior under test.
 
-**Optional:** set `BH_SLACK_WEBHOOK_URL` to also exercise the Slack-attempt assertion; leave it unset to skip that assertion cleanly. Set `BH_VERIFY_BLOCK_TIMEOUT_SECS` to override the default 600-second timeout on the daemon's single poll tick (real model latency for reasoning through the ambiguity, posting a comment, and adding the label can take several minutes).
+**Optional:** set `CODEREEVE_SLACK_WEBHOOK_URL` to also exercise the Slack-attempt assertion; leave it unset to skip that assertion cleanly. Set `CODEREEVE_VERIFY_BLOCK_TIMEOUT_SECS` to override the default 600-second timeout on the daemon's single poll tick (real model latency for reasoning through the ambiguity, posting a comment, and adding the label can take several minutes).
 
 Usage and options:
 
@@ -816,7 +816,7 @@ The script runs one scenario (not a suite of scenarios like `verify-recovery.sh`
 | `BLOCK-escalation-logged` | Captured daemon stdout/stderr contains the specific SUCCESS message `escalate: GitHub comment posted on issue #<n> (kind=block)` | No |
 | `BLOCK-comment-posted` | The issue has at least TWO comments post-run — the agent's clarifying question AND the daemon's escalation park-summary comment | No |
 | `BLOCK-agent-clarification-comment` | An issue comment exists that is distinct from the daemon's fixed park message and contains a `?`, as a proxy for the agent's clarifying question | No |
-| `BLOCK-slack-attempted` | Daemon output contains a SINGLE line with `escalate: Slack ...`, `issue #<n>`, and `kind=block` | Yes — only runs if `BH_SLACK_WEBHOOK_URL` is set; otherwise reported `[SKIPPED]`, not `[FAIL]` |
+| `BLOCK-slack-attempted` | Daemon output contains a SINGLE line with `escalate: Slack ...`, `issue #<n>`, and `kind=block` | Yes — only runs if `CODEREEVE_SLACK_WEBHOOK_URL` is set; otherwise reported `[SKIPPED]`, not `[FAIL]` |
 
 Notes on specific assertions:
 - **`BLOCK-escalation-logged` requires the SUCCESS log line specifically.** `escalation.escalate()` logs `"escalate: GitHub comment posted on issue #N (kind=block)"` at INFO only after the GitHub comment is posted. If only the WARNING failure-path text is present, the assertion fails instead of treating a real GitHub-comment-post failure as an acceptable outcome.
@@ -837,7 +837,7 @@ codereeve: [PASS] BLOCK-in-progress-cleared
 codereeve: [PASS] BLOCK-escalation-logged
 codereeve: [PASS] BLOCK-comment-posted
 codereeve: [PASS] BLOCK-agent-clarification-comment
-codereeve: [SKIPPED] BLOCK-slack-attempted — BH_SLACK_WEBHOOK_URL not set — Slack channel not exercised
+codereeve: [SKIPPED] BLOCK-slack-attempted — CODEREEVE_SLACK_WEBHOOK_URL not set — Slack channel not exercised
 codereeve: ==============================
 codereeve: Block escalation verification summary
 codereeve: ==============================
@@ -847,7 +847,7 @@ codereeve:   SKIPPED: 1
 codereeve: RESULT: PASS
 ```
 
-With `BH_SLACK_WEBHOOK_URL` set, the sixth line becomes a `[PASS]`/`[FAIL]` instead of `[SKIPPED]`, and the summary's `PASSED`/`SKIPPED` counts shift accordingly.
+With `CODEREEVE_SLACK_WEBHOOK_URL` set, the sixth line becomes a `[PASS]`/`[FAIL]` instead of `[SKIPPED]`, and the summary's `PASSED`/`SKIPPED` counts shift accordingly.
 
 If the OAuth credential file is absent, the entire scenario is skipped before any issue is seeded:
 
@@ -866,4 +866,4 @@ The EXIT trap performs **best-effort** cleanup: it closes the seeded issue (with
 
 - As part of pre-release smoke testing, alongside the positive-path dispatch check (#168) and `bin/verify-recovery.sh`'s startup-recovery gates.
 - When validating the #239 self-block escalation chain after a change to `config/WORKFLOW.md`'s confidence/block rule, `src/codereeve/chain/daemon/work_unit.py`'s park path, or `src/codereeve/chain/escalation.py`.
-- Before enabling `BH_SLACK_WEBHOOK_URL` in a new deployment, to confirm the Slack-attempt path fires as expected.
+- Before enabling `CODEREEVE_SLACK_WEBHOOK_URL` in a new deployment, to confirm the Slack-attempt path fires as expected.

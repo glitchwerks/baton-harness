@@ -153,7 +153,7 @@ def test_daemon_retains_lease_through_shutdown(
 # consulted when `repo_root` resolves to an actual git worktree.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _OWNER = "glitchwerks"
-_REPO_NAME = "baton-harness"
+_REPO_NAME = "codereeve"
 # Sentinel SHA for the #353 diagnostic tests below.
 _CI_GATE_SHA = "deadbeef" * 5
 
@@ -308,7 +308,7 @@ def _common_patches(
     run_worker_side_effect: Any = None,  # noqa: ANN401
     merge_outcome: MergeOutcome = MergeOutcome.MERGED,
     pr_head_sha: str = "abc123",
-    issue_branch: str = "baton/my-milestone-10",
+    issue_branch: str = "codereeve/my-milestone-10",
     feature_branch_exists: bool = False,
 ) -> Any:  # noqa: ANN401
     """Return a context-manager that applies all common patches."""
@@ -518,7 +518,7 @@ def test_happy_linear_dag_merges_and_opens_pr() -> None:
         return _make_run_side_effect(
             ready_issues=ready_issues,
             pr_head_sha="abc123",
-            issue_branch="baton/issue-10-10",
+            issue_branch="codereeve/issue-10-10",
             feature_branch_exists=False,
         )(cmd)
 
@@ -555,7 +555,7 @@ def test_happy_linear_dag_merges_and_opens_pr() -> None:
             side_effect=_make_run_side_effect(
                 ready_issues=ready_issues,
                 pr_head_sha="abc123",
-                issue_branch="baton/issue-10-10",
+                issue_branch="codereeve/issue-10-10",
                 feature_branch_exists=False,
             ),
         ):
@@ -594,7 +594,7 @@ def test_draft_pr_flag_absent_from_pr_create() -> None:
         return _make_run_side_effect(
             ready_issues=ready_issues,
             pr_head_sha="abc123",
-            issue_branch="baton/issue-10-10",
+            issue_branch="codereeve/issue-10-10",
             feature_branch_exists=False,
         )(cmd)
 
@@ -673,7 +673,7 @@ def test_never_merges_to_main() -> None:
         return _make_run_side_effect(
             ready_issues=ready_issues,
             pr_head_sha="abc123",
-            issue_branch="baton/issue-10-10",
+            issue_branch="codereeve/issue-10-10",
             feature_branch_exists=False,
         )(cmd)
 
@@ -748,7 +748,7 @@ def test_no_pr_result_parks_and_escalates_without_retry() -> None:
             side_effect=_make_run_side_effect(
                 ready_issues=ready_issues,
                 pr_head_sha="abc123",
-                issue_branch="baton/issue-10-10",
+                issue_branch="codereeve/issue-10-10",
                 feature_branch_exists=False,
             ),
         ),
@@ -822,7 +822,7 @@ def test_agent_in_progress_removed_on_every_terminal_outcome() -> None:
             return _make_run_side_effect(
                 ready_issues=_ready,
                 pr_head_sha="abc123",
-                issue_branch="baton/issue-10-10",
+                issue_branch="codereeve/issue-10-10",
                 feature_branch_exists=False,
             )(cmd)
 
@@ -906,7 +906,7 @@ def test_fully_parked_dag_exits_work_unit_daemon_stays_alive() -> None:
             side_effect=_make_run_side_effect(
                 ready_issues=ready_issues,
                 pr_head_sha="abc123",
-                issue_branch="baton/issue-10-10",
+                issue_branch="codereeve/issue-10-10",
                 feature_branch_exists=False,
             ),
         ),
@@ -994,7 +994,7 @@ def test_serial_dispatch_one_worker_at_a_time() -> None:
             prs = [
                 {
                     "number": 1,
-                    "headRefName": f"baton/sprint-1-{n}",
+                    "headRefName": f"codereeve/sprint-1-{n}",
                     "headRefOid": "abc" + str(n),
                 }
                 for n in [20, 21]
@@ -1072,7 +1072,7 @@ def test_ci_gated_merge_relabels_to_agent_merged() -> None:
         return _make_run_side_effect(
             ready_issues=ready_issues,
             pr_head_sha="abc123",
-            issue_branch="baton/issue-10-10",
+            issue_branch="codereeve/issue-10-10",
             feature_branch_exists=False,
         )(cmd)
 
@@ -1132,7 +1132,11 @@ def test_registry_unset_raises_clean_error() -> None:
 
     env_backup = {
         k: os.environ.pop(k, None)
-        for k in ("BH_REPO_OWNER", "BH_REPO_NAME", "BH_PROJECT_ROOT")
+        for k in (
+            "CODEREEVE_REPO_OWNER",
+            "CODEREEVE_REPO_NAME",
+            "CODEREEVE_PROJECT_ROOT",
+        )
     }
     try:
         with pytest.raises(ValueError, match="Registry is not configured"):
@@ -1363,7 +1367,7 @@ def test_milestone_dispatch_order_a_before_b_when_both_ready() -> None:
             prs = [
                 {
                     "number": i,
-                    "headRefName": f"baton/sprint-7-{n}",
+                    "headRefName": f"codereeve/sprint-7-{n}",
                     "headRefOid": f"sha{n}",
                 }
                 for i, n in enumerate([1, 2], 1)
@@ -1559,7 +1563,7 @@ def test_merge_issue_branch_raises_parks_issue_and_daemon_survives() -> None:
         return _make_run_side_effect(
             ready_issues=ready_issues,
             pr_head_sha="abc123",
-            issue_branch="baton/issue-10-10",
+            issue_branch="codereeve/issue-10-10",
             feature_branch_exists=False,
         )(cmd)
 
@@ -1641,7 +1645,7 @@ def test_work_unit_exception_daemon_survives_and_proceeds() -> None:
         return _make_run_side_effect(
             ready_issues=ready_issues,
             pr_head_sha="abc123",
-            issue_branch="baton/issue-10-10",
+            issue_branch="codereeve/issue-10-10",
             feature_branch_exists=False,
         )(cmd)
 
@@ -1669,16 +1673,18 @@ def test_work_unit_exception_daemon_survives_and_proceeds() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Issue #67: BH_FEATURE_BRANCH env export + integration PR closing keywords
+# Issue #67: CODEREEVE_FEATURE_BRANCH env export + integration PR closing
+# keywords
 # ---------------------------------------------------------------------------
 
 
-def test_bh_feature_branch_exported_before_run_worker() -> None:
-    """BH_FEATURE_BRANCH is set in os.environ before _run_worker is called.
+def test_codereeve_feature_branch_exported_before_run_worker() -> None:
+    """Feature branch is set in os.environ before _run_worker is called.
 
     The env var must equal the feature branch name (e.g. ``feature/issue-10``
     for an un-milestoned issue 10) so the agent's shell can expand
-    ``$BH_FEATURE_BRANCH`` in ``gh pr create --base "$BH_FEATURE_BRANCH"``.
+    ``$CODEREEVE_FEATURE_BRANCH`` in ``gh pr create --base
+    "$CODEREEVE_FEATURE_BRANCH"``.
     """
     ready_issues = [
         {
@@ -1707,7 +1713,7 @@ def test_bh_feature_branch_exported_before_run_worker() -> None:
             side_effect=_make_run_side_effect(
                 ready_issues=ready_issues,
                 pr_head_sha="abc123",
-                issue_branch="baton/issue-10-10",
+                issue_branch="codereeve/issue-10-10",
                 feature_branch_exists=False,
             ),
         ),
@@ -1746,18 +1752,19 @@ def test_bh_feature_branch_exported_before_run_worker() -> None:
             )
         )
 
-    assert "BH_FEATURE_BRANCH" in captured_env, (
-        "BH_FEATURE_BRANCH must be set in os.environ before _run_worker runs"
+    assert "CODEREEVE_FEATURE_BRANCH" in captured_env, (
+        "CODEREEVE_FEATURE_BRANCH must be set in "
+        "os.environ before _run_worker runs"
     )
     # Un-milestoned issue 10 → feature/issue-10.
-    assert captured_env["BH_FEATURE_BRANCH"] == "feature/issue-10", (
-        f"Expected BH_FEATURE_BRANCH='feature/issue-10',"
-        f" got {captured_env['BH_FEATURE_BRANCH']!r}"
+    assert captured_env["CODEREEVE_FEATURE_BRANCH"] == "feature/issue-10", (
+        f"Expected CODEREEVE_FEATURE_BRANCH='feature/issue-10',"
+        f" got {captured_env['CODEREEVE_FEATURE_BRANCH']!r}"
     )
 
 
-def test_bh_feature_branch_exported_for_milestone_work_unit() -> None:
-    """BH_FEATURE_BRANCH equals the milestone feature branch name.
+def test_codereeve_feature_branch_exported_for_milestone_work_unit() -> None:
+    """CODEREEVE_FEATURE_BRANCH equals the milestone feature branch name.
 
     For a milestoned work unit the feature branch is ``feature/<slug>``;
     the env var must reflect that slug, not ``feature/issue-<N>``.
@@ -1812,7 +1819,7 @@ def test_bh_feature_branch_exported_for_milestone_work_unit() -> None:
             prs = [
                 {
                     "number": 5,
-                    "headRefName": "baton/sprint-3-20",
+                    "headRefName": "codereeve/sprint-3-20",
                     "headRefOid": "abc999",
                 }
             ]
@@ -1868,14 +1875,15 @@ def test_bh_feature_branch_exported_for_milestone_work_unit() -> None:
             )
         )
 
-    assert "BH_FEATURE_BRANCH" in captured_env, (
-        "BH_FEATURE_BRANCH must be set in os.environ before _run_worker runs"
+    assert "CODEREEVE_FEATURE_BRANCH" in captured_env, (
+        "CODEREEVE_FEATURE_BRANCH must be set in "
+        "os.environ before _run_worker runs"
         " for milestone work units"
     )
     # Milestone "Sprint 3" → slugified to "sprint-3" → feature/sprint-3.
-    assert captured_env["BH_FEATURE_BRANCH"] == "feature/sprint-3", (
-        f"Expected BH_FEATURE_BRANCH='feature/sprint-3',"
-        f" got {captured_env['BH_FEATURE_BRANCH']!r}"
+    assert captured_env["CODEREEVE_FEATURE_BRANCH"] == "feature/sprint-3", (
+        f"Expected CODEREEVE_FEATURE_BRANCH='feature/sprint-3',"
+        f" got {captured_env['CODEREEVE_FEATURE_BRANCH']!r}"
     )
 
 
@@ -1908,7 +1916,7 @@ def test_integration_pr_body_contains_closes_keyword_per_issue() -> None:
         return _make_run_side_effect(
             ready_issues=ready_issues,
             pr_head_sha="abc123",
-            issue_branch="baton/issue-10-10",
+            issue_branch="codereeve/issue-10-10",
             feature_branch_exists=False,
         )(cmd)
 
@@ -2048,7 +2056,7 @@ def test_integration_pr_body_contains_closes_keyword_per_issue_multi() -> None:
             prs = [
                 {
                     "number": i,
-                    "headRefName": f"baton/sprint-5-{n}",
+                    "headRefName": f"codereeve/sprint-5-{n}",
                     "headRefOid": f"sha{n}",
                 }
                 for i, n in enumerate([10, 11], 1)
@@ -2150,7 +2158,8 @@ def test_integration_pr_body_contains_closes_keyword_per_issue_multi() -> None:
 
 # ---------------------------------------------------------------------------
 # Issue #67 / PR #69 (Codex P1): feature branch must be pushed to origin
-# BEFORE _run_worker is called, so gh pr create --base "$BH_FEATURE_BRANCH"
+# BEFORE _run_worker is called, so gh pr create --base
+# "$CODEREEVE_FEATURE_BRANCH"
 # references a remote branch that already exists.
 # ---------------------------------------------------------------------------
 
@@ -2159,7 +2168,7 @@ def test_feature_branch_pushed_to_origin_before_run_worker() -> None:
     """Git push origin <feature_branch> must occur before _run_worker.
 
     The agent's WORKFLOW.md step uses
-    ``gh pr create --base "$BH_FEATURE_BRANCH"`` during the worker run.
+    ``gh pr create --base "$CODEREEVE_FEATURE_BRANCH"`` during the worker run.
     For a fresh work unit the feature branch only existed locally until
     this fix; ``gh pr create --base`` requires the base branch to exist
     on the remote.  This test verifies the ordering: a
@@ -2201,7 +2210,7 @@ def test_feature_branch_pushed_to_origin_before_run_worker() -> None:
         return _make_run_side_effect(
             ready_issues=ready_issues,
             pr_head_sha="abc123",
-            issue_branch="baton/issue-10-10",
+            issue_branch="codereeve/issue-10-10",
             feature_branch_exists=False,
         )(cmd)
 
@@ -2320,7 +2329,7 @@ def test_zero_commit_branch_skips_pr_and_logs_info(
         return _make_run_side_effect(
             ready_issues=ready_issues,
             pr_head_sha="abc123",
-            issue_branch="baton/issue-10-10",
+            issue_branch="codereeve/issue-10-10",
             feature_branch_exists=False,
         )(cmd)
 
@@ -2422,7 +2431,7 @@ def test_nonzero_commit_branch_proceeds_to_pr() -> None:
         return _make_run_side_effect(
             ready_issues=ready_issues,
             pr_head_sha="abc123",
-            issue_branch="baton/issue-10-10",
+            issue_branch="codereeve/issue-10-10",
             feature_branch_exists=False,
         )(cmd)
 
@@ -2503,7 +2512,7 @@ def test_revlist_count_failure_falls_through_to_pr() -> None:
         return _make_run_side_effect(
             ready_issues=ready_issues,
             pr_head_sha="abc123",
-            issue_branch="baton/issue-10-10",
+            issue_branch="codereeve/issue-10-10",
             feature_branch_exists=False,
         )(cmd)
 
@@ -2563,24 +2572,25 @@ def test_revlist_count_failure_falls_through_to_pr() -> None:
 class TestRunlogObservabilityWiring:
     """Daemon observability wiring: RunLog construction and event emission."""
 
-    def test_run_daemon_without_bh_env_does_not_raise(
+    def test_run_daemon_without_codereeve_env_does_not_raise(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """run_daemon completes without raising when no BH_* obs vars are set.
+        """run_daemon completes without raising when no * obs vars are set.
 
         Proves that observability is best-effort and never prevents the
         daemon loop from running (risk R2).
         """
-        # Clear all BH_* observability vars so load_obs_config uses defaults.
+        # Clear all CODEREEVE_* observability vars so
+        # load_obs_config uses defaults.
         for var in (
-            "BH_PROJECT_ROOT",
-            "BH_RUNLOG_PATH",
-            "BH_HEARTBEAT_FILE",
-            "BH_REDISPATCH_WINDOW_TICKS",
-            "BH_REDISPATCH_MAX",
-            "BH_HEARTBEAT_STALL_S",
-            "BH_HEARTBEAT_PING_URL",
+            "CODEREEVE_PROJECT_ROOT",
+            "CODEREEVE_RUNLOG_PATH",
+            "CODEREEVE_HEARTBEAT_FILE",
+            "CODEREEVE_REDISPATCH_WINDOW_TICKS",
+            "CODEREEVE_REDISPATCH_MAX",
+            "CODEREEVE_HEARTBEAT_STALL_S",
+            "CODEREEVE_HEARTBEAT_PING_URL",
         ):
             monkeypatch.delenv(var, raising=False)
 
@@ -2592,7 +2602,7 @@ class TestRunlogObservabilityWiring:
                 side_effect=_make_run_side_effect(
                     ready_issues=[],
                     pr_head_sha="abc123",
-                    issue_branch="baton/issue-10-10",
+                    issue_branch="codereeve/issue-10-10",
                     feature_branch_exists=False,
                 ),
             ),
@@ -2638,20 +2648,20 @@ class TestRunlogObservabilityWiring:
     ) -> None:
         """run_daemon emits a daemon_start event on startup via RunLog.
 
-        Uses BH_PROJECT_ROOT so load_obs_config resolves the log path
+        Uses CODEREEVE_PROJECT_ROOT so load_obs_config resolves the log path
         under tmp_path, then patches the _write_line seam to capture
         what is written without touching the real filesystem.
         """
         import codereeve.chain.runlog as runlog_mod
 
-        monkeypatch.setenv("BH_PROJECT_ROOT", str(tmp_path))
+        monkeypatch.setenv("CODEREEVE_PROJECT_ROOT", str(tmp_path))
         for var in (
-            "BH_RUNLOG_PATH",
-            "BH_HEARTBEAT_FILE",
-            "BH_REDISPATCH_WINDOW_TICKS",
-            "BH_REDISPATCH_MAX",
-            "BH_HEARTBEAT_STALL_S",
-            "BH_HEARTBEAT_PING_URL",
+            "CODEREEVE_RUNLOG_PATH",
+            "CODEREEVE_HEARTBEAT_FILE",
+            "CODEREEVE_REDISPATCH_WINDOW_TICKS",
+            "CODEREEVE_REDISPATCH_MAX",
+            "CODEREEVE_HEARTBEAT_STALL_S",
+            "CODEREEVE_HEARTBEAT_PING_URL",
         ):
             monkeypatch.delenv(var, raising=False)
 
@@ -2668,7 +2678,7 @@ class TestRunlogObservabilityWiring:
                 side_effect=_make_run_side_effect(
                     ready_issues=[],
                     pr_head_sha="abc123",
-                    issue_branch="baton/issue-10-10",
+                    issue_branch="codereeve/issue-10-10",
                     feature_branch_exists=False,
                 ),
             ),
@@ -2716,11 +2726,11 @@ class TestRunlogObservabilityWiring:
             f"got event names: {event_names!r}"
         )
 
-        # The .baton-harness/ directory must exist under tmp_path
+        # The .codereeve/ directory must exist under tmp_path
         # (mkdir-before-emit requirement).
-        baton_dir = tmp_path / ".codereeve"
-        assert baton_dir.exists(), (
-            f"Expected {baton_dir} to exist after daemon startup "
+        state_dir = tmp_path / ".codereeve"
+        assert state_dir.exists(), (
+            f"Expected {state_dir} to exist after daemon startup "
             f"(RunLog must mkdir parents)"
         )
 
@@ -2741,14 +2751,14 @@ class TestRunlogObservabilityWiring:
         """
         import codereeve.chain.runlog as runlog_mod
 
-        monkeypatch.setenv("BH_PROJECT_ROOT", str(tmp_path))
+        monkeypatch.setenv("CODEREEVE_PROJECT_ROOT", str(tmp_path))
         for var in (
-            "BH_RUNLOG_PATH",
-            "BH_HEARTBEAT_FILE",
-            "BH_REDISPATCH_WINDOW_TICKS",
-            "BH_REDISPATCH_MAX",
-            "BH_HEARTBEAT_STALL_S",
-            "BH_HEARTBEAT_PING_URL",
+            "CODEREEVE_RUNLOG_PATH",
+            "CODEREEVE_HEARTBEAT_FILE",
+            "CODEREEVE_REDISPATCH_WINDOW_TICKS",
+            "CODEREEVE_REDISPATCH_MAX",
+            "CODEREEVE_HEARTBEAT_STALL_S",
+            "CODEREEVE_HEARTBEAT_PING_URL",
         ):
             monkeypatch.delenv(var, raising=False)
 
@@ -2778,7 +2788,7 @@ class TestRunlogObservabilityWiring:
                 side_effect=_make_run_side_effect(
                     ready_issues=ready_issues,
                     pr_head_sha="abc123",
-                    issue_branch="baton/issue-10-10",
+                    issue_branch="codereeve/issue-10-10",
                     feature_branch_exists=False,
                 ),
             ),
@@ -2868,7 +2878,7 @@ def test_ci_gate_failed_park_routes_through_alert_severity_critical() -> None:
             side_effect=_make_run_side_effect(
                 ready_issues=ready_issues,
                 pr_head_sha="abc123",
-                issue_branch="baton/issue-10-10",
+                issue_branch="codereeve/issue-10-10",
                 feature_branch_exists=False,
             ),
         ),
@@ -2952,7 +2962,7 @@ def test_worker_exception_routes_through_alert_severity_warn() -> None:
             side_effect=_make_run_side_effect(
                 ready_issues=ready_issues,
                 pr_head_sha="abc123",
-                issue_branch="baton/issue-10-10",
+                issue_branch="codereeve/issue-10-10",
                 feature_branch_exists=False,
             ),
         ),
@@ -3037,7 +3047,7 @@ def test_ci_gate_reentry_no_open_pr_alert_is_critical() -> None:
             side_effect=_make_run_side_effect(
                 ready_issues=ready_issues,
                 pr_head_sha="abc123",
-                issue_branch="baton/issue-10-10",
+                issue_branch="codereeve/issue-10-10",
                 feature_branch_exists=False,
             ),
         ),
@@ -3119,7 +3129,7 @@ def test_ci_gate_reentry_failed_outcome_alert_is_critical() -> None:
             side_effect=_make_run_side_effect(
                 ready_issues=ready_issues,
                 pr_head_sha="abc123",
-                issue_branch="baton/issue-10-10",
+                issue_branch="codereeve/issue-10-10",
                 feature_branch_exists=False,
             ),
         ),
@@ -3145,7 +3155,7 @@ def test_ci_gate_reentry_failed_outcome_alert_is_critical() -> None:
         # Open PR found — reentry proceeds to merge_issue_branch.
         patch(
             "codereeve.chain.daemon._find_issue_pr",
-            return_value=("baton/issue-10-10", "abc123"),
+            return_value=("codereeve/issue-10-10", "abc123"),
         ),
         # Simulate CI_FAILED from the re-entry merge gate.
         patch(
@@ -3239,7 +3249,7 @@ def _make_torn_label_run_side_effect(
     ready_issues: list[dict[str, Any]],
     post_labels_json: str,
     pr_head_sha: str = "abc123",
-    issue_branch: str = "baton/issue-10-10",
+    issue_branch: str = "codereeve/issue-10-10",
     feature_branch_exists: bool = False,
 ) -> Any:  # noqa: ANN401
     """Build a _run side-effect that injects torn post-worker label state.
@@ -3418,7 +3428,7 @@ def test_no_state_label_no_pr_post_worker_fires_critical_alert_and_parks() -> (
             side_effect=_make_run_side_effect(
                 ready_issues=ready_issues,
                 pr_head_sha="abc123",
-                issue_branch="baton/issue-10-10",
+                issue_branch="codereeve/issue-10-10",
                 feature_branch_exists=False,
             ),
         ),
@@ -3500,7 +3510,7 @@ def test_torn_labels_post_worker_parks_the_issue() -> None:
             side_effect=_make_run_side_effect(
                 ready_issues=ready_issues,
                 pr_head_sha="abc123",
-                issue_branch="baton/issue-10-10",
+                issue_branch="codereeve/issue-10-10",
                 feature_branch_exists=False,
             ),
         ),
@@ -3573,7 +3583,7 @@ def test_single_blocked_post_worker_does_not_fire_invariant_critical() -> None:
             side_effect=_make_run_side_effect(
                 ready_issues=ready_issues,
                 pr_head_sha="abc123",
-                issue_branch="baton/issue-10-10",
+                issue_branch="codereeve/issue-10-10",
                 feature_branch_exists=False,
             ),
         ),
@@ -3660,7 +3670,7 @@ def test_single_agent_done_pr_created_does_not_fire_invariant_critical() -> (
             side_effect=_make_run_side_effect(
                 ready_issues=ready_issues,
                 pr_head_sha="abc123",
-                issue_branch="baton/issue-10-10",
+                issue_branch="codereeve/issue-10-10",
                 feature_branch_exists=False,
             ),
         ),
@@ -3733,7 +3743,7 @@ def test_torn_labels_post_worker_removes_agent_in_progress() -> None:
         return _make_run_side_effect(
             ready_issues=ready_issues,
             pr_head_sha="abc123",
-            issue_branch="baton/issue-10-10",
+            issue_branch="codereeve/issue-10-10",
             feature_branch_exists=False,
         )(cmd)
 
@@ -3816,7 +3826,7 @@ def test_torn_labels_post_worker_mark_parked_is_called() -> None:
             side_effect=_make_run_side_effect(
                 ready_issues=ready_issues,
                 pr_head_sha="abc123",
-                issue_branch="baton/issue-10-10",
+                issue_branch="codereeve/issue-10-10",
                 feature_branch_exists=False,
             ),
         ),
@@ -3915,7 +3925,7 @@ def test_runlog_emit_raises_daemon_still_alerts_parks_and_continues() -> None:
             side_effect=_make_run_side_effect(
                 ready_issues=ready_issues,
                 pr_head_sha="abc123",
-                issue_branch="baton/issue-10-10",
+                issue_branch="codereeve/issue-10-10",
                 feature_branch_exists=False,
             ),
         ),
@@ -4004,7 +4014,8 @@ def test_runlog_emit_raises_daemon_still_alerts_parks_and_continues() -> None:
 # Mocking strategy:
 #   - Pre-seed the dispatch-counts.json file to simulate a counts file
 #     that already has marks at the threshold.
-#   - Use BH_REDISPATCH_COUNTS_PATH / BH_PROJECT_ROOT (monkeypatch) so
+# - Use CODEREEVE_REDISPATCH_COUNTS_PATH / CODEREEVE_PROJECT_ROOT
+# (monkeypatch) so
 #     obs.redispatch_counts_path resolves to the pre-seeded temp file.
 #   - recovery_result.redispatch={10} to put the issue on the redispatch
 #     path (mirrors existing torn-state test style).
@@ -4068,21 +4079,21 @@ def test_redispatch_loop_breach_skips_worker_and_parks(
     import codereeve.chain.runlog as runlog_mod
 
     # Point obs config at tmp_path so redispatch_counts_path resolves there.
-    monkeypatch.setenv("BH_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("CODEREEVE_PROJECT_ROOT", str(tmp_path))
     for var in (
-        "BH_RUNLOG_PATH",
-        "BH_HEARTBEAT_FILE",
-        "BH_REDISPATCH_WINDOW_TICKS",
-        "BH_REDISPATCH_MAX",
-        "BH_HEARTBEAT_STALL_S",
-        "BH_HEARTBEAT_PING_URL",
-        "BH_REDISPATCH_COUNTS_PATH",
+        "CODEREEVE_RUNLOG_PATH",
+        "CODEREEVE_HEARTBEAT_FILE",
+        "CODEREEVE_REDISPATCH_WINDOW_TICKS",
+        "CODEREEVE_REDISPATCH_MAX",
+        "CODEREEVE_HEARTBEAT_STALL_S",
+        "CODEREEVE_HEARTBEAT_PING_URL",
+        "CODEREEVE_REDISPATCH_COUNTS_PATH",
     ):
         monkeypatch.delenv(var, raising=False)
 
     # Default: window=10, max=3.  Pre-seed 3 marks at ticks 1, 2, 3
     # (all within a window of 10 from tick 4 which the daemon will reach).
-    counts_path = tmp_path / ".baton-harness" / "dispatch-counts.json"
+    counts_path = tmp_path / ".codereeve" / "dispatch-counts.json"
     _seed_counts_file(counts_path, tick=3, issue=10, marks=[1, 2, 3])
 
     ready_issues = [_make_redispatch_ready_issue(10)]
@@ -4106,7 +4117,7 @@ def test_redispatch_loop_breach_skips_worker_and_parks(
             side_effect=_make_run_side_effect(
                 ready_issues=ready_issues,
                 pr_head_sha="abc123",
-                issue_branch="baton/issue-10-10",
+                issue_branch="codereeve/issue-10-10",
                 feature_branch_exists=False,
             ),
         ),
@@ -4181,19 +4192,19 @@ def test_redispatch_loop_breach_emits_redispatch_loop_event(
     """
     import codereeve.chain.runlog as runlog_mod
 
-    monkeypatch.setenv("BH_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("CODEREEVE_PROJECT_ROOT", str(tmp_path))
     for var in (
-        "BH_RUNLOG_PATH",
-        "BH_HEARTBEAT_FILE",
-        "BH_REDISPATCH_WINDOW_TICKS",
-        "BH_REDISPATCH_MAX",
-        "BH_HEARTBEAT_STALL_S",
-        "BH_HEARTBEAT_PING_URL",
-        "BH_REDISPATCH_COUNTS_PATH",
+        "CODEREEVE_RUNLOG_PATH",
+        "CODEREEVE_HEARTBEAT_FILE",
+        "CODEREEVE_REDISPATCH_WINDOW_TICKS",
+        "CODEREEVE_REDISPATCH_MAX",
+        "CODEREEVE_HEARTBEAT_STALL_S",
+        "CODEREEVE_HEARTBEAT_PING_URL",
+        "CODEREEVE_REDISPATCH_COUNTS_PATH",
     ):
         monkeypatch.delenv(var, raising=False)
 
-    counts_path = tmp_path / ".baton-harness" / "dispatch-counts.json"
+    counts_path = tmp_path / ".codereeve" / "dispatch-counts.json"
     _seed_counts_file(counts_path, tick=3, issue=10, marks=[1, 2, 3])
 
     ready_issues = [_make_redispatch_ready_issue(10)]
@@ -4210,7 +4221,7 @@ def test_redispatch_loop_breach_emits_redispatch_loop_event(
             side_effect=_make_run_side_effect(
                 ready_issues=ready_issues,
                 pr_head_sha="abc123",
-                issue_branch="baton/issue-10-10",
+                issue_branch="codereeve/issue-10-10",
                 feature_branch_exists=False,
             ),
         ),
@@ -4282,20 +4293,20 @@ def test_redispatch_below_threshold_dispatches_worker(
         tmp_path: pytest fixture providing a temporary directory.
         monkeypatch: pytest fixture for hermetic env-var injection.
     """
-    monkeypatch.setenv("BH_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("CODEREEVE_PROJECT_ROOT", str(tmp_path))
     for var in (
-        "BH_RUNLOG_PATH",
-        "BH_HEARTBEAT_FILE",
-        "BH_REDISPATCH_WINDOW_TICKS",
-        "BH_REDISPATCH_MAX",
-        "BH_HEARTBEAT_STALL_S",
-        "BH_HEARTBEAT_PING_URL",
-        "BH_REDISPATCH_COUNTS_PATH",
+        "CODEREEVE_RUNLOG_PATH",
+        "CODEREEVE_HEARTBEAT_FILE",
+        "CODEREEVE_REDISPATCH_WINDOW_TICKS",
+        "CODEREEVE_REDISPATCH_MAX",
+        "CODEREEVE_HEARTBEAT_STALL_S",
+        "CODEREEVE_HEARTBEAT_PING_URL",
+        "CODEREEVE_REDISPATCH_COUNTS_PATH",
     ):
         monkeypatch.delenv(var, raising=False)
 
     # Only 1 prior mark — well below max_count=3.
-    counts_path = tmp_path / ".baton-harness" / "dispatch-counts.json"
+    counts_path = tmp_path / ".codereeve" / "dispatch-counts.json"
     _seed_counts_file(counts_path, tick=1, issue=10, marks=[1])
 
     ready_issues = [_make_redispatch_ready_issue(10)]
@@ -4313,7 +4324,7 @@ def test_redispatch_below_threshold_dispatches_worker(
             side_effect=_make_run_side_effect(
                 ready_issues=ready_issues,
                 pr_head_sha="abc123",
-                issue_branch="baton/issue-10-10",
+                issue_branch="codereeve/issue-10-10",
                 feature_branch_exists=False,
             ),
         ),
@@ -4451,7 +4462,7 @@ class TestBackstopConvergence:
             return _make_run_side_effect(
                 ready_issues=ready_issues,
                 pr_head_sha="abc123",
-                issue_branch="baton/issue-10-10",
+                issue_branch="codereeve/issue-10-10",
                 feature_branch_exists=False,
             )(cmd)
 
@@ -4487,7 +4498,7 @@ class TestBackstopConvergence:
         - After convergence, does NOT ``continue``; falls through to the
           normal CI-gate / merge path on this tick.
         - ``merge_issue_branch`` IS called for issue #10 with the PR
-          branch ``"baton/issue-10-10"`` and sha ``"abc123"``.
+          branch ``"codereeve/issue-10-10"`` and sha ``"abc123"``.
         - On ``MergeOutcome.MERGED``, the post-merge label cleanup runs:
           ``agent-in-progress`` is removed (merge-success path).
 
@@ -4529,7 +4540,7 @@ class TestBackstopConvergence:
             # convergence call and the CI-gate call (daemon.py:1031).
             patch(
                 "codereeve.chain.daemon._find_issue_pr",
-                return_value=("baton/issue-10-10", "abc123"),
+                return_value=("codereeve/issue-10-10", "abc123"),
             ),
             patch("codereeve.chain.daemon.alert", mock_alert),
             patch(
@@ -4636,7 +4647,7 @@ class TestBackstopConvergence:
         )
 
         # NEW: Assert merge was invoked with the correct branch + sha.
-        # _find_issue_pr returns ("baton/issue-10-10", "abc123") for
+        # _find_issue_pr returns ("codereeve/issue-10-10", "abc123") for
         # both the backstop call and the CI-gate call (daemon.py:1031).
         merge_call_args = mock_merge_fn.call_args
         assert merge_call_args is not None, (
@@ -4655,9 +4666,9 @@ class TestBackstopConvergence:
             if len(call_positional) > 2
             else call_keyword.get("pr_head_sha")
         )
-        assert branch_arg == "baton/issue-10-10", (
+        assert branch_arg == "codereeve/issue-10-10", (
             "merge_issue_branch must be called with the PR branch"
-            f" 'baton/issue-10-10'; got branch_arg={branch_arg!r}."
+            f" 'codereeve/issue-10-10'; got branch_arg={branch_arg!r}."
             f" full call_args={merge_call_args}"
         )
         assert sha_arg == "abc123", (
@@ -4841,7 +4852,7 @@ class TestBackstopConvergence:
 
         Scenario (the #96 headline bug):
         - Post-worker labels = ``{agent-in-progress}`` (zero state labels).
-        - ``_find_issue_pr`` returns ``("baton/issue-10-10", "abc123")``
+        - ``_find_issue_pr`` returns ``("codereeve/issue-10-10", "abc123")``
           (open PR exists — convergence fires).
         - ``blocked`` label is NOT present.
         - **``_run_worker`` returns ``"no_pr"``** (the worker's own PR check
@@ -4849,7 +4860,7 @@ class TestBackstopConvergence:
 
         Expected behaviour (redesigned — FAILS on current code):
         - ``merge_issue_branch`` IS called with
-          ``issue_branch="baton/issue-10-10"`` and
+          ``issue_branch="codereeve/issue-10-10"`` and
           ``pr_head_sha="abc123"`` (the converged observation).
         - ``sched.mark_parked`` is NOT called for issue #10.
         - On ``MergeOutcome.MERGED``, ``sched.mark_done(10)`` is called.
@@ -4902,7 +4913,7 @@ class TestBackstopConvergence:
             # PR exists — convergence fires with this observation.
             patch(
                 "codereeve.chain.daemon._find_issue_pr",
-                return_value=("baton/issue-10-10", "abc123"),
+                return_value=("codereeve/issue-10-10", "abc123"),
             ),
             patch("codereeve.chain.daemon.alert", mock_alert),
             patch(
@@ -4975,9 +4986,9 @@ class TestBackstopConvergence:
             if len(positional) > 2
             else keyword.get("pr_head_sha")
         )
-        assert branch_arg == "baton/issue-10-10", (
+        assert branch_arg == "codereeve/issue-10-10", (
             "merge_issue_branch must be called with the converged branch"
-            f" 'baton/issue-10-10'; got branch_arg={branch_arg!r}."
+            f" 'codereeve/issue-10-10'; got branch_arg={branch_arg!r}."
             f" full call_args={merge_call}"
         )
         assert sha_arg == "abc123", (
@@ -5048,7 +5059,9 @@ class TestBackstopConvergence:
             self_sched.parked.add(issue)
 
         mock_merge_fn = MagicMock(return_value=MergeOutcome.MERGED)
-        mock_find_pr = MagicMock(return_value=("baton/issue-10-10", "abc123"))
+        mock_find_pr = MagicMock(
+            return_value=("codereeve/issue-10-10", "abc123")
+        )
 
         with (
             patch.object(
@@ -5191,7 +5204,7 @@ class TestBackstopConvergence:
             ),
             patch(
                 "codereeve.chain.daemon._find_issue_pr",
-                return_value=("baton/issue-10-10", "abc123"),
+                return_value=("codereeve/issue-10-10", "abc123"),
             ),
             patch("codereeve.chain.daemon.alert", mock_alert),
             patch(
@@ -5329,7 +5342,7 @@ class TestBackstopConvergence:
             ),
             patch(
                 "codereeve.chain.daemon._find_issue_pr",
-                return_value=("baton/issue-10-10", "abc123"),
+                return_value=("codereeve/issue-10-10", "abc123"),
             ),
             patch("codereeve.chain.daemon.alert", mock_alert),
             patch(
@@ -5485,7 +5498,7 @@ class TestBackstopConvergence:
             ),
             patch(
                 "codereeve.chain.daemon._find_issue_pr",
-                return_value=("baton/issue-10-10", "abc123"),
+                return_value=("codereeve/issue-10-10", "abc123"),
             ),
             # Inject a violation string that contains '%' — the bug trigger.
             patch(
@@ -5597,7 +5610,7 @@ class TestBackstopConvergence:
         """
         label_edits: list[list[str]] = []
         mock_find_issue_pr = MagicMock(
-            return_value=("baton/issue-10-10", "abc123")
+            return_value=("codereeve/issue-10-10", "abc123")
         )
         mock_merge_fn = MagicMock(return_value=MergeOutcome.MERGED)
 
@@ -5766,7 +5779,7 @@ def test_backstop_does_not_converge_when_labels_unreadable() -> None:
         return _make_run_side_effect(
             ready_issues=ready_issues,
             pr_head_sha="abc123",
-            issue_branch="baton/issue-10-10",
+            issue_branch="codereeve/issue-10-10",
             feature_branch_exists=False,
         )(cmd)
 
@@ -5781,7 +5794,7 @@ def test_backstop_does_not_converge_when_labels_unreadable() -> None:
         # handled conservatively.
         patch(
             "codereeve.chain.daemon._find_issue_pr",
-            return_value=("baton/issue-10-10", "abc123"),
+            return_value=("codereeve/issue-10-10", "abc123"),
         ),
         patch("codereeve.chain.daemon.alert", mock_alert),
         patch(
@@ -5992,7 +6005,7 @@ class TestAsyncEscalationStartupWarning:
             warn_if_async_escalation_unconfigured,
         )
 
-        monkeypatch.delenv("BH_SLACK_WEBHOOK_URL", raising=False)
+        monkeypatch.delenv("CODEREEVE_SLACK_WEBHOOK_URL", raising=False)
         obs = _minimal_obs_config(heartbeat_ping_url=None)
 
         with caplog.at_level(logging.WARNING, logger="codereeve.chain.daemon"):
@@ -6033,7 +6046,7 @@ class TestAsyncEscalationStartupWarning:
             warn_if_async_escalation_unconfigured,
         )
 
-        monkeypatch.delenv("BH_SLACK_WEBHOOK_URL", raising=False)
+        monkeypatch.delenv("CODEREEVE_SLACK_WEBHOOK_URL", raising=False)
         obs = _minimal_obs_config(
             heartbeat_ping_url="https://uptime.example/ping"
         )
@@ -6055,7 +6068,7 @@ class TestAsyncEscalationStartupWarning:
     def test_silent_when_slack_webhook_configured(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """No WARNING when BH_SLACK_WEBHOOK_URL is set (ping URL absent).
+        """No WARNING when slack webhook url is set (ping URL absent).
 
         Slack env set to a non-empty URL, obs.heartbeat_ping_url=None
         → zero WARNING records from this helper.
@@ -6067,7 +6080,7 @@ class TestAsyncEscalationStartupWarning:
         )
 
         monkeypatch.setenv(
-            "BH_SLACK_WEBHOOK_URL", "https://hooks.slack.test/x"
+            "CODEREEVE_SLACK_WEBHOOK_URL", "https://hooks.slack.test/x"
         )
         obs = _minimal_obs_config(heartbeat_ping_url=None)
 
@@ -6081,7 +6094,7 @@ class TestAsyncEscalationStartupWarning:
             and r.name == "codereeve.chain.daemon"
         ]
         assert len(warning_records) == 0, (
-            "Expected zero WARNINGs when BH_SLACK_WEBHOOK_URL is set; "
+            "Expected zero WARNINGs when CODEREEVE_SLACK_WEBHOOK_URL is set; "
             f"got {len(warning_records)}: {warning_records}"
         )
 
@@ -6100,7 +6113,7 @@ class TestAsyncEscalationStartupWarning:
         )
 
         monkeypatch.setenv(
-            "BH_SLACK_WEBHOOK_URL", "https://hooks.slack.test/x"
+            "CODEREEVE_SLACK_WEBHOOK_URL", "https://hooks.slack.test/x"
         )
         obs = _minimal_obs_config(
             heartbeat_ping_url="https://uptime.example/ping"
@@ -6123,9 +6136,9 @@ class TestAsyncEscalationStartupWarning:
     def test_empty_slack_env_treated_as_unconfigured(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Empty BH_SLACK_WEBHOOK_URL is treated as unconfigured.
+        """Empty CODEREEVE_SLACK_WEBHOOK_URL is treated as unconfigured.
 
-        monkeypatch sets BH_SLACK_WEBHOOK_URL to empty string with
+        monkeypatch sets CODEREEVE_SLACK_WEBHOOK_URL to empty string with
         heartbeat_ping_url=None → WARNS (empty == unconfigured).
         """
         import logging
@@ -6134,7 +6147,7 @@ class TestAsyncEscalationStartupWarning:
             warn_if_async_escalation_unconfigured,
         )
 
-        monkeypatch.setenv("BH_SLACK_WEBHOOK_URL", "")
+        monkeypatch.setenv("CODEREEVE_SLACK_WEBHOOK_URL", "")
         obs = _minimal_obs_config(heartbeat_ping_url=None)
 
         with caplog.at_level(logging.WARNING, logger="codereeve.chain.daemon"):
@@ -6147,7 +6160,8 @@ class TestAsyncEscalationStartupWarning:
             and r.name == "codereeve.chain.daemon"
         ]
         assert len(warning_records) == 1, (
-            "Expected exactly 1 WARNING when BH_SLACK_WEBHOOK_URL is empty "
+            "Expected exactly 1 WARNING when "
+            "CODEREEVE_SLACK_WEBHOOK_URL is empty "
             "(empty string must be treated as unconfigured); "
             f"got {len(warning_records)}: {warning_records}"
         )
@@ -6272,7 +6286,7 @@ class TestP2MarkInProgressCallSites:
                 side_effect=_make_run_side_effect(
                     ready_issues=ci_reentry_issue,
                     pr_head_sha="abc123",
-                    issue_branch="baton/issue-77-77",
+                    issue_branch="codereeve/issue-77-77",
                     feature_branch_exists=False,
                 ),
             ),
@@ -6385,7 +6399,7 @@ class TestP2MarkInProgressCallSites:
                 side_effect=_make_run_side_effect(
                     ready_issues=ready_issues,
                     pr_head_sha="abc123",
-                    issue_branch="baton/issue-55-55",
+                    issue_branch="codereeve/issue-55-55",
                     feature_branch_exists=False,
                 ),
             ),
@@ -6474,7 +6488,7 @@ def test_run_daemon_calls_reconcile_startup_exactly_once() -> None:
             side_effect=_make_run_side_effect(
                 ready_issues=ready_issues,
                 pr_head_sha="abc123",
-                issue_branch="baton/issue-10-10",
+                issue_branch="codereeve/issue-10-10",
                 feature_branch_exists=False,
             ),
         ),
@@ -6573,7 +6587,7 @@ def test_run_daemon_reconcile_startup_called_before_heartbeat_thread() -> None:
             side_effect=_make_run_side_effect(
                 ready_issues=ready_issues,
                 pr_head_sha="abc123",
-                issue_branch="baton/issue-10-10",
+                issue_branch="codereeve/issue-10-10",
                 feature_branch_exists=False,
             ),
         ),
@@ -6689,7 +6703,7 @@ def test_run_daemon_registers_sigterm_handler_on_startup() -> None:
             side_effect=_make_run_side_effect(
                 ready_issues=ready_issues,
                 pr_head_sha="abc123",
-                issue_branch="baton/issue-10-10",
+                issue_branch="codereeve/issue-10-10",
                 feature_branch_exists=False,
             ),
         ),
@@ -6769,7 +6783,7 @@ def test_sigterm_handler_clears_marker_on_invocation(
 
     # Build a real tmp dir for the marker path so the handler can unlink it.
     real_tmp = _Path(tempfile.mkdtemp())
-    harness_dir = real_tmp / ".baton-harness"
+    harness_dir = real_tmp / ".codereeve"
     harness_dir.mkdir(parents=True, exist_ok=True)
     marker = harness_dir / "daemon.alive"
 
@@ -6799,7 +6813,7 @@ def test_sigterm_handler_clears_marker_on_invocation(
             side_effect=_make_run_side_effect(
                 ready_issues=ready_issues,
                 pr_head_sha="abc123",
-                issue_branch="baton/issue-10-10",
+                issue_branch="codereeve/issue-10-10",
                 feature_branch_exists=False,
             ),
         ),
@@ -7463,7 +7477,7 @@ def test_unmilestoned_issue_dispatched_alongside_milestoned_in_same_tick() -> (
             prs = [
                 {
                     "number": 5,
-                    "headRefName": f"baton/sprint-3-{n}",
+                    "headRefName": f"codereeve/sprint-3-{n}",
                     "headRefOid": f"sha{n}",
                 }
                 for n in [20, 1]
@@ -7667,7 +7681,7 @@ def test_second_work_unit_skipped_when_blocked_mid_drain() -> None:
             prs = [
                 {
                     "number": 10,
-                    "headRefName": f"baton/issue-{n}-{n}",
+                    "headRefName": f"codereeve/issue-{n}-{n}",
                     "headRefOid": f"sha{n}",
                 }
                 for n in [1, 5]
@@ -7885,7 +7899,7 @@ def test_second_work_unit_skipped_on_non_blocked_exclude_label_mid_drain() -> (
             prs = [
                 {
                     "number": 10,
-                    "headRefName": f"baton/issue-{n}-{n}",
+                    "headRefName": f"codereeve/issue-{n}-{n}",
                     "headRefOid": f"sha{n}",
                 }
                 for n in [1, 5]
@@ -8337,7 +8351,7 @@ def test_second_work_unit_skipped_when_agent_ready_removed_mid_drain() -> None:
             prs = [
                 {
                     "number": 10,
-                    "headRefName": f"baton/issue-{n}-{n}",
+                    "headRefName": f"codereeve/issue-{n}-{n}",
                     "headRefOid": f"sha{n}",
                 }
                 for n in [1, 5]
@@ -8867,7 +8881,7 @@ class TestDrainAgentReadyRevalidation:
 
         Args:
             ready_issues: The full list returned by the agent-ready poll.
-            ms_number: Milestone number; used to build baton branch names.
+            ms_number: Milestone number; used to build CodeReeve branch names.
 
         Returns:
             A callable matching the ``_run(cmd, env)`` signature.
@@ -8927,7 +8941,7 @@ class TestDrainAgentReadyRevalidation:
                 prs = [
                     {
                         "number": 5,
-                        "headRefName": (f"baton/sprint-{ms_number}-10"),
+                        "headRefName": (f"codereeve/sprint-{ms_number}-10"),
                         "headRefOid": "sha10",
                     }
                 ]
@@ -9362,7 +9376,7 @@ class TestDrainAgentReadyRevalidation:
                 prs = [
                     {
                         "number": i,
-                        "headRefName": f"baton/sprint-{ms}-{n}",
+                        "headRefName": f"codereeve/sprint-{ms}-{n}",
                         "headRefOid": f"sha{n}",
                     }
                     for i, (ms, n) in enumerate([(8, 5), (9, 10)], start=1)
@@ -9514,7 +9528,7 @@ class TestDaemonGhCallsUseInstallationToken:
             side_effect = _make_run_side_effect(
                 ready_issues=ready_issues,
                 pr_head_sha="abc123",
-                issue_branch="baton/issue-10-10",
+                issue_branch="codereeve/issue-10-10",
                 feature_branch_exists=False,
             )
             return side_effect(cmd if isinstance(cmd, list) else [cmd])
@@ -9615,7 +9629,7 @@ class TestDaemonGhCallsUseInstallationToken:
                         }
                     ],
                     pr_head_sha="abc123",
-                    issue_branch="baton/issue-10-10",
+                    issue_branch="codereeve/issue-10-10",
                     feature_branch_exists=False,
                 ),
             ),
@@ -9703,7 +9717,7 @@ class TestDaemonGhCallsUseInstallationToken:
         with patch.object(subprocess, "run", side_effect=recording_run):
             merge_mod._query_action_jobs(
                 "glitchwerks",
-                "baton-harness",
+                "codereeve",
                 "abc123sha",
                 installation_token=_INSTALLATION_TOKEN,
             )
@@ -9755,12 +9769,12 @@ class TestDaemonGhCallsUseInstallationToken:
         with (
             patch.object(subprocess, "run", side_effect=recording_run),
             # Suppress Slack webhook calls.
-            monkeypatch.delenv("BH_SLACK_WEBHOOK_URL", raising=False)
+            monkeypatch.delenv("CODEREEVE_SLACK_WEBHOOK_URL", raising=False)
             or patch("codereeve.chain.escalation.urllib"),
         ):
             escalation_mod.escalate(
                 "glitchwerks",
-                "baton-harness",
+                "codereeve",
                 42,
                 "Test escalation from slice 3a test",
                 installation_token=_INSTALLATION_TOKEN,
@@ -9963,7 +9977,7 @@ class TestRunCiGateForwardsToken:
                 owner=_OWNER,
                 repo=_REPO_NAME,
                 n=42,
-                issue_branch="baton/issue-42-42",
+                issue_branch="codereeve/issue-42-42",
                 pr_head_sha="deadbeef" * 5,
                 repo_root=_REPO_ROOT,
                 branch_name="feature/test-slug",
@@ -10029,7 +10043,9 @@ class TestRunCiGateForwardsToken:
                 prs = [
                     {
                         "number": 1,
-                        "headRefName": (f"baton/issue-{_issue_n}-{_issue_n}"),
+                        "headRefName": (
+                            f"codereeve/issue-{_issue_n}-{_issue_n}"
+                        ),
                         "headRefOid": "abc123",
                     }
                 ]
@@ -10455,7 +10471,7 @@ class TestAuthedGitPush:
             side_effect = _make_run_side_effect(
                 ready_issues=ready_issues,
                 pr_head_sha="abc123",
-                issue_branch="baton/issue-10-10",
+                issue_branch="codereeve/issue-10-10",
                 feature_branch_exists=False,
             )
             return side_effect(cmd)
@@ -10629,7 +10645,7 @@ def test_configured_required_checks_reach_merge_gate() -> None:
             side_effect=_make_run_side_effect(
                 ready_issues=ready_issues,
                 pr_head_sha="abc123",
-                issue_branch="baton/issue-10-10",
+                issue_branch="codereeve/issue-10-10",
                 feature_branch_exists=False,
             ),
         ),
@@ -10707,7 +10723,7 @@ def test_ci_gate_reentry_passes_configured_required_checks() -> None:
             side_effect=_make_run_side_effect(
                 ready_issues=ready_issues,
                 pr_head_sha="abc123",
-                issue_branch="baton/issue-10-10",
+                issue_branch="codereeve/issue-10-10",
                 feature_branch_exists=False,
             ),
         ),
@@ -10730,7 +10746,7 @@ def test_ci_gate_reentry_passes_configured_required_checks() -> None:
         # Open PR found — reentry proceeds to merge_issue_branch.
         patch(
             "codereeve.chain.daemon._find_issue_pr",
-            return_value=("baton/issue-10-10", "abc123"),
+            return_value=("codereeve/issue-10-10", "abc123"),
         ),
         patch(
             "codereeve.chain.daemon.merge_issue_branch",
@@ -10801,7 +10817,7 @@ def test_unset_required_checks_falls_back_and_warns(
             side_effect=_make_run_side_effect(
                 ready_issues=ready_issues,
                 pr_head_sha="abc123",
-                issue_branch="baton/issue-10-10",
+                issue_branch="codereeve/issue-10-10",
                 feature_branch_exists=False,
             ),
         ),
@@ -10914,7 +10930,7 @@ class TestRunCiGateDiagnosticEnrichment:
                 owner=_OWNER,
                 repo=_REPO_NAME,
                 n=10,
-                issue_branch="baton/issue-10-10",
+                issue_branch="codereeve/issue-10-10",
                 pr_head_sha=_CI_GATE_SHA,
                 repo_root=_REPO_ROOT,
                 branch_name="feature/test-slug",
@@ -10965,7 +10981,7 @@ class TestRunCiGateDiagnosticEnrichment:
                 owner=_OWNER,
                 repo=_REPO_NAME,
                 n=10,
-                issue_branch="baton/issue-10-10",
+                issue_branch="codereeve/issue-10-10",
                 pr_head_sha=_CI_GATE_SHA,
                 repo_root=_REPO_ROOT,
                 branch_name="feature/test-slug",
@@ -11017,7 +11033,7 @@ class TestRunCiGateDiagnosticEnrichment:
                 owner=_OWNER,
                 repo=_REPO_NAME,
                 n=13,
-                issue_branch="baton/issue-13-13",
+                issue_branch="codereeve/issue-13-13",
                 pr_head_sha=_CI_GATE_SHA,
                 repo_root=_REPO_ROOT,
                 branch_name="feature/test-slug",
@@ -11073,7 +11089,7 @@ class TestRunCiGateDiagnosticEnrichment:
                 owner=_OWNER,
                 repo=_REPO_NAME,
                 n=12,
-                issue_branch="baton/issue-12-12",
+                issue_branch="codereeve/issue-12-12",
                 pr_head_sha=_CI_GATE_SHA,
                 repo_root=_REPO_ROOT,
                 branch_name="feature/test-slug",
@@ -11147,7 +11163,7 @@ class TestRunCiGateDiagnosticEnrichment:
                 owner=_OWNER,
                 repo=_REPO_NAME,
                 n=11,
-                issue_branch="baton/issue-11-11",
+                issue_branch="codereeve/issue-11-11",
                 pr_head_sha=_CI_GATE_SHA,
                 repo_root=_REPO_ROOT,
                 branch_name="feature/test-slug",
@@ -11219,7 +11235,7 @@ class TestRunCiGateDiagnosticEnrichment:
                 owner=_OWNER,
                 repo=_REPO_NAME,
                 n=14,
-                issue_branch="baton/issue-14-14",
+                issue_branch="codereeve/issue-14-14",
                 pr_head_sha=_CI_GATE_SHA,
                 repo_root=_REPO_ROOT,
                 branch_name="feature/test-slug",

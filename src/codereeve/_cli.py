@@ -3,12 +3,13 @@
 This module provides two utilities that every hook needs:
 
 1. ``resolve_issue_number`` — derives the GitHub issue number from the
-   current worktree directory path.  Baton does not pass env-var context
+   current worktree directory path.  symphony does not pass env-var context
    to hooks (spike finding F2), so the issue number is inferred from
    ``basename(cwd)``.  Two naming forms are accepted:
 
-   * **Baton (symphony) form** — the directory name is a bare integer,
-     e.g. ``.symphony/worktrees/2``.  This is Baton's default: it names
+   * **symphony worktree form** — the directory name is a bare integer,
+     e.g. ``.symphony/worktrees/2``.  This is the orchestrator's
+     default: it names
      worktrees after the plain issue number.
    * **CodeReeve prefixed form** — ``<prefix>-<issue>[-<slug>]``, e.g.
      ``.worktrees/feat-10-python-scaffold`` or ``.worktrees/chore-7``.
@@ -30,8 +31,8 @@ from pathlib import Path
 # then either end-of-string or a dash followed by anything.
 #
 # Accepted forms:
-#   "2"                       → Baton bare-issue (symphony worktree)
-#   "12345"                   → Baton bare-issue (multi-digit)
+#   "2"                       → symphony bare-issue (symphony worktree)
+#   "12345"                   → symphony bare-issue (multi-digit)
 #   "feat-10-python-scaffold" → CodeReeve prefixed form with slug
 #   "fix-42-auth-bug"         → CodeReeve prefixed form with slug
 #   "chore-7"                 → CodeReeve prefixed form, no slug
@@ -46,15 +47,15 @@ def resolve_issue_number(path: Path | None = None) -> int | None:
 
     Two naming forms are accepted:
 
-    * **Baton (symphony) form** — the directory name is a bare integer.
-      Baton names worktrees ``<repo>/.symphony/worktrees/<issue>``, so
+    * **symphony worktree form** — the directory name is a bare integer.
+      symphony names worktrees ``<repo>/.symphony/worktrees/<issue>``, so
       ``basename(path)`` is just the issue number (e.g. ``"2"``).
     * **CodeReeve prefixed form** — ``<prefix>-<issue>[-<slug>]``. Used by
       this project's ``.worktrees/<branch>`` convention.
 
     Examples::
 
-        "2"                       → 2   (Baton bare-issue)
+        "2"                       → 2   (symphony bare-issue)
         "feat-10-python-scaffold" → 10  (CodeReeve prefixed + slug)
         "fix-42-auth-bug"         → 42  (CodeReeve prefixed + slug)
         "chore-7"                 → 7   (CodeReeve prefixed, no slug)

@@ -5,7 +5,7 @@ Current bug: ``bin/init-sandbox.sh`` never checks whether
 writing it.
 Confirmed via a black-box run of the real script (pre-seeding
 ``.codereeve/config.env`` with known content, no tty attached): execution
-reaches the exact same ``baton-harness: writing sandbox config to
+reaches the exact same ``codereeve: writing sandbox config to
 <path>/.codereeve/config.env ...`` stdout line whether or not the file was
 already present, and only then fails on the (pre-existing, unrelated)
 non-interactive-session guard. There is no existence check anywhere in
@@ -241,7 +241,7 @@ def _run_init_sandbox(
     env.pop("CODEREEVE_SETUP_NO_PROMPT", None)
 
     if input_text is not None:
-        from tests._bh_pty import run_interactive
+        from tests._codereeve_pty import run_interactive
 
         rc, stdout, stderr = run_interactive(
             [_BASH, str(INIT_SANDBOX)], env, input_text=input_text, timeout=60
@@ -270,7 +270,7 @@ def test_existing_config_env_write_marker_suppressed_before_overwrite(
     """A pre-existing config.env must not reach the unconditional write step.
 
     Black-box confirmed today: with no existence check at all, the
-    script reaches "baton-harness: writing sandbox config to ..."
+    script reaches "codereeve: writing sandbox config to ..."
     regardless of whether ``.codereeve/config.env`` already has content, and
     only fails afterward because this subprocess has no tty. Once an
     existence check is added ahead of the write (issue #352 item 1),
@@ -281,9 +281,9 @@ def test_existing_config_env_write_marker_suppressed_before_overwrite(
     marker must be gone.
     """
     _origin, project_root = _make_origin_and_clone(tmp_path)
-    bh_dir = project_root / ".codereeve"
-    bh_dir.mkdir()
-    (bh_dir / "config.env").write_text(
+    codereeve_dir = project_root / ".codereeve"
+    codereeve_dir.mkdir()
+    (codereeve_dir / "config.env").write_text(
         "CODEREEVE_GITHUB_APP_ID=preexisting123\n",
         encoding="utf-8",
         newline="\n",
@@ -319,14 +319,14 @@ def test_existing_config_env_bytes_unchanged_when_run_non_interactively(
     the new existence check lands.
     """
     _origin, project_root = _make_origin_and_clone(tmp_path)
-    bh_dir = project_root / ".codereeve"
-    bh_dir.mkdir()
+    codereeve_dir = project_root / ".codereeve"
+    codereeve_dir.mkdir()
     original_bytes = b"CODEREEVE_GITHUB_APP_ID=preexisting123\n"
-    (bh_dir / "config.env").write_bytes(original_bytes)
+    (codereeve_dir / "config.env").write_bytes(original_bytes)
 
     proc = _run_init_sandbox(tmp_path, project_root)
 
-    assert (bh_dir / "config.env").read_bytes() == original_bytes, (
+    assert (codereeve_dir / "config.env").read_bytes() == original_bytes, (
         "a non-interactive run must never modify a pre-existing "
         "config.env it cannot obtain a choice for\n"
         f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"

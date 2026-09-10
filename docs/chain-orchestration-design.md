@@ -126,7 +126,7 @@ The daemon auto-reconstructs scheduler state on every start. `recovery.reconstru
 
 **Classification precedence (first match wins):**
 
-1. **done** — feature branch git log contains a `--no-ff` merge commit with the exact trailer `Baton-Harness-Merge: issue-<N> ci=green` **AND** the issue carries `agent-merged`. Both signals required (B-I2 provenance invariant: a human `git merge` produces no trailer and is not read as done).
+1. **done** — feature branch git log contains a `--no-ff` merge commit with the exact trailer `CodeReeve-Merge: issue-<N> ci=green` **AND** the issue carries `agent-merged`. Both signals required (B-I2 provenance invariant: a human `git merge` produces no trailer and is not read as done).
 2. **ci_gate_reentry (3a)** — provenance merge commit present but `agent-merged` label absent. Daemon died after merging but before writing the label. Re-enter the CI gate without re-running `_run_worker`.
 3. **parked_seed** — issue carries `blocked` label.
 4. **ci_gate_reentry (3a)** — `agent-done` + open PR + no daemon-provenance merge commit. Agent finished; CI gate/merge was interrupted.
@@ -182,13 +182,13 @@ On RED/TIMEOUT, the gate reports which required checks never appeared versus rem
 
 **Merge commit.** Uses `git merge --no-ff` (not squash). Squashing diverges git history and forces `--onto` rebasing of every dependent branch. Merge-commit order follows the topological ready queue — lowest (earliest) blockers first; out-of-order merges create ghost diffs.
 
-**Provenance trailer.** On a green merge, `merge.py` writes the trailer `Baton-Harness-Merge: issue-<N> ci=green` to the merge commit message, adds the `agent-merged` label to the issue, and posts a marker comment. These three signals are what `recovery.py` uses to reconstruct the `done` set reliably without re-querying GC'd check-runs (B-I2).
+**Provenance trailer.** On a green merge, `merge.py` writes the trailer `CodeReeve-Merge: issue-<N> ci=green` to the merge commit message, adds the `agent-merged` label to the issue, and posts a marker comment. These three signals are what `recovery.py` uses to reconstruct the `done` set reliably without re-querying GC'd check-runs (B-I2).
 
 ---
 
 ## 9. Escalation — `escalation.py`
 
-Dual-channel: GitHub issue comment (always attempted, the durable record) + optional Slack via `BH_SLACK_WEBHOOK_URL` (best-effort, never blocks the durable record). A Slack failure is logged at WARNING and does not affect the return value.
+Dual-channel: GitHub issue comment (always attempted, the durable record) + optional Slack via `CODEREEVE_SLACK_WEBHOOK_URL` (best-effort, never blocks the durable record). A Slack failure is logged at WARNING and does not affect the return value.
 
 Escalation fires on: park paths (block, CI failure, CI timeout, merge conflict), label invariant violations, cycle detection, redispatch loop detection, and daemon tick exceptions.
 
@@ -199,7 +199,7 @@ The daemon **never exits on a block.** A parked sub-tree is escalated and the lo
 ## 10. C1/C2/C3 contracts (inherited from `harness-design.md §6`)
 
 - **C1 — single-writer claim authority.** The daemon is the sole writer of `agent-in-progress` and the sole promoter of issues from `agent-ready` to in-flight. `after_run` (inside `_run_worker`) writes terminal labels; the daemon and `after_run` never target the same issue at the same instant because dispatch is serial. With a unified single daemon and one execution path, there is no concurrent label-writer conflict and no lock is required (B3 dissolved — `harness-design.md §10`).
-- **C2 — provenance allowlist.** The daemon acts only on issues carrying the trusted milestone label and only merges branches authored by the daemon itself (identified by the `Baton-Harness-Merge` provenance trailer). It never merges a human-authored or external branch into the feature branch.
+- **C2 — provenance allowlist.** The daemon acts only on issues carrying the trusted milestone label and only merges branches authored by the daemon itself (identified by the `CodeReeve-Merge` provenance trailer). It never merges a human-authored or external branch into the feature branch.
 - **C3 — bounded rework + escalation.** No auto-rework in v1. A failed or blocked issue parks its sub-tree and triggers escalation. The re-dispatch loop detector (`redispatch.py`) is the rework bound: an issue that is orphaned and re-dispatched more than `redispatch_max` times within `redispatch_window_ticks` ticks is parked rather than retried indefinitely.
 
 ---

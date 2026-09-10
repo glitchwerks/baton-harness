@@ -1,7 +1,8 @@
 """Sandbox config reader and validator for CodeReeve configuration files.
 
 Provides pure configuration resolution and explicit effect boundaries for
-``.bh/config.env``. ``read_and_validate`` retains the legacy composition:
+canonical configuration files. ``read_and_validate`` retains the legacy
+composition:
 it resolves against ``os.environ``, confirms the target repository through
 ``gh api``, then applies the result to ``os.environ``.
 
@@ -16,7 +17,8 @@ value takes precedence over the value parsed from the file (an empty
 string is treated as absent). The resolved value — whichever source it
 came from — is validated with the same per-key rules. The derived
 ``BWS_APP_ID`` / ``BWS_INSTALLATION_ID`` twins always follow the
-*resolved* ``BH_GITHUB_APP_ID`` / ``BH_GITHUB_APP_INSTALLATION_ID`` and
+*resolved* ``CODEREEVE_GITHUB_APP_ID`` /
+``CODEREEVE_GITHUB_APP_INSTALLATION_ID`` and
 are not independently overridable via their own env vars.
 
 Fail-closed semantics
@@ -192,7 +194,7 @@ class _SourceLayer:
 
 @dataclass(frozen=True)
 class SandboxConfig:
-    """Validated sandbox configuration loaded from ``.bh/config.env``.
+    """Validated sandbox configuration loaded from a selected config file.
 
     Attributes:
         repo_owner: GitHub repository owner.
@@ -269,7 +271,7 @@ def _is_valid(key: str, value: str) -> bool:
     is validated identically no matter its source.
 
     Args:
-        key: Config key name (e.g. ``"BH_GITHUB_APP_ID"``).
+        key: Config key name (e.g. ``"CODEREEVE_GITHUB_APP_ID"``).
         value: Candidate value to check.
 
     Returns:

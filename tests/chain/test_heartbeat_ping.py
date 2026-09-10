@@ -1,6 +1,7 @@
 """Tests for _heartbeat_tick ping-URL behavior (issues #79 / #85).
 
-Covers acceptance criteria for the BH_HEARTBEAT_PING_URL best-effort ping
+Covers acceptance criteria for the CODEREEVE_HEARTBEAT_PING_URL best-effort
+ping
 that _heartbeat_tick must perform on each tick.
 
 AC coverage:

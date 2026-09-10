@@ -184,7 +184,7 @@ def test_stall_fires_once_at_critical_with_correct_identity(
     correct owner/repo/issue, and a runlog event='stall'.
     Second call still past stall_s: NO second alert (debounce holds).
     """
-    owner, repo, issue_num = "glitchwerks", "baton-harness", 42
+    owner, repo, issue_num = "glitchwerks", "codereeve", 42
     stall_s = 100.0
     obs = _make_obs(tmp_path / "heartbeat", heartbeat_stall_s=stall_s)
     runlog_path = tmp_path / "runlog.jsonl"
@@ -708,7 +708,7 @@ def test_stall_debounce_not_latched_on_delivery_failure(
     - Total alert calls after ticks 1+2+3+4: exactly 3 (fail, fail, succeed,
       suppressed).  _stall_alerted is True after tick 3.
     """
-    owner, repo, issue_num = "glitchwerks", "baton-harness", 78
+    owner, repo, issue_num = "glitchwerks", "codereeve", 78
     stall_s = 100.0
     obs = _make_obs(tmp_path / "heartbeat", heartbeat_stall_s=stall_s)
     state = LivenessState()
@@ -1033,7 +1033,7 @@ def test_progress_stall_fires_when_worker_active_and_stale_progress(
     once (debounced via _stall_alerted).  This is one half of the IS-1
     regression test.
     """
-    owner, repo, issue_num = "glitchwerks", "baton-harness", 33
+    owner, repo, issue_num = "glitchwerks", "codereeve", 33
     progress_stall_s = 300.0
     obs = _make_obs_p2(
         tmp_path / "heartbeat",
@@ -1088,7 +1088,7 @@ def test_progress_stall_silent_when_worker_inactive_same_stale_progress(
     This is the critical IS-1 proof: CI-gate wait can never false-fire a
     progress stall.
     """
-    owner, repo, issue_num = "glitchwerks", "baton-harness", 33
+    owner, repo, issue_num = "glitchwerks", "codereeve", 33
     progress_stall_s = 300.0
     obs = _make_obs_p2(
         tmp_path / "heartbeat",

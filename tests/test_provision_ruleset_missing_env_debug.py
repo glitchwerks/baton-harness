@@ -175,9 +175,9 @@ def test_missing_env_vars_detail_config_env_present(tmp_path: Path) -> None:
     differs from case 2).
     """
     project_root = tmp_path / "project"
-    bh_dir = project_root / ".codereeve"
-    bh_dir.mkdir(parents=True)
-    (bh_dir / "config.env").write_text(
+    codereeve_dir = project_root / ".codereeve"
+    codereeve_dir.mkdir(parents=True)
+    (codereeve_dir / "config.env").write_text(
         "# fixture config.env — deliberately does not set the missing "
         "required vars\n",
         encoding="utf-8",
@@ -253,9 +253,9 @@ def test_missing_env_vars_per_var_detail_config_env_unreadable(
 ) -> None:
     """Each missing var reports that .codereeve/config.env is unreadable."""
     project_root = tmp_path / "project"
-    bh_dir = project_root / ".codereeve"
-    bh_dir.mkdir(parents=True)
-    config_env = bh_dir / "config.env"
+    codereeve_dir = project_root / ".codereeve"
+    codereeve_dir.mkdir(parents=True)
+    config_env = codereeve_dir / "config.env"
     config_env.write_text("SOME_UNRELATED_VAR=foo\n", encoding="utf-8")
     os.chmod(config_env, 0o000)
 
@@ -288,9 +288,9 @@ def test_missing_env_vars_per_var_detail_not_defined_in_config_env(
 ) -> None:
     """Each absent assignment is distinguished from an empty value."""
     project_root = tmp_path / "project"
-    bh_dir = project_root / ".codereeve"
-    bh_dir.mkdir(parents=True)
-    (bh_dir / "config.env").write_text(
+    codereeve_dir = project_root / ".codereeve"
+    codereeve_dir.mkdir(parents=True)
+    (codereeve_dir / "config.env").write_text(
         "SOME_UNRELATED_VAR=foo\n",
         encoding="utf-8",
         newline="\n",
@@ -317,9 +317,9 @@ def test_missing_env_vars_per_var_detail_present_but_empty(
 ) -> None:
     """An assigned empty value is distinguished from absent assignments."""
     project_root = tmp_path / "project"
-    bh_dir = project_root / ".codereeve"
-    bh_dir.mkdir(parents=True)
-    (bh_dir / "config.env").write_text(
+    codereeve_dir = project_root / ".codereeve"
+    codereeve_dir.mkdir(parents=True)
+    (codereeve_dir / "config.env").write_text(
         "CODEREEVE_GITHUB_APP_ID=\n",
         encoding="utf-8",
         newline="\n",

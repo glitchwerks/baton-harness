@@ -107,14 +107,14 @@ done
 if [[ ${#_missing[@]} -gt 0 ]]; then
     echo "provision-ruleset: missing env vars: ${_missing[*]}" >&2
     if [[ -n "${CODEREEVE_PROJECT_ROOT:-}" ]]; then
-        _bh_config_env="${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env"
+        _codereeve_config_env="${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env"
         echo "  detail: CODEREEVE_PROJECT_ROOT=${CODEREEVE_PROJECT_ROOT}" >&2
-        if [[ -f "${_bh_config_env}" ]]; then
-            echo "  detail: .codereeve/config.env=${_bh_config_env} (exists)" >&2
+        if [[ -f "${_codereeve_config_env}" ]]; then
+            echo "  detail: .codereeve/config.env=${_codereeve_config_env} (exists)" >&2
         else
-            echo "  detail: .codereeve/config.env=${_bh_config_env} (does not exist)" >&2
+            echo "  detail: .codereeve/config.env=${_codereeve_config_env} (does not exist)" >&2
         fi
-        unset _bh_config_env
+        unset _codereeve_config_env
     else
         echo "  detail: CODEREEVE_PROJECT_ROOT=(unset)" >&2
         echo "  detail: .codereeve/config.env=(not checked: CODEREEVE_PROJECT_ROOT unset)" >&2

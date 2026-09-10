@@ -28,8 +28,8 @@ CLI entrypoint coverage (issue #200 — ``main()`` in
 - Neither the fetched PEM content nor ``BWS_ACCESS_TOKEN`` ever appears
   in captured stdout/stderr, on both the success path and the error
   path (e.g. an unparseable PEM causing ``build_app_jwt`` to raise).
-- Missing/malformed required env vars (``BH_GITHUB_APP_ID``,
-  ``BH_GITHUB_APP_INSTALLATION_ID``, ``BWS_PEM_SECRET_ID``,
+- Missing/malformed required env vars (``CODEREEVE_GITHUB_APP_ID``,
+  ``CODEREEVE_GITHUB_APP_INSTALLATION_ID``, ``BWS_PEM_SECRET_ID``,
   ``BWS_ACCESS_TOKEN``) produce a non-zero exit and a clear stderr
   message naming the missing var, without ever calling
   ``bws_client.fetch_secret`` or the network transport.
@@ -801,8 +801,8 @@ class TestBootstrapSecretsEnvDisciplineInvariants:
 #   - ``main(["jwt"])``   -> mints + prints an App JWT to stdout, exit 0.
 #   - ``main(["token"])`` -> mints + prints an installation token to
 #     stdout, exit 0.
-#   - Required env vars: BH_GITHUB_APP_ID, BWS_PEM_SECRET_ID,
-#     BWS_ACCESS_TOKEN (both modes); BH_GITHUB_APP_INSTALLATION_ID
+#   - Required env vars: CODEREEVE_GITHUB_APP_ID, BWS_PEM_SECRET_ID,
+#     BWS_ACCESS_TOKEN (both modes); CODEREEVE_GITHUB_APP_INSTALLATION_ID
 #     (token mode only — jwt mode does not need an installation id).
 #   - PEM fetch goes through ``codereeve.chain.bws_client
 #     .fetch_secret`` (patched at that module attribute, matching the
@@ -852,8 +852,10 @@ def file_cli_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Select the real file key without any BWS dependency."""
-    monkeypatch.setenv("BH_GITHUB_APP_KEY_PROVIDER", "file")
-    monkeypatch.setenv("BH_GITHUB_APP_PRIVATE_KEY_FILE", str(file_key[0]))
+    monkeypatch.setenv("CODEREEVE_GITHUB_APP_KEY_PROVIDER", "file")
+    monkeypatch.setenv(
+        "CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE", str(file_key[0])
+    )
     monkeypatch.delenv("BWS_PEM_SECRET_ID")
     monkeypatch.delenv("BWS_ACCESS_TOKEN")
 
@@ -1032,10 +1034,12 @@ def test_cli_errors_never_include_pem_or_access_token(
 @pytest.fixture()
 def cli_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Set the four env vars the CLI entrypoint requires (issue #200)."""
-    monkeypatch.setenv("BH_GITHUB_APP_ID", _CLI_APP_ID)
-    monkeypatch.setenv("BH_GITHUB_APP_KEY_PROVIDER", "bws")
-    monkeypatch.delenv("BH_GITHUB_APP_PRIVATE_KEY_FILE", raising=False)
-    monkeypatch.setenv("BH_GITHUB_APP_INSTALLATION_ID", _CLI_INSTALLATION_ID)
+    monkeypatch.setenv("CODEREEVE_GITHUB_APP_ID", _CLI_APP_ID)
+    monkeypatch.setenv("CODEREEVE_GITHUB_APP_KEY_PROVIDER", "bws")
+    monkeypatch.delenv("CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE", raising=False)
+    monkeypatch.setenv(
+        "CODEREEVE_GITHUB_APP_INSTALLATION_ID", _CLI_INSTALLATION_ID
+    )
     monkeypatch.setenv("BWS_PEM_SECRET_ID", _CLI_PEM_SECRET_ID)
     monkeypatch.setenv("BWS_ACCESS_TOKEN", _CLI_ACCESS_TOKEN_SENTINEL)
 
@@ -1086,7 +1090,7 @@ class TestCliJwtMode:
         cli_env: None,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Stdout carries a JWT whose iss claim equals BH_GITHUB_APP_ID."""
+        """Stdout carries a JWT whose iss claim equals github app id."""
         pem, pub_der = _generate_rsa_keypair()
         stub = _make_cli_fetch_secret_stub(pem)
 
@@ -1288,11 +1292,11 @@ class TestCliMissingEnvVars:
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Absent BH_GITHUB_APP_ID fails before any vault fetch."""
-        monkeypatch.delenv("BH_GITHUB_APP_ID", raising=False)
+        """Absent CODEREEVE_GITHUB_APP_ID fails before any vault fetch."""
+        monkeypatch.delenv("CODEREEVE_GITHUB_APP_ID", raising=False)
         fetch_mock = MagicMock(
             side_effect=AssertionError(
-                "fetch_secret must not be called when BH_GITHUB_APP_ID "
+                "fetch_secret must not be called when CODEREEVE_GITHUB_APP_ID "
                 "is missing"
             )
         )
@@ -1384,7 +1388,9 @@ class TestCliMissingEnvVars:
         unconditional gate on all four vars regardless of the selected
         output mode.
         """
-        monkeypatch.delenv("BH_GITHUB_APP_INSTALLATION_ID", raising=False)
+        monkeypatch.delenv(
+            "CODEREEVE_GITHUB_APP_INSTALLATION_ID", raising=False
+        )
         pem, _pub_der = _generate_rsa_keypair()
         stub = _make_cli_fetch_secret_stub(pem)
 
@@ -1404,7 +1410,8 @@ class TestCliMissingEnvVars:
         assert token_exit != 0, "expected token mode to fail: no exit code"
         assert "CODEREEVE_GITHUB_APP_INSTALLATION_ID" in token_captured.err
         assert jwt_exit == 0, (
-            "jwt mode does not require BH_GITHUB_APP_INSTALLATION_ID and "
+            "jwt mode does not require "
+            "CODEREEVE_GITHUB_APP_INSTALLATION_ID and "
             f"should have succeeded; stderr={jwt_captured.err!r}"
         )
 
@@ -1414,8 +1421,10 @@ class TestCliMissingEnvVars:
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """A non-numeric BH_GITHUB_APP_INSTALLATION_ID fails clean."""
-        monkeypatch.setenv("BH_GITHUB_APP_INSTALLATION_ID", "not-a-number")
+        """A non-numeric CODEREEVE_GITHUB_APP_INSTALLATION_ID fails clean."""
+        monkeypatch.setenv(
+            "CODEREEVE_GITHUB_APP_INSTALLATION_ID", "not-a-number"
+        )
         pem, _pub_der = _generate_rsa_keypair()
         stub = _make_cli_fetch_secret_stub(pem)
 

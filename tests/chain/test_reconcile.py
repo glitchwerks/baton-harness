@@ -48,7 +48,7 @@ def _import_reconcile() -> Any:  # noqa: ANN401
 # ---------------------------------------------------------------------------
 
 _OWNER = "glitchwerks"
-_REPO = "baton-harness"
+_REPO = "codereeve"
 
 # A valid GitHub App installation token so validate_daemon_token passes
 # the token-type gate.  We patch out the validator so the value does
@@ -60,7 +60,7 @@ def _make_obs(tmp_path: Path) -> Any:  # noqa: ANN401
     """Return an ObsConfig-like object with a real tmp_path project root."""
     from codereeve.chain.obs_config import ObsConfig
 
-    harness_dir = tmp_path / ".baton-harness"
+    harness_dir = tmp_path / ".codereeve"
     harness_dir.mkdir(parents=True, exist_ok=True)
     return ObsConfig(
         runlog_path=harness_dir / "runlog.jsonl",
@@ -427,7 +427,7 @@ class TestG3FatalOrdering:
         repo_cfgs = [_make_repo_cfg(tmp_path)]
 
         # Compute the expected marker path.
-        marker = tmp_path / ".baton-harness" / "daemon.alive"
+        marker = tmp_path / ".codereeve" / "daemon.alive"
 
         with (
             patch(
@@ -473,7 +473,7 @@ class TestG3FatalOrdering:
         obs = _make_obs(tmp_path)
         repo_cfgs = [_make_repo_cfg(tmp_path)]
 
-        marker = tmp_path / ".baton-harness" / "daemon.alive"
+        marker = tmp_path / ".codereeve" / "daemon.alive"
 
         with (
             patch(
@@ -519,7 +519,7 @@ class TestG2UngracefulExitDetection:
 
         obs = _make_obs(tmp_path)
         repo_cfgs = [_make_repo_cfg(tmp_path)]
-        marker = tmp_path / ".baton-harness" / "daemon.alive"
+        marker = tmp_path / ".codereeve" / "daemon.alive"
 
         assert not marker.exists(), "Precondition: marker must not exist"
 
@@ -567,7 +567,7 @@ class TestG2UngracefulExitDetection:
 
         obs = _make_obs(tmp_path)
         repo_cfgs = [_make_repo_cfg(tmp_path)]
-        marker = tmp_path / ".baton-harness" / "daemon.alive"
+        marker = tmp_path / ".codereeve" / "daemon.alive"
 
         # Simulate a prior crash: marker already exists.
         marker.parent.mkdir(parents=True, exist_ok=True)
@@ -627,7 +627,7 @@ class TestG2UngracefulExitDetection:
 
         obs = _make_obs(tmp_path)
         repo_cfgs = [_make_repo_cfg(tmp_path)]
-        marker = tmp_path / ".baton-harness" / "daemon.alive"
+        marker = tmp_path / ".codereeve" / "daemon.alive"
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text("alive", encoding="utf-8")
 
@@ -665,7 +665,7 @@ class TestG2UngracefulExitDetection:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Marker is in .baton-harness/, NOT .symphony/."""
+        """Marker is in .codereeve/, NOT .symphony/."""
         reconcile = _import_reconcile()
 
         monkeypatch.setenv("GH_TOKEN", _INSTALLATION_TOKEN)
@@ -689,12 +689,12 @@ class TestG2UngracefulExitDetection:
                 reconcile.reconcile_startup(repo_cfgs, obs, runlog=None)
             )
 
-        # Only .baton-harness/daemon.alive must exist; not .symphony/.
+        # Only .codereeve/daemon.alive must exist; not .symphony/.
         symphony_marker = tmp_path / ".symphony" / "daemon.alive"
-        baton_marker = tmp_path / ".baton-harness" / "daemon.alive"
+        alive_marker = tmp_path / ".codereeve" / "daemon.alive"
 
-        assert baton_marker.exists(), (
-            "Marker must be at .baton-harness/daemon.alive"
+        assert alive_marker.exists(), (
+            "Marker must be at .codereeve/daemon.alive"
         )
         assert not symphony_marker.exists(), (
             "Marker must NOT be at .symphony/daemon.alive — wrong directory"
@@ -852,7 +852,7 @@ class TestG1OrphanProcessSweep:
 
         obs = _make_obs(tmp_path)
         repo_cfgs = [_make_repo_cfg(tmp_path)]
-        marker = tmp_path / ".baton-harness" / "daemon.alive"
+        marker = tmp_path / ".codereeve" / "daemon.alive"
 
         with (
             patch(
@@ -1503,7 +1503,7 @@ class TestReconcileStartupAlertsThreadToken:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
         # Pre-create the marker file so G2 detects an ungraceful prior exit.
-        harness_dir = tmp_path / ".baton-harness"
+        harness_dir = tmp_path / ".codereeve"
         harness_dir.mkdir(parents=True, exist_ok=True)
         marker = harness_dir / "daemon.alive"
         marker.write_text("alive", encoding="utf-8")
@@ -1569,7 +1569,7 @@ def test_reconcile_preserves_native_order_without_repeating_live_gate(
     monkeypatch.setenv("GH_TOKEN", _INSTALLATION_TOKEN)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     events = []
-    marker = tmp_path / ".baton-harness" / "daemon.alive"
+    marker = tmp_path / ".codereeve" / "daemon.alive"
 
     def validate(token: str) -> None:
         """Record token validation before persistent markers."""

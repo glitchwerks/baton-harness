@@ -380,7 +380,7 @@ def _make_probe_harness(
     token_path = tmp_path / "worker-token.txt"
     token_path.write_text("worker-token-123\n", encoding="utf-8")
 
-    hook_path = tmp_path / "bh-force-pr-not-merge"
+    hook_path = tmp_path / "codereeve-test-hook"
     if with_hook:
         hook_api_mode = "strict" if hook_blocks_api_put else "loose"
         _write_executable(

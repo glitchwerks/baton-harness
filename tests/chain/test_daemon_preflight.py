@@ -58,7 +58,8 @@ Coverage:
   stays in the module for the provisioning-side verifier, but the daemon
   gate must not call it — catches an accidental re-introduction).
 - Alert POST failure does NOT crash launch decision loop.
-- No ``BH_HEARTBEAT_PING_URL`` configured (obs.heartbeat_ping_url is None)
+- No ``CODEREEVE_HEARTBEAT_PING_URL`` configured (obs.heartbeat_ping_url is
+None)
   → returns False on DRIFT but no POST attempted; a warning is logged.
 
 Additional coverage added for codex-review issues (PR #167, cef91ce5aa):
@@ -114,7 +115,7 @@ from codereeve.chain.obs_config import ObsConfig
 # ---------------------------------------------------------------------------
 
 _OWNER = "glitchwerks"
-_REPO = "baton-harness"
+_REPO = "codereeve"
 _ISSUE = 42
 _APP_ID = "111"
 _TOKEN = "ghs_TESTTOKEN"
@@ -453,8 +454,8 @@ def test_should_launch_worker_refuses_and_alerts_on_error_fail_closed(
 # ---------------------------------------------------------------------------
 
 _NOT_PROVISIONED_DETAIL = (
-    "no ruleset baseline pinned for glitchwerks/baton-harness at "
-    ".bh/ruleset-baseline.json; run bin/provision-ruleset.sh first"
+    "no ruleset baseline pinned for glitchwerks/codereeve at "
+    ".codereeve/ruleset-baseline.json; run bin/provision-ruleset.sh first"
 )
 
 

@@ -38,14 +38,15 @@ from codereeve.after_create import main
 def _stub_claude_settings_for_legacy_tests(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Stub out the C4 BH_VENV gate so pre-3b tests stay focused.
+    """Stub out the C4 CODEREEVE_VENV gate so pre-3b tests stay focused.
 
     The new ``_write_claude_settings_if_configured`` call added in slice 3b
-    fatally exits when ``BH_VENV`` is unset.  These tests were written before
+    fatally exits when ``CODEREEVE_VENV`` is unset.  These tests were
+    written before
     that contract existed and are not about settings-write behaviour; mocking
     the function out keeps them exercising only the dep-install paths they were
     designed for, and avoids false failures on clean CI environments where
-    ``BH_VENV`` is not exported.
+    ``CODEREEVE_VENV`` is not exported.
     """
     monkeypatch.setattr(
         after_create_mod,
@@ -344,7 +345,7 @@ class TestAfterCreateNoProjectFiles:
 
         assert result == 0
         assert calls == [], "no subprocess should run for empty project"
-        # A log line should be emitted so the no-op is visible in Baton.
+        # A log line should be emitted so the no-op is visible in CodeReeve.
         captured = capsys.readouterr()
         assert captured.out != ""
 
@@ -689,12 +690,14 @@ class TestRegisterGitExcludeOnLinkedWorktree:
     def test_non_git_directory_returns_rc_no_git(
         self,
         tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A plain directory (no git) returns _RC_NO_GIT (2).
 
         This verifies the degraded-mode path preserved from the original
         implementation still works when triggered via subprocess failure.
         """
+        monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
         plain_dir = tmp_path / "not-a-repo"
         plain_dir.mkdir()
 
@@ -839,9 +842,7 @@ class TestWriteClaudeSettingsTrackedFileFatal:
             venv_root=tmp_path / "fakevenv",
         )
 
-        backup_path = (
-            worktree / ".claude" / "settings.json.codereeve-backup"
-        )
+        backup_path = worktree / ".claude" / "settings.json.codereeve-backup"
         assert not backup_path.exists(), (
             "backup file should NOT be created in the tracked-file FATAL path"
         )

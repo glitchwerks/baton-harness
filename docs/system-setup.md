@@ -29,7 +29,7 @@ These are the CLIs `bin/setup-env.sh` (step 2 below) checks — it requires `uv`
 - [`uv`](https://docs.astral.sh/uv/) — not auto-installed; install it yourself first
   (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
 - `gh` (GitHub CLI; authenticate after setup with `gh auth login` — this is your personal
-  GitHub identity, separate from `bh-daemon`'s runtime credentials; see
+  GitHub identity, separate from `codereeve daemon`'s runtime credentials; see
   [docs/authentication.md § Operator `gh auth login`](authentication.md#operator-gh-auth-login-not-a-runtime-credential))
 - `bws` (Bitwarden Secrets CLI) when the App-key provider is `bws`, or either optional
   BWS PAT/heartbeat secret locator is configured. It is not a daemon runtime prerequisite
@@ -126,7 +126,7 @@ commit (which must match HEAD in a checkout). The hook validates these explicit
 assertions, not the tag name. Unset the development flag for a standard build:
 
 ```bash
-unset CODEREEVE_BUILD_DEVELOPMENT BH_BUILD_DEVELOPMENT
+unset CODEREEVE_BUILD_DEVELOPMENT CODEREEVE_BUILD_DEVELOPMENT
 mkdir -p .tmp
 uv lock --check
 uv export --locked --no-emit-project --format requirements.txt \

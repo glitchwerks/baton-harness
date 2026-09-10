@@ -180,7 +180,7 @@ from codereeve.chain.obs_config import ObsConfig
 # ---------------------------------------------------------------------------
 
 _OWNER = "glitchwerks"
-_REPO = "baton-harness"
+_REPO = "codereeve"
 _ISSUE = 42
 _APP_ID = "111"
 _TOKEN = "ghs_TESTTOKEN"
@@ -191,18 +191,18 @@ _DENIAL_STDERR = (
     "remote: error: GH006: Protected branch update failed for "
     "refs/heads/feature/__codereeve-probe-abc123\n"
     "remote: Cannot push to this protected branch\n"
-    "To github.com:glitchwerks/baton-harness.git\n"
+    "To github.com:glitchwerks/codereeve.git\n"
     " ! [remote rejected] feature/__codereeve-probe-abc123 -> "
     "feature/__codereeve-probe-abc123 (protected branch hook declined)\n"
     "error: failed to push some refs to "
-    "'github.com:glitchwerks/baton-harness.git'"
+    "'github.com:glitchwerks/codereeve.git'"
 )
 
 # A non-zero exit that carries NO recognizable denial vocabulary — must
 # be treated as indeterminate, not as proof of denial.
 _UNRECOGNIZED_STDERR = (
     "fatal: unable to access "
-    "'https://github.com/glitchwerks/baton-harness.git/': "
+    "'https://github.com/glitchwerks/codereeve.git/': "
     "Could not resolve host: github.com"
 )
 
@@ -327,7 +327,7 @@ def test_probe_pushes_using_worker_identity_via_run_seam(
 
     probe_fn = _get_probe_fn(daemon_mod)
 
-    sentinel_env = {"__BH_TEST_SENTINEL_WORKER_ENV__": "1"}
+    sentinel_env = {"__CODEREEVE_TEST_SENTINEL_WORKER_ENV__": "1"}
     captured_identity: list[Any] = []
 
     def _spy_env_for(identity: Any, **kwargs: Any) -> dict[str, str]:  # noqa: ANN401

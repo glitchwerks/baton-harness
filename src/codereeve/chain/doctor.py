@@ -756,7 +756,7 @@ def _check_host_env(ctx: DoctorContext) -> CheckResult:
 
 
 def _check_config_env(ctx: DoctorContext) -> CheckResult:
-    """Check whether ``.bh/config.env`` exists.
+    """Check whether the selected configuration file exists.
 
     Args:
         ctx: Injected doctor context.
@@ -793,7 +793,7 @@ def _check_required_keys(ctx: DoctorContext) -> CheckResult:
         Required-key validation result.
     """
     title = "Required sandbox config keys valid"
-    fix = "Set all required .bh/config.env keys to valid values."
+    fix = "Set all required .codereeve/config.env keys to valid values."
     try:
         _resolved_config(ctx)
     except sandbox_config.SandboxConfigError as exc:
@@ -833,7 +833,8 @@ def _check_optional_secret_ids(ctx: DoctorContext) -> CheckResult:
             title,
             Severity.WARNING,
             CheckStatus.SKIP,
-            ".bh/config.env is missing; optional IDs are not applicable.",
+            ".codereeve/config.env is missing; optional "
+            "IDs are not applicable.",
             fix,
         )
     try:
@@ -1475,7 +1476,7 @@ CATALOG: list[Check] = [
         Severity.CRITICAL,
         Phase.CONFIGURATION,
         False,
-        "Set all required .bh/config.env keys to valid values.",
+        "Set all required .codereeve/config.env keys to valid values.",
         _check_required_keys,
     ),
     Check(

@@ -1212,7 +1212,7 @@ def test_rules_equal_drift_when_current_missing_duplicate_rule_type() -> None:
     duplicates to their *last* occurrence in each list — so a desired
     side carrying two ``commit_message_pattern`` rules and a current
     side carrying only the *last* of those two both reduce to the same
-    single key/value pair (``"commit_message_pattern"`` -> the "BH-"
+    single key/value pair (``"commit_message_pattern"`` -> the "CR-"
     rule) and compare equal, even though the first restriction
     ("JIRA-") is entirely missing from current.
 
@@ -1234,21 +1234,21 @@ def test_rules_equal_drift_when_current_missing_duplicate_rule_type() -> None:
             "type": "commit_message_pattern",
             "parameters": {
                 "operator": "starts_with",
-                "pattern": "BH-",
+                "pattern": "CR-",
             },
         },
     ]
     # Current carries only the SECOND (last) of desired's two duplicate
     # occurrences. The buggy dict-by-type collapse keeps the last entry
-    # from each list, so desired collapses to "BH-" and current also
-    # collapses to "BH-" — a false MATCH — even though the "JIRA-"
+    # from each list, so desired collapses to "CR-" and current also
+    # collapses to "CR-" — a false MATCH — even though the "JIRA-"
     # restriction is missing entirely from current.
     current_rules: list[object] = [
         {
             "type": "commit_message_pattern",
             "parameters": {
                 "operator": "starts_with",
-                "pattern": "BH-",
+                "pattern": "CR-",
             },
         },
     ]
@@ -1277,17 +1277,17 @@ def test_rules_equal_match_duplicate_type_order_independent() -> None:
             "pattern": "JIRA-",
         },
     }
-    bh_rule = {
+    codereeve_rule = {
         "type": "commit_message_pattern",
         "parameters": {
             "operator": "starts_with",
-            "pattern": "BH-",
+            "pattern": "CR-",
         },
     }
 
-    desired_rules: list[object] = [jira_rule, bh_rule]
+    desired_rules: list[object] = [jira_rule, codereeve_rule]
     # Same two occurrences, reversed order, to prove order-independence.
-    current_rules: list[object] = [bh_rule, jira_rule]
+    current_rules: list[object] = [codereeve_rule, jira_rule]
 
     assert _rules_equal(desired_rules, current_rules) is True, (
         "same multiset of two 'commit_message_pattern' occurrences "
@@ -1308,7 +1308,7 @@ def test_rules_equal_match_duplicate_type_order_independent() -> None:
 #     baseline_path=None) -> RulesetCheckResult`` — new top-level function.
 #     Does NOT replace or alter ``ruleset_is_provisioned`` (kept intact for
 #     the 25 tests above). ``baseline_path`` defaults to
-#     ``$BH_PROJECT_ROOT/.bh/ruleset-baseline.json`` when omitted.
+# ``$CODEREEVE_PROJECT_ROOT/.codereeve/ruleset-baseline.json`` when omitted.
 #   - ``_expected_bypass_verdict(rendered_config, app_id) -> str`` — pure
 #     helper: "always" when app_id is an Integration bypass actor in
 #     ``rendered_config["bypass_actors"]``, else "never". Keyed purely by
@@ -1317,7 +1317,7 @@ def test_rules_equal_match_duplicate_type_order_independent() -> None:
 #     content ``["name","target","enforcement","conditions","rules"]``
 #     (no ``bypass_actors``).
 #
-# Baseline schema (``.bh/ruleset-baseline.json``):
+# Baseline schema (``.codereeve/ruleset-baseline.json``):
 #   {"<owner>/<repo>": {"<ruleset-name>": {"ruleset_id": int,
 #                                           "updated_at": str}, ...}}
 # ---------------------------------------------------------------------------
@@ -1401,7 +1401,7 @@ def _write_baseline(
     feat_id: int = _FEAT_ID,
     feat_updated_at: str = _BASELINE_FEAT_UPDATED_AT,
 ) -> None:
-    """Write a ``.bh/ruleset-baseline.json``-shaped file to ``path``.
+    """Write a ``.codereeve/ruleset-baseline.json``-shaped file to ``path``.
 
     Args:
         path: File path to write the baseline JSON to.
@@ -1928,10 +1928,10 @@ def test_check_ruleset_signals_not_provisioned_when_repo_key_missing(
 def test_check_ruleset_signals_baseline_path_defaults_to_env_var(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``baseline_path`` defaults from ``$BH_PROJECT_ROOT/.bh/...json``.
+    """``baseline_path`` defaults from ``$project root/.codereeve/...json``.
 
     When the caller omits ``baseline_path`` entirely, the function must
-    resolve it from the ``BH_PROJECT_ROOT`` environment variable rather
+    resolve it from the ``CODEREEVE_PROJECT_ROOT`` environment variable rather
     than requiring every call site to compute the path itself.
     """
     from codereeve.chain.ruleset_status import (
@@ -1939,10 +1939,10 @@ def test_check_ruleset_signals_baseline_path_defaults_to_env_var(
         check_ruleset_signals,
     )
 
-    monkeypatch.setenv("BH_PROJECT_ROOT", str(tmp_path))
-    bh_dir = tmp_path / ".bh"
-    bh_dir.mkdir()
-    _write_baseline(bh_dir / "ruleset-baseline.json", "o", "r")
+    monkeypatch.setenv("CODEREEVE_PROJECT_ROOT", str(tmp_path))
+    codereeve_dir = tmp_path / ".codereeve"
+    codereeve_dir.mkdir()
+    _write_baseline(codereeve_dir / "ruleset-baseline.json", "o", "r")
 
     runner = _FakeRunner(
         list_proc=_ok(_list_body()),

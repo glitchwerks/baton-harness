@@ -762,7 +762,7 @@ def merge_issue_branch(
         issue: The issue number being merged.
         pr_head_sha: The PR head commit SHA used to query check-runs.
         issue_branch: The per-issue branch to merge (e.g.
-            ``"baton/v2-daemon-44"``).
+            ``"codereeve/v2-daemon-44"``).
         feature_branch: The feature branch to merge INTO (e.g.
             ``"feature/v2-daemon"``).  Must start with ``feature/`` — this
             guard ensures the merge never accidentally targets ``main``.

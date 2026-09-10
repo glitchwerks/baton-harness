@@ -4,7 +4,7 @@ Tests cover:
 - ``resolve_issue_number``: derives the GitHub issue number from a worktree
   directory path.  Accepted forms:
 
-  * Baton bare-number: ``.symphony/worktrees/<issue>`` — the directory name
+  * symphony bare-number: ``.symphony/worktrees/<issue>`` — the directory name
     is a plain integer (e.g. ``"2"``).
   * Harness prefixed form (with or without trailing slug):
     ``<prefix>-<issue>[-<slug>]`` (e.g. ``feat-10-python-scaffold``,
@@ -51,13 +51,13 @@ class TestResolveIssueNumber:
         path = Path("/repo/.worktrees/feat-123-big-feature")
         assert resolve_issue_number(path) == 123
 
-    def test_baton_bare_issue_number_single_digit(self) -> None:
-        """Baton bare worktree name "2" → 2 (e.g. .symphony/worktrees/2)."""
+    def test_symphony_bare_issue_number_single_digit(self) -> None:
+        """Symphony bare worktree name "2" → 2 (e.g. .symphony/worktrees/2)."""
         path = Path("/repo/.symphony/worktrees/2")
         assert resolve_issue_number(path) == 2
 
-    def test_baton_bare_issue_number_multi_digit(self) -> None:
-        """Baton bare worktree name "12345" → 12345."""
+    def test_symphony_bare_issue_number_multi_digit(self) -> None:
+        """Symphony bare worktree name "12345" → 12345."""
         path = Path("/repo/.symphony/worktrees/12345")
         assert resolve_issue_number(path) == 12345
 

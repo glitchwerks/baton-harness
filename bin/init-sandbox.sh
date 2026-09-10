@@ -895,7 +895,7 @@ fi
 # Write .codereeve/config.env
 # ---------------------------------------------------------------------------
 
-_bh_prompt_and_write_sandbox_config() {
+_codereeve_prompt_and_write_sandbox_config() {
     echo "codereeve: writing sandbox config to ${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env ..."
 
     if [[ "${CODEREEVE_SETUP_NO_PROMPT:-0}" == "1" || ! -t 0 || ! -t 1 ]]; then
@@ -904,38 +904,38 @@ _bh_prompt_and_write_sandbox_config() {
         exit 1
     fi
 
-    read -r -p "  CODEREEVE_GITHUB_APP_ID (GitHub App numeric ID): " _bh_github_app_id
-    read -r -p "  CODEREEVE_GITHUB_APP_INSTALLATION_ID (GitHub App installation numeric ID): " _bh_github_app_installation_id
+    read -r -p "  CODEREEVE_GITHUB_APP_ID (GitHub App numeric ID): " _codereeve_github_app_id
+    read -r -p "  CODEREEVE_GITHUB_APP_INSTALLATION_ID (GitHub App installation numeric ID): " _codereeve_github_app_installation_id
     while true; do
-        if ! read -r -p "  CODEREEVE_GITHUB_APP_KEY_PROVIDER (bws/file): " _bh_app_key_provider; then
+        if ! read -r -p "  CODEREEVE_GITHUB_APP_KEY_PROVIDER (bws/file): " _codereeve_app_key_provider; then
             echo "codereeve: error: could not read App private-key provider" >&2
             return 1
         fi
-        case "${_bh_app_key_provider}" in
+        case "${_codereeve_app_key_provider}" in
             bws|file) break ;;
             *) echo "codereeve: error: App private-key provider must be bws or file" >&2 ;;
         esac
     done
-    if [[ "${_bh_app_key_provider}" == bws ]]; then
-        local _bh_uuid_re='^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'
+    if [[ "${_codereeve_app_key_provider}" == bws ]]; then
+        local _codereeve_uuid_re='^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'
         while true; do
             if ! read -r -p "  BWS_PEM_SECRET_ID (UUID of GitHub App PEM secret in BWS): " _bws_pem_secret_id; then
                 echo "codereeve: error: could not read BWS PEM secret UUID" >&2
                 return 1
             fi
-            if [[ "${_bws_pem_secret_id}" =~ ${_bh_uuid_re} ]]; then
+            if [[ "${_bws_pem_secret_id}" =~ ${_codereeve_uuid_re} ]]; then
                 break
             fi
             echo "codereeve: error: BWS_PEM_SECRET_ID must be a valid UUID" >&2
         done
-        _bh_app_key_source="export BWS_PEM_SECRET_ID='${_bws_pem_secret_id}'"
+        _codereeve_app_key_source="export BWS_PEM_SECRET_ID='${_bws_pem_secret_id}'"
     else
         while true; do
-            if ! read -r -p "  CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE (absolute path to secured PEM file): " _bh_app_key_file; then
+            if ! read -r -p "  CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE (absolute path to secured PEM file): " _codereeve_app_key_file; then
                 echo "codereeve: error: could not read App private-key file path" >&2
                 return 1
             fi
-            case "${_bh_app_key_file}" in
+            case "${_codereeve_app_key_file}" in
                 *"'"*)
                     echo "codereeve: error: App private-key file path must not contain a single quote" >&2
                     ;;
@@ -945,7 +945,7 @@ _bh_prompt_and_write_sandbox_config() {
                     ;;
             esac
         done
-        _bh_app_key_source="export CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE='${_bh_app_key_file}'"
+        _codereeve_app_key_source="export CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE='${_codereeve_app_key_file}'"
     fi
     read -r -p "  BWS_GH_TOKEN_SECRET_ID (required for the standard App-token deploy — the worker PAT is vault-fetched from this ID; only skip if GH_TOKEN is supplied by other means): " _bws_gh_token_secret_id
     read -r -p "  BWS_HEARTBEAT_PING_URL_SECRET_ID (optional; press Enter to skip): " _bws_heartbeat_ping_url_secret_id
@@ -957,10 +957,10 @@ _bh_prompt_and_write_sandbox_config() {
 # Required:
 export CODEREEVE_REPO_OWNER=${CODEREEVE_REPO_OWNER}
 export CODEREEVE_REPO_NAME=${CODEREEVE_REPO_NAME}
-export CODEREEVE_GITHUB_APP_ID=${_bh_github_app_id}
-export CODEREEVE_GITHUB_APP_INSTALLATION_ID=${_bh_github_app_installation_id}
-export CODEREEVE_GITHUB_APP_KEY_PROVIDER=${_bh_app_key_provider}
-${_bh_app_key_source}
+export CODEREEVE_GITHUB_APP_ID=${_codereeve_github_app_id}
+export CODEREEVE_GITHUB_APP_INSTALLATION_ID=${_codereeve_github_app_installation_id}
+export CODEREEVE_GITHUB_APP_KEY_PROVIDER=${_codereeve_app_key_provider}
+${_codereeve_app_key_source}
 # Required for the standard App-token deploy (leave empty ONLY if GH_TOKEN is
 # supplied by other means, e.g. a direct export — see README "Override / fallback"):
 export BWS_GH_TOKEN_SECRET_ID=${_bws_gh_token_secret_id}
@@ -971,7 +971,7 @@ EOF
     echo "codereeve: .codereeve/config.env written to ${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env"
 }
 
-if ! _bh_resolve_config_with_reuse_prompt "${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env" _bh_prompt_and_write_sandbox_config; then
+if ! _codereeve_resolve_config_with_reuse_prompt "${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env" _codereeve_prompt_and_write_sandbox_config; then
     exit 1
 fi
 

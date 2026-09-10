@@ -123,9 +123,7 @@ class TestClaudeSettingsJsonShape:
         settings = claude_settings_json_for_worktree(venv)
         cmd = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
 
-        executable = str(venv / "Scripts" / "codereeve.exe").replace(
-            "\\", "/"
-        )
+        executable = str(venv / "Scripts" / "codereeve.exe").replace("\\", "/")
         assert cmd == f"'{executable}' hook force-pr-not-merge"
 
     def test_command_references_venv_scripts_or_bin(
@@ -172,8 +170,7 @@ class TestClaudeSettingsJsonShape:
         cmd = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
 
         assert cmd == (
-            f"'{str(venv / 'bin' / 'codereeve')}' "
-            "hook force-pr-not-merge"
+            f"'{str(venv / 'bin' / 'codereeve')}' hook force-pr-not-merge"
         )
 
     @pytest.mark.skipif(os.name != "nt", reason="Windows launcher test")

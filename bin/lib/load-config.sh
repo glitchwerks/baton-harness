@@ -82,30 +82,30 @@ _codereeve_load_config() {
     return 0
 }
 
-_bh_resolve_config_with_reuse_prompt() {
-    local _bh_config_file="$1"
-    local _bh_prompt_and_write_fn="$2"
+_codereeve_resolve_config_with_reuse_prompt() {
+    local _codereeve_config_file="$1"
+    local _codereeve_prompt_and_write_fn="$2"
 
-    if [[ ! -f "${_bh_config_file}" ]]; then
-        "${_bh_prompt_and_write_fn}"
+    if [[ ! -f "${_codereeve_config_file}" ]]; then
+        "${_codereeve_prompt_and_write_fn}"
         return $?
     fi
 
     if [[ -t 0 && -t 1 && "${CODEREEVE_SETUP_NO_PROMPT:-0}" != "1" ]]; then
-        local _bh_answer
-        if ! read -r -p "codereeve: existing config found at ${_bh_config_file}; type 'overwrite' to replace it, or press Enter to reuse it: " _bh_answer; then
+        local _codereeve_answer
+        if ! read -r -p "codereeve: existing config found at ${_codereeve_config_file}; type 'overwrite' to replace it, or press Enter to reuse it: " _codereeve_answer; then
             echo "codereeve: error: could not read overwrite-or-reuse choice" >&2
             return 1
         fi
-        case "${_bh_answer}" in
+        case "${_codereeve_answer}" in
             [Oo][Vv][Ee][Rr][Ww][Rr][Ii][Tt][Ee])
-                "${_bh_prompt_and_write_fn}"
+                "${_codereeve_prompt_and_write_fn}"
                 return $?
                 ;;
         esac
         return 0
     else
-        echo "codereeve: error: existing config ${_bh_config_file} requires an interactive overwrite-or-reuse choice" >&2
+        echo "codereeve: error: existing config ${_codereeve_config_file} requires an interactive overwrite-or-reuse choice" >&2
         return 1
     fi
 }

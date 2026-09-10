@@ -1,6 +1,6 @@
 """Hook: after_create — per-worktree dependency setup.
 
-Invoked by Baton immediately after a new worktree is created (before the
+Invoked by symphony immediately after a new worktree is created (before the
 agent's first run).  Detects the project type from files present in the
 worktree (``package.json``, ``requirements.txt``, ``pyproject.toml``) and
 installs dependencies using the appropriate tool.
@@ -20,7 +20,7 @@ Context:
     The issue number is inferred from ``basename($PWD)`` via
     ``codereeve._cli.resolve_issue_number`` (spike finding F2: Baton
     passes no env-var context to hooks).
-    Baton names worktrees ``<repo>/.symphony/worktrees/<issue>`` (a bare
+    symphony names worktrees ``<repo>/.symphony/worktrees/<issue>`` (a bare
     integer); the harness's own convention is ``<repo>/.worktrees/<branch>``
     (``<prefix>-<issue>[-<slug>]``).  Both forms are accepted.
 """
@@ -50,7 +50,8 @@ _HOOK = "after-create"
 def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
     """Run a subprocess command and return its CompletedProcess.
 
-    Streams stdout/stderr to the terminal so Baton's log captures tool
+    Streams stdout/stderr to the terminal so the orchestrator's log
+    captures tool
     output in real time.  Always uses ``encoding="utf-8"`` to avoid
     Windows cp1252 mangling of non-ASCII output.
 
@@ -415,7 +416,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
     if issue is None:
         print(
             f"[{_HOOK}] error: could not derive issue number from cwd — "
-            "expected a bare integer (Baton: .symphony/worktrees/<issue>) "
+            "expected a bare integer (symphony: .symphony/worktrees/<issue>) "
             "or <prefix>-<issue>[-<slug>] (CodeReeve: .worktrees/<branch>)",
             file=sys.stderr,
             flush=True,

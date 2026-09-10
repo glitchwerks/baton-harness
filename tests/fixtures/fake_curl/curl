@@ -36,7 +36,7 @@
 #     transport failure (DNS, network, TLS — modeled here by the
 #     curl_transport_failure marker) makes this shim exit non-zero.
 #
-# Canned scenarios live in $BH_FAKE_GH_CANNED_DIR — the SAME directory
+# Canned scenarios live in $CODEREEVE_FAKE_GH_CANNED_DIR — the SAME directory
 # fake_gh reads from; the App-ID preflight is one logical scenario shared
 # across both shims:
 #
@@ -77,7 +77,7 @@
 # curl_malformed_body > curl_http_401 > curl_no_id > app_id.txt
 # (default 200-match/mismatch).
 #
-# Every call is appended as a JSON line to $BH_FAKE_GH_LOG — the SAME
+# Every call is appended as a JSON line to $CODEREEVE_FAKE_GH_LOG — the SAME
 # log file fake_gh writes to, so a test can assert on the combined gh+
 # curl call history from one file. Records are distinguished from
 # fake_gh's by an additive "tool":"curl" field that fake_gh's records
@@ -98,7 +98,7 @@
 set -euo pipefail
 
 _log() {
-    printf '%s\n' "$1" >> "${BH_FAKE_GH_LOG}"
+    printf '%s\n' "$1" >> "${CODEREEVE_FAKE_GH_LOG}"
 }
 
 _json_escape() {
@@ -162,28 +162,28 @@ if [[ "${_url}" != *"api.github.com/app"* ]]; then
     exit 3
 fi
 
-if [[ -f "${BH_FAKE_GH_CANNED_DIR}/curl_transport_failure" ]]; then
+if [[ -f "${CODEREEVE_FAKE_GH_CANNED_DIR}/curl_transport_failure" ]]; then
     _log "$(printf '{"tool":"curl","method":"GET","url":"%s","endpoint":"get_app","auth_header":"%s","http_code":""}' \
         "$(_json_escape "${_url}")" "$(_json_escape "${_auth_header}")")"
     printf 'curl: (6) Could not resolve host: api.github.com\n' >&2
     exit 6
 fi
 
-if [[ -f "${BH_FAKE_GH_CANNED_DIR}/curl_http_status.txt" ]]; then
-    _status="$(cat "${BH_FAKE_GH_CANNED_DIR}/curl_http_status.txt")"
+if [[ -f "${CODEREEVE_FAKE_GH_CANNED_DIR}/curl_http_status.txt" ]]; then
+    _status="$(cat "${CODEREEVE_FAKE_GH_CANNED_DIR}/curl_http_status.txt")"
     _body='{"message":"simulated non-200/401 status from fake_curl"}'
-elif [[ -f "${BH_FAKE_GH_CANNED_DIR}/curl_malformed_body" ]]; then
+elif [[ -f "${CODEREEVE_FAKE_GH_CANNED_DIR}/curl_malformed_body" ]]; then
     _status="200"
     _body='<html>truncated response'
-elif [[ -f "${BH_FAKE_GH_CANNED_DIR}/curl_http_401" ]]; then
+elif [[ -f "${CODEREEVE_FAKE_GH_CANNED_DIR}/curl_http_401" ]]; then
     _status="401"
     _body='{"message":"Bad credentials"}'
-elif [[ -f "${BH_FAKE_GH_CANNED_DIR}/curl_no_id" ]]; then
+elif [[ -f "${CODEREEVE_FAKE_GH_CANNED_DIR}/curl_no_id" ]]; then
     _status="200"
     _body='{}'
 else
     _status="200"
-    _body="$(printf '{"id":%s}' "$(cat "${BH_FAKE_GH_CANNED_DIR}/app_id.txt")")"
+    _body="$(printf '{"id":%s}' "$(cat "${CODEREEVE_FAKE_GH_CANNED_DIR}/app_id.txt")")"
 fi
 
 _log "$(printf '{"tool":"curl","method":"GET","url":"%s","endpoint":"get_app","auth_header":"%s","http_code":"%s"}' \
