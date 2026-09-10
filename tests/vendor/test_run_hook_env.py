@@ -8,7 +8,8 @@ inside the hook subprocess (CONCERN-1 in issue #42).
 
 Coverage:
 - VP-1 signature: ``run_hook`` accepts ``env=`` keyword without error.
-- Override keys reach the subprocess env (e.g. CHAIN_BASE_BRANCH, BH_VENV).
+- Override keys reach the subprocess env (e.g. CHAIN_BASE_BRANCH,
+CODEREEVE_VENV).
 - PATH and HOME survive the merge (CONCERN-1 regression guard).
 - env=None (default) is identical to passing no env — os.environ only.
 - Empty script path → True returned without spawning a subprocess.
@@ -212,8 +213,8 @@ class TestRunHookEnvThreading:
 
         assert captured_env.get("CHAIN_BASE_BRANCH") == "feature/my-branch"
 
-    def test_bh_venv_override_reaches_subprocess_env(self) -> None:
-        """BH_VENV from env= appears in the subprocess env dict."""
+    def test_codereeve_venv_override_reaches_subprocess_env(self) -> None:
+        """CODEREEVE_VENV from env= appears in the subprocess env dict."""
         captured_env: dict[str, str] = {}
 
         async def fake_create_subprocess_exec(
@@ -232,11 +233,11 @@ class TestRunHookEnvThreading:
                     "before_run",
                     "true",
                     cwd="/tmp",
-                    env={"BH_VENV": "/repo/.venv"},
+                    env={"CODEREEVE_VENV": "/repo/.venv"},
                 )
             )
 
-        assert captured_env.get("BH_VENV") == "/repo/.venv"
+        assert captured_env.get("CODEREEVE_VENV") == "/repo/.venv"
 
 
 # ---------------------------------------------------------------------------

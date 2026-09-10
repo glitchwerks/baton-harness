@@ -128,7 +128,7 @@ def test_pytest_job_runs_foundation_verifier() -> None:
     assert verifier_steps == [
         {
             "name": "Verify frozen wheel foundation",
-            "run": ".venv/bin/bh-verify-foundation",
+            "run": ".venv/bin/codereeve verify",
         }
     ]
 
@@ -145,7 +145,7 @@ def test_composite_setup_selects_python_floor_explicitly() -> None:
         if step.get("name") == "Install package and dev dependencies"
     )
     assert sync_step["run"] == "uv sync --python 3.10 --locked --extra dev"
-    assert sync_step.get("env") == {"BH_BUILD_DEVELOPMENT": "1"}
+    assert sync_step.get("env") == {"CODEREEVE_BUILD_DEVELOPMENT": "1"}
     expected_version_check = (
         ".venv/bin/python -c 'import sys; assert "
         "sys.version_info[:2] == (3, 10), sys.version'"

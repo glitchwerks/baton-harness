@@ -134,7 +134,7 @@ def _setup_feature_branch(
 
     # Issue #67 / PR #69 (Codex P1): publish the feature branch to origin
     # NOW, before any worker/agent runs.  The agent's WORKFLOW.md uses
-    #   gh pr create --base "$BH_FEATURE_BRANCH"
+    #   gh pr create --base "$CODEREEVE_FEATURE_BRANCH"
     # which requires the base branch to already exist on the remote.  The
     # completion push at Step 3 below publishes merge commits at unit end,
     # but for a fresh work unit `origin/<branch_name>` does not yet exist

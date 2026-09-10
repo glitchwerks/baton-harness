@@ -1,8 +1,12 @@
 # Harness design
 
+Current implementation guidance uses the CodeReeve package, CLI, variables, and paths.
+Explicitly historical sections retain Baton-era evidence. Runtime compatibility aliases
+remain through 0.3.x and are removed in 0.4.
+
 **Status:** Living design document. Starts at pilot scope; evolves as the harness grows. This is the design of the harness *itself* — the policy layer built around the vendored `symphony` orchestrator.
 
-**Vendoring status [implemented]:** `symphony/` (the `mraza007/baton` Python package) is vendored into `src/baton_harness/vendor/symphony/` and called directly as a library (issue #27, P0). §1 and §2 describe the implemented model.
+**Vendoring status [implemented]:** `symphony/` (the `mraza007/baton` Python package) is vendored into `src/codereeve/vendor/symphony/` and called directly as a library (issue #27, P0). §1 and §2 describe the implemented model.
 
 **Companion docs:** [architecture-spec.md](./architecture-spec.md) (overall system). The spike findings that ground design decisions are inlined in [§ Decision records](#decision-records) below. Project constraints are in [§ Constraints](#constraints) below.
 
@@ -10,11 +14,11 @@
 
 ## Decision — Implementation language: Python (2026-06-04, closes #11)
 
-The harness implementation language is **Python**. This supersedes the shell-script approach used in the spike. `bin/run-daemon.sh` (the launcher, originally `bin/run.sh` issue #1; superseded by `bin/run-daemon.sh` under vendoring — see §4.1) **stays shell** — it resolves the harness root, runs an env/label preflight, and `exec`s the `bh-daemon` entry point. Everything else — the lifecycle hooks (`after_create`, `before_run`, `after_run`) and all future stateful components — is Python.
+The harness implementation language is **Python**. This supersedes the shell-script approach used in the spike. `bin/run-daemon.sh` (the launcher, originally `bin/run.sh` issue #1; superseded by `bin/run-daemon.sh` under vendoring — see §4.1) **stays shell** — it resolves the harness root, runs an env/label preflight, and `exec`s `codereeve daemon`. Everything else — the lifecycle hooks (`after_create`, `before_run`, `after_run`) and all future stateful components — is Python.
 
 **Rationale:**
 
-1. **Python is already in the runtime.** Baton is `pip`-installed (architecture-spec.md §5 — container image contents), so the container has a Python interpreter regardless. A Python harness adds zero new dependency.
+1. **Python is already in the runtime.** CodeReeve is `pip`-installed (architecture-spec.md §5 — container image contents), so the container has a Python interpreter regardless. A Python harness adds zero new dependency.
 
 2. **Matches the project's toolchain and standards.** The project's Python standards (PEP 8, type hints, Google docstrings, `uv`, pytest) apply directly. No equivalent tooling exists for shell here.
 
@@ -30,7 +34,7 @@ The harness implementation language is **Python**. This supersedes the shell-scr
 
 A standalone, version-controlled repo that holds the *reusable policy and tooling* around the orchestrator: the agent prompt, the lifecycle hook scripts, per-project config, context templates, and the launcher. The orchestration engine (`symphony`) is vendored into the repo and called directly as a library; the harness is what makes it do the right thing.
 
-**Vendoring decision [implemented]:** `symphony/` (the `mraza007/baton` Python package, MIT licensed, ~1120 lines) is vendored at `src/baton_harness/vendor/symphony/` (issue #27, P0). The harness calls `Orchestrator._run_worker(issue)` directly — no subprocess, no `baton start` invocation. Upstream `mraza007/baton` is frozen/dormant (3 commits, Mar 2026, zero external PRs ever merged); vendoring makes the harness the de facto maintainer of the orchestrator source.
+**Vendoring decision [implemented]:** `symphony/` (the `mraza007/baton` Python package, MIT licensed, ~1120 lines) is vendored at `src/codereeve/vendor/symphony/` (issue #27, P0). The harness calls `Orchestrator._run_worker(issue)` directly — no subprocess, no `baton start` invocation. Upstream `mraza007/baton` is frozen/dormant (3 commits, Mar 2026, zero external PRs ever merged); vendoring makes the harness the de facto maintainer of the orchestrator source.
 
 **Relationship to D2:** Decision D2 ("harness is its own repo, not a Baton fork") is not violated — the harness repo remains independent. D2's "fork only as a last resort" framing is superseded: vendoring the source into a subdirectory of the harness package is the selected path, chosen over both external-dependency management and a full fork. D2 as a historical decision record is preserved in [§ Decision records — D2](#d2--harness-is-its-own-repo-not-a-baton-fork) with a supersession note.
 
@@ -57,11 +61,11 @@ cd <project-repo> && baton start -w /agent-harness/config/WORKFLOW.md
 **Implemented model:** The `baton start -w` subprocess seam is deleted by vendoring (issue #27, P0). The integration model is:
 
 ```python
-from baton_harness.vendor.symphony.orchestrator import Orchestrator
+from codereeve.vendor.symphony.orchestrator import Orchestrator
 result = await orchestrator._run_worker(issue)  # returns "pr_created" | "no_pr"
 ```
 
-The daemon calls `Orchestrator._run_worker(issue)` directly — no global singletons, no poller loop, no subprocess. The `WORKFLOW.md` YAML front-matter is no longer parsed by an external process; its agent prompt body content continues to serve as the instruction template. `BH_VENV` is threaded via the vendored `run_hook env=` (VP-1). The per-project `CLAUDE.md` constraint is unchanged (F11 still holds).
+The daemon calls `Orchestrator._run_worker(issue)` directly — no global singletons, no poller loop, no subprocess. The `WORKFLOW.md` YAML front-matter is no longer parsed by an external process; its agent prompt body content continues to serve as the instruction template. `CODEREEVE_VENV` is threaded via the vendored `run_hook env=` (VP-1). The per-project `CLAUDE.md` constraint is unchanged (F11 still holds).
 
 ---
 
@@ -101,11 +105,11 @@ agent-harness/
 ## 4. Components
 
 ### 4.1 Launcher — `bin/run-daemon.sh` (shell — active launcher) [implemented]
-Starts the always-on daemon. Validates that `BH_REPO_OWNER`, `BH_REPO_NAME`, and `BH_PROJECT_ROOT` are set, runs label and sandbox preflight checks, exports `BATON_HARNESS_DIR` so hook entry points can locate the package without hardcoding a path, then invokes the `bh-daemon` Python entry point. This launcher is a thin shell wrapper and is not part of the Python package.
+Starts the always-on daemon. Resolves `CODEREEVE_REPO_OWNER`, `CODEREEVE_REPO_NAME`, and `CODEREEVE_PROJECT_ROOT` through the shared non-executing parser, runs label and sandbox preflight checks, then invokes `codereeve daemon`. Legacy `BH_*` and `BATON_HARNESS_DIR` aliases remain compatibility inputs through 0.3.x and are removed in 0.4.
 
 > **Historical note:** The original `bin/run.sh` encapsulated the `baton start -w` external-process invocation (issue #1). It was deleted when `bin/run-daemon.sh` landed in P3 (vendoring). The `BATON_HARNESS_DIR` export pattern is preserved in `bin/run-daemon.sh` for backward compatibility with existing per-project `CLAUDE.md` setups.
 
-### 4.2 Hooks — `src/baton_harness/` (Python)
+### 4.2 Hooks — `src/codereeve/` (Python)
 Standalone, independently testable Python modules (spike F8 confirmed the testability pattern), each invoked as an entry point and taking the issue number as an argument derived from the worktree path (`basename "$PWD"` — F2: Baton passes no env-var context to hooks) [implemented]. Issue number parsing, GitHub API calls, and JSON handling are all done in Python — no shell grepping of JSON output.
 
 > **Post-vendoring [implemented]:** The vendored `run_hook` (VP-1, P0) now threads `env=` to hook calls, passing `ISSUE_NUMBER` directly. The `basename "$PWD"` workaround is retired.
@@ -117,7 +121,7 @@ Standalone, independently testable Python modules (spike F8 confirmed the testab
 Each module is covered by pytest and passes ruff and mypy before merge.
 
 ### 4.3 Config — `config/WORKFLOW.md`
-Single generic Baton config (flattened from `config/<project>/` — YAGNI per issue #5): tracker labels, concurrency, `max_turns`, `permission_mode: bypassPermissions` (F11/F4), the `after_create`/`before_run`/`after_run` hook wiring (entry points in `src/baton_harness/`), and the agent prompt body. The prompt uses the mechanical, numbered closing-steps pattern proven necessary in the spike (F4) and the explicit confidence/block rule (F6/F9). Per-project `config/<name>/` subdirectories are introduced when a second project appears.
+Single generic CodeReeve config (flattened from `config/<project>/` — YAGNI per issue #5): tracker labels, concurrency, `max_turns`, `permission_mode: bypassPermissions` (F11/F4), the `after_create`/`before_run`/`after_run` hook wiring (handlers in `src/codereeve/`), and the agent prompt body. The prompt uses the mechanical, numbered closing-steps pattern proven necessary in the spike (F4) and the explicit confidence/block rule (F6/F9). Per-project `config/<name>/` subdirectories are introduced when a second project appears.
 
 ### 4.4 Context template — `templates/CLAUDE.md.template`
 Source for each project's `CLAUDE.md`. Because CLAUDE.md is irreducibly project-local (F11), the live file is committed to the project repo; this template is the harness-owned source it's generated from. Should encode the conventions the agent needs plus the boundaries from the problem statement (e.g. no infra changes, no design decisions, implementation only).
@@ -139,10 +143,10 @@ agent-ready ──▶ agent-in-progress ──▶ agent-done    (PR opened)
 `agent-failed` is a terminal, human-triage-required state. It belongs to both
 `STATE_LABELS` and the daemon's dispatch-exclusion set; an operator restores an
 issue by removing `agent-failed` and adding `agent-ready`. Charged failures use
-the `BH_MAX_ISSUE_FAILURES` budget; uncharged infrastructure failures restore
+the `CODEREEVE_MAX_ISSUE_FAILURES` budget; uncharged infrastructure failures restore
 readiness without consuming it. The shared park transition enforces exactly one
 state label after each park (#351,
-`src/baton_harness/chain/daemon/park.py:L50-L163`).
+`src/codereeve/chain/daemon/park.py:L50-L163`).
 
 Reconciliation is enforced in `after_run.py` to maintain a single state label.
 `_reconcile_labels` is idempotent: re-running it against any label set,
@@ -160,7 +164,7 @@ These come from the spike and must be honoured by the harness as it grows. The f
 
 - **C1 — single-writer claim authority.** When the async CI/review layer is added, exactly one component may mutate claim/state. (Deferred — not in pilot.)
 - **C2 — provenance allowlist.** The harness acts only on agent-authored branches/PRs and owner-labeled issues; never on arbitrary-author content. (Deferred — not in pilot, since the pilot has no event-driven trigger.)
-- **C3 — bounded rework with escalation.** Charged agent failures retry within `BH_MAX_ISSUE_FAILURES`, then transition to `agent-failed` for human triage; the separate crash redispatch loop remains bounded by `BH_REDISPATCH_MAX` (`src/baton_harness/chain/daemon/park.py:L71-L91`, `src/baton_harness/chain/redispatch.py:L29-L90`, #351).
+- **C3 — bounded rework with escalation.** Charged agent failures retry within `CODEREEVE_MAX_ISSUE_FAILURES`, then transition to `agent-failed` for human triage; the separate crash redispatch loop remains bounded by `CODEREEVE_REDISPATCH_MAX` (`src/codereeve/chain/daemon/park.py:L71-L91`, `src/codereeve/chain/redispatch.py:L29-L90`, #351).
 - **Cost note (H-note).** A block costs up to `max_turns` full agent runs in the external-process pilot. The #6 dry run (T2) confirmed that the external-process Baton did not re-check `exclude_labels` between turns. Under vendoring [implemented, VP-2, P3], the `_run_worker` turn-loop patch makes a block terminal — retiring the `max_turns: 2` cost workaround. Issue #23 (tracking this fix) is closed. See §8 for the full terminal-block decision record.
 - **Outcome ≠ green CI (F10).** "PR opened" is not "correct." In the pilot, the human is the CI gate at review; automating this is a later phase.
 
@@ -171,7 +175,7 @@ These come from the spike and must be honoured by the harness as it grows. The f
 Explicitly deferred so the pilot stays minimal:
 
 - **Docker containerization** — pilot runs on the host.
-- **Slack / comms layer** — core to the model; the daemon escalates to Slack via webhook when `BH_SLACK_WEBHOOK_URL` is set (implemented as a v1 minimal path). Full Bolt bot / Block Kit interactive cards remain deferred to v2.
+- **Slack / comms layer** — core to the model; the daemon escalates to Slack via webhook when `CODEREEVE_SLACK_WEBHOOK_URL` is set (implemented as a v1 minimal path). Full Bolt bot / Block Kit interactive cards remain deferred to v2.
 - **Async CI-completion trigger and auto-rework** — human reviews PRs; this is what defers C1/C2/C3 entirely.
 - **Multi-project templating** — single pilot project; templatize when project #2 appears.
 - **Observability tooling (Langfuse etc.)** — basic logs only.
@@ -184,7 +188,7 @@ Two are docs-can't-answer test targets; the rest are design decisions to make as
 
 - ~~**[test] Absolute `-w` path:** confirm `baton start -w <absolute-path-outside-project>` works (docs show only a relative example). ~2 min.~~ **Obsolete under vendoring** — `baton start -w` is retired; the active launcher is `bin/run-daemon.sh`.
 - ~~**[test] Block cost:** does Baton's continuation retry respect `exclude_labels: ["blocked"]` and stop after the first blocked turn, or burn all `max_turns`?~~ **Resolved — #6 dry run (T2).** `exclude_labels` is checked at poll time only; Baton does not halt an in-flight run. Block costs up to `max_turns`. See §8 terminal-block decision (issue #6, finding 5).
-- **[design] Script path resolution:** ~~do hooks hardcode the harness path, or read it from an env var exported by the launcher?~~ **Resolved.** The launcher (`bin/run-daemon.sh`) exports `BATON_HARNESS_DIR`; hook entry points read it from the environment. Hardcoding is no longer needed.
+- **[design] Script path resolution:** ~~do hooks hardcode the harness path, or read it from an env var exported by the launcher?~~ **Resolved.** The launcher (`bin/run-daemon.sh`) exports `CODEREEVE_ROOT`; hook entry points read it from the environment. Hardcoding is no longer needed.
 - **[design] CLAUDE.md sync:** how does the template become the project's committed CLAUDE.md — manual copy for the pilot, or a small generate step? Manual is fine for one project.
 - **[design] H1 fix — terminal-block decision (2026-06-06, closes AC3 of #4):** The block path is implemented: `after_run` enforces the single-state invariant (Priority 1 in `_reconcile_labels` — removes `agent-ready`, leaves `blocked`). This was validated live in the #6 dry run (T2; issue #6 finding 5).
 
@@ -205,8 +209,8 @@ The architecture spec (§3.4) described the orchestration layer abstractly. This
 ## 10. Always-on daemon: dependency-ordered work units [implemented (v1, serial)]
 
 **Status:** Implemented as issue #27, P3.  The v1 serial daemon is live in
-`src/baton_harness/chain/daemon.py`.  Launcher: `bin/run-daemon.sh`.  CLI
-entry point: `bh-daemon` (see `pyproject.toml`).  The implementation spec that
+`src/codereeve/chain/daemon/__init__.py`.  Launcher: `bin/run-daemon.sh`.  CLI
+entry point: `codereeve daemon` (see `pyproject.toml`).  The implementation spec that
 drove P0–P3 was retired after merge (issue #53); its durable design rationale is
 preserved in this §10, and the implementation history is in issue #27 and
 PRs #46–#49.
@@ -240,7 +244,7 @@ N=1 is the degenerate DAG. The same logic handles both; there is no separate fla
 Symphony's flat poll/dispatch loop (`run`/`_tick`/`_dispatch`/`_on_worker_done`), `cli.start`, and `watchfiles` are **dropped** — the custom daemon replaces them.
 
 **Worker = vendored `symphony._run_worker`.** Called by the daemon as a library function. Owns:
-- Per-issue git worktree creation (`.symphony/worktrees/<N>`, `baton/<slug>-<N>` branches — symphony naming preserved).
+- Per-issue git worktree creation (`.symphony/worktrees/<N>`, `codereeve/<slug>-<N>` branches — canonical worker naming).
 - `before_run` hook (rebase onto feature branch, via `CHAIN_BASE_BRANCH` threaded by VP-1).
 - `claude -p` turn-loop.
 - `after_run` hook (outcome classification, label reconciliation, Dial 2 filtering).
@@ -276,7 +280,7 @@ All OQs resolved as of issue #27 (P0–P3):
 - **A required check that never reports at all** is treated as NOT YET, then RED on timeout — no vacuous pass from absent checks.
 - **RED/TIMEOUT diagnostics (#353):** the gate captures a `CiDiagnostic` distinguishing required checks that were never observed from those observed but incomplete, along with other job names, poll count, and elapsed time. The detail is surfaced in the park comment and the session report's `escalations`; `_classify_check_runs` and the green predicate are unchanged.
 
-This definition is the `REQUIRED_CHECKS` constant in `src/baton_harness/chain/merge.py` and the `evaluate_ci` function.
+This definition is the `REQUIRED_CHECKS` constant in `src/codereeve/chain/merge.py` and the `evaluate_ci` function.
 
 ### Crash recovery reconstruction (invariant)
 
@@ -312,19 +316,19 @@ One daemon per repo. The binding constraint is the GitHub dependency API (`block
 
 ## 11. Daemon liveness monitoring [implemented — issues #79, #33]
 
-The heartbeat thread (`src/baton_harness/chain/heartbeat.py`) provides two independent liveness signals on every tick. The nominal cadence is 30 s (`_DEFAULT_HEARTBEAT_CADENCE_S`); when `BH_HEARTBEAT_PING_URL` is set, the actual interval between consecutive ping arrivals is 30 s plus the ping's own latency, because the ping runs synchronously as the last step of each tick.
+The heartbeat thread (`src/codereeve/chain/heartbeat.py`) provides two independent liveness signals on every tick. The nominal cadence is 30 s (`_DEFAULT_HEARTBEAT_CADENCE_S`); when `CODEREEVE_HEARTBEAT_PING_URL` is set, the actual interval between consecutive ping arrivals is 30 s plus the ping's own latency, because the ping runs synchronously as the last step of each tick.
 
 ### Two monitoring modes
 
-**Mode A — local heartbeat file (`BH_HEARTBEAT_FILE`)**
+**Mode A — local heartbeat file (`CODEREEVE_HEARTBEAT_FILE`)**
 
-On each tick the daemon writes an ISO-8601 UTC timestamp to a file. The default path is `${BH_PROJECT_ROOT}/.baton-harness/heartbeat`; override with `BH_HEARTBEAT_FILE` (absolute path). An external process — a cron job, a container health-check, or a file-age alert — can compare the file's modification time or contents against a threshold to determine whether the daemon is alive.
+On each tick the daemon writes an ISO-8601 UTC timestamp to a file. The default path is `${CODEREEVE_PROJECT_ROOT}/.codereeve/heartbeat`; override with `CODEREEVE_HEARTBEAT_FILE` (absolute path). An external process — a cron job, a container health-check, or a file-age alert — can compare the file's modification time or contents against a threshold to determine whether the daemon is alive.
 
 When to use: local deployments where a network endpoint is unavailable or unwanted; as a complement to the webhook ping (both signals are always written regardless of whether Mode B is configured).
 
-**Mode B — external dead-man's-switch webhook ping (`BH_HEARTBEAT_PING_URL`)**
+**Mode B — external dead-man's-switch webhook ping (`CODEREEVE_HEARTBEAT_PING_URL`)**
 
-When `BH_HEARTBEAT_PING_URL` is set, the daemon issues a best-effort HTTP GET to that URL on every tick. If the env var is unset, no ping is sent and Mode A is the only liveness signal. The mechanism is compatible with any Healthchecks.io-style ping-URL service (`obs_config.py` line 233: `os.environ.get("BH_HEARTBEAT_PING_URL") or None`).
+When `CODEREEVE_HEARTBEAT_PING_URL` is set, the daemon issues a best-effort HTTP GET to that URL on every tick. If the env var is unset, no ping is sent and Mode A is the only liveness signal. The mechanism is compatible with any Healthchecks.io-style ping-URL service (`obs_config.py` line 233: `os.environ.get("CODEREEVE_HEARTBEAT_PING_URL") or None`).
 
 When to use: unattended server deployments where you want an alert delivered without polling a local filesystem; the hosted service handles the alerting logic and silencing.
 
@@ -334,7 +338,7 @@ When to use: unattended server deployments where you want an alert delivered wit
 2. Copy the check's ping URL (e.g. `https://hc-ping.com/<uuid>`).
 3. Export it before starting the daemon:
    ```bash
-   export BH_HEARTBEAT_PING_URL=https://hc-ping.com/<uuid>
+   export CODEREEVE_HEARTBEAT_PING_URL=https://hc-ping.com/<uuid>
    bin/run-daemon.sh
    ```
 4. The daemon will GET that URL once per heartbeat tick (nominally every 30 s; the actual interval is 30 s plus the ping's own latency). When pings stop arriving, the service fires its configured alarm after the grace period expires.
@@ -380,13 +384,13 @@ The `LivenessState` dataclass (`heartbeat.py` lines 63–153) carries a `_worker
 | WORKER_ACTIVE | `True` | Fresh dispatch (`daemon.py` line 993) | Wall-clock AND progress-bound |
 | NON_WORKER | `False` | CI-gate re-entry (`daemon.py` line 859) | Wall-clock only |
 
-**WORKER_ACTIVE phase** (`worker_active=True`, set by fresh dispatch at `daemon.py` line 993): the issue is actively running Claude Code worker turns. In this phase both stall predicates apply. The progress-bound predicate fires when `(now - last_progress_at) > obs.worker_progress_stall_s` (`heartbeat.py` lines 401–415), where `last_progress_at` is stamped by the VP-3 `progress_cb` hook at each turn-loop entry in the vendored orchestrator (`orchestrator.py` lines 154–165; `note_progress` is `heartbeat.py` lines 141–153). The default threshold is 1800 s (6× the 300 s per-turn timeout; derivation: `max_retry_backoff_ms=300_000` at `config.py` line 31; see `obs_config.py` lines 90–91). Override with `BH_WORKER_PROGRESS_STALL_S` (`obs_config.py` lines 59–64, 261–274).
+**WORKER_ACTIVE phase** (`worker_active=True`, set by fresh dispatch at `daemon.py` line 993): the issue is actively running Claude Code worker turns. In this phase both stall predicates apply. The progress-bound predicate fires when `(now - last_progress_at) > obs.worker_progress_stall_s` (`heartbeat.py` lines 401–415), where `last_progress_at` is stamped by the VP-3 `progress_cb` hook at each turn-loop entry in the vendored orchestrator (`orchestrator.py` lines 154–165; `note_progress` is `heartbeat.py` lines 141–153). The default threshold is 1800 s (6× the 300 s per-turn timeout; derivation: `max_retry_backoff_ms=300_000` at `config.py` line 31; see `obs_config.py` lines 90–91). Override with `CODEREEVE_WORKER_PROGRESS_STALL_S` (`obs_config.py` lines 59–64, 261–274).
 
 **NON_WORKER phase** (`worker_active=False`, set by `ci_gate_reentry` at `daemon.py` line 859): the issue is waiting on a CI gate poll. No worker turns occur, so `progress_cb` never fires — `last_progress_at` is not updated. The progress-bound predicate is explicitly gated off in this phase (`heartbeat.py` line 401: `if worker_active_snap and ...`) so a CI poll wait, which can block up to `ci_timeout` seconds, can never false-fire a progress-stall alert (IS-1).
 
 **Wall-clock backstop (`heartbeat_stall_s`, default 7200 s)**
 
-The original wall-clock predicate (`heartbeat.py` lines 347–393) — present since issue #79 — fires when `(now - in_progress_since) > obs.heartbeat_stall_s`. It applies in BOTH phases. Override with `BH_HEARTBEAT_STALL_S`.
+The original wall-clock predicate (`heartbeat.py` lines 347–393) — present since issue #79 — fires when `(now - in_progress_since) > obs.heartbeat_stall_s`. It applies in BOTH phases. Override with `CODEREEVE_HEARTBEAT_STALL_S`.
 
 NIT-1: the 7200 s backstop is meaningful primarily in NON_WORKER phase (where the progress predicate is off) and as a catch-all if the VP-3 progress signal itself breaks. During WORKER_ACTIVE the 1800 s progress threshold always latches first (1800 s « 7200 s), so in practice the backstop is a safety net rather than the primary signal.
 
@@ -421,9 +425,9 @@ The conservatism guarantee: a worktree that is OPEN, fetch-failed, currently run
 
 **Detect vs reclaim modes**
 
-The mode is read from `obs.worktree_gc` (`obs_config.py` lines 52–57, 131) and defaults to `"detect"`. Override with `BH_WORKTREE_GC`.
+The mode is read from `obs.worktree_gc` (`obs_config.py` lines 52–57, 131) and defaults to `"detect"`. Override with `CODEREEVE_WORKTREE_GC`.
 
-| `BH_WORKTREE_GC` | Behaviour |
+| `CODEREEVE_WORKTREE_GC` | Behaviour |
 |---|---|
 | `detect` (default) | Logs a `severity="warn"` alert and emits an `orphan_worktree` runlog event for each confirmed orphan; never removes the worktree (`recovery.py` lines 634–657). Safe default — IS-5 detect-first. |
 | `reclaim` | As above, then calls `cleanup_worktree(issue_num)` to remove the worktree (`recovery.py` lines 659–663). Opt-in; destructive. |
@@ -442,7 +446,7 @@ The sweep is guarded: the entire `scan_orphan_worktrees` body is wrapped in a `t
 
 Every subprocess the daemon spawns needs a GitHub credential decision: does this process act as the harness's own privileged identity, or as the unprivileged worker doing the actual issue work? A single shared credential cannot answer both cases — a fine-grained PAT cannot hold the `checks` permission the daemon's CI reads need, and a feature-branch push to a ruleset-protected branch requires the bypass actor to be the GitHub App itself, not a PAT (issue #220; see `_authed_git_push` in `daemon.py`). So the harness models exactly two identities and never collapses them into one ambient environment.
 
-`src/baton_harness/chain/identity.py` defines the model:
+`src/codereeve/chain/identity.py` defines the model:
 
 | Identity | Env keys carried | Used for | Failure mode |
 |---|---|---|---|
@@ -457,7 +461,7 @@ This centralizes what used to be five near-identical per-module `_gh_env` helper
 
 ### Guard: every spawn must declare its identity
 
-`tests/chain/test_identity_spawn_guard.py` AST-walks every `.py` file in `src/baton_harness/chain/` looking for a `subprocess.run`/`Popen`/`call` invocation that omits an explicit `env=` keyword. A call site is exempted only by a trailing `# identity: env-exempt` comment on the same source line, reserved for genuinely auth-agnostic spawns with no credential surface — e.g. the `pgrep` liveness probe and a `git config --get-all` key read in `reconcile.py`. The guard fails closed: any new bare spawn in `chain/` breaks this test until it either resolves an explicit identity via `env_for` or is marked exempt at review time.
+`tests/chain/test_identity_spawn_guard.py` AST-walks every `.py` file in `src/codereeve/chain/` looking for a `subprocess.run`/`Popen`/`call` invocation that omits an explicit `env=` keyword. A call site is exempted only by a trailing `# identity: env-exempt` comment on the same source line, reserved for genuinely auth-agnostic spawns with no credential surface — e.g. the `pgrep` liveness probe and a `git config --get-all` key read in `reconcile.py`. The guard fails closed: any new bare spawn in `chain/` breaks this test until it either resolves an explicit identity via `env_for` or is marked exempt at review time.
 
 ---
 
@@ -477,7 +481,7 @@ Reviewed the current Claude Code / consumer terms. No explicit verbiage was foun
 
 The policy layer (outcome router, hooks, prompts, templates, eventual Slack bot + Dockerfile) lives in a standalone version-controlled repo with the orchestrator as an upstream dependency. Fork only as a last resort, after "work around it" and "contribute upstream" are exhausted. *Detailed harness architecture deferred until the spike completes.*
 
-> **[SUPERSEDED 2026-06-06 by option-(c) vendoring — see §1]** D2's "own repo, not a Baton fork" framing is not violated, but its "upstream dependency" and "contribute upstream" premises are superseded: `symphony/` is vendored into `src/baton_harness/vendor/symphony/` and called directly. The harness remains its own repo; D2 as a historical decision record is preserved here.
+> **[SUPERSEDED 2026-06-06 by option-(c) vendoring — see §1]** D2's "own repo, not a Baton fork" framing is not violated, but its "upstream dependency" and "contribute upstream" premises are superseded: `symphony/` is vendored into `src/codereeve/vendor/symphony/` and called directly. The harness remains its own repo; D2 as a historical decision record is preserved here.
 
 ---
 

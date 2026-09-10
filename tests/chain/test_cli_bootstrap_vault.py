@@ -4,12 +4,12 @@ Coverage (issue #171 / #222):
 - GH_TOKEN is fetched from Bitwarden vault when BWS_GH_TOKEN_SECRET_ID is
   set and GH_TOKEN is absent from the environment, but is NOT written
   into ambient ``os.environ``.
-- BH_HEARTBEAT_PING_URL is fetched from Bitwarden vault when
-  BWS_HEARTBEAT_PING_URL_SECRET_ID is set and BH_HEARTBEAT_PING_URL is
+- CODEREEVE_HEARTBEAT_PING_URL is fetched from Bitwarden vault when
+  BWS_HEARTBEAT_PING_URL_SECRET_ID is set and CODEREEVE_HEARTBEAT_PING_URL is
   absent from the environment.
 - A pre-existing GH_TOKEN in the environment is preserved; vault is NOT
   called for that secret.
-- A pre-existing BH_HEARTBEAT_PING_URL in the environment is preserved;
+- A pre-existing CODEREEVE_HEARTBEAT_PING_URL in the environment is preserved;
   vault is NOT called for that secret.
 - bootstrap_secrets() succeeds (does NOT raise) when BWS_GH_TOKEN_SECRET_ID
   is absent from the environment — backward-compat path.
@@ -87,17 +87,17 @@ def base_env(monkeypatch: pytest.MonkeyPatch) -> None:
     BWS_INSTALLATION_ID.  Tests that also need BWS_GH_TOKEN_SECRET_ID or
     BWS_HEARTBEAT_PING_URL_SECRET_ID set those individually.
 
-    Removes GH_TOKEN and BH_HEARTBEAT_PING_URL so each test starts with
+    Removes GH_TOKEN and CODEREEVE_HEARTBEAT_PING_URL so each test starts with
     a clean slate for those keys.
     """
     monkeypatch.setenv("BWS_ACCESS_TOKEN", _ACCESS_TOKEN)
-    monkeypatch.setenv("BH_GITHUB_APP_KEY_PROVIDER", "bws")
-    monkeypatch.delenv("BH_GITHUB_APP_PRIVATE_KEY_FILE", raising=False)
+    monkeypatch.setenv("CODEREEVE_GITHUB_APP_KEY_PROVIDER", "bws")
+    monkeypatch.delenv("CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE", raising=False)
     monkeypatch.setenv("BWS_APP_ID", _APP_ID)
     monkeypatch.setenv("BWS_PEM_SECRET_ID", _PEM_SECRET_ID)
     monkeypatch.setenv("BWS_INSTALLATION_ID", _INSTALLATION_ID)
     monkeypatch.delenv("GH_TOKEN", raising=False)
-    monkeypatch.delenv("BH_HEARTBEAT_PING_URL", raising=False)
+    monkeypatch.delenv("CODEREEVE_HEARTBEAT_PING_URL", raising=False)
     monkeypatch.delenv("BWS_GH_TOKEN_SECRET_ID", raising=False)
     monkeypatch.delenv("BWS_HEARTBEAT_PING_URL_SECRET_ID", raising=False)
     monkeypatch.setattr(cli, "_BOOTSTRAPPED_GH_TOKEN", "")
@@ -110,8 +110,10 @@ def file_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Select an absolute owner-only PEM file without BWS consumers."""
-    monkeypatch.setenv("BH_GITHUB_APP_KEY_PROVIDER", "file")
-    monkeypatch.setenv("BH_GITHUB_APP_PRIVATE_KEY_FILE", str(file_key[0]))
+    monkeypatch.setenv("CODEREEVE_GITHUB_APP_KEY_PROVIDER", "file")
+    monkeypatch.setenv(
+        "CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE", str(file_key[0])
+    )
     monkeypatch.delenv("BWS_PEM_SECRET_ID")
     monkeypatch.delenv("BWS_ACCESS_TOKEN")
 
@@ -168,7 +170,7 @@ def test_file_provider_with_optional_heartbeat_fetches_only_heartbeat_and_key_fr
         provider = cli.bootstrap_secrets()
     assert isinstance(provider, app_auth.InstallationTokenProvider)
     assert provider.private_key_pem == file_key[1]
-    assert os.environ["BH_HEARTBEAT_PING_URL"] == _FAKE_HEARTBEAT_URL
+    assert os.environ["CODEREEVE_HEARTBEAT_PING_URL"] == _FAKE_HEARTBEAT_URL
     fetch.assert_called_once_with(
         _HEARTBEAT_SECRET_ID, access_token=_ACCESS_TOKEN
     )
@@ -212,7 +214,9 @@ def test_bootstrap_scrubs_bws_access_token_for_every_failure_stage(
     pem, _ = _generate_rsa_keypair()
     fetch = MagicMock(return_value=pem)
     if stage == "resolve":
-        monkeypatch.setenv("BH_GITHUB_APP_PRIVATE_KEY_FILE", "conflicting-key")
+        monkeypatch.setenv(
+            "CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE", "conflicting-key"
+        )
     elif stage == "optional_fetch":
         monkeypatch.setenv("BWS_GH_TOKEN_SECRET_ID", _GH_TOKEN_SECRET_ID)
         fetch.side_effect = BwsClientError("optional fetch failed")
@@ -394,21 +398,22 @@ class TestGhTokenVaultFetch:
 
 
 # ---------------------------------------------------------------------------
-# V2. BH_HEARTBEAT_PING_URL vault fetch when absent
+# V2. CODEREEVE_HEARTBEAT_PING_URL vault fetch when absent
 # ---------------------------------------------------------------------------
 
 
 class TestHeartbeatUrlVaultFetch:
-    """BH_HEARTBEAT_PING_URL is populated from Bitwarden when absent."""
+    """CODEREEVE_HEARTBEAT_PING_URL is populated from Bitwarden when absent."""
 
     def test_bootstrap_fetches_heartbeat_url_from_vault_when_env_absent(
         self,
         base_env: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """BH_HEARTBEAT_PING_URL is set in os.environ after bootstrap.
+        """CODEREEVE_HEARTBEAT_PING_URL is set in os.environ after bootstrap.
 
-        BWS_HEARTBEAT_PING_URL_SECRET_ID is set; BH_HEARTBEAT_PING_URL is
+        BWS_HEARTBEAT_PING_URL_SECRET_ID is set;
+        CODEREEVE_HEARTBEAT_PING_URL is
         absent.  After bootstrap_secrets() returns, os.environ key must
         equal the vault value.
         """
@@ -436,10 +441,11 @@ class TestHeartbeatUrlVaultFetch:
             bootstrap_secrets()
 
         assert (
-            os.environ.get("BH_HEARTBEAT_PING_URL") == _FAKE_HEARTBEAT_URL
+            os.environ.get("CODEREEVE_HEARTBEAT_PING_URL")
+            == _FAKE_HEARTBEAT_URL
         ), (
-            f"Expected BH_HEARTBEAT_PING_URL={_FAKE_HEARTBEAT_URL!r}, "
-            f"got {os.environ.get('BH_HEARTBEAT_PING_URL')!r}"
+            f"Expected CODEREEVE_HEARTBEAT_PING_URL={_FAKE_HEARTBEAT_URL!r}, "
+            f"got {os.environ.get('CODEREEVE_HEARTBEAT_PING_URL')!r}"
         )
 
 
@@ -508,14 +514,15 @@ class TestExistingEnvPreservation:
         base_env: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """A pre-existing BH_HEARTBEAT_PING_URL is preserved; no vault call.
+        """A pre-existing heartbeat ping url is preserved; no vault call.
 
-        BWS_HEARTBEAT_PING_URL_SECRET_ID is set AND BH_HEARTBEAT_PING_URL
+        BWS_HEARTBEAT_PING_URL_SECRET_ID is set AND
+        CODEREEVE_HEARTBEAT_PING_URL
         is already in env.  fetch_secret must not be called with the
         heartbeat secret ID.
         """
         monkeypatch.setenv(
-            "BH_HEARTBEAT_PING_URL", "https://existing.example.com/ping"
+            "CODEREEVE_HEARTBEAT_PING_URL", "https://existing.example.com/ping"
         )
         monkeypatch.setenv(
             "BWS_HEARTBEAT_PING_URL_SECRET_ID", _HEARTBEAT_SECRET_ID
@@ -551,12 +558,12 @@ class TestExistingEnvPreservation:
 
             bootstrap_secrets()
 
-        assert os.environ.get("BH_HEARTBEAT_PING_URL") == (
+        assert os.environ.get("CODEREEVE_HEARTBEAT_PING_URL") == (
             "https://existing.example.com/ping"
-        ), "Pre-existing BH_HEARTBEAT_PING_URL was overwritten"
+        ), "Pre-existing CODEREEVE_HEARTBEAT_PING_URL was overwritten"
         assert not called_with_heartbeat_id, (
             "fetch_secret was called for heartbeat secret ID even though "
-            "BH_HEARTBEAT_PING_URL was already set"
+            "CODEREEVE_HEARTBEAT_PING_URL was already set"
         )
 
 
@@ -609,8 +616,9 @@ class TestBackwardCompatNoSecretId:
     ) -> None:
         """bootstrap_secrets() succeeds when heartbeat secret ID absent.
 
-        BWS_HEARTBEAT_PING_URL_SECRET_ID not set, BH_HEARTBEAT_PING_URL
-        not set.  bootstrap_secrets() must NOT raise; BH_HEARTBEAT_PING_URL
+        BWS_HEARTBEAT_PING_URL_SECRET_ID not set, CODEREEVE_HEARTBEAT_PING_URL
+        not set.  bootstrap_secrets() must NOT raise;
+        CODEREEVE_HEARTBEAT_PING_URL
         remains absent.
         """
         stub = _make_fetch_secret_stub({})
@@ -630,8 +638,8 @@ class TestBackwardCompatNoSecretId:
 
             bootstrap_secrets()
 
-        assert "BH_HEARTBEAT_PING_URL" not in os.environ, (
-            "BH_HEARTBEAT_PING_URL was unexpectedly set when "
+        assert "CODEREEVE_HEARTBEAT_PING_URL" not in os.environ, (
+            "CODEREEVE_HEARTBEAT_PING_URL was unexpectedly set when "
             "BWS_HEARTBEAT_PING_URL_SECRET_ID was absent"
         )
 
@@ -693,7 +701,8 @@ class TestVaultErrorFailClosed:
     ) -> None:
         """BwsClientError from heartbeat URL fetch propagates out.
 
-        BWS_HEARTBEAT_PING_URL_SECRET_ID is set, BH_HEARTBEAT_PING_URL is
+        BWS_HEARTBEAT_PING_URL_SECRET_ID is set,
+        CODEREEVE_HEARTBEAT_PING_URL is
         absent, and fetch_secret raises BwsClientError.
         bootstrap_secrets() must NOT swallow the exception.
         """

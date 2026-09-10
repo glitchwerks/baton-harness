@@ -21,7 +21,7 @@ runs:
     # uv creates .venv as needed and installs the project editably by default.
     - name: Install package and dev dependencies
       env:
-        BH_BUILD_DEVELOPMENT: "1"
+        CODEREEVE_BUILD_DEVELOPMENT: "1"
       run: uv sync --python 3.10 --locked --extra dev
       shell: bash
 

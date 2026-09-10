@@ -20,8 +20,8 @@ The architecture is bounded by two human checkpoints (morning approval, evening 
 | Source of truth | **GitHub** (issues, PRs, milestones, labels) | Already where work lives; avoids parallel tracking |
 | Executor | **Claude Code** (`claude` CLI, first-party binary) | Only ToS-compliant path on subscription cost model |
 | Orchestrator | **custom always-on daemon** + **vendored `symphony._run_worker`** (worker) [implemented (v1, serial)] | Daemon owns DAG scheduling, feature-branch lifecycle, Slack escalation, sub-tree parking; worker (`_run_worker`) owns per-issue worktree + turn-loop; symphony's poll/dispatch loop dropped |
-| Isolation | **Single Docker container** running baton-harness (vendored symphony) + Claude Code [decided — not yet built] | Restores host boundary lost by worktree-only isolation. **What's actually implemented today is a bare process (systemd or foreground), not a container** — see [§5](#5-deployment-topology). |
-| Comms | **Slack Bolt bot (Socket Mode)** [deferred to v2 — not implemented] + official GitHub→Slack app | Two channels, two purposes — active decisions + passive activity. **What's actually implemented today is a plain incoming webhook (`BH_SLACK_WEBHOOK_URL`), not this bot** — see [§3.2](#32-layer-2--async-communication) and [docs/authentication.md § Slack](authentication.md#slack). |
+| Isolation | **Single Docker container** running CodeReeve (vendored symphony) + Claude Code [decided — not yet built] | Restores host boundary lost by worktree-only isolation. **What's actually implemented today is a bare process (systemd or foreground), not a container** — see [§5](#5-deployment-topology). |
+| Comms | **Slack Bolt bot (Socket Mode)** [deferred to v2 — not implemented] + official GitHub→Slack app | Two channels, two purposes — active decisions + passive activity. **What's actually implemented today is a plain incoming webhook (`CODEREEVE_SLACK_WEBHOOK_URL`), not this bot** — see [§3.2](#32-layer-2--async-communication) and [docs/authentication.md § Slack](authentication.md#slack). |
 | CI | **GitHub Actions** (per-project precondition) | Verification is the project's responsibility, not the pipeline's |
 | Auth (Claude) and Auth (GitHub) | GitHub App (primary) + fine-grained PAT (fallback) for GitHub; OAuth via mounted volume (no `ANTHROPIC_API_KEY`) for Claude | See [docs/authentication.md](authentication.md) for auth method, required permissions, and consuming modules for every credential the harness uses — not restated here. |
 
@@ -77,7 +77,7 @@ Two human-owned bookends; everything between is the system's responsibility.
 
 ### 3.2 Layer 2 — Async communication
 
-**What's actually implemented today (v1) is much narrower than the two-channel design below: a single best-effort incoming webhook (`BH_SLACK_WEBHOOK_URL`), posting plain-text notifications, no bot process, no OAuth scopes, no Socket Mode.** See [docs/authentication.md § Slack](authentication.md#slack) for exactly what exists today versus what's deferred. The two-channel, Bolt-bot design below is the **v2 target design** — read the rest of this section as aspirational, not current state.
+**What's actually implemented today (v1) is much narrower than the two-channel design below: a single best-effort incoming webhook (`CODEREEVE_SLACK_WEBHOOK_URL`), posting plain-text notifications, no bot process, no OAuth scopes, no Socket Mode.** See [docs/authentication.md § Slack](authentication.md#slack) for exactly what exists today versus what's deferred. The two-channel, Bolt-bot design below is the **v2 target design** — read the rest of this section as aspirational, not current state.
 
 Two distinct channels, two distinct purposes.
 
@@ -85,7 +85,7 @@ Two distinct channels, two distinct purposes.
 
 **`#agent-decisions`** [deferred to v2 — not implemented] — active interaction, fed by a custom Slack Bolt app. Every message in this channel requires action: agent asking a threshold-crossing question, run failed, blocked sub-tree surfaced. Uses Block Kit interactive cards for bounded approvals and thread replies for freeform steering.
 
-**Guidance flow [implemented, v1 form]:** the always-on daemon's escalation path (`src/baton_harness/chain/escalation.py`) is implemented today as a plain-text webhook POST, not the Block Kit card described above. When the daemon detects a `blocked` label (agent has posted a question on the issue), it posts a durable GitHub issue comment (always) and, if `BH_SLACK_WEBHOOK_URL` is configured, a best-effort plain-text Slack notification (optional). The human posts guidance directly on the GitHub issue and removes `blocked`; the daemon's next poll sees the label gone and resumes the parked sub-tree. Slack is the *channel*; the GitHub issue is the *durable record* the agent reads — this durable-record behavior is implemented and unaffected by the bot-vs-webhook gap.
+**Guidance flow [implemented, v1 form]:** the always-on daemon's escalation path (`src/codereeve/chain/escalation.py`) is implemented today as a plain-text webhook POST, not the Block Kit card described above. When the daemon detects a `blocked` label (agent has posted a question on the issue), it posts a durable GitHub issue comment (always) and, if `CODEREEVE_SLACK_WEBHOOK_URL` is configured, a best-effort plain-text Slack notification (optional). The human posts guidance directly on the GitHub issue and removes `blocked`; the daemon's next poll sees the label gone and resumes the parked sub-tree. Slack is the *channel*; the GitHub issue is the *durable record* the agent reads — this durable-record behavior is implemented and unaffected by the bot-vs-webhook gap.
 
 **Connection method [deferred to v2 — not implemented]:** Slack **Socket Mode**. The bot opens an outbound WebSocket to Slack; no inbound webhook, no reverse proxy, no public TLS endpoint on the server. Bot runs as a persistent process (systemd or a sidecar container). The v1 implementation instead makes a one-shot outbound HTTPS POST per escalation — no persistent bot process, no WebSocket.
 
@@ -114,19 +114,19 @@ Transitions are owned by the orchestrator (Layer 4); the human owns initial `age
 
 **Current model [implemented (v1, serial)]:** The always-on daemon + vendored symphony model. The external-process Baton model (pilot) is superseded. The orchestration layer is split into two components with distinct responsibilities.
 
-**Orchestrator = custom always-on daemon [implemented].** A persistent harness process that never exits between work units or on a block (`src/baton_harness/chain/daemon.py`). It watches for ready work units, builds and schedules the DAG (`graphlib.TopologicalSorter`), owns the `feature/<slug>` branch lifecycle (creation, CI-gated `--no-ff` merge of per-issue branches, ready-for-review `feature → main` PR at completion), drives Slack escalation, and parks/resumes sub-trees. Symphony's flat poll/dispatch loop (`run`/`_tick`/`_dispatch`/`_on_worker_done`), `cli.start`, and `watchfiles` are **dropped** — the custom daemon replaces them entirely.
+**Orchestrator = custom always-on daemon [implemented].** A persistent CodeReeve process that never exits between work units or on a block (`src/codereeve/chain/daemon/__init__.py`). It watches for ready work units, builds and schedules the DAG (`graphlib.TopologicalSorter`), owns the `feature/<slug>` branch lifecycle and ready-for-review `feature/<slug> → main` PR, drives Slack escalation, and parks or resumes sub-trees.
 
-**Worker = vendored `symphony._run_worker` [implemented].** Called by the daemon as a library function per issue (`src/baton_harness/vendor/symphony/`). Responsible for: creating the per-issue git worktree, firing `before_run` and `after_run` hooks, running the `claude -p` turn-loop, and detecting PR creation. The worker is the boundary between the daemon and Claude Code. Worktrees and branches follow symphony's existing naming: `.symphony/worktrees/<N>` (bare-integer directory) and `baton/<slug>-<N>` branches. The daemon resolves the issue number from the worktree directory basename (works post-PR #20). Base-ref to the feature branch: the daemon checks out `feature/<slug>` as HEAD before calling `_run_worker`, so symphony's HEAD-based worktree creation naturally targets the feature branch.
+**Worker = vendored `symphony._run_worker` [implemented].** Called by the daemon as a library function per issue (`src/codereeve/vendor/symphony/`). `.symphony/worktrees/<N>` remains the engine-owned worktree layout. New worker branches use `codereeve/<slug>-<N>`; legacy `baton/<slug>-<N>` branches remain recognized for recovery through 0.3.x and are removed in 0.4.
 
 **Vendor patches (minimal) [implemented]:**
-- **VP-1 (P0):** `run_hook` gains an `env=` parameter — threads `CHAIN_BASE_BRANCH` (correct `before_run` rebase target for feature-branch runs) and `BH_VENV` (hook discovery) through to hook calls.
+- **VP-1 (P0):** `run_hook` gains an `env=` parameter — threads `CHAIN_BASE_BRANCH` (correct `before_run` rebase target for feature-branch runs) and `CODEREEVE_VENV` (hook discovery) through to hook calls.
 - **VP-2:** Re-check `exclude_labels` inside the `_run_worker` turn loop — makes a block terminal, retiring the `max_turns: 2` workaround (issue #23).
 
 No naming patch (CONCERN-1 resolved by base-ref approach above). No retry wiring (no retry in v1 — see §6).
 
 **`before_run` rebase target [implemented]:** `origin/main` for standalone N=1 work units. For work units under a milestone (feature-branch runs), the rebase target is the feature branch — threaded via `CHAIN_BASE_BRANCH` (enabled by VP-1, implemented in P0).
 
-**`after_run` outcome router** [implemented] — inspects what the run produced and decides what to do next. Implemented as a Python module (`after_run.py`) in the `baton_harness` package; see the implementation-language decision in [harness-design.md](./harness-design.md). Pseudocode:
+**`after_run` outcome router** [implemented] — inspects what the run produced and decides what to do next. Implemented as a Python module (`after_run.py`) in the `codereeve` package; see the implementation-language decision in [harness-design.md](./harness-design.md). Pseudocode:
 
 ```
 if PR opened and CI green       → label agent-done; notify #activity (already covered by GitHub app)
@@ -197,7 +197,7 @@ The always-on daemon [implemented] is the load-bearing mechanism for Dial 2: it 
 
 **The container topology and Slack-bot process described in this section are the target v2 deployment design and are not yet built** — Docker containerization has not started (§10 item 1), and the Slack bot container below is the same deferred Bolt-bot design flagged in [§3.2](#32-layer-2--async-communication). The daemon currently runs as a bare process (systemd or foreground), not containerized; see [docs/system-setup.md](system-setup.md) and [docs/repository-onboarding.md](repository-onboarding.md) for the actual current deployment path. **Exception:** the Concurrency guidance at the end of this section (`max_concurrent` in `WORKFLOW.md`) is live and applies to the current bare-process deployment as well as the target v2 topology — it is a config knob, not a container-dependent behavior.
 
-Single Docker container running Baton, Claude Code, and supporting tools. The bot runs alongside but as a separate process.
+Single Docker container running CodeReeve, Claude Code, and supporting tools. The bot runs alongside but as a separate process.
 
 ```
 ┌─────────────────────── server (Linux host) ───────────────────────┐
@@ -210,7 +210,7 @@ Single Docker container running Baton, Claude Code, and supporting tools. The bo
 │  │     └─ .git/worktrees/issue-NNN/  (per-issue isolation)   │    │
 │  │                                                           │    │
 │  │   processes:                                              │    │
-│  │     - baton-harness (vendored symphony orchestrator)      │    │
+│  │     - CodeReeve (vendored symphony orchestrator)      │    │
 │  │     - one `claude -p` per concurrent issue                │    │
 │  │                                                           │    │
 │  │   env: ANTHROPIC_API_KEY MUST NOT BE SET                  │    │
@@ -231,7 +231,7 @@ The `slack-bot container` box above is the same deferred v2 Bolt-bot design flag
 - Base: `node:22-slim` (or equivalent; Claude Code is npm-distributed)
 - `@anthropic-ai/claude-code` (pinned version)
 - `git`, `gh` CLI
-- `baton_harness` package (pip install) — includes vendored `symphony/` source; no separate `baton` pip install required under the vendored model
+- `codereeve` package (pip install) — includes vendored `symphony/` source; no separate `baton` pip install required under the vendored model
 - Non-root user `agent` (required — Claude Code refuses `--dangerously-skip-permissions` under root)
 - No `ANTHROPIC_API_KEY` — strictly OAuth via mounted credentials volume
 
@@ -288,7 +288,7 @@ For the full DAG spec (implementation reference), see [harness-design.md §10](.
 
 Langfuse is the leading candidate but integrates with Claude Code less cleanly than it did with OpenHands' LiteLLM routing. Initial pipeline will rely on:
 
-- Baton's terminal logging (operational signal)
+- CodeReeve's terminal logging (operational signal)
 - Claude Code session transcripts (where it stores them, configurable)
 - GitHub issue comments (semantic signal — what the agent actually said)
 

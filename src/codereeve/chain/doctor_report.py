@@ -27,6 +27,7 @@ _SECRET_ENV_NAMES = frozenset(
         "BWS_ACCESS_TOKEN",
         "ANTHROPIC_API_KEY",
         "CLAUDE_CODE_OAUTH_TOKEN",
+        "CODEREEVE_HEARTBEAT_PING_URL",
         "BH_HEARTBEAT_PING_URL",
     }
 )

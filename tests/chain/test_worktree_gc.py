@@ -75,7 +75,7 @@ import codereeve.chain.recovery as recovery_mod
 # ---------------------------------------------------------------------------
 
 _OWNER = "glitchwerks"
-_REPO = "baton-harness"
+_REPO = "codereeve"
 
 # A path under .symphony/worktrees/<issue> as WorkspaceManager produces.
 _WT_PATH_42 = "/repo/.symphony/worktrees/42"
@@ -88,10 +88,33 @@ _WT_PATH_7 = "/repo/.symphony/worktrees/7"
 
 
 def _porcelain_block(
-    worktree: str, branch: str = "refs/heads/baton/42"
+    worktree: str, branch: str = "refs/heads/codereeve/worker-42"
 ) -> str:
     """Build one git worktree list --porcelain block."""
     return f"worktree {worktree}\nHEAD abc123def456\nbranch {branch}\n\n"
+
+
+def test_parse_worktree_list_accepts_canonical_and_legacy_branches() -> None:
+    """Worktree recovery recognizes both supported branch namespaces."""
+    porcelain = _porcelain_block(
+        _WT_PATH_42, "refs/heads/codereeve/canonical-worker-42"
+    ) + _porcelain_block(_WT_PATH_99, "refs/heads/baton/legacy-worker-99")
+
+    assert recovery_mod._parse_worktree_list(porcelain) == [
+        (_WT_PATH_42, 42),
+        (_WT_PATH_99, 99),
+    ]
+
+
+def test_parse_worktree_list_rejects_unrelated_branches() -> None:
+    """Worktree recovery ignores other namespaces and missing suffixes."""
+    porcelain = (
+        _porcelain_block(_WT_PATH_42, "refs/heads/feature/canonical-worker-42")
+        + _porcelain_block(_WT_PATH_99, "refs/heads/codereeve/no-issue-suffix")
+        + _porcelain_block(_WT_PATH_7, "refs/heads/codereeve/7")
+    )
+
+    assert recovery_mod._parse_worktree_list(porcelain) == []
 
 
 def _porcelain_bare_block(worktree: str) -> str:
@@ -237,7 +260,7 @@ def test_open_issue_is_never_orphan_regardless_of_liveness() -> None:
     Covers the ci_gate_reentry in-flight case (Rule 4 — agent-done + open
     PR + OPEN state) as well as any other OPEN issue.
     """
-    porcelain = _porcelain_block(_WT_PATH_42, "refs/heads/baton/42")
+    porcelain = _porcelain_block(_WT_PATH_42, "refs/heads/codereeve/worker-42")
 
     with patch.object(
         recovery_mod,
@@ -268,7 +291,7 @@ def test_agent_done_open_state_open_pr_is_not_orphan() -> None:
     finished work but the CI gate / merge is still in progress.  The
     worktree is still needed.  OPEN state → not terminal → not orphan.
     """
-    porcelain = _porcelain_block(_WT_PATH_42, "refs/heads/baton/42")
+    porcelain = _porcelain_block(_WT_PATH_42, "refs/heads/codereeve/worker-42")
 
     with patch.object(
         recovery_mod,
@@ -299,7 +322,7 @@ def test_closed_issue_clean_pushed_not_running_is_orphan() -> None:
     This is the minimal positive case: CLOSED state AND no live predicates
     hold → orphan.  CLOSED = work is finished and merged.
     """
-    porcelain = _porcelain_block(_WT_PATH_42, "refs/heads/baton/42")
+    porcelain = _porcelain_block(_WT_PATH_42, "refs/heads/codereeve/worker-42")
 
     with patch.object(
         recovery_mod,
@@ -484,9 +507,9 @@ def test_mixed_worktrees_only_true_orphans_flagged() -> None:
     - Issue 7: OPEN, in running set → live
     """
     porcelain = (
-        _porcelain_block(_WT_PATH_42, "refs/heads/baton/42")
-        + _porcelain_block(_WT_PATH_99, "refs/heads/baton/99")
-        + _porcelain_block(_WT_PATH_7, "refs/heads/baton/7")
+        _porcelain_block(_WT_PATH_42, "refs/heads/codereeve/worker-42")
+        + _porcelain_block(_WT_PATH_99, "refs/heads/codereeve/worker-99")
+        + _porcelain_block(_WT_PATH_7, "refs/heads/codereeve/worker-7")
     )
 
     with patch.object(
@@ -567,7 +590,7 @@ def test_state_fetch_failure_treats_issue_as_live() -> None:
     A state-fetch failure must not trigger a false orphan classification.
     Conservatism: unknown state → live.
     """
-    porcelain = _porcelain_block(_WT_PATH_42, "refs/heads/baton/42")
+    porcelain = _porcelain_block(_WT_PATH_42, "refs/heads/codereeve/worker-42")
 
     def _seam(cmd: list[str]) -> subprocess.CompletedProcess[str]:
         cmd_str = " ".join(cmd)
@@ -695,8 +718,8 @@ def test_cleanup_worktree_called_only_for_confirmed_orphans_not_live() -> None:
     Issue 99: CLOSED, dirty → live → cleanup NOT called.
     """
     porcelain = _porcelain_block(
-        _WT_PATH_42, "refs/heads/baton/42"
-    ) + _porcelain_block(_WT_PATH_99, "refs/heads/baton/99")
+        _WT_PATH_42, "refs/heads/codereeve/worker-42"
+    ) + _porcelain_block(_WT_PATH_99, "refs/heads/codereeve/worker-99")
     mock_cleanup = AsyncMock()
 
     with patch.object(

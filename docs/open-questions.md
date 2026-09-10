@@ -53,7 +53,7 @@ Under the vendored-symphony model [implemented, issue #27 P0], this concern diss
 ### S2.1 — Outcome router is hand-waved and load-bearing
 **RESOLVED — `after_run.py` implemented and tested.**
 
-`after_run.py` is implemented as a full Python module in the `baton_harness` package, with pytest coverage and ruff/mypy compliance (issue #3, merged). It correctly classifies the four outcome states identified by the spike (F5: `uncommitted-changes`, `no-commits`, `committed-no-pr`, `pr-opened`) and reconciles GitHub labels to a single state. The "Dial 2" router that was described as hand-waved is now production code, not glue.
+`after_run.py` is implemented as a full Python module in the `codereeve` package, with pytest coverage and ruff/mypy compliance (issue #3, merged). It correctly classifies the four outcome states identified by the spike (F5: `uncommitted-changes`, `no-commits`, `committed-no-pr`, `pr-opened`) and reconciles GitHub labels to a single state. The "Dial 2" router that was described as hand-waved is now production code, not glue.
 
 Remaining known gap: `after_run` classifies `pr-opened` as `agent-done` without checking CI status (F10). Draft-PR compliance (pilot finding, Scenario A nit) is a separate pre-existing gap tracked in issue #21. Neither gap is a structural concern about the router's design.
 
@@ -71,11 +71,11 @@ The merged #27 spec resolves the transition. On a parked/blocked issue, the **hu
 
 **In-flight / stuck-state recovery: RESOLVED by design.** The merged spec's `recovery.py` reconstruction (§11.5) re-derives the scheduler `done`/`parked`/frontier state from git provenance and labels on each daemon start. The `agent-in-progress` orphan rule (§8 / §11.5 rule 3b) handles issues stuck in-progress at crash time: the daemon re-evaluates them and re-dispatches rather than treating them as done. `after_run` crash-safety is tracked in **#31**; liveness in **#33**; failure notification in **#34**.
 
-**Operational hardening: resolved by #40** — startup reconciliation sweep (`src/baton_harness/chain/reconcile.py`) wired into `run_daemon` at `daemon.py:1497`, before the poll loop.
+**Operational hardening: resolved by #40** — startup reconciliation sweep (`src/codereeve/chain/reconcile.py`) wired into `run_daemon` at `daemon.py:1497`, before the poll loop.
 
 **Specific gaps — resolution status:**
-- **Orphan `claude` process** → **resolved (#40).** Startup `pgrep -f 'claude -p'` detect-only sweep (`reconcile.py:161-177`): if stray processes are found at boot, `alert(severity="warn")` fires with the PID list. Auto-reclaim is deferred behind a future `BH_ORPHAN_PROC_GC` flag, mirroring the `BH_WORKTREE_GC` shape from #33.
-- **Container OOM / ungraceful exit** → **resolved (#40).** A `.baton-harness/daemon.alive` marker is written at startup and cleared on graceful shutdown. If the marker is present on the next boot, the prior run ended ungracefully (likely OOM-kill or hard crash) — `alert(severity="critical")` fires (`reconcile.py:138-154`). SIGTERM now also clears the marker before exit (`daemon.py:1500-1520`), so a graceful `docker stop` does not leave the marker in place and false-alarm on next boot. The harness cannot self-report an uncatchable SIGKILL; next-boot detection is the tractable notification.
+- **Orphan `claude` process** → **resolved (#40).** Startup `pgrep -f 'claude -p'` detect-only sweep (`reconcile.py:161-177`): if stray processes are found at boot, `alert(severity="warn")` fires with the PID list. Auto-reclaim is deferred behind a future `CODEREEVE_ORPHAN_PROC_GC` flag, mirroring the `CODEREEVE_WORKTREE_GC` shape from #33.
+- **Container OOM / ungraceful exit** → **resolved (#40).** A `.codereeve/daemon.alive` marker is written at startup and cleared on graceful shutdown. If the marker is present on the next boot, the prior run ended ungracefully (likely OOM-kill or hard crash) — `alert(severity="critical")` fires (`reconcile.py:138-154`). SIGTERM now also clears the marker before exit (`daemon.py:1500-1520`), so a graceful `docker stop` does not leave the marker in place and false-alarm on next boot. The harness cannot self-report an uncatchable SIGKILL; next-boot detection is the tractable notification.
 - **Credential corruption / missing credentials** → **resolved (#40, #108).** Two startup gates run before the poll loop (`reconcile.py:105-135`): (1) `validate_github_token()` — fatal if the GitHub token is missing or invalid (`reconcile.py:105-116`); (2) `ANTHROPIC_API_KEY` guard — **fatal if the key IS set** (`reconcile.py:119-135`). The architecture mandates OAuth via a mounted credentials volume (`architecture-spec.md` L318); a non-empty `ANTHROPIC_API_KEY` means per-token billing is active, which must be refused at startup. Either failure emits `alert(severity="critical")` then calls `sys.exit(1)`. The OAuth credential-volume health-check (G3c gate — presence/readability of the mounted `~/.claude/.credentials.json` via `open()`) is **resolved by #108** (`reconcile.py` — `_OAUTH_CRED_PATH` seam, structural-only check, fatal on absent or unreadable).
 - **`state.json` load-on-startup (retry-queue continuity)** → **resolved (issue #106, closed 2026-06-27, PR #166 / vendor-patch VP-6).** `state.py` now implements `load()` alongside `persist()`; the daemon reloads the retry queue and in-flight state on restart instead of starting from a fresh queue. In-flight issues were already recoverable from labels + git provenance (`recovery.py`); VP-6 closes the remaining state-continuity gap.
 
@@ -138,10 +138,10 @@ The merged spec **serializes all work units in v1** — one DAG in flight repo-w
 Claude Code releases weekly. The spec pins for reproducibility, but doesn't define a version-bump cadence. **Resolution:** Monthly review of release notes; deliberate bump with smoke test of one issue before adoption.
 
 ### S4.2 — No correlation IDs across log sources
-Baton logs, Claude Code transcripts, GitHub comments, and Slack messages don't share IDs. Future debugging will require manual stitching. **Resolution:** Adopt a convention: prefix all Baton log lines with `[issue-NNN]`. Mirror into Claude Code session names via the wrapper script. Slack messages already embed issue number in the card.
+CodeReeve logs, Claude Code transcripts, GitHub comments, and Slack messages don't share IDs. Future debugging will require manual stitching. **Resolution:** Adopt a convention: prefix all CodeReeve log lines with `[issue-NNN]`. Mirror into Claude Code session names via the wrapper script. Slack messages already embed issue number in the card.
 
 ### S4.3 — Cross-repo work needs a different architecture
-One Baton instance per repo means one container per repo. At 3+ active projects this becomes painful. **Resolution:** Out of scope for v1. Revisit if active project count exceeds 2.
+One CodeReeve instance per repo means one container per repo. At 3+ active projects this becomes painful. **Resolution:** Out of scope for v1. Revisit if active project count exceeds 2.
 
 ### S4.4 — Observability is deferred to phase 2
 Langfuse integration with Claude Code isn't turnkey. **Resolution:** Operate on basic logs for first month. If a baffling failure occurs that the basic logs can't explain, prioritise Langfuse integration then.

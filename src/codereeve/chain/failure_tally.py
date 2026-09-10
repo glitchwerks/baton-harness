@@ -1,4 +1,4 @@
-"""Durable per-issue failure counts for the baton-harness daemon."""
+"""Durable per-issue failure counts for the CodeReeve daemon."""
 
 from __future__ import annotations
 

@@ -43,7 +43,7 @@ import pytest
 # ---------------------------------------------------------------------------
 
 _OWNER = "glitchwerks"
-_REPO = "baton-harness"
+_REPO = "codereeve"
 _INSTALLATION_TOKEN = "ghs_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
 
@@ -58,7 +58,7 @@ def _make_obs(tmp_path: Path) -> Any:  # noqa: ANN401
     """Return an ObsConfig-like object rooted at tmp_path."""
     from codereeve.chain.obs_config import ObsConfig
 
-    harness_dir = tmp_path / ".baton-harness"
+    harness_dir = tmp_path / ".codereeve"
     harness_dir.mkdir(parents=True, exist_ok=True)
     return ObsConfig(
         runlog_path=harness_dir / "runlog.jsonl",
@@ -351,7 +351,7 @@ class TestG3cCredentialFileAbsent:
         mock_lister = MagicMock(return_value=[])
         obs = _make_obs(tmp_path)
         repo_cfgs = [_make_repo_cfg(tmp_path)]
-        marker = tmp_path / ".baton-harness" / "daemon.alive"
+        marker = tmp_path / ".codereeve" / "daemon.alive"
 
         with (
             patch(
@@ -538,7 +538,7 @@ class TestG3cCredentialFileUnreadable:
         mock_lister = MagicMock(return_value=[])
         obs = _make_obs(tmp_path)
         repo_cfgs = [_make_repo_cfg(tmp_path)]
-        marker = tmp_path / ".baton-harness" / "daemon.alive"
+        marker = tmp_path / ".codereeve" / "daemon.alive"
 
         original_open = builtins.open
 

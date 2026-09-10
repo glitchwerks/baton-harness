@@ -1,4 +1,4 @@
-"""``bh-daemon`` console entry point.
+"""Implementation of the ``codereeve daemon`` command.
 
 Parses CLI arguments, loads the workflow config and repo registry, then
 runs the always-on daemon via ``asyncio.run``.
@@ -268,7 +268,7 @@ def _assert_force_pr_not_merge_tripwire() -> None:
     """Fail if the force-pr-not-merge hook no longer blocks a known payload."""
     cmd = [sys.executable, "-m", "codereeve.hooks.force_pr_not_merge"]
     with tempfile.TemporaryDirectory(
-        prefix="bh-force-pr-not-merge-self-test-"
+        prefix="codereeve-force-pr-not-merge-self-test-"
     ) as tmpdir:
         result = subprocess.run(
             cmd,
@@ -327,7 +327,7 @@ def main(
         default=None,
         help=(
             "Path to WORKFLOW.md config file.  Defaults to"
-            " the WORKFLOW.md shipped in the harness package."
+            " the WORKFLOW.md shipped in the CodeReeve package."
         ),
     )
     parser.add_argument(

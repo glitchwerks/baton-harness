@@ -32,35 +32,35 @@ _OPTIONAL_ID = "11111111-2222-3333-4444-555555555555"
     ("values", "match"),
     [
         ({}, "CODEREEVE_GITHUB_APP_KEY_PROVIDER"),
-        ({"BH_GITHUB_APP_KEY_PROVIDER": "vault"}, "unsupported"),
-        ({"BH_GITHUB_APP_KEY_PROVIDER": "bws"}, "BWS_PEM_SECRET_ID"),
+        ({"CODEREEVE_GITHUB_APP_KEY_PROVIDER": "vault"}, "unsupported"),
+        ({"CODEREEVE_GITHUB_APP_KEY_PROVIDER": "bws"}, "BWS_PEM_SECRET_ID"),
         (
             {
-                "BH_GITHUB_APP_KEY_PROVIDER": "bws",
+                "CODEREEVE_GITHUB_APP_KEY_PROVIDER": "bws",
                 "BWS_PEM_SECRET_ID": "not-a-uuid",
             },
             "BWS_PEM_SECRET_ID",
         ),
         (
             {
-                "BH_GITHUB_APP_KEY_PROVIDER": "bws",
+                "CODEREEVE_GITHUB_APP_KEY_PROVIDER": "bws",
                 "BWS_PEM_SECRET_ID": _PEM_ID,
-                "BH_GITHUB_APP_PRIVATE_KEY_FILE": "/run/key.pem",
+                "CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE": "/run/key.pem",
             },
             "conflicting",
         ),
-        ({"BH_GITHUB_APP_KEY_PROVIDER": "file"}, "PRIVATE_KEY_FILE"),
+        ({"CODEREEVE_GITHUB_APP_KEY_PROVIDER": "file"}, "PRIVATE_KEY_FILE"),
         (
             {
-                "BH_GITHUB_APP_KEY_PROVIDER": "file",
-                "BH_GITHUB_APP_PRIVATE_KEY_FILE": "relative.pem",
+                "CODEREEVE_GITHUB_APP_KEY_PROVIDER": "file",
+                "CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE": "relative.pem",
             },
             "absolute",
         ),
         (
             {
-                "BH_GITHUB_APP_KEY_PROVIDER": "file",
-                "BH_GITHUB_APP_PRIVATE_KEY_FILE": "/run/key.pem",
+                "CODEREEVE_GITHUB_APP_KEY_PROVIDER": "file",
+                "CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE": "/run/key.pem",
                 "BWS_PEM_SECRET_ID": _PEM_ID,
             },
             "conflicting",
@@ -80,14 +80,14 @@ def test_bws_and_file_configs_are_discriminated(tmp_path: Path) -> None:
     key_path = (tmp_path / "key.pem").resolve()
     bws = resolve_app_private_key_config(
         {
-            "BH_GITHUB_APP_KEY_PROVIDER": "bws",
+            "CODEREEVE_GITHUB_APP_KEY_PROVIDER": "bws",
             "BWS_PEM_SECRET_ID": _PEM_ID,
         }
     )
     file = resolve_app_private_key_config(
         {
-            "BH_GITHUB_APP_KEY_PROVIDER": "file",
-            "BH_GITHUB_APP_PRIVATE_KEY_FILE": str(key_path),
+            "CODEREEVE_GITHUB_APP_KEY_PROVIDER": "file",
+            "CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE": str(key_path),
         }
     )
     assert bws.provider is AppPrivateKeyProvider.BWS
@@ -105,8 +105,8 @@ def test_file_provider_rejects_foreign_absolute_syntax() -> None:
     with pytest.raises(AppPrivateKeyConfigError, match="absolute"):
         resolve_app_private_key_config(
             {
-                "BH_GITHUB_APP_KEY_PROVIDER": "file",
-                "BH_GITHUB_APP_PRIVATE_KEY_FILE": foreign_path,
+                "CODEREEVE_GITHUB_APP_KEY_PROVIDER": "file",
+                "CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE": foreign_path,
             }
         )
 
@@ -116,7 +116,7 @@ def test_file_provider_rejects_foreign_absolute_syntax() -> None:
     [
         (
             {
-                "BH_GITHUB_APP_KEY_PROVIDER": "bws",
+                "CODEREEVE_GITHUB_APP_KEY_PROVIDER": "bws",
                 "BWS_PEM_SECRET_ID": _PEM_ID,
             },
             {},
@@ -124,24 +124,24 @@ def test_file_provider_rejects_foreign_absolute_syntax() -> None:
         ),
         (
             {
-                "BH_GITHUB_APP_KEY_PROVIDER": "file",
-                "BH_GITHUB_APP_PRIVATE_KEY_FILE": "/run/key.pem",
+                "CODEREEVE_GITHUB_APP_KEY_PROVIDER": "file",
+                "CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE": "/run/key.pem",
             },
             {},
             False,
         ),
         (
             {
-                "BH_GITHUB_APP_KEY_PROVIDER": "file",
-                "BH_GITHUB_APP_PRIVATE_KEY_FILE": "/run/key.pem",
+                "CODEREEVE_GITHUB_APP_KEY_PROVIDER": "file",
+                "CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE": "/run/key.pem",
             },
             {"BWS_GH_TOKEN_SECRET_ID": _OPTIONAL_ID},
             True,
         ),
         (
             {
-                "BH_GITHUB_APP_KEY_PROVIDER": "file",
-                "BH_GITHUB_APP_PRIVATE_KEY_FILE": "/run/key.pem",
+                "CODEREEVE_GITHUB_APP_KEY_PROVIDER": "file",
+                "CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE": "/run/key.pem",
             },
             {"BWS_HEARTBEAT_PING_URL_SECRET_ID": _OPTIONAL_ID},
             True,
@@ -155,10 +155,10 @@ def test_requires_bws_composes_provider_and_optional_consumers(
     tmp_path: Path,
 ) -> None:
     """Require BWS for the provider or either optional BWS consumer."""
-    if provider_values["BH_GITHUB_APP_KEY_PROVIDER"] == "file":
+    if provider_values["CODEREEVE_GITHUB_APP_KEY_PROVIDER"] == "file":
         provider_values = {
             **provider_values,
-            "BH_GITHUB_APP_PRIVATE_KEY_FILE": str(
+            "CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE": str(
                 (tmp_path / "key.pem").resolve()
             ),
         }
@@ -173,8 +173,8 @@ def _file_config(path: Path) -> AppPrivateKeyConfig:
     """Resolve a file-provider configuration for a test path."""
     return resolve_app_private_key_config(
         {
-            "BH_GITHUB_APP_KEY_PROVIDER": "file",
-            "BH_GITHUB_APP_PRIVATE_KEY_FILE": str(path.resolve()),
+            "CODEREEVE_GITHUB_APP_KEY_PROVIDER": "file",
+            "CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE": str(path.resolve()),
         }
     )
 
@@ -190,7 +190,10 @@ def test_bws_loader_fetches_once_with_explicit_access_token() -> None:
     """Fetch the selected BWS secret once with the explicit token."""
     fetch = Mock(return_value="private-key")
     config = resolve_app_private_key_config(
-        {"BH_GITHUB_APP_KEY_PROVIDER": "bws", "BWS_PEM_SECRET_ID": _PEM_ID}
+        {
+            "CODEREEVE_GITHUB_APP_KEY_PROVIDER": "bws",
+            "BWS_PEM_SECRET_ID": _PEM_ID,
+        }
     )
     assert (
         load_app_private_key(
@@ -205,7 +208,10 @@ def test_bws_loader_rejects_empty_access_token_without_fetch() -> None:
     """Reject an empty access token before touching BWS."""
     fetch = Mock()
     config = resolve_app_private_key_config(
-        {"BH_GITHUB_APP_KEY_PROVIDER": "bws", "BWS_PEM_SECRET_ID": _PEM_ID}
+        {
+            "CODEREEVE_GITHUB_APP_KEY_PROVIDER": "bws",
+            "BWS_PEM_SECRET_ID": _PEM_ID,
+        }
     )
     with pytest.raises(AppPrivateKeyLoadError, match="access token"):
         load_app_private_key(config, bws_access_token="", fetch_secret=fetch)
@@ -216,7 +222,10 @@ def test_bws_loader_rejects_empty_secret() -> None:
     """Reject empty key material returned by BWS."""
     fetch = Mock(return_value="")
     config = resolve_app_private_key_config(
-        {"BH_GITHUB_APP_KEY_PROVIDER": "bws", "BWS_PEM_SECRET_ID": _PEM_ID}
+        {
+            "CODEREEVE_GITHUB_APP_KEY_PROVIDER": "bws",
+            "BWS_PEM_SECRET_ID": _PEM_ID,
+        }
     )
     with pytest.raises(AppPrivateKeyLoadError, match="empty"):
         load_app_private_key(
@@ -229,7 +238,10 @@ def test_bws_loader_hides_fetch_error_text_in_traceback() -> None:
     sentinel = "sentinel-bws-output"
     fetch = Mock(side_effect=RuntimeError(sentinel))
     config = resolve_app_private_key_config(
-        {"BH_GITHUB_APP_KEY_PROVIDER": "bws", "BWS_PEM_SECRET_ID": _PEM_ID}
+        {
+            "CODEREEVE_GITHUB_APP_KEY_PROVIDER": "bws",
+            "BWS_PEM_SECRET_ID": _PEM_ID,
+        }
     )
     with pytest.raises(AppPrivateKeyLoadError) as exc_info:
         load_app_private_key(
@@ -302,8 +314,8 @@ def test_file_loader_rejects_symlink(tmp_path: Path) -> None:
         pytest.skip(f"symlink creation unavailable: {exc}")
     config = resolve_app_private_key_config(
         {
-            "BH_GITHUB_APP_KEY_PROVIDER": "file",
-            "BH_GITHUB_APP_PRIVATE_KEY_FILE": str(link.absolute()),
+            "CODEREEVE_GITHUB_APP_KEY_PROVIDER": "file",
+            "CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE": str(link.absolute()),
         }
     )
     with pytest.raises(AppPrivateKeyLoadError, match="symbolic link"):
@@ -574,9 +586,10 @@ def test_requires_bws_cli_prints_only_boolean(
     tmp_path: Path,
 ) -> None:
     """Print only the lowercase boolean for a valid shell query."""
-    monkeypatch.setenv("BH_GITHUB_APP_KEY_PROVIDER", "file")
+    monkeypatch.setenv("CODEREEVE_GITHUB_APP_KEY_PROVIDER", "file")
     monkeypatch.setenv(
-        "BH_GITHUB_APP_PRIVATE_KEY_FILE", str((tmp_path / "key.pem").resolve())
+        "CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE",
+        str((tmp_path / "key.pem").resolve()),
     )
     monkeypatch.delenv("BWS_PEM_SECRET_ID", raising=False)
     monkeypatch.delenv("BWS_GH_TOKEN_SECRET_ID", raising=False)
@@ -594,8 +607,8 @@ def test_requires_bws_cli_reports_safe_config_error(
     """Report invalid configuration without leaking sentinel values."""
     key_sentinel = "sentinel-private-key-path"
     secret_sentinel = "sentinel-secret-id"
-    monkeypatch.setenv("BH_GITHUB_APP_KEY_PROVIDER", "unknown")
-    monkeypatch.setenv("BH_GITHUB_APP_PRIVATE_KEY_FILE", key_sentinel)
+    monkeypatch.setenv("CODEREEVE_GITHUB_APP_KEY_PROVIDER", "unknown")
+    monkeypatch.setenv("CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE", key_sentinel)
     monkeypatch.setenv("BWS_PEM_SECRET_ID", secret_sentinel)
     assert main(["requires-bws"]) == 2
     captured = capsys.readouterr()

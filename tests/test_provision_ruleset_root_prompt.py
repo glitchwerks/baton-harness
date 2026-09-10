@@ -13,7 +13,7 @@ root before required variables are checked. The latter case supplies only
 contributes
 resolved values without allowing the script to reach live GitHub calls.
 
-The interactive cases use a real pty from ``tests/_bh_pty.py``. Python's
+The interactive cases use a real pty from ``tests/_codereeve_pty.py``. Python's
 ``pty`` module is POSIX-only, so they are skipped on Windows and execute
 for real on the project's ``ubuntu-latest`` CI runner.
 """
@@ -150,7 +150,7 @@ def test_interactive_session_prompts_for_and_uses_project_root(
     the rest of the script's resolution chain, not merely that the run
     failed for the pre-existing reason.
     """
-    from tests._bh_pty import run_interactive
+    from tests._codereeve_pty import run_interactive
 
     env = _isolated_env(tmp_path)
     fed_root = tmp_path / "operator-entered-root"
@@ -197,7 +197,7 @@ def test_interactive_session_loads_config_env_from_prompted_root(
     tmp_path: Path,
 ) -> None:
     """The prompted root's config.env must load before env validation."""
-    from tests._bh_pty import run_interactive
+    from tests._codereeve_pty import run_interactive
 
     env = _isolated_env(tmp_path)
     fed_root = tmp_path / "operator-entered-root"

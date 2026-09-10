@@ -1,1 +1,1 @@
-"""Test suite for baton-harness."""
+"""Test suite for CodeReeve."""

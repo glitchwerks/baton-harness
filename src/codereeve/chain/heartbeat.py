@@ -239,8 +239,9 @@ def _ping_url(url: str, *, timeout: float = _DEFAULT_PING_TIMEOUT_S) -> None:
 
     Non-http/https schemes (e.g. ``file://``, ``ftp://``) are rejected
     before ``urlopen`` is called: a warning is logged and the function
-    returns without making any network call.  This closes the SSRF-ish
-    hole that arises from a misconfigured ``BH_HEARTBEAT_PING_URL``.
+    returns without making any network call. This blocks unsafe URL schemes
+    in ``CODEREEVE_HEARTBEAT_PING_URL``; it does not validate destinations
+    or prevent requests to loopback or metadata addresses.
 
     The response body is read and discarded inside a context manager so
     the underlying connection is released even if ``read()`` raises.

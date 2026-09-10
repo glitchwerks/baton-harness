@@ -28,10 +28,10 @@
     returncode errors so that ``_reconcile_labels`` aborts with zero
     label mutations, preserving the single-state invariant (MAJOR 2).
 
-Invoked by Baton after each agent run turn completes.  Responsible for:
+Invoked by symphony after each agent run turn completes.  Responsible for:
 
 1. Classifying the run outcome into one of the states defined in
-   ``harness-design.md §5``:
+   ``docs/harness-design.md §5``:
 
    - ``uncommitted-changes`` — agent left changes but did not commit.
    - ``no-commits`` — agent ran but produced no changes.
@@ -44,28 +44,28 @@ Invoked by Baton after each agent run turn completes.  Responsible for:
    (``agent-ready``, ``agent-done``, or ``blocked``), enforcing the
    invariant that exactly one state label is present at any time.
 
-Entry point: ``bh-after-run`` (defined in ``pyproject.toml``).
+Canonical command: ``codereeve hook after-run``.
 
 WORKFLOW.md hook line (issue #5)::
 
-    after_run: bh-after-run
+    after_run: codereeve hook after-run
 
 Context:
     The hook runs with ``$PWD`` set to the worktree directory.  The issue
     number is inferred from ``basename($PWD)`` via
     ``codereeve._cli.resolve_issue_number`` (spike finding F2).
-    Baton names worktrees ``<repo>/.symphony/worktrees/<issue>`` (a bare
-    integer); the harness's own convention is ``<repo>/.worktrees/<branch>``
+    symphony names worktrees ``<repo>/.symphony/worktrees/<issue>`` (a bare
+    integer); CodeReeve's convention is ``<repo>/.worktrees/<branch>``
     (``<prefix>-<issue>[-<slug>]``).  Both forms are accepted.
 
     GitHub API calls use ``gh --json`` output parsed via ``json.loads``,
     never shell-grepped (addresses the pattern flagged in PR #9; see the
-    language-decision rationale in ``harness-design.md``).
+    language-decision rationale in ``docs/harness-design.md``).
 
     All subprocess calls use ``encoding="utf-8"`` explicitly (Windows
     cp1252 footgun — see Python skill notes).
 
-    This hook must finish under the 60 s timeout enforced by Baton
+    This hook must finish under the 60 s timeout enforced by symphony
     (spike finding F11).
 """
 
@@ -97,6 +97,7 @@ from codereeve.chain.labels import (
     LABEL_BLOCKED,
 )
 from codereeve.chain.subproc import run_cmd
+from codereeve.config_env import runtime_environment
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -125,7 +126,8 @@ _SENTINEL_NAME = "worker-tried-merge"
 
 def _require_repo_identity() -> tuple[str, str]:
     """Return repo owner/name from env, raising if either is absent."""
-    return os.environ["BH_REPO_OWNER"], os.environ["BH_REPO_NAME"]
+    values = runtime_environment(os.environ).values
+    return values["CODEREEVE_REPO_OWNER"], values["CODEREEVE_REPO_NAME"]
 
 
 # ---------------------------------------------------------------------------
@@ -363,7 +365,7 @@ def _classify() -> RunOutcome:
 def _reconcile_labels(issue: int, outcome: RunOutcome) -> int:
     """Reconcile GitHub labels to enforce the single-state invariant.
 
-    Implements the label state machine from ``harness-design.md §5``.
+    Implements the label state machine from ``docs/harness-design.md §5``.
     Exactly one of ``agent-ready``, ``agent-done``, or ``blocked`` must
     be present after this function returns.
 
@@ -613,20 +615,20 @@ def _reconcile_labels(issue: int, outcome: RunOutcome) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Entry point for the ``bh-after-run`` console script.
+    """Run the ``codereeve hook after-run`` command.
 
     Resolves the issue number from the current working directory, classifies
     the run outcome (F5), and reconciles GitHub labels to a single state
-    (harness-design.md §5 / H1 fix).
+    (``docs/harness-design.md §5`` / H1 fix).
 
     Transient failure handling (#32): if ``_classify`` returns
     ``TRANSIENT_ERROR`` (all ``gh pr list`` attempts exhausted), this
     function returns ``1`` after reconciling labels as a no-op.  The
-    non-zero exit signals the daemon/Baton that the hook did not complete
+    non-zero exit signals the daemon/symphony that the hook did not complete
     successfully, without altering the issue's label state.
 
     Args:
-        argv: Unused; reserved for future CLI argument support.  Baton
+        argv: Unused; reserved for future CLI argument support.  symphony
             passes no env-var context to hooks (spike finding F2), so
             all context is derived from the worktree directory name.
 
@@ -639,8 +641,8 @@ def main(argv: list[str] | None = None) -> int:
     if issue is None:
         print(
             f"[{_HOOK}] error: could not derive issue number from cwd — "
-            "expected a bare integer (Baton: .symphony/worktrees/<issue>) "
-            "or <prefix>-<issue>[-<slug>] (harness: .worktrees/<branch>)",
+            "expected a bare integer (symphony: .symphony/worktrees/<issue>) "
+            "or <prefix>-<issue>[-<slug>] (CodeReeve: .worktrees/<branch>)",
             file=sys.stderr,
             flush=True,
         )

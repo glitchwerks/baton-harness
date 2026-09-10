@@ -268,12 +268,13 @@ def test_context_collects_credentials_only(report: ModuleType) -> None:
             "BWS_ACCESS_TOKEN": "vault-value",
             "ANTHROPIC_API_KEY": "api-value",
             "CLAUDE_CODE_OAUTH_TOKEN": "oauth-value",
-            "BH_HEARTBEAT_PING_URL": "ping-value",
+            "CODEREEVE_HEARTBEAT_PING_URL": "ping-value",
+            "BH_HEARTBEAT_PING_URL": "legacy-ping-value",
             "PATH": "/bin",
-            "BH_PROJECT_ROOT": "/project",
+            "CODEREEVE_PROJECT_ROOT": "/project",
             "EMPTY_TOKEN": "",
             "BWS_PEM_SECRET_ID": "public-id",
-            "BH_GITHUB_APP_PRIVATE_KEY_FILE": "/key.pem",
+            "CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE": "/key.pem",
         },
         unused,
         unused,
@@ -288,8 +289,26 @@ def test_context_collects_credentials_only(report: ModuleType) -> None:
         "api-value",
         "oauth-value",
         "ping-value",
+        "legacy-ping-value",
         "install-value",
     }
+    check = CheckResult(
+        "PING",
+        Phase.LIVE,
+        "ping-value",
+        Severity.CRITICAL,
+        CheckStatus.FAIL,
+        "legacy-ping-value",
+        "ping-value",
+    )
+    secrets = report.secret_values_from_context(ctx)
+    for output in (
+        report.render_text((check,), secret_values=secrets),
+        report.render_json(
+            (check,), (Phase.LIVE,), None, secret_values=secrets
+        ),
+    ):
+        assert "ping-value" not in output
 
 
 @pytest.mark.parametrize(

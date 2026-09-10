@@ -1,10 +1,10 @@
-"""Tests for bh-after-create .claude/settings.json drop (slice 3b task 5).
+"""Tests for CodeReeve after-create settings generation.
 
 Verifies that after_create writes .claude/settings.json with the
-force-pr-not-merge PreToolUse hook registered, pointing at
-$BH_VENV/{Scripts,bin}/bh-force-pr-not-merge.
+force-pr-not-merge PreToolUse hook registered through the canonical
+``codereeve hook force-pr-not-merge`` command.
 
-C4: BH_VENV absence is FATAL — _write_claude_settings_if_configured
+C4: CODEREEVE_VENV absence is FATAL — _write_claude_settings_if_configured
 returns non-zero and must log via err() (not log()), and must NOT create
 .claude/settings.json.
 
@@ -14,7 +14,7 @@ Coverage:
   console-script (Windows Scripts/ or POSIX bin/).
 - Happy path: _write_claude_settings writes $cwd/.claude/settings.json
   with the expected JSON shape and returns 0.
-- BH_VENV absent is fatal: _write_claude_settings_if_configured returns
+- CODEREEVE_VENV absent is fatal: _write_claude_settings_if_configured returns
   non-zero, writes nothing, and emits the error via err() not log().
 - Idempotency: calling _write_claude_settings twice re-writes the file
   (no error, same content, rc 0 on both calls).
@@ -28,6 +28,10 @@ errors.
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -46,7 +50,7 @@ class TestClaudeSettingsJsonShape:
 
         venv = tmp_path / "venv"
         (venv / "Scripts").mkdir(parents=True)
-        (venv / "Scripts" / "bh-force-pr-not-merge").touch()
+        (venv / "Scripts" / "codereeve").touch()
 
         settings = claude_settings_json_for_worktree(venv)
 
@@ -58,7 +62,7 @@ class TestClaudeSettingsJsonShape:
 
         venv = tmp_path / "venv"
         (venv / "Scripts").mkdir(parents=True)
-        (venv / "Scripts" / "bh-force-pr-not-merge").touch()
+        (venv / "Scripts" / "codereeve").touch()
 
         settings = claude_settings_json_for_worktree(venv)
         pre = settings["hooks"]["PreToolUse"]
@@ -71,7 +75,7 @@ class TestClaudeSettingsJsonShape:
 
         venv = tmp_path / "venv"
         (venv / "Scripts").mkdir(parents=True)
-        (venv / "Scripts" / "bh-force-pr-not-merge").touch()
+        (venv / "Scripts" / "codereeve").touch()
 
         settings = claude_settings_json_for_worktree(venv)
         pre = settings["hooks"]["PreToolUse"]
@@ -84,7 +88,7 @@ class TestClaudeSettingsJsonShape:
 
         venv = tmp_path / "venv"
         (venv / "Scripts").mkdir(parents=True)
-        (venv / "Scripts" / "bh-force-pr-not-merge").touch()
+        (venv / "Scripts" / "codereeve").touch()
 
         settings = claude_settings_json_for_worktree(venv)
         entry = settings["hooks"]["PreToolUse"][0]
@@ -97,7 +101,7 @@ class TestClaudeSettingsJsonShape:
 
         venv = tmp_path / "venv"
         (venv / "Scripts").mkdir(parents=True)
-        (venv / "Scripts" / "bh-force-pr-not-merge").touch()
+        (venv / "Scripts" / "codereeve").touch()
 
         settings = claude_settings_json_for_worktree(venv)
         nested = settings["hooks"]["PreToolUse"][0]["hooks"]
@@ -106,23 +110,21 @@ class TestClaudeSettingsJsonShape:
         assert len(nested) == 1
         assert nested[0]["type"] == "command"
 
-    def test_command_ends_with_bh_force_pr_not_merge(
+    def test_windows_command_uses_canonical_subcommand(
         self, tmp_path: Path
     ) -> None:
-        """The command path ends with the bh-force-pr-not-merge script."""
+        """Windows settings invoke the canonical executable and hook route."""
         from codereeve._cli import claude_settings_json_for_worktree
 
-        venv = tmp_path / "venv"
+        venv = tmp_path / "venv with spaces & hooks"
         (venv / "Scripts").mkdir(parents=True)
-        (venv / "Scripts" / "bh-force-pr-not-merge").touch()
+        (venv / "Scripts" / "codereeve.exe").touch()
 
         settings = claude_settings_json_for_worktree(venv)
         cmd = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
 
-        # Accept both bare name (POSIX) and .exe suffix (Windows).
-        assert cmd.endswith("bh-force-pr-not-merge") or cmd.endswith(
-            "bh-force-pr-not-merge.exe"
-        )
+        executable = str(venv / "Scripts" / "codereeve.exe").replace("\\", "/")
+        assert cmd == f"'{executable}' hook force-pr-not-merge"
 
     def test_command_references_venv_scripts_or_bin(
         self, tmp_path: Path
@@ -132,7 +134,7 @@ class TestClaudeSettingsJsonShape:
 
         venv = tmp_path / "venv"
         (venv / "Scripts").mkdir(parents=True)
-        (venv / "Scripts" / "bh-force-pr-not-merge").touch()
+        (venv / "Scripts" / "codereeve").touch()
 
         settings = claude_settings_json_for_worktree(venv)
         cmd = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
@@ -146,7 +148,7 @@ class TestClaudeSettingsJsonShape:
 
         venv = tmp_path / "venv"
         (venv / "Scripts").mkdir(parents=True)
-        (venv / "Scripts" / "bh-force-pr-not-merge").touch()
+        (venv / "Scripts" / "codereeve").touch()
 
         settings = claude_settings_json_for_worktree(venv)
         cmd = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
@@ -160,32 +162,82 @@ class TestClaudeSettingsJsonShape:
         """When bin/ layout exists it is preferred (POSIX consistency)."""
         from codereeve._cli import claude_settings_json_for_worktree
 
-        venv = tmp_path / "venv"
+        venv = tmp_path / "venv with spaces & hooks"
         (venv / "bin").mkdir(parents=True)
-        (venv / "bin" / "bh-force-pr-not-merge").touch()
+        (venv / "bin" / "codereeve").touch()
 
         settings = claude_settings_json_for_worktree(venv)
         cmd = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
 
-        # POSIX bin/ must appear in the command.
-        assert "/bin/" in cmd.replace("\\", "/")
+        assert cmd == (
+            f"'{str(venv / 'bin' / 'codereeve')}' hook force-pr-not-merge"
+        )
 
-    def test_windows_scripts_exe_is_accepted(self, tmp_path: Path) -> None:
-        """Windows .exe variant accepted when Scripts/*.exe is the only form.
-
-        The helper must not hard-fail if Scripts/bh-force-pr-not-merge.exe
-        is the only script present.
-        """
+    @pytest.mark.skipif(os.name != "nt", reason="Windows launcher test")
+    def test_windows_generated_command_preserves_hook_contract(
+        self, tmp_path: Path
+    ) -> None:
+        """The generated command runs the installed canonical hook launcher."""
         from codereeve._cli import claude_settings_json_for_worktree
 
-        venv = tmp_path / "venv"
+        venv = tmp_path / "venv with spaces"
         (venv / "Scripts").mkdir(parents=True)
-        (venv / "Scripts" / "bh-force-pr-not-merge.exe").touch()
+        source = Path(sys.executable).parent / "codereeve.exe"
+        shutil.copy2(source, venv / "Scripts" / "codereeve.exe")
 
         settings = claude_settings_json_for_worktree(venv)
         cmd = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
 
-        assert "bh-force-pr-not-merge" in cmd
+        bash = Path("C:/Program Files/Git/usr/bin/bash.exe")
+        if not bash.exists():
+            pytest.skip("Git Bash is unavailable")
+        result = subprocess.run(
+            [str(bash), "-lc", cmd],
+            input=json.dumps(
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "gh pr merge 42"},
+                }
+            ),
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            check=False,
+        )
+
+        assert result.returncode == 2
+        assert result.stderr.startswith("BH_WORKER_TRIED_MERGE:")
+
+    @pytest.mark.skipif(os.name == "nt", reason="native POSIX launcher test")
+    def test_posix_generated_command_preserves_hook_contract(
+        self, tmp_path: Path
+    ) -> None:
+        """The generated command runs the installed canonical POSIX hook."""
+        from codereeve._cli import claude_settings_json_for_worktree
+
+        venv = tmp_path / "venv with spaces & hooks"
+        (venv / "bin").mkdir(parents=True)
+        source = Path(sys.executable).parent / "codereeve"
+        shutil.copy2(source, venv / "bin" / "codereeve")
+
+        settings = claude_settings_json_for_worktree(venv)
+        cmd = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        result = subprocess.run(
+            ["sh", "-c", cmd],
+            input=json.dumps(
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "gh pr merge 42"},
+                }
+            ),
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            check=False,
+        )
+
+        assert result.returncode == 2
+        assert result.stderr.startswith("BH_WORKER_TRIED_MERGE:")
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +256,7 @@ class TestWriteClaudeSettingsHappyPath:
         worktree.mkdir()
         venv = tmp_path / "venv"
         (venv / "Scripts").mkdir(parents=True)
-        (venv / "Scripts" / "bh-force-pr-not-merge").touch()
+        (venv / "Scripts" / "codereeve").touch()
 
         rc = _write_claude_settings(issue=42, cwd=worktree, venv_root=venv)
 
@@ -218,7 +270,7 @@ class TestWriteClaudeSettingsHappyPath:
         worktree.mkdir()
         venv = tmp_path / "venv"
         (venv / "Scripts").mkdir(parents=True)
-        (venv / "Scripts" / "bh-force-pr-not-merge").touch()
+        (venv / "Scripts" / "codereeve").touch()
 
         _write_claude_settings(issue=42, cwd=worktree, venv_root=venv)
 
@@ -232,7 +284,7 @@ class TestWriteClaudeSettingsHappyPath:
         worktree.mkdir()
         venv = tmp_path / "venv"
         (venv / "Scripts").mkdir(parents=True)
-        (venv / "Scripts" / "bh-force-pr-not-merge").touch()
+        (venv / "Scripts" / "codereeve").touch()
 
         _write_claude_settings(issue=42, cwd=worktree, venv_root=venv)
 
@@ -246,7 +298,7 @@ class TestWriteClaudeSettingsHappyPath:
         worktree.mkdir()
         venv = tmp_path / "venv"
         (venv / "Scripts").mkdir(parents=True)
-        (venv / "Scripts" / "bh-force-pr-not-merge").touch()
+        (venv / "Scripts" / "codereeve").touch()
 
         _write_claude_settings(issue=42, cwd=worktree, venv_root=venv)
 
@@ -266,7 +318,7 @@ class TestWriteClaudeSettingsHappyPath:
         worktree.mkdir()
         venv = tmp_path / "venv"
         (venv / "Scripts").mkdir(parents=True)
-        (venv / "Scripts" / "bh-force-pr-not-merge").touch()
+        (venv / "Scripts" / "codereeve").touch()
 
         _write_claude_settings(issue=42, cwd=worktree, venv_root=venv)
 
@@ -291,7 +343,7 @@ class TestWriteClaudeSettingsHappyPath:
         worktree.mkdir()
         venv = tmp_path / "venv"
         (venv / "Scripts").mkdir(parents=True)
-        (venv / "Scripts" / "bh-force-pr-not-merge").touch()
+        (venv / "Scripts" / "codereeve").touch()
 
         _write_claude_settings(issue=42, cwd=worktree, venv_root=venv)
 
@@ -306,17 +358,17 @@ class TestWriteClaudeSettingsHappyPath:
 
 
 # ---------------------------------------------------------------------------
-# BH_VENV absence is FATAL (C4)
+# CODEREEVE_VENV absence is FATAL (C4)
 # ---------------------------------------------------------------------------
 
 
-class TestBhVenvAbsentIsFatal:
-    """C4: missing BH_VENV must cause a loud, non-zero failure."""
+class TestCodereeveVenvAbsentIsFatal:
+    """C4: missing CODEREEVE_VENV causes a loud, non-zero failure."""
 
-    def test_returns_nonzero_when_bh_venv_absent(
+    def test_returns_nonzero_when_codereeve_venv_absent(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Missing BH_VENV causes non-zero return (C4).
+        """Missing CODEREEVE_VENV causes non-zero return (C4).
 
         A worker without the force-pr-not-merge hook silently loses
         defense-in-depth — the operator must notice at worktree creation
@@ -329,15 +381,16 @@ class TestBhVenvAbsentIsFatal:
         worktree = tmp_path / "wt"
         worktree.mkdir()
         monkeypatch.delenv("BH_VENV", raising=False)
+        monkeypatch.delenv("CODEREEVE_VENV", raising=False)
 
         rc = _write_claude_settings_if_configured(issue=42, cwd=worktree)
 
-        assert rc != 0, "BH_VENV absent must return non-zero (C4)"
+        assert rc != 0, "CODEREEVE_VENV absent must return non-zero (C4)"
 
-    def test_no_settings_json_written_when_bh_venv_absent(
+    def test_no_settings_json_written_when_codereeve_venv_absent(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """No .claude/settings.json is written when BH_VENV is absent."""
+        """No settings are written when CODEREEVE_VENV is absent."""
         from codereeve.after_create import (
             _write_claude_settings_if_configured,
         )
@@ -345,21 +398,22 @@ class TestBhVenvAbsentIsFatal:
         worktree = tmp_path / "wt"
         worktree.mkdir()
         monkeypatch.delenv("BH_VENV", raising=False)
+        monkeypatch.delenv("CODEREEVE_VENV", raising=False)
 
         _write_claude_settings_if_configured(issue=42, cwd=worktree)
 
         assert not (worktree / ".claude").exists()
 
-    def test_error_written_to_stderr_not_stdout_when_bh_venv_absent(
+    def test_error_written_to_stderr_when_codereeve_venv_absent(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """BH_VENV absence logs via err() — message appears on stderr.
+        """CODEREEVE_VENV absence logs through ``err`` to stderr.
 
         err() writes to stderr; log() writes to stdout.  The C4 failure must
-        be loud: an operator tailing stdout (Baton's default) must see it.
+        be loud so the operator can diagnose the failed hook.
         Using err() also causes non-zero-exit shell pipelines to propagate
         the failure correctly.
         """
@@ -370,21 +424,22 @@ class TestBhVenvAbsentIsFatal:
         worktree = tmp_path / "wt"
         worktree.mkdir()
         monkeypatch.delenv("BH_VENV", raising=False)
+        monkeypatch.delenv("CODEREEVE_VENV", raising=False)
 
         _write_claude_settings_if_configured(issue=42, cwd=worktree)
 
         captured = capsys.readouterr()
         assert captured.err != "", (
-            "BH_VENV absent must emit an error on stderr (C4)"
+            "CODEREEVE_VENV absent must emit an error on stderr (C4)"
         )
 
-    def test_no_stdout_log_when_bh_venv_absent(
+    def test_no_stdout_log_when_codereeve_venv_absent(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """BH_VENV absence must NOT log a success line to stdout.
+        """CODEREEVE_VENV absence must not log success to stdout.
 
         If log() were called instead of err(), a monitoring pipeline that
         treats any stdout output as success would miss the failure.
@@ -396,31 +451,33 @@ class TestBhVenvAbsentIsFatal:
         worktree = tmp_path / "wt"
         worktree.mkdir()
         monkeypatch.delenv("BH_VENV", raising=False)
+        monkeypatch.delenv("CODEREEVE_VENV", raising=False)
 
         _write_claude_settings_if_configured(issue=42, cwd=worktree)
 
         captured = capsys.readouterr()
         assert captured.out == "", (
-            "BH_VENV absent must NOT write to stdout (must use err())"
+            "CODEREEVE_VENV absent must not write to stdout"
         )
 
-    def test_bh_venv_set_to_empty_string_is_fatal(
+    def test_codereeve_venv_set_to_empty_string_is_fatal(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """An empty-string BH_VENV is treated as absent (also fatal)."""
+        """An empty CODEREEVE_VENV is treated as absent and fatal."""
         from codereeve.after_create import (
             _write_claude_settings_if_configured,
         )
 
         worktree = tmp_path / "wt"
         worktree.mkdir()
-        monkeypatch.setenv("BH_VENV", "")
+        monkeypatch.delenv("BH_VENV", raising=False)
+        monkeypatch.setenv("CODEREEVE_VENV", "")
 
         rc = _write_claude_settings_if_configured(issue=42, cwd=worktree)
 
-        assert rc != 0, "Empty BH_VENV must be treated as absent (C4)"
+        assert rc != 0, "Empty CODEREEVE_VENV must be treated as absent"
 
 
 # ---------------------------------------------------------------------------
@@ -439,7 +496,7 @@ class TestWriteClaudeSettingsIdempotency:
         worktree.mkdir()
         venv = tmp_path / "venv"
         (venv / "Scripts").mkdir(parents=True)
-        (venv / "Scripts" / "bh-force-pr-not-merge").touch()
+        (venv / "Scripts" / "codereeve").touch()
 
         rc1 = _write_claude_settings(issue=42, cwd=worktree, venv_root=venv)
         rc2 = _write_claude_settings(issue=42, cwd=worktree, venv_root=venv)
@@ -457,7 +514,7 @@ class TestWriteClaudeSettingsIdempotency:
         worktree.mkdir()
         venv = tmp_path / "venv"
         (venv / "Scripts").mkdir(parents=True)
-        (venv / "Scripts" / "bh-force-pr-not-merge").touch()
+        (venv / "Scripts" / "codereeve").touch()
 
         settings_path = worktree / ".claude" / "settings.json"
 
@@ -474,9 +531,9 @@ class TestWriteClaudeSettingsIdempotency:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """_write_claude_settings_if_configured is idempotent when BH_VENV set.
+        """The configured settings write is idempotent.
 
-        Re-running with the same BH_VENV must succeed (rc 0) and not raise.
+        Re-running with the same CODEREEVE_VENV succeeds without raising.
         """
         from codereeve.after_create import (
             _write_claude_settings_if_configured,
@@ -486,11 +543,83 @@ class TestWriteClaudeSettingsIdempotency:
         worktree.mkdir()
         venv = tmp_path / "venv"
         (venv / "Scripts").mkdir(parents=True)
-        (venv / "Scripts" / "bh-force-pr-not-merge").touch()
-        monkeypatch.setenv("BH_VENV", str(venv))
+        (venv / "Scripts" / "codereeve").touch()
+        monkeypatch.delenv("BH_VENV", raising=False)
+        monkeypatch.setenv("CODEREEVE_VENV", str(venv))
 
         rc1 = _write_claude_settings_if_configured(issue=42, cwd=worktree)
         rc2 = _write_claude_settings_if_configured(issue=42, cwd=worktree)
 
         assert rc1 == 0
         assert rc2 == 0
+
+
+@pytest.mark.parametrize(
+    "project", ["package.json", "requirements.txt", "pyproject.toml"]
+)
+def test_canonical_hook_rejects_alias_conflicts_before_effects(
+    project: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Alias conflicts prevent dependency installation and settings writes."""
+    from unittest.mock import Mock
+
+    from codereeve import after_create, cli
+    from codereeve.config_env import PRODUCT_ALIASES
+
+    alias = next(s for s in PRODUCT_ALIASES if s.canonical == "CODEREEVE_VENV")
+    monkeypatch.setenv(alias.canonical, "canonical-secret-sentinel")
+    monkeypatch.setenv(alias.legacy, "legacy-secret-sentinel")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / project).touch()
+    monkeypatch.setattr(after_create, "resolve_issue_number", lambda: 395)
+    effects = Mock(return_value=0)
+    for name in (
+        "_install_npm",
+        "_install_requirements",
+        "_install_pyproject",
+        "_write_claude_settings",
+    ):
+        monkeypatch.setattr(after_create, name, effects)
+
+    assert cli.main(["hook", "after-create"]) != 0
+    effects.assert_not_called()
+    output = capsys.readouterr().err
+    assert alias.canonical in output and alias.legacy in output
+    assert "canonical-secret-sentinel" not in output
+    assert "legacy-secret-sentinel" not in output
+
+
+@pytest.mark.parametrize("spelling", ["canonical", "legacy"])
+def test_canonical_hook_uses_validated_snapshot(
+    spelling: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Either spelling works even if installation changes the environment."""
+    from unittest.mock import Mock
+
+    from codereeve import after_create, cli
+    from codereeve.config_env import PRODUCT_ALIASES
+
+    alias = next(s for s in PRODUCT_ALIASES if s.canonical == "CODEREEVE_VENV")
+    monkeypatch.delenv(alias.canonical, raising=False)
+    monkeypatch.delenv(alias.legacy, raising=False)
+    venv = tmp_path / "original-venv"
+    monkeypatch.setenv(getattr(alias, spelling), str(venv))
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "requirements.txt").touch()
+    monkeypatch.setattr(after_create, "resolve_issue_number", lambda: 395)
+
+    def install(issue: int) -> int:
+        """Simulate an installer changing environment after validation."""
+        monkeypatch.setenv(getattr(alias, spelling), str(tmp_path / "changed"))
+        return 0
+
+    monkeypatch.setattr(after_create, "_install_requirements", install)
+    writer = Mock(return_value=0)
+    monkeypatch.setattr(after_create, "_write_claude_settings", writer)
+    assert cli.main(["hook", "after-create"]) == 0
+    writer.assert_called_once_with(issue=395, cwd=tmp_path, venv_root=venv)

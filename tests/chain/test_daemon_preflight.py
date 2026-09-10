@@ -36,7 +36,7 @@ Proposed seam (code-writer adopts this name in Phase 2):
      but still refuses to launch (returns False for non-MATCH).
 
 The alert message body for Charge 5 must satisfy:
-  ``"baton-harness refusing to launch worker"`` is a substring, AND
+  ``"CodeReeve refusing to launch worker"`` is a substring, AND
   the failed-checks description is present (e.g. ``"Failed checks:"``).
 
 All external calls (``check_ruleset_signals``, ``post_slack_alert``) are
@@ -58,7 +58,8 @@ Coverage:
   stays in the module for the provisioning-side verifier, but the daemon
   gate must not call it — catches an accidental re-introduction).
 - Alert POST failure does NOT crash launch decision loop.
-- No ``BH_HEARTBEAT_PING_URL`` configured (obs.heartbeat_ping_url is None)
+- No ``CODEREEVE_HEARTBEAT_PING_URL`` configured (obs.heartbeat_ping_url is
+None)
   → returns False on DRIFT but no POST attempted; a warning is logged.
 
 Additional coverage added for codex-review issues (PR #167, cef91ce5aa):
@@ -114,7 +115,7 @@ from codereeve.chain.obs_config import ObsConfig
 # ---------------------------------------------------------------------------
 
 _OWNER = "glitchwerks"
-_REPO = "baton-harness"
+_REPO = "codereeve"
 _ISSUE = 42
 _APP_ID = "111"
 _TOKEN = "ghs_TESTTOKEN"
@@ -225,7 +226,7 @@ def test_should_launch_worker_refuses_and_alerts_on_drift(
     """_should_launch_worker returns False on DRIFT and POSTs a Slack alert.
 
     The alert body must contain:
-    - ``"baton-harness refusing to launch worker"``
+    - ``"CodeReeve refusing to launch worker"``
     - ``"Failed checks:"``
     - The exact ``.detail`` string from the ``RulesetCheckResult`` returned
       by ``check_ruleset_signals`` — proving the gate builds the alert from
@@ -294,7 +295,7 @@ def test_should_launch_worker_refuses_and_alerts_on_drift(
         f"Alert must POST to obs.heartbeat_ping_url {_WEBHOOK!r}; "
         f"got {url_posted!r}"
     )
-    assert "baton-harness refusing to launch worker" in message_posted, (
+    assert "CodeReeve refusing to launch worker" in message_posted, (
         f"Alert body must contain the refusal phrase; got {message_posted!r}"
     )
     assert "Failed checks:" in message_posted, (
@@ -364,7 +365,7 @@ def test_should_launch_worker_refuses_and_alerts_on_absent(
     assert result is False, "_should_launch_worker must return False on ABSENT"
     assert post_calls, "A Slack alert must be posted on ABSENT"
     _, message_posted = post_calls[0]
-    assert "baton-harness refusing to launch worker" in message_posted, (
+    assert "CodeReeve refusing to launch worker" in message_posted, (
         f"Alert body must contain the refusal phrase; got {message_posted!r}"
     )
     assert "Failed checks:" in message_posted, (
@@ -438,7 +439,7 @@ def test_should_launch_worker_refuses_and_alerts_on_error_fail_closed(
     )
     assert post_calls, "A Slack alert must be attempted on ERROR"
     _, message_posted = post_calls[0]
-    assert "baton-harness refusing to launch worker" in message_posted, (
+    assert "CodeReeve refusing to launch worker" in message_posted, (
         f"Alert body must contain the refusal phrase; got {message_posted!r}"
     )
     assert _ERROR_DETAIL in message_posted, (
@@ -453,8 +454,8 @@ def test_should_launch_worker_refuses_and_alerts_on_error_fail_closed(
 # ---------------------------------------------------------------------------
 
 _NOT_PROVISIONED_DETAIL = (
-    "no ruleset baseline pinned for glitchwerks/baton-harness at "
-    ".bh/ruleset-baseline.json; run bin/provision-ruleset.sh first"
+    "no ruleset baseline pinned for glitchwerks/codereeve at "
+    ".codereeve/ruleset-baseline.json; run bin/provision-ruleset.sh first"
 )
 
 
@@ -523,7 +524,7 @@ def test_should_launch_worker_refuses_and_alerts_on_not_provisioned(
     )
     assert post_calls, "A Slack alert must be posted on NOT_PROVISIONED"
     _, message_posted = post_calls[0]
-    assert "baton-harness refusing to launch worker" in message_posted, (
+    assert "CodeReeve refusing to launch worker" in message_posted, (
         f"Alert body must contain the refusal phrase; got {message_posted!r}"
     )
     assert "Failed checks:" in message_posted, (

@@ -1,6 +1,6 @@
 """Hook: after_create — per-worktree dependency setup.
 
-Invoked by Baton immediately after a new worktree is created (before the
+Invoked by symphony immediately after a new worktree is created (before the
 agent's first run).  Detects the project type from files present in the
 worktree (``package.json``, ``requirements.txt``, ``pyproject.toml``) and
 installs dependencies using the appropriate tool.
@@ -9,18 +9,18 @@ This is a **partial** mitigation for worktree-isolation limits (S2.4 in the
 architecture spec): it handles dependency installation only.  Shared
 ports/services that cannot be replicated per-worktree are outside scope.
 
-Entry point: ``bh-after-create`` (defined in ``pyproject.toml``).
+Canonical command: ``codereeve hook after-create``.
 
 WORKFLOW.md hook line (issue #5)::
 
-    after_create: bh-after-create
+    after_create: codereeve hook after-create
 
 Context:
     The hook runs with ``$PWD`` set to the newly created worktree directory.
     The issue number is inferred from ``basename($PWD)`` via
     ``codereeve._cli.resolve_issue_number`` (spike finding F2: Baton
     passes no env-var context to hooks).
-    Baton names worktrees ``<repo>/.symphony/worktrees/<issue>`` (a bare
+    symphony names worktrees ``<repo>/.symphony/worktrees/<issue>`` (a bare
     integer); the harness's own convention is ``<repo>/.worktrees/<branch>``
     (``<prefix>-<issue>[-<slug>]``).  Both forms are accepted.
 """
@@ -41,6 +41,11 @@ from codereeve._cli import (
     resolve_issue_number,
 )
 from codereeve.chain.subproc import run_cmd
+from codereeve.config_env import (
+    AliasConflictError,
+    ResolvedEnvironment,
+    runtime_environment,
+)
 
 #: Short name used in log/err prefixes.
 _HOOK = "after-create"
@@ -49,7 +54,8 @@ _HOOK = "after-create"
 def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
     """Run a subprocess command and return its CompletedProcess.
 
-    Streams stdout/stderr to the terminal so Baton's log captures tool
+    Streams stdout/stderr to the terminal so the orchestrator's log
+    captures tool
     output in real time.  Always uses ``encoding="utf-8"`` to avoid
     Windows cp1252 mangling of non-ASCII output.
 
@@ -268,20 +274,20 @@ def _write_claude_settings(issue: int, cwd: Path, venv_root: Path) -> int:
     If ``.claude/settings.json`` is **tracked** by git in the target
     repo, the hook refuses to overwrite it and returns ``1`` (FATAL).
     The git exclude entry only protects untracked files, so overwriting
-    a tracked file would cause ``git add -A`` to stage the harness
+    a tracked file would cause ``git add -A`` to stage the CodeReeve
     payload as a modification, potentially deleting the repo's real
     Claude configuration from the PR.  Running a worker without the
     PreToolUse tripwire is worse than refusing startup; the operator
     must resolve the tracked-file conflict explicitly.
 
     If ``.claude/settings.json`` is **untracked but already present**,
-    it is backed up to ``.claude/settings.json.bh-backup`` before being
+    it is backed up to ``.claude/settings.json.codereeve-backup`` before being
     overwritten so the operator's local-only settings are preserved.
 
     Args:
         issue: Issue number (used in log prefix).
         cwd: The freshly-created worktree directory.
-        venv_root: Absolute path to the harness venv.
+        venv_root: Absolute path to the CodeReeve venv.
 
     Returns:
         ``0`` on success; ``1`` on filesystem error or when the target
@@ -298,7 +304,7 @@ def _write_claude_settings(issue: int, cwd: Path, venv_root: Path) -> int:
 
     out_dir = cwd / ".claude"
     out_path = out_dir / "settings.json"
-    backup_path = out_dir / "settings.json.bh-backup"
+    backup_path = out_dir / "settings.json.codereeve-backup"
 
     try:
         out_dir.mkdir(exist_ok=True)
@@ -336,14 +342,14 @@ def _write_claude_settings(issue: int, cwd: Path, venv_root: Path) -> int:
                 _HOOK,
                 issue,
                 "backed up existing .claude/settings.json to "
-                ".claude/settings.json.bh-backup",
+                ".claude/settings.json.codereeve-backup",
             )
             print(
                 f"[{_HOOK}] WARNING: target repo has an untracked "
                 ".claude/settings.json; backed up to "
-                ".claude/settings.json.bh-backup before injecting "
-                "harness settings.  Restore manually after run "
-                "or add bh-after-run cleanup if needed.",
+                ".claude/settings.json.codereeve-backup before injecting "
+                "CodeReeve settings. Restore manually after the run "
+                "or add `codereeve hook after-run` cleanup if needed.",
                 file=sys.stderr,
                 flush=True,
             )
@@ -361,29 +367,35 @@ def _write_claude_settings(issue: int, cwd: Path, venv_root: Path) -> int:
     return 0
 
 
-def _write_claude_settings_if_configured(issue: int, cwd: Path) -> int:
-    """Drop .claude/settings.json or FAIL LOUDLY if BH_VENV is absent (C4).
+def _write_claude_settings_if_configured(
+    issue: int, cwd: Path, environment: ResolvedEnvironment | None = None
+) -> int:
+    """Drop settings or fail loudly if ``CODEREEVE_VENV`` is absent.
 
     Args:
         issue: Issue number (used in log prefix).
         cwd: The freshly-created worktree directory.
+        environment: Validated hook snapshot; resolve current values when
+            called directly without a snapshot.
 
     Returns:
         ``0`` on success; non-zero on misconfiguration or write failure.
-        Specifically: BH_VENV absent returns ``1`` — a worker without the
-        force-pr-not-merge hook would silently lose defense-in-depth, and
+        Specifically: ``CODEREEVE_VENV`` absent returns ``1`` — a worker
+        without the force-pr-not-merge hook would silently lose
+        defense-in-depth, and
         the operator MUST notice at first worktree creation rather than at
         first merge attempt.
     """
-    venv_root_env = os.environ.get("BH_VENV")
+    if environment is None:
+        environment = runtime_environment(os.environ)
+    venv_root_env = environment.values.get("CODEREEVE_VENV")
     if not venv_root_env:
         err(
             _HOOK,
             issue,
-            "BH_VENV not set — refusing to create worktree without the "
-            "force-pr-not-merge PreToolUse hook. Set BH_VENV in the "
-            "daemon environment (bin/run-daemon.sh:L65-L66 normally "
-            "exports it) and re-run.",
+            "CODEREEVE_VENV not set — refusing to create worktree without "
+            "the force-pr-not-merge PreToolUse hook. Set CODEREEVE_VENV "
+            "in the daemon environment and re-run.",
         )
         return 1
     return _write_claude_settings(
@@ -392,7 +404,7 @@ def _write_claude_settings_if_configured(issue: int, cwd: Path) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
-    """Entry point for the ``bh-after-create`` console script.
+    """Run the ``codereeve hook after-create`` command.
 
     Detects the project type from files present in the current working
     directory and runs the appropriate dependency-install command.  Logs
@@ -405,15 +417,21 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
         ``0`` on success or when no project files are found; ``1`` when the
         issue number cannot be resolved; non-zero (propagated from the
         install command) on install failure; non-zero (``1``) when
-        ``BH_VENV`` is absent or unset (C4 fatal: workers without the
+        ``CODEREEVE_VENV`` is absent or unset (workers without the
         force-pr-not-merge hook lose defense-in-depth).
     """
+    try:
+        environment = runtime_environment(os.environ)
+    except AliasConflictError as exc:
+        print(f"[{_HOOK}] error: {exc}", file=sys.stderr, flush=True)
+        return 1
+
     issue = resolve_issue_number()
     if issue is None:
         print(
             f"[{_HOOK}] error: could not derive issue number from cwd — "
-            "expected a bare integer (Baton: .symphony/worktrees/<issue>) "
-            "or <prefix>-<issue>[-<slug>] (harness: .worktrees/<branch>)",
+            "expected a bare integer (symphony: .symphony/worktrees/<issue>) "
+            "or <prefix>-<issue>[-<slug>] (CodeReeve: .worktrees/<branch>)",
             file=sys.stderr,
             flush=True,
         )
@@ -441,9 +459,11 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
 
     # Slice 3b — install the force-pr-not-merge PreToolUse hook so any
     # worker-side `gh pr merge` is stopped before the ruleset would have
-    # denied it at the API layer. BH_VENV absence is FATAL (C4) — a
+    # denied it at the API layer. CODEREEVE_VENV absence is fatal — a
     # silent skip would ship workers without defense-in-depth.
-    rc_settings = _write_claude_settings_if_configured(issue=issue, cwd=cwd)
+    rc_settings = _write_claude_settings_if_configured(
+        issue=issue, cwd=cwd, environment=environment
+    )
     if rc_settings != 0:
         return rc_settings
 

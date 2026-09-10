@@ -255,7 +255,7 @@ def _probe_worker_push_denied(repo_root: Path) -> ProbeResult:
         why (``ACCEPTED``, ``CLEANUP_FAILED``, ``UNRECOGNIZED``,
         ``TRANSPORT_ERROR``, or ``TIMEOUT``).
     """
-    probe_ref = f"feature/__bh-probe-{uuid.uuid4().hex[:12]}"
+    probe_ref = f"feature/__codereeve-probe-{uuid.uuid4().hex[:12]}"
     worker_env = env_for(Identity.WORKER)
     push_cmd = [
         "git",

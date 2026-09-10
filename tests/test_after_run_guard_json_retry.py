@@ -266,7 +266,8 @@ class TestMainGuardedJsonLoadsNoAgentReadyRemoval:
     ) -> None:
         """main() returns non-zero exit code on persistent non-JSON failure.
 
-        A transient gh failure must surface as a hook failure so Baton or the
+        A transient gh failure must surface as a hook failure so
+        symphony or the
         daemon can record the error rather than treating it as success.
         """
         worktree = tmp_path / "feat-32-banner"

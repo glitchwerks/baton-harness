@@ -54,7 +54,8 @@ describes forwarding the CLI's resolved path as
 ``run_daemon(..., report_path=...)``, and in Phase 2's requirement that the
 finally block already write *somewhere* before the CLI flag exists. Every
 test below passes ``report_path`` explicitly (never relying on the
-always-on default path) so assertions never depend on ``BH_PROJECT_ROOT``.
+always-on default path) so assertions never depend on
+``CODEREEVE_PROJECT_ROOT``.
 The exact commit SHA source for ``merge_gate.merged_sha`` is left
 unspecified by the plan (it could be the known PR head SHA or a
 post-merge ``git rev-parse``), so the ``_run`` seam returns the **same**
@@ -92,11 +93,20 @@ from codereeve.vendor.symphony.config import WorkflowConfig
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _OWNER = "glitchwerks"
-_REPO_NAME = "baton-harness"
+_REPO_NAME = "codereeve"
 
 # Sentinel SHA used for every git command that could plausibly supply the
 # report's merge_gate.merged_sha (see module docstring "Assumptions").
 _FEED_SHA = "feedface" * 5
+
+
+@pytest.fixture(autouse=True)
+def _synthetic_daemon_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Supply a synthetic installation token to the real startup type gate."""
+    _isolate_work_unit_env(monkeypatch)
+    monkeypatch.setenv("GH_TOKEN", "ghs_TEST_report_fixture")
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
 
 def _ok(stdout: str = "") -> subprocess.CompletedProcess[str]:
@@ -164,7 +174,7 @@ def _repo_cfg(project_root: Path) -> RepoConfig:
         project_root: Directory to use as the config's project root.
             Callers must pass the test's ``tmp_path`` fixture, never the
             real repo checkout — ``run_daemon`` startup writes a
-            ``.baton-harness/daemon.alive`` liveness marker (and a work
+            ``.codereeve/daemon.alive`` liveness marker (and a work
             unit creates a ``.symphony/state.json``) under this path, so
             a real-repo root would leak untracked artifacts into the
             working tree.
@@ -190,8 +200,8 @@ def _repo_cfg(project_root: Path) -> RepoConfig:
 def _isolate_work_unit_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Guard against ambient ``os.environ`` leaks from the work-unit path.
 
-    ``_run_work_unit`` writes ``BH_VENV``, ``CHAIN_BASE_BRANCH``, and
-    ``BH_FEATURE_BRANCH`` directly to the real ``os.environ`` (not via
+    ``_run_work_unit`` writes ``CODEREEVE_VENV``, ``CHAIN_BASE_BRANCH``, and
+    ``CODEREEVE_FEATURE_BRANCH`` directly to the real ``os.environ`` (not via
     ``monkeypatch``) as a side effect of dispatching a work unit. Those
     writes would otherwise outlive the test and bleed into later tests in
     the same pytest process. Calling ``monkeypatch.delenv`` here — before
@@ -202,7 +212,13 @@ def _isolate_work_unit_env(monkeypatch: pytest.MonkeyPatch) -> None:
     Args:
         monkeypatch: The test's ``monkeypatch`` fixture.
     """
-    for key in ("BH_VENV", "CHAIN_BASE_BRANCH", "BH_FEATURE_BRANCH"):
+    for key in (
+        "CODEREEVE_VENV",
+        "BH_VENV",
+        "CHAIN_BASE_BRANCH",
+        "CODEREEVE_FEATURE_BRANCH",
+        "BH_FEATURE_BRANCH",
+    ):
         monkeypatch.delenv(key, raising=False)
 
 
@@ -355,8 +371,10 @@ def _common_success_patches() -> Any:  # noqa: ANN401
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("repo", ["codereeve", "baton-harness"])
 def test_report_captures_pickup_label_transitions_pr_url_and_merge_gate(
     tmp_path: Path,
+    repo: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Report records pickup, label transitions, PR url, and merge gate.
@@ -370,6 +388,7 @@ def test_report_captures_pickup_label_transitions_pr_url_and_merge_gate(
     (S7), and a ``merge_gate`` outcome of ``"MERGED"`` with a ``merged_sha``
     (S7 / S5).
     """
+    monkeypatch.setitem(globals(), "_REPO_NAME", repo)
     _isolate_work_unit_env(monkeypatch)
     ready_issues = [_make_issue(10, ["agent-ready"])]
     report_path = tmp_path / "session-report.json"
@@ -380,7 +399,7 @@ def test_report_captures_pickup_label_transitions_pr_url_and_merge_gate(
             "_run",
             side_effect=_make_run_side_effect(
                 ready_issues=ready_issues,
-                issue_branch_by_number={10: "baton/issue-10-10"},
+                issue_branch_by_number={10: "codereeve/issue-10-10"},
             ),
         ),
         _common_success_patches()(),
@@ -470,7 +489,7 @@ def test_report_captures_parked_issue_with_block_kind_and_escalation(
             "_run",
             side_effect=_make_run_side_effect(
                 ready_issues=ready_issues,
-                issue_branch_by_number={20: "baton/issue-20-20"},
+                issue_branch_by_number={20: "codereeve/issue-20-20"},
             ),
         ),
         patch(
@@ -722,8 +741,8 @@ def test_tick_error_recorded_and_partial_state_survives_on_exception(
             side_effect=_make_run_side_effect(
                 ready_issues=ready_issues,
                 issue_branch_by_number={
-                    10: "baton/issue-10-10",
-                    99: "baton/issue-99-99",
+                    10: "codereeve/issue-10-10",
+                    99: "codereeve/issue-99-99",
                 },
             ),
         ),
@@ -816,7 +835,7 @@ def test_run_ci_gate_returns_merge_outcome_directly() -> None:
             owner=_OWNER,
             repo=_REPO_NAME,
             n=42,
-            issue_branch="baton/issue-42-42",
+            issue_branch="codereeve/issue-42-42",
             pr_head_sha=_FEED_SHA,
             repo_root=_REPO_ROOT,
             branch_name="feature/test-slug",
@@ -870,7 +889,7 @@ def test_open_pr_returns_pr_create_stdout_url_instead_of_none(
             "_run",
             side_effect=_make_run_side_effect(
                 ready_issues=ready_issues,
-                issue_branch_by_number={10: "baton/issue-10-10"},
+                issue_branch_by_number={10: "codereeve/issue-10-10"},
             ),
         ),
         patch.object(daemon_mod, "_open_pr", side_effect=spy_open_pr),
@@ -964,7 +983,7 @@ class TestRunCiGateRecordsEscalationDetail:
 
     Closes finding F4 — CI-gate parks fire ``alert`` today but never
     ``report.record_escalation``, so they are invisible in
-    ``.baton-harness/session-report.json``'s ``escalations`` list.
+    ``.codereeve/session-report.json``'s ``escalations`` list.
     """
 
     def test_ci_timeout_park_records_one_debug_critical_escalation(
@@ -996,7 +1015,7 @@ class TestRunCiGateRecordsEscalationDetail:
                 owner=_OWNER,
                 repo=_REPO_NAME,
                 n=30,
-                issue_branch="baton/issue-30-30",
+                issue_branch="codereeve/issue-30-30",
                 pr_head_sha=_FEED_SHA,
                 repo_root=_REPO_ROOT,
                 branch_name="feature/test-slug",
@@ -1103,7 +1122,7 @@ class TestRunCiGateRecordsEscalationDetail:
                 owner=_OWNER,
                 repo=_REPO_NAME,
                 n=31,
-                issue_branch="baton/issue-31-31",
+                issue_branch="codereeve/issue-31-31",
                 pr_head_sha=_FEED_SHA,
                 repo_root=_REPO_ROOT,
                 branch_name="feature/test-slug",

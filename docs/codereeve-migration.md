@@ -65,9 +65,10 @@ as an error from the checker.
 
 ## Apply and retained evidence
 
-Before apply, stop every daemon and other process that can write the legacy or
-canonical state. An authoritative coordinator must verify all writers stopped,
-keep them stopped, and retain the project migration lease for the transaction.
+These standalone examples document the interface, but real standalone apply refuses
+because it cannot establish coordinator authority. Use the supported
+[service cutover coordinator](codereeve-service-cutover.md), which stops and holds every
+writer, verifies quiescence, and retains the migration lease.
 An old context snapshot, missing marker, process-name scan, or lock probe is not
 quiescence evidence (#394;
 `src/codereeve/migration/transaction.py:L82-L108`).
@@ -133,8 +134,10 @@ path returned by apply. The restoration API revalidates the filesystem even
 when its persisted journal previously ended as restored (#393, #394;
 `src/codereeve/migration/transaction.py:L922-L958`).
 
-Rollback configuration and state before #394 activates the canonical service.
-Do not modify the service unit as part of these steps; the migration only
+During rollback, restore legacy configuration and state before the coordinator restores
+the prior unit, executable, environment selection, and activation state. Successful
+forward cutover activates the canonical service only after migration and strict gates pass.
+Do not modify the service unit as part of these standalone steps; migration only
 inventories it and reports the external cutover prerequisite (#393, #394;
 `src/codereeve/migration/inventory.py:L114-L193`).
 

@@ -17,7 +17,8 @@ B-I2 invariant:
 Classification precedence (first match wins):
 
 1. **done** — feature branch git log contains a ``--no-ff`` merge commit
-   with the exact trailer ``Baton-Harness-Merge: issue-<N> ci=green``
+   with a supported ``CodeReeve-Merge: issue-<N> ci=green`` or legacy
+   ``Baton-Harness-Merge: issue-<N> ci=green`` trailer
    AND issue carries the ``agent-merged`` label.
 2. **ci_gate_reentry (3a)** — provenance merge commit present but
    ``agent-merged`` label absent (daemon died after merge, before marker).
@@ -36,9 +37,9 @@ calls patchable in tests (spike finding F8).
 Worktree-scan layout assumption:
     The worktree orphan-GC scan (``scan_orphan_worktrees`` and
     ``_parse_worktree_list``) assumes the standard
-    ``.symphony/worktrees/<N>`` layout with ``baton/<N>``-prefixed
-    branch names (see ``WorkspaceManager`` /
-    ``_BATON_BRANCH_PREFIX``).  Worktrees that do not follow this
+    ``.symphony/worktrees/<N>`` layout with canonical ``codereeve/`` or
+    legacy ``baton/`` branch names (see ``WorkspaceManager`` /
+    ``_WORKER_BRANCH_PREFIXES``). Worktrees that do not follow this
     layout (non-standard branch names, manually-created worktrees,
     detached HEADs) are silently skipped — they are neither counted
     as orphans nor reported as errors.
@@ -48,6 +49,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -75,8 +77,11 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger(__name__)
 
-# Exact trailer written by merge.py at merge time (§11.5 / B-I2).
-_PROVENANCE_PREFIX = "Baton-Harness-Merge: issue-"
+# Exact canonical trailer written by merge.py and its legacy reader alias.
+_PROVENANCE_PREFIXES = (
+    "CodeReeve-Merge: issue-",
+    "Baton-Harness-Merge: issue-",
+)
 
 # ---------------------------------------------------------------------------
 # Subprocess helper (the sole I/O seam; patch this in tests)
@@ -148,8 +153,9 @@ def _fetch_provenance_merges(repo_root: Path, feature_branch: str) -> set[int]:
     """Return issue numbers whose daemon-provenance merge commits exist.
 
     Parses ``git log <feature_branch> --merges --format=%H%x1f%B%x1e``
-    and extracts issue numbers from the exact trailer line
-    ``Baton-Harness-Merge: issue-<N> ci=green``.
+    and extracts issue numbers from canonical
+    ``CodeReeve-Merge: issue-<N> ci=green`` and legacy
+    ``Baton-Harness-Merge: issue-<N> ci=green`` trailer lines.
 
     Args:
         repo_root: Absolute path to the local repository checkout.
@@ -193,9 +199,16 @@ def _fetch_provenance_merges(repo_root: Path, feature_branch: str) -> set[int]:
         body = parts[1]
         for line in body.splitlines():
             line = line.strip()
-            if line.startswith(_PROVENANCE_PREFIX):
-                # Parse: "Baton-Harness-Merge: issue-<N> ci=green"
-                rest = line[len(_PROVENANCE_PREFIX) :]
+            prefix = next(
+                (
+                    candidate
+                    for candidate in _PROVENANCE_PREFIXES
+                    if line.startswith(candidate)
+                ),
+                None,
+            )
+            if prefix is not None:
+                rest = line[len(prefix) :]
                 # rest is "<N> ci=green"
                 token = rest.split()[0] if rest.split() else ""
                 try:
@@ -267,19 +280,20 @@ def _fetch_open_prs(
 def _has_open_pr(issue: int, open_pr_heads: list[str]) -> bool:
     """Return True if any open PR's head branch matches issue N.
 
-    Mirrors ``tracker.check_pr_exists`` heuristic: matches on branch
-    names starting with ``baton/`` and ending with ``-<N>``.
+    Mirrors ``tracker.check_pr_exists`` heuristic: matches canonical
+    ``codereeve/`` and legacy ``baton/`` branches ending with ``-<N>``.
 
     Args:
         issue: The issue number to check.
         open_pr_heads: List of head-ref names from ``_fetch_open_prs``.
 
     Returns:
-        ``True`` if a ``baton/*-<N>`` branch is in the open PR list.
+        ``True`` if a supported worker branch is in the open PR list.
     """
     suffix = f"-{issue}"
     return any(
-        h.startswith("baton/") and h.endswith(suffix) for h in open_pr_heads
+        h.startswith(("codereeve/", "baton/")) and h.endswith(suffix)
+        for h in open_pr_heads
     )
 
 
@@ -394,9 +408,12 @@ def reconstruct(
 # Label that marks an issue as actively in-flight (IS-5 predicate b).
 _AGENT_IN_PROGRESS_LABEL = "agent-in-progress"
 
-# Branch prefix written by WorkspaceManager for issue worktrees
-# (e.g. "refs/heads/baton/42").
-_BATON_BRANCH_PREFIX = "refs/heads/baton/"
+# Branch prefixes written by the current WorkspaceManager and its legacy
+# Baton counterpart.
+_WORKER_BRANCH_PREFIXES = (
+    "refs/heads/codereeve/",
+    "refs/heads/baton/",
+)
 
 
 def _parse_worktree_list(
@@ -405,9 +422,9 @@ def _parse_worktree_list(
     """Parse ``git worktree list --porcelain`` output.
 
     Extracts ``(worktree_path, issue_number)`` pairs from each block.
-    Issue number is parsed from branch lines matching
-    ``refs/heads/baton/<N>``.  Blocks without a matching branch are
-    silently skipped (main worktree, detached HEADs).
+    Issue number is parsed from canonical ``refs/heads/codereeve/*-<N>``
+    and legacy ``refs/heads/baton/`` branches. Blocks without a matching
+    branch are silently skipped (main worktree, detached HEADs).
 
     Args:
         porcelain: Raw stdout from ``git worktree list --porcelain``.
@@ -433,12 +450,23 @@ def _parse_worktree_list(
             current_issue = None
         elif line.startswith("branch "):
             branch = line[len("branch ") :]
-            if branch.startswith(_BATON_BRANCH_PREFIX):
-                tail = branch[len(_BATON_BRANCH_PREFIX) :]
-                try:
-                    current_issue = int(tail)
-                except ValueError:
-                    current_issue = None
+            prefix = next(
+                (
+                    candidate
+                    for candidate in _WORKER_BRANCH_PREFIXES
+                    if branch.startswith(candidate)
+                ),
+                None,
+            )
+            if prefix is not None:
+                tail = branch[len(prefix) :]
+                issue_pattern = (
+                    r"(?:^|-)(\d+)$"
+                    if prefix == "refs/heads/baton/"
+                    else r"-(\d+)$"
+                )
+                match = re.search(issue_pattern, tail)
+                current_issue = int(match.group(1)) if match else None
 
     # Flush the final block.
     if current_path is not None and current_issue is not None:

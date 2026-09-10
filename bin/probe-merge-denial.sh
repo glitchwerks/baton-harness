@@ -14,7 +14,7 @@
 # Optional environment variables:
 #   CODEREEVE_PROBE_DRY_RUN=1          print commands without executing them
 #   CODEREEVE_PROBE_HOOK_SCRIPT        path to force-pr-not-merge hook script
-#                               (default: auto-detected from harness root)
+#                               (default: auto-detected from CodeReeve root)
 #
 # Exit codes:
 #   0  all 7 vectors denied as expected
@@ -34,14 +34,14 @@ set -uo pipefail
 # Script-dir resolution (works from any cwd).
 # ---------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HARNESS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+CODEREEVE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # ---------------------------------------------------------------------------
 # Source shared env-config loader (host.env -> CODEREEVE_PROJECT_ROOT;
 # .codereeve/config.env -> CODEREEVE_REPO_OWNER/CODEREEVE_REPO_NAME/CODEREEVE_GITHUB_APP_ID/etc;
 # operator env wins). Same pattern as provision-ruleset.sh; a no-op here
 # unless CODEREEVE_PROJECT_ROOT ends up known, since this probe's own required
-# vars (BH_PROBE_*) are not part of .codereeve/config.env's schema.
+# vars (CODEREEVE_PROBE_*) are not part of .codereeve/config.env's schema.
 # ---------------------------------------------------------------------------
 _codereeve_load_config="${SCRIPT_DIR}/lib/load-config.sh"
 if [[ -f "${_codereeve_load_config}" ]]; then
@@ -53,8 +53,8 @@ unset _codereeve_load_config
 # ---------------------------------------------------------------------------
 # Python resolver — same pattern as provision-ruleset.sh.
 # ---------------------------------------------------------------------------
-_PYTHON="${HARNESS_DIR}/.venv/Scripts/python.exe"
-[[ ! -x "${_PYTHON}" ]] && _PYTHON="${HARNESS_DIR}/.venv/bin/python"
+_PYTHON="${CODEREEVE_DIR}/.venv/Scripts/python.exe"
+[[ ! -x "${_PYTHON}" ]] && _PYTHON="${CODEREEVE_DIR}/.venv/bin/python"
 [[ ! -x "${_PYTHON}" ]] && _PYTHON="python3"
 [[ ! -x "${_PYTHON}" ]] && _PYTHON="python"
 
@@ -63,7 +63,7 @@ _PYTHON="${HARNESS_DIR}/.venv/Scripts/python.exe"
 # ---------------------------------------------------------------------------
 _probe_assert() {
     (
-        cd "${HARNESS_DIR}" || exit
+        cd "${CODEREEVE_DIR}" || exit
         "${_PYTHON}" -m scripts.probe_assert "$@"
     )
 }
@@ -101,9 +101,9 @@ _TOKEN_LEN="$(wc -c < "${CODEREEVE_PROBE_WORKER_TOKEN_PATH}" | tr -d ' ')"
 _HOOK_SCRIPT="${CODEREEVE_PROBE_HOOK_SCRIPT:-}"
 _HOOK_ARGS=()
 if [[ -z "${_HOOK_SCRIPT}" ]]; then
-    _HOOK_SCRIPT="${HARNESS_DIR}/.venv/Scripts/codereeve.exe"
+    _HOOK_SCRIPT="${CODEREEVE_DIR}/.venv/Scripts/codereeve.exe"
     [[ ! -x "${_HOOK_SCRIPT}" ]] && \
-        _HOOK_SCRIPT="${HARNESS_DIR}/.venv/bin/codereeve"
+        _HOOK_SCRIPT="${CODEREEVE_DIR}/.venv/bin/codereeve"
     [[ ! -x "${_HOOK_SCRIPT}" ]] && _HOOK_SCRIPT=""
     _HOOK_ARGS=(hook force-pr-not-merge)
 fi
@@ -121,7 +121,7 @@ DRY_RUN="${CODEREEVE_PROBE_DRY_RUN:-0}"
 # ---------------------------------------------------------------------------
 echo ""
 echo "============================================================"
-echo "  baton-harness merge-denial probe  (slice 3c, #160)"
+echo "  CodeReeve merge-denial probe  (slice 3c, #160)"
 echo "============================================================"
 echo "  Sandbox repo : ${SANDBOX_REPO}"
 echo "  PR number    : ${PR_NUM}"

@@ -4,7 +4,8 @@ The branch-protection preflight gate (``_should_launch_worker``) was wired
 into ``_run_work_unit`` as part of issue #144.  Two module-level helpers
 gate every worker dispatch:
 
-* ``_resolve_app_id()`` — reads ``BH_GITHUB_APP_ID`` from the environment.
+* ``_resolve_app_id()`` — reads ``CODEREEVE_GITHUB_APP_ID`` from the
+environment.
   Integration tests that do not set this env var would hit fail-closed
   parking before any worker is dispatched.
 
@@ -40,7 +41,7 @@ _TEST_APP_ID = "0"
 def _auto_patch_resolve_app_id() -> None:  # type: ignore[return]
     """Return a sentinel app-id so _run_work_unit does not park on missing env.
 
-    ``_resolve_app_id()`` reads ``BH_GITHUB_APP_ID`` from the process
+    ``_resolve_app_id()`` reads ``CODEREEVE_GITHUB_APP_ID`` from the process
     environment.  Integration tests do not set this variable; without this
     autouse the daemon would log CRITICAL and park every issue before
     dispatching a worker.

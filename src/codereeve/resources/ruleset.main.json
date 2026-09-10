@@ -5,7 +5,7 @@
   "enforcement": "active",
   "bypass_actors": [
     {
-      "actor_id": "__BH_ADMIN_ROLE_ID__",
+      "actor_id": "__CODEREEVE_ADMIN_ROLE_ID__",
       "actor_type": "RepositoryRole",
       "bypass_mode": "always"
     }
