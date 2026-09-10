@@ -29,6 +29,7 @@ def _write_event(
     *,
     body: str | None,
     head_ref: str = "feature/365-workflow",
+    repository: str = "glitchwerks/codereeve",
 ) -> Path:
     """Write a minimal GitHub pull-request event fixture.
 
@@ -36,6 +37,7 @@ def _write_event(
         tmp_path: Pytest-provided temporary directory.
         body: Pull-request body included in the event.
         head_ref: Pull-request source branch included in the event.
+        repository: Caller-supplied GitHub repository slug.
 
     Returns:
         Path to the JSON event fixture.
@@ -44,7 +46,7 @@ def _write_event(
     event_path.write_text(
         json.dumps(
             {
-                "repository": {"full_name": "glitchwerks/codereeve"},
+                "repository": {"full_name": repository},
                 "pull_request": {
                     "body": body,
                     "head": {"ref": head_ref},
@@ -56,14 +58,19 @@ def _write_event(
     return event_path
 
 
-def test_load_pull_request_event(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "repository", ["glitchwerks/codereeve", "glitchwerks/baton-harness"]
+)
+def test_load_pull_request_event(tmp_path: Path, repository: str) -> None:
     """Decode the repository, source branch, and body from an event."""
-    event_path = _write_event(tmp_path, body="Closes #365")
+    event_path = _write_event(
+        tmp_path, body="Closes #365", repository=repository
+    )
 
     assert load_pull_request_event(event_path) == PullRequestEvent(
         head_ref="feature/365-workflow",
         body="Closes #365",
-        repository="glitchwerks/codereeve",
+        repository=repository,
     )
 
 
@@ -103,7 +110,12 @@ def test_main_rejects_invalid_utf8_event_without_token(
     assert token not in output
 
 
-def test_fetch_issue_has_milestone(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    "repository", ["glitchwerks/codereeve", "glitchwerks/baton-harness"]
+)
+def test_fetch_issue_has_milestone(
+    monkeypatch: pytest.MonkeyPatch, repository: str
+) -> None:
     """Create the required GET request and accept an object milestone."""
     observed: dict[str, object] = {}
     token = "test-token"
@@ -130,10 +142,10 @@ def test_fetch_issue_has_milestone(monkeypatch: pytest.MonkeyPatch) -> None:
         request_json,
     )
 
-    assert fetch_issue_has_milestone("glitchwerks/codereeve", 365, token)
+    assert fetch_issue_has_milestone(repository, 365, token)
     assert observed == {
         "method": "GET",
-        "url": "https://api.github.com/repos/glitchwerks/codereeve/issues/365",
+        "url": f"https://api.github.com/repos/{repository}/issues/365",
         "accept": "application/vnd.github+json",
         "authorization_is_expected": True,
         "api_version": "2022-11-28",

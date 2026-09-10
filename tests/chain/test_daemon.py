@@ -1136,6 +1136,9 @@ def test_registry_unset_raises_clean_error() -> None:
             "CODEREEVE_REPO_OWNER",
             "CODEREEVE_REPO_NAME",
             "CODEREEVE_PROJECT_ROOT",
+            "BH_REPO_OWNER",
+            "BH_REPO_NAME",
+            "BH_PROJECT_ROOT",
         )
     }
     try:

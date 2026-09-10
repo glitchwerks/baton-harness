@@ -1296,8 +1296,8 @@ class TestReconcileLabelsWorkerTriedMerge:
         """
         monkeypatch.delenv("CODEREEVE_REPO_OWNER", raising=False)
         monkeypatch.delenv("CODEREEVE_REPO_NAME", raising=False)
-        monkeypatch.delenv("CODEREEVE_REPO_OWNER", raising=False)
-        monkeypatch.delenv("CODEREEVE_REPO_NAME", raising=False)
+        monkeypatch.delenv("BH_REPO_OWNER", raising=False)
+        monkeypatch.delenv("BH_REPO_NAME", raising=False)
 
         monkeypatch.setattr(
             after_run, "_current_labels", lambda issue: ["agent-ready"]

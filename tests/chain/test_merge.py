@@ -363,7 +363,10 @@ class TestCiAuthErrorType:
 class TestQueryActionJobsCallShape:
     """Tests that ``_query_action_jobs`` issues the correct two-step calls."""
 
-    def test_first_call_queries_actions_runs_with_head_sha(self) -> None:
+    @pytest.mark.parametrize("repo", ["codereeve", "baton-harness"])
+    def test_first_call_queries_actions_runs_with_head_sha(
+        self, repo: str
+    ) -> None:
         """First call must query ``actions/runs?head_sha={sha}``."""
         calls: list[list[str]] = []
         responses = _action_jobs_responses([_actions_all_success_run()])
@@ -373,10 +376,11 @@ class TestQueryActionJobsCallShape:
             return responses.pop(0)
 
         with patch.object(merge_mod, "_run", side_effect=fake_run):
-            _query_action_jobs(_OWNER, _REPO_NAME, _SHA)
+            _query_action_jobs(_OWNER, repo, _SHA)
 
         assert calls, "Expected at least one _run call"
         first_call_str = " ".join(calls[0])
+        assert f"repos/glitchwerks/{repo}/actions/runs" in first_call_str
         assert "actions/runs" in first_call_str, (
             "First call must query the actions/runs endpoint"
         )

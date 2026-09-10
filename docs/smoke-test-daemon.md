@@ -95,9 +95,9 @@ compatibility through 0.3.x and are removed in 0.4; do not source or evaluate ol
 
 The daemon's environment is assembled from three sources in order, with explicit shell exports as an escape hatch for any layer. This section describes each source and what it supplies — for what each credential *is* and why it's required, see [docs/authentication.md](authentication.md).
 
-### Sandbox-committed constants — `.codereeve/config.env` in the sandbox repo
+### Host-local sandbox configuration — `.codereeve/config.env` in the sandbox repo
 
-`${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env` is a plain `KEY=VAL` file committed in the **sandbox** repo (not the harness fork). This inverts the old model — per-deployment identity now lives alongside the code the daemon manages rather than in a file that had to be edited in the harness checkout on every new deploy.
+`${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env` is a plain, host-local `KEY=VAL` file in the **sandbox** repo working tree (ignored by Git, not stored in the harness fork). This inverts the old model — per-deployment identity now lives alongside the code the daemon manages rather than in a file that had to be edited in the harness checkout on every new deploy.
 
 `bin/run-daemon.sh` parses `host.env` for `CODEREEVE_PROJECT_ROOT`, then reads `.codereeve/config.env` for the repo slug to run its label and `.symphony/`-gitignore preflights. `codereeve daemon` then authoritatively parses and validates `.codereeve/config.env` via `sandbox_config.read_and_validate` before the registry loads.
 
@@ -637,7 +637,7 @@ the resolved configuration needs it; all configuration comes from `.codereeve/co
 # export BWS_ACCESS_TOKEN=<bitwarden-machine-account-token>  # conditional
 
 # In a persistent tmux session:
-tmux new-session -d -s bh 'bin/run-daemon.sh >> /var/log/codereeve.log 2>&1'
+tmux new-session -d -s codereeve 'bin/run-daemon.sh >> /var/log/codereeve.log 2>&1'
 
 # Or with nohup:
 nohup bin/run-daemon.sh >> /var/log/codereeve.log 2>&1 &

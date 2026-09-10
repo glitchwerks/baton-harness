@@ -100,6 +100,15 @@ _REPO_NAME = "codereeve"
 _FEED_SHA = "feedface" * 5
 
 
+@pytest.fixture(autouse=True)
+def _synthetic_daemon_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Supply a synthetic installation token to the real startup type gate."""
+    _isolate_work_unit_env(monkeypatch)
+    monkeypatch.setenv("GH_TOKEN", "ghs_TEST_report_fixture")
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+
 def _ok(stdout: str = "") -> subprocess.CompletedProcess[str]:
     """Return a successful CompletedProcess."""
     return subprocess.CompletedProcess(
@@ -205,8 +214,10 @@ def _isolate_work_unit_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     for key in (
         "CODEREEVE_VENV",
+        "BH_VENV",
         "CHAIN_BASE_BRANCH",
         "CODEREEVE_FEATURE_BRANCH",
+        "BH_FEATURE_BRANCH",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -360,8 +371,10 @@ def _common_success_patches() -> Any:  # noqa: ANN401
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("repo", ["codereeve", "baton-harness"])
 def test_report_captures_pickup_label_transitions_pr_url_and_merge_gate(
     tmp_path: Path,
+    repo: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Report records pickup, label transitions, PR url, and merge gate.
@@ -375,6 +388,7 @@ def test_report_captures_pickup_label_transitions_pr_url_and_merge_gate(
     (S7), and a ``merge_gate`` outcome of ``"MERGED"`` with a ``merged_sha``
     (S7 / S5).
     """
+    monkeypatch.setitem(globals(), "_REPO_NAME", repo)
     _isolate_work_unit_env(monkeypatch)
     ready_issues = [_make_issue(10, ["agent-ready"])]
     report_path = tmp_path / "session-report.json"

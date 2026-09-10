@@ -904,8 +904,16 @@ _codereeve_prompt_and_write_sandbox_config() {
         exit 1
     fi
 
-    read -r -p "  CODEREEVE_GITHUB_APP_ID (GitHub App numeric ID): " _codereeve_github_app_id
-    read -r -p "  CODEREEVE_GITHUB_APP_INSTALLATION_ID (GitHub App installation numeric ID): " _codereeve_github_app_installation_id
+    while true; do
+        read -r -p "  CODEREEVE_GITHUB_APP_ID (GitHub App numeric ID): " _codereeve_github_app_id || return 1
+        [[ "${_codereeve_github_app_id}" =~ ^[1-9][0-9]*$ ]] && break
+        echo "codereeve: error: CODEREEVE_GITHUB_APP_ID must be a positive integer" >&2
+    done
+    while true; do
+        read -r -p "  CODEREEVE_GITHUB_APP_INSTALLATION_ID (GitHub App installation numeric ID): " _codereeve_github_app_installation_id || return 1
+        [[ "${_codereeve_github_app_installation_id}" =~ ^[1-9][0-9]*$ ]] && break
+        echo "codereeve: error: CODEREEVE_GITHUB_APP_INSTALLATION_ID must be a positive integer" >&2
+    done
     while true; do
         if ! read -r -p "  CODEREEVE_GITHUB_APP_KEY_PROVIDER (bws/file): " _codereeve_app_key_provider; then
             echo "codereeve: error: could not read App private-key provider" >&2

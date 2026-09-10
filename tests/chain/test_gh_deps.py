@@ -125,12 +125,20 @@ def _fail(stderr: str = "error") -> subprocess.CompletedProcess[str]:
 class TestFetchBlockedBy:
     """Tests for ``fetch_blocked_by``."""
 
-    def test_returns_blocker_numbers_from_single_page(self) -> None:
+    @pytest.mark.parametrize("repo", ["codereeve", "baton-harness"])
+    def test_returns_blocker_numbers_from_single_page(self, repo: str) -> None:
         """Parses blocker issue numbers from a single-page array response."""
         payload = [_ISSUE_42]
 
-        with patch.object(gh_deps_mod, "_run", return_value=_ok(payload)):
-            result = fetch_blocked_by("glitchwerks", "codereeve", 43)
+        with patch.object(
+            gh_deps_mod, "_run", return_value=_ok(payload)
+        ) as run:
+            result = fetch_blocked_by("glitchwerks", repo, 43)
+
+        assert (
+            f"repos/glitchwerks/{repo}/issues/43/dependencies/blocked_by"
+            in run.call_args.args[0][2]
+        )
 
         assert result == [42]
 
