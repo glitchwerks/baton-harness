@@ -28,7 +28,7 @@ implementation remains infrastructure-owned.
 As an initial provisioning proposal, allocate **4 vCPU, 8 GiB RAM, and 60 GiB
 disk**. These are planning values from the
 [#396 provisioning proposal](https://github.com/glitchwerks/baton-harness/issues/396#issuecomment-5647545855)
-(fetched 2026-09-10), not measured product minima. The
+(fetched 2026-09-12), not measured product minima. The
 portable container result used 4 vCPU and 4 GiB and observed 1.677 GiB while four
 modeled matrices ran, but that result does not size a real Claude agent workload
 or establish a production capacity requirement (#396).
@@ -92,32 +92,34 @@ proof, a ticket, or chat. Hand back only the credential mechanism and the secure
 location from which the release operator can retrieve the private setup details
 (`docs/codereeve-release-gate.md:L571-L580`; #396).
 
-## Snapshot sequence
+## Snapshot sequence and ownership
 
-The infrastructure manager must prove that each named snapshot can be restored
-and must give the release operator the provider-specific restore procedure. The
-operator will use this sequence:
+Infrastructure provisioning ends with a **Baseline** snapshot: guest tools,
+accounts, source checkout, wheel, empty managed repository, and secure credential
+delivery are present, but neither managed unit, managed state, nor scenario
+environment has been seeded. The infrastructure manager must demonstrate that
+Baseline restores successfully and give the release operator the provider-specific
+snapshot and restore procedure. This restore proof is the snapshot prerequisite
+for infrastructure handback.
 
-1. **Baseline:** guest tools, accounts, source checkout, wheel, empty managed
-   repository, and secure credential delivery are present; neither managed unit,
-   managed state, nor either scenario environment has been seeded.
-2. **Render:** restore Baseline, prepare the selected scenario, and snapshot
-   immediately before `--print-unit`. Restore this snapshot after render-state
-   inspection.
-3. **Install-only:** from the restored Render snapshot, run `--no-start`, retain
-   its evidence, and snapshot that installed-but-inactive state. Restore Render
-   again before activation.
-4. **Fresh:** prepare a scenario with no legacy or candidate unit or state,
-   snapshot it, and use it for the full fresh-install cutover.
-5. **Upgrade:** restore Baseline, seed only the supported direct legacy launcher,
-   separate legacy environment, legacy unit, and fixture state, then snapshot it
-   for the full upgrade cutover.
-6. **Recovery:** restore the applicable Fresh or Upgrade scenario snapshot before
-   every interruption attempt. After an incomplete or unexecuted attempt, restore
-   it again before retrying.
+During live-gate execution, the release operator creates two scenario snapshots:
 
-This ordering prevents the render and install-only probes from contaminating the
-activation scenarios and gives each recovery attempt the same starting state
+1. **Fresh:** restore Baseline, prepare a scenario with no legacy or candidate
+   unit or state, then create the Fresh snapshot before any installer mode runs.
+2. **Upgrade:** restore Baseline, seed only the supported direct legacy launcher,
+   separate legacy environment, legacy unit, and fixture state, then create the
+   Upgrade snapshot before any candidate installer mode runs.
+
+For **each** scenario, the operator restores that scenario's snapshot, runs
+`--print-unit` and `--no-start`, and retains their evidence. The operator then
+restores the same scenario snapshot again before the full activating cutover.
+Every interruption or recovery attempt also begins by restoring the applicable
+Fresh or Upgrade snapshot; an incomplete or unexecuted attempt requires another
+restore before retrying. The infrastructure manager assists only if the supplied
+snapshot mechanism requires infrastructure authority.
+
+This ordering gives both scenarios independent render, install-only, activation,
+and recovery branches without letting an earlier probe contaminate later state
 (`docs/codereeve-release-gate.md:L301-L362`;
 `docs/codereeve-release-gate.md:L390-L401`; #396).
 
@@ -131,6 +133,9 @@ install, configure, enable, start, stop, or authenticate anything.
 export PROJECT_ROOT=/absolute/path/to/disposable-managed-repository
 export SERVICE_HOME=/absolute/path/to/dedicated-service-home
 export SERVICE_USER=codereeve
+export CODEREEVE_GITHUB_APP_KEY_PROVIDER=file  # file or bws
+
+set -euo pipefail
 
 uname -a
 test "$(ps -p 1 -o comm=)" = systemd
@@ -144,6 +149,18 @@ getent passwd "$SERVICE_USER"
 id "$SERVICE_USER"
 systemctl --version
 command -v sudo git uv gh claude
+case "$CODEREEVE_GITHUB_APP_KEY_PROVIDER" in
+  file) ;;
+  bws)
+    command -v bws
+    bws --version
+    ;;
+  *)
+    printf 'unsupported App-key provider: %s\n' \
+      "$CODEREEVE_GITHUB_APP_KEY_PROVIDER" >&2
+    exit 1
+    ;;
+esac
 sudo -V
 git --version
 uv --version
@@ -155,7 +172,8 @@ git -C "$PROJECT_ROOT" remote -v
 ps -eo pid=,uid=,user=,cgroup=,args=
 ```
 
-The `/proc` and `/sys/fs/cgroup` filesystem types must report `proc` and
+The block exits nonzero at the first failed prerequisite. The `/proc` and
+`/sys/fs/cgroup` filesystem types must report `proc` and
 `cgroup2`. Review the project and HOME mount results to confirm native local
 POSIX storage. The final process listing must show no unmanaged process using the
 service UID when the acceptance window begins. Do not include raw `remote -v` or
@@ -175,9 +193,9 @@ are true:
 - the empty managed repository has no eligible work and the provisioned
   credentials are limited to the test purpose;
 - outbound access and every required tool are available;
-- Baseline, Render, Install-only, Fresh, Upgrade, and Recovery restore points can
-  be identified and restored, including every relevant filesystem and systemd
-  state; and
+- Baseline covers every relevant filesystem and systemd state, its restore has
+  been demonstrated, and the operator has the snapshot procedure needed to
+  create and restore the later Fresh and Upgrade scenario snapshots; and
 - the infrastructure manager has completed the handback below without recording
   a secret value.
 
@@ -212,13 +230,18 @@ channel. Leave a field marked `pending` rather than inserting a credential.
 | Credential mechanism/provider | |
 | Secure credential handoff location | |
 | Baseline snapshot ID | |
-| Render snapshot ID | |
-| Install-only snapshot ID | |
-| Fresh snapshot ID | |
-| Upgrade snapshot ID | |
-| Recovery restore source(s) | |
 | Restore procedure reference | |
-| Restore test completed at | |
+| Baseline restore test completed at | |
+
+The release operator adds these execution-owned values to the private run record
+after provisioning handback; they are not infrastructure-readiness criteria:
+
+| Field | Release-operator record |
+|---|---|
+| Fresh scenario snapshot ID | |
+| Upgrade scenario snapshot ID | |
+| Fresh recovery restore source | |
+| Upgrade recovery restore source | |
 
 The release operator records the exact candidate commit, wheel hash, lock
 identity, installed provenance, tool versions, and snapshot IDs in the final
