@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-07-codereeve-rename-design.md` (approved; #390, #392–#398).
 
-**Status:** Preparation draft. Tasks 1–4 are scoped; Task 5 requires the release/closure sequencing decision below before external execution.
+**Status:** Local implementation authorized 2026-09-12. Tasks 1–4 are scoped; Task 5 requires the release/closure sequencing decision below before external execution.
 
 **touches:** `tests/release_gate/**`, `tests/fixtures/codereeve-upgrade-v1.json`, existing migration/service/build tests, release-gate documentation/evidence/release notes, README/current links, downstream issue bodies, integration/release authority, GitHub repository metadata/protection/Actions, and deployment remotes (#396).
 
@@ -27,12 +27,12 @@
 
 ## Verified starting point and execution gates
 
-Observed 2026-09-10:
+Updated 2026-09-12:
 
 | Evidence | Consequence |
 |---|---|
 | Integration HEAD `b6959fb4864d8b4a75a507e7e1b9f27f60cbc1f7` includes PR #401. | Package/configuration/service work is available for planning. |
-| PR #402 is open at `95dbfc88bbb59d6256fe516f2a47778fcacff51a`; its full CodeRabbit review completed with eight findings being addressed. | Refresh its live review state and integrate the approved identity work before claiming the complete 0.2 gate. |
+| PR #402 merged at `1787a9a0bc390886efed4b0ac70a46d5adc00434`; #395 is closed. This child branch contains that merge. | The identity implementation dependency is satisfied (PR #402; #395). |
 | `tests/service_cutover/conftest.py:L169-L192` writes a synthetic interpreter and console script. | Existing portable service tests do not prove an actual old installation remains executable. |
 | `tests/service_cutover/test_recovery.py:L200-L258` enumerates durable forward prefixes; `tests/test_migration_transaction.py:L570-L605` exercises observed migration boundaries. | Reuse these tests and extend missing coverage; do not replace production transactions with a second test-only implementation. |
 | `src/codereeve/verify_foundation.py:L839-L893` builds with `0.0.0+foundation`. | Foundation success is supporting evidence, not proof of a release-version 0.2.0 wheel. |
@@ -132,4 +132,4 @@ The legacy source candidate is immutable commit `e25749fc48aff6500744b2b202534f1
 
 All #396 acceptance criteria map to Tasks 1–5. Task 1 covers durable/canonical-only fixture readiness; Task 2 covers separate environments, compatibility, and distribution evidence; Task 3 covers failures, interruption, conflicts, quiescence, and redaction; Task 4 covers actual clean-host/upgrade/service execution; Task 5 covers integration, notes, repository metadata, downstream issue interfaces, and issue sequencing. Coverage mapping does not resolve the explicit external sequencing decision above (#396).
 
-Preparation only: no release gate, deployment, merge, release, or repository rename has been performed by this plan. PR #402 review fixes/merge and the live-host prerequisite remain open execution dependencies. Refresh their states before execution; this document is not a substitute for live evidence (#396; PR #402).
+Preparation only: no release gate, deployment, merge, release, or repository rename has been performed by this plan. The live-host prerequisite and Task 5 external sequencing remain open execution dependencies. Refresh their states before execution; this document is not a substitute for live evidence (#396; PR #402).
