@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 
@@ -385,15 +386,24 @@ class MigrationOperations(FileOperations):
         self.journal.storage.sync_directory(path)
 
     def create_journal(
-        self, root: Path, report: MigrationReport
+        self,
+        root: Path,
+        report: MigrationReport,
+        *,
+        before_create: Callable[[Path], None] | None = None,
     ) -> MigrationJournal:
-        """Link the real manifest durably before generic staging can begin."""
-        created = super().create_journal(root, report)
-        self.journal.record(
-            "effect_intent",
-            {"operation": "migrate", "path": str(created.manifest_path)},
-        )
-        return created
+        """Persist parent authority before creating any child artifacts."""
+
+        def authorize(manifest_path: Path) -> None:
+            """Bind the child identity before it can create any artifacts."""
+            self.journal.record(
+                "effect_intent",
+                {"operation": "migrate", "path": str(manifest_path)},
+            )
+            if before_create is not None:
+                before_create(manifest_path)
+
+        return super().create_journal(root, report, before_create=authorize)
 
     def verify_quiescence(
         self, project: Path, lease: WriterLease

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -40,6 +41,25 @@ def put(path: Path, content: bytes) -> None:
     """Create isolated fixture bytes."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)
+
+
+def restore_in_fresh_process(manifest: Path) -> RestorationStatus:
+    """Reconstruct migration recovery in a new bounded interpreter."""
+    script = """
+import sys
+from pathlib import Path
+from codereeve.migration.transaction import restore_migration
+from tests.test_migration_transaction import PortableOperations
+result = restore_migration(Path(sys.argv[1]), operations=PortableOperations())
+print(result.status.value)
+"""
+    child = subprocess.run(
+        [sys.executable, "-c", script, str(manifest)],
+        capture_output=True,
+        timeout=30,
+    )
+    assert child.returncode == 0, child.stderr.decode()
+    return RestorationStatus(child.stdout.decode().strip())
 
 
 @pytest.fixture
@@ -425,15 +445,26 @@ def test_backup_boundary_rechecks_source_after_external_edit(
     assert not list(source.parent.glob(source.name + ".codereeve-backup-*"))
 
 
-@pytest.mark.parametrize("prefix", range(17))
+@pytest.mark.parametrize(
+    "exhaustive",
+    [
+        False,
+        pytest.param(
+            True,
+            marks=pytest.mark.skipif(
+                sys.platform != "linux",
+                reason="exhaustive process-death matrix requires Linux",
+            ),
+        ),
+    ],
+)
 def test_process_death_at_each_durable_prefix_recovers_fresh(
-    context: MigrationContext,
-    prefix: int,
+    tmp_path: Path,
+    exhaustive: bool,
 ) -> None:
     """Fresh recovery covers created, planned, uncertain and after records."""
-    original = context.layout.legacy_config.read_bytes()
-    base = context.layout.canonical_state.parent.parent
     script = """
+import json
 import os
 import sys
 from pathlib import Path
@@ -445,37 +476,89 @@ class Crash(PortableOperations):
     count = -1
     def boundary(self, name, phase, path):
         super().boundary(name, phase, path)
-        boundaries = {("journal_create", "after"), ("journal_record", "after")}
-        if (name, phase) in boundaries:
-            self.count += 1
-            if self.count == int(sys.argv[2]):
-                os._exit(73)
+        self.count += 1
+        if self.count == int(sys.argv[2]):
+            payload = json.dumps([(n, p) for n, p, _ in self.trace])
+            os.write(1, payload.encode())
+            os._exit(73)
 base = Path(sys.argv[1])
 layout = PathLayout.for_environment(
     base / "project", {}, home=base / "home", etc_root=base / "etc"
 )
-apply_migration(MigrationContext(layout), operations=Crash())
+operations = Crash()
+apply_migration(MigrationContext(layout), operations=operations)
+os.write(1, json.dumps([(n, p) for n, p, _ in operations.trace]).encode())
 """
-    child = subprocess.run(
-        [sys.executable, "-c", script, str(base), str(prefix)],
-        capture_output=True,
-        timeout=30,
+    baseline = context.__wrapped__(tmp_path / "observe")
+    trace = PortableOperations()
+    apply_migration(baseline, operations=trace)
+    assert trace.trace
+    (tmp_path / "observed-trace.json").write_text(
+        json.dumps([(n, p) for n, p, _ in trace.trace]), encoding="utf-8"
     )
-    assert child.returncode == 73, child.stderr.decode()
-    manifest = next(
-        (base / "project" / ".codereeve-migration").glob("*/manifest.json")
+    selected = (
+        list(range(len(trace.trace) + 1))
+        if exhaustive
+        else [
+            next(
+                i
+                for i, (name, phase, _) in enumerate(trace.trace)
+                if (name, phase) == ("journal_create", "after")
+            ),
+            next(
+                i
+                for i, (name, phase, _) in enumerate(trace.trace)
+                if (name, phase) == ("publish", "after")
+            ),
+            len(trace.trace) - 1,
+            len(trace.trace),
+        ]
     )
-    restored = restore_migration(manifest, operations=PortableOperations())
-    assert restored.status is RestorationStatus.COMPLETE
-    assert context.layout.legacy_config.read_bytes() == original
-    assert (
-        context.layout.legacy_state / "heartbeat"
-    ).read_bytes() == b"alive\n"
-    assert not context.layout.canonical_state.exists()
-    assert (
-        restore_migration(manifest, operations=PortableOperations()).status
-        is RestorationStatus.NOT_NEEDED
-    )
+    for prefix in selected:
+        case = context.__wrapped__(tmp_path / str(prefix))
+        original = case.layout.legacy_config.read_bytes()
+        base = case.layout.canonical_state.parent.parent
+        child = subprocess.run(
+            [sys.executable, "-c", script, str(base), str(prefix)],
+            capture_output=True,
+            timeout=30,
+        )
+        assert child.returncode == (0 if prefix == len(trace.trace) else 73), (
+            prefix,
+            child.stderr.decode(),
+        )
+        assert json.loads(child.stdout) == [
+            [n, p] for n, p, _ in trace.trace[: prefix + 1]
+        ]
+        manifests = list(
+            (base / "project" / ".codereeve-migration").glob("*/manifest.json")
+        )
+        if not manifests:
+            assert case.layout.legacy_config.read_bytes() == original
+            assert not case.layout.canonical_state.exists()
+            continue
+        manifest = manifests[0]
+        restored = restore_in_fresh_process(manifest)
+        if load_incomplete_journal(
+            manifest.with_name("journal.jsonl")
+        ).manual_recovery:
+            assert restored is RestorationStatus.INCOMPLETE
+            assert case.layout.legacy_config.read_bytes() == original
+            assert not case.layout.canonical_state.exists()
+            continue
+        assert restored is RestorationStatus.COMPLETE, (
+            prefix,
+            trace.trace[prefix],
+        )
+        assert case.layout.legacy_config.read_bytes() == original
+        assert (
+            case.layout.legacy_state / "heartbeat"
+        ).read_bytes() == b"alive\n"
+        assert not case.layout.canonical_state.exists()
+        assert (
+            restore_migration(manifest, operations=PortableOperations()).status
+            is RestorationStatus.NOT_NEEDED
+        )
 
 
 @pytest.mark.parametrize("field", ["writers", "service"])
@@ -604,6 +687,109 @@ def test_every_observed_boundary_reverses_caught_failure(
         assert not case.layout.canonical_state.exists(), index
 
 
+def test_every_observed_reverse_boundary_resumes_caught_failure(
+    tmp_path: Path,
+) -> None:
+    """A second failure during rollback cannot discard restore authority."""
+    baseline = context.__wrapped__(tmp_path / "observe")
+    applied = apply_migration(baseline, operations=PortableOperations())
+    trace = PortableOperations()
+    assert (
+        restore_migration(applied.manifest_path, operations=trace).status
+        is RestorationStatus.COMPLETE
+    )
+    assert trace.trace
+    (tmp_path / "observed-trace.json").write_text(
+        json.dumps([(n, p) for n, p, _ in trace.trace]), encoding="utf-8"
+    )
+    for index in range(len(trace.trace)):
+        case = context.__wrapped__(tmp_path / str(index))
+        original = case.layout.legacy_config.read_bytes()
+        applied = apply_migration(case, operations=PortableOperations())
+
+        class FailureAtIndex(PortableOperations):
+            """Fail exactly once at a production reverse boundary."""
+
+            fired = False
+            failure_index = index
+
+            def boundary(self, name: str, phase: str, path: Path) -> None:
+                """Retain the observed sequence and inject a caught failure."""
+                super().boundary(name, phase, path)
+                if len(self.trace) - 1 == self.failure_index:
+                    self.fired = True
+                    raise OSError("TOP_SECRET")
+
+        operations = FailureAtIndex()
+        first = restore_migration(applied.manifest_path, operations=operations)
+        assert operations.fired, index
+        assert "TOP_SECRET" not in first.diagnostic
+        assert [(n, p) for n, p, _ in operations.trace] == [
+            (n, p) for n, p, _ in trace.trace[: index + 1]
+        ]
+        second = restore_migration(
+            applied.manifest_path, operations=PortableOperations()
+        )
+        assert second.status in {
+            RestorationStatus.COMPLETE,
+            RestorationStatus.NOT_NEEDED,
+        }, index
+        assert case.layout.legacy_config.read_bytes() == original
+        assert not case.layout.canonical_state.exists()
+        assert all(path.exists() for path in applied.backups)
+
+
+@pytest.mark.parametrize("failure", ["directory_fsync", "copy", "file_fsync"])
+@pytest.mark.parametrize("when", ["before", "after"])
+def test_partial_reverse_copy_retries_without_reusing_private_stage(
+    context: MigrationContext,
+    failure: str,
+    when: str,
+) -> None:
+    """Partial private copies cannot permanently prevent original recovery."""
+    original = context.layout.legacy_config.read_bytes()
+    applied = apply_migration(context, operations=PortableOperations())
+
+    class FailPrivateCopy(PortableOperations):
+        """Stop within private reverse-copy creation, retaining real files."""
+
+        fired = False
+        copying = False
+
+        def boundary(self, name: str, phase: str, path: Path) -> None:
+            super().boundary(name, phase, path)
+            if name == "copy" and ".restore" in str(path):
+                self.copying = True
+            if (
+                phase == when
+                and name == failure
+                and (
+                    ".restore" in str(path)
+                    or (name == "file_fsync" and self.copying)
+                )
+            ):
+                self.fired = True
+                raise OSError("injected private copy failure")
+
+    operations = FailPrivateCopy()
+    first = restore_migration(applied.manifest_path, operations=operations)
+    assert operations.fired
+    assert first.status is RestorationStatus.INCOMPLETE
+    root = context.layout.canonical_state.parent.parent
+    retained = [path for path in root.rglob("*") if ".restore" in path.name]
+    assert retained
+    second = restore_migration(
+        applied.manifest_path, operations=PortableOperations()
+    )
+    assert second.status is RestorationStatus.COMPLETE
+    assert context.layout.legacy_config.read_bytes() == original
+    assert (
+        context.layout.legacy_state / "heartbeat"
+    ).read_bytes() == b"alive\n"
+    assert all(path.exists() for path in applied.backups)
+    assert all(path.exists() for path in retained)
+
+
 def test_state_copy_streams_instead_of_reading_whole_runtime_log(
     context: MigrationContext,
     monkeypatch: pytest.MonkeyPatch,
@@ -681,15 +867,26 @@ def test_unrelated_default_value_does_not_change_product_path_rewrite(
     )
 
 
-@pytest.mark.parametrize("prefix", range(11))
+@pytest.mark.parametrize(
+    "exhaustive",
+    [
+        False,
+        pytest.param(
+            True,
+            marks=pytest.mark.skipif(
+                sys.platform != "linux",
+                reason="exhaustive process-death matrix requires Linux",
+            ),
+        ),
+    ],
+)
 def test_process_death_during_reverse_recovery_resumes(
-    context: MigrationContext,
-    prefix: int,
+    tmp_path: Path,
+    exhaustive: bool,
 ) -> None:
     """Repeated recovery resumes rollback-before and rollback-after records."""
-    original = context.layout.legacy_config.read_bytes()
-    result = apply_migration(context, operations=PortableOperations())
     script = """
+import json
 import os
 import sys
 from pathlib import Path
@@ -699,31 +896,94 @@ class Crash(PortableOperations):
     count = -1
     def boundary(self, name, phase, path):
         super().boundary(name, phase, path)
-        if (name, phase) == ("journal_record", "after"):
-            self.count += 1
-            if self.count == int(sys.argv[2]):
-                os._exit(73)
-restore_migration(Path(sys.argv[1]), operations=Crash())
+        self.count += 1
+        if self.count == int(sys.argv[2]):
+            payload = json.dumps([(n, p) for n, p, _ in self.trace])
+            os.write(1, payload.encode())
+            os._exit(73)
+operations = Crash()
+restore_migration(Path(sys.argv[1]), operations=operations)
+os.write(1, json.dumps([(n, p) for n, p, _ in operations.trace]).encode())
 """
-    child = subprocess.run(
-        [sys.executable, "-c", script, str(result.manifest_path), str(prefix)],
-        capture_output=True,
-        timeout=30,
-    )
-    assert child.returncode == 73, child.stderr.decode()
-    restored = restore_migration(
-        result.manifest_path, operations=PortableOperations()
-    )
-    assert restored.status in {
-        RestorationStatus.COMPLETE,
-        RestorationStatus.NOT_NEEDED,
-    }
-    assert context.layout.legacy_config.read_bytes() == original
+    baseline = context.__wrapped__(tmp_path / "observe")
+    applied = apply_migration(baseline, operations=PortableOperations())
+    trace = PortableOperations()
     assert (
-        context.layout.legacy_state.joinpath("heartbeat").read_bytes()
-        == b"alive\n"
+        restore_migration(applied.manifest_path, operations=trace).status
+        is RestorationStatus.COMPLETE
     )
-    assert all(path.exists() for path in result.backups)
+    assert trace.trace
+    (tmp_path / "observed-trace.json").write_text(
+        json.dumps([(n, p) for n, p, _ in trace.trace]), encoding="utf-8"
+    )
+    selected = (
+        list(range(len(trace.trace) + 1))
+        if exhaustive
+        else [
+            next(
+                i
+                for i, (name, phase, _) in enumerate(trace.trace)
+                if (name, phase) == ("journal_record", "after")
+            ),
+            len(trace.trace) - 1,
+            len(trace.trace),
+        ]
+    )
+    if not exhaustive:
+        first_copy = next(
+            i
+            for i, (name, phase, path) in enumerate(trace.trace)
+            if (name, phase) == ("copy", "before") and ".restore" in str(path)
+        )
+        prior_record = max(
+            i
+            for i, (name, phase, _) in enumerate(trace.trace[:first_copy])
+            if (name, phase) == ("journal_record", "after")
+        )
+        for name in ("directory_fsync", "copy", "file_fsync"):
+            for phase in ("before", "after"):
+                selected.append(
+                    next(
+                        i
+                        for i, (observed, when, _) in enumerate(trace.trace)
+                        if i > prior_record
+                        and (observed, when) == (name, phase)
+                    )
+                )
+        selected = sorted(set(selected))
+    for prefix in selected:
+        case = context.__wrapped__(tmp_path / str(prefix))
+        original = case.layout.legacy_config.read_bytes()
+        result = apply_migration(case, operations=PortableOperations())
+        child = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                script,
+                str(result.manifest_path),
+                str(prefix),
+            ],
+            capture_output=True,
+            timeout=30,
+        )
+        assert child.returncode == (0 if prefix == len(trace.trace) else 73), (
+            prefix,
+            child.stderr.decode(),
+        )
+        assert json.loads(child.stdout) == [
+            [n, p] for n, p, _ in trace.trace[: prefix + 1]
+        ]
+        restored = restore_in_fresh_process(result.manifest_path)
+        assert restored in {
+            RestorationStatus.COMPLETE,
+            RestorationStatus.NOT_NEEDED,
+        }
+        assert case.layout.legacy_config.read_bytes() == original
+        assert (
+            case.layout.legacy_state.joinpath("heartbeat").read_bytes()
+            == b"alive\n"
+        )
+        assert all(path.exists() for path in result.backups)
 
 
 def test_host_only_apply_and_restore(tmp_path: Path) -> None:

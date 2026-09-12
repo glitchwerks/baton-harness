@@ -290,18 +290,29 @@ def rollback(
                 and e["metadata"].get("operation") == "migrate"
             )
             with effect(journal, "restore_migration"):
-                restored = restore_migration(
-                    manifest,
-                    operations=MigrationOperations(journal, backend, uids),
-                    lease=lease,
-                )
-                if restored.status not in {
-                    RestorationStatus.COMPLETE,
-                    RestorationStatus.NOT_NEEDED,
-                }:
-                    raise CutoverError(
-                        "generic migration restoration is incomplete"
+                journal.storage.safe(manifest)
+                try:
+                    manifest.parent.lstat()
+                except FileNotFoundError:
+                    # The durable intent can precede child creation. An
+                    # absent directory proves no retained child artifacts;
+                    # original inputs must independently remain unchanged.
+                    from .selection import verify_original_inputs
+
+                    verify_original_inputs(journal, units=False)
+                else:
+                    restored = restore_migration(
+                        manifest,
+                        operations=MigrationOperations(journal, backend, uids),
+                        lease=lease,
                     )
+                    if restored.status not in {
+                        RestorationStatus.COMPLETE,
+                        RestorationStatus.NOT_NEEDED,
+                    }:
+                        raise CutoverError(
+                            "generic migration restoration is incomplete"
+                        )
         with effect(journal, "restore_selection"):
             restore_selection(journal, backend)
             backend.reload()

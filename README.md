@@ -620,6 +620,21 @@ code, commit, push branches, and open GitHub PRs autonomously. Before running:
 
 ## Usage
 
+### Release-gate development command
+
+Before a release, build the exact clean candidate commit and run the explicit
+installed-wheel upgrade test on Python 3.10 and 3.13. The test requires old and
+candidate wheel paths plus their locked runtime requirement exports; the full
+commands and evidence contract are in
+[docs/codereeve-release-gate.md](docs/codereeve-release-gate.md).
+The [0.2.0 release notes](docs/releases/0.2.0.md) remain explicitly unreleased
+until the live-systemd, integration, publication, and rename gates in #396 pass.
+
+```bash
+CODEREEVE_RELEASE_PYTHON=3.13 \
+  .venv/Scripts/python.exe -m pytest tests/release_gate/test_installed_upgrade.py
+```
+
 ### Running the daemon
 
 `codereeve daemon` is the always-on poll loop that watches a GitHub repo for `agent-ready`

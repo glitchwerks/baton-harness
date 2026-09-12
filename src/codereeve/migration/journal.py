@@ -619,6 +619,7 @@ class MigrationJournal:
         *,
         directory_sync: Callable[[Path], None] | None = None,
         file_sync: Callable[[int], None] | None = None,
+        before_create: Callable[[Path], None] | None = None,
     ) -> MigrationJournal:
         """Create exclusive private artifacts, inventorying metadata only.
 
@@ -628,6 +629,8 @@ class MigrationJournal:
             now: A timezone-aware timestamp, normalized to UTC.
             directory_sync: Optional explicit directory durability capability.
             file_sync: Optional file durability capability retained on writer.
+            before_create: Persist parent authority for the manifest path
+                before any child directory or file is created.
 
         Returns:
             Durable journal containing its initial created event.
@@ -659,6 +662,9 @@ class MigrationJournal:
                 for action in report.actions
                 for entry in _snapshot(action.source)
             )
+            directory = transaction_root / transaction_id
+            if before_create is not None:
+                before_create(directory / "manifest.json")
             if not transaction_root.exists():
                 _private_directory(transaction_root)
                 sync_directory(transaction_root.parent)
@@ -669,7 +675,6 @@ class MigrationJournal:
                 raise JournalError(
                     "transaction root permissions are not private"
                 )
-            directory = transaction_root / transaction_id
             _private_directory(directory)
             sync_directory(transaction_root)
             data = {

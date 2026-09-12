@@ -86,6 +86,45 @@ def test_journal_events_reopen_and_contain_metadata_only(
     assert evidence.verified_transactions == (journal.path.parent,)
 
 
+@pytest.mark.parametrize("abort", [False, True])
+def test_parent_authority_precedes_child_artifact_creation(
+    tmp_path: Path,
+    report: MigrationReport,
+    portable_fsync: None,
+    abort: bool,
+) -> None:
+    """The optional ownership callback runs before child filesystem effects."""
+    root = tmp_path / "transactions"
+    authorized: list[Path] = []
+
+    class Interrupted(BaseException):
+        """Simulate loss of the caller while persisting parent authority."""
+
+    def authorize(path: Path) -> None:
+        assert not root.exists()
+        assert path.name == "manifest.json"
+        authorized.append(path)
+        if abort:
+            raise Interrupted()
+
+    if abort:
+        with pytest.raises(Interrupted):
+            MigrationJournal.create(
+                root,
+                report,
+                datetime.now(timezone.utc),
+                before_create=authorize,
+            )
+        assert not root.exists()
+    else:
+        journal = MigrationJournal.create(
+            root, report, datetime.now(timezone.utc), before_create=authorize
+        )
+        assert authorized == [journal.manifest_path]
+        assert not load_incomplete_journal(journal.path).manual_recovery
+    assert len(authorized) == 1
+
+
 @pytest.mark.parametrize(
     "damage", ["partial", "checksum", "extra_field", "empty"]
 )
