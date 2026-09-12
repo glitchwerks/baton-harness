@@ -300,22 +300,49 @@ script, its matching separate environment, the legacy unit and fixture state.
 Custom paths and unrelated Symphony data must remain unchanged
 (`docs/codereeve-service-cutover.md:L78-L88`; #396).
 
-For each scenario, render first and verify that neither unit's enabled or active
-state changed. Then install without activation and require `status: installed`
-plus the reported journal path. The command grammar permits only the modes and
-selection flags shown here (`src/codereeve/service_cutover/cli.py:L28-L41`;
+For each scenario, capture both units' enabled and active states, render, capture
+the same states again, and require exact equality before proceeding. The capture
+retains each command's stdout and status separately, including `not-found` and
+other absent-unit results. Keep the state files and raw rendered unit private:
+they can contain installation paths or environment selections. Then install
+without activation and require `status: installed` plus the reported journal
+path. The command grammar permits only the modes and selection flags shown here
+(`src/codereeve/service_cutover/cli.py:L28-L41`;
 `src/codereeve/service_cutover/cli.py:L243-L283`).
 
 ```bash
+set -euo pipefail
+
+RENDER_EVIDENCE="$(mktemp -d)"
+chmod 700 "$RENDER_EVIDENCE"
+
+capture_unit_states() {
+  destination="$1"
+  : >"$destination"
+  for unit in bh-daemon.service codereeve.service; do
+    for query in is-enabled is-active; do
+      if output="$(systemctl --system --no-pager "$query" "$unit" 2>/dev/null)"; then
+        status=0
+      else
+        status=$?
+      fi
+      printf '%s\t%s\tstatus=%s\tstdout=%s\n' \
+        "$unit" "$query" "$status" "$output" >>"$destination"
+    done
+  done
+}
+
+capture_unit_states "$RENDER_EVIDENCE/before.tsv"
+
 "$HARNESS_DIR/bin/install-daemon-service.sh" \
   --harness-dir "$HARNESS_DIR" \
   --environment "$CANDIDATE_ENV" \
   --project-root "$PROJECT_ROOT" \
   --user "$SERVICE_USER" \
-  --print-unit
+  --print-unit >"$RENDER_EVIDENCE/rendered-unit.txt"
 
-systemctl --system --no-pager is-enabled bh-daemon.service codereeve.service || true
-systemctl --system --no-pager is-active bh-daemon.service codereeve.service || true
+capture_unit_states "$RENDER_EVIDENCE/after.tsv"
+cmp "$RENDER_EVIDENCE/before.tsv" "$RENDER_EVIDENCE/after.tsv"
 
 "$HARNESS_DIR/bin/install-daemon-service.sh" \
   --harness-dir "$HARNESS_DIR" \
@@ -355,17 +382,117 @@ identities, digests, states, and assertions.
 
 ### Exercise interruption and recovery
 
-Use the test-only process interruption harness and exact observed boundary
-identities implemented for #396. Do not add fault-injection flags to the
-production installer. Restore a disposable snapshot before each case, terminate
-the coordinator only at the selected test-harness boundary, and recover from
-the journal path reported for that transaction. Recovery accepts the durable
-journal directly (`src/codereeve/service_cutover/cli.py:L257-L270`; #396):
+The process-death tests use a modeled subprocess harness and fake service
+manager. They do not drive a real systemd host
+(`tests/service_cutover/process_support.py`; #396). On the disposable live host,
+restore the scenario snapshot and run the installed launcher in the background.
+The launcher uses `exec`, so its PID becomes the selected candidate Python
+coordinator (`bin/install-daemon-service.sh:L56-L74`). Capture the existing
+journal paths first, then stop the coordinator as soon as one new journal
+appears. If the process exits before `SIGSTOP` succeeds, discard that run,
+restore the snapshot, and retry; it is not interruption evidence.
+
+The following procedure records the exact process executable and module, the
+new private journal, the last durable record observed before termination, both
+signals, and the shell's killed-process status. The journal layout is
+`$PROJECT_ROOT/.codereeve-cutover/<32-hex>/journal.jsonl`
+(`src/codereeve/service_cutover/journal.py:L419-L455`;
+`src/codereeve/service_cutover/journal.py:L498-L505`). Keep `LIVE_EVIDENCE`, the
+raw journal record, and coordinator output private.
 
 ```bash
+set -euo pipefail
+
+LIVE_EVIDENCE="$(mktemp -d)"
+chmod 700 "$LIVE_EVIDENCE"
+find "$PROJECT_ROOT/.codereeve-cutover" -mindepth 2 -maxdepth 2 \
+  -name journal.jsonl -print 2>/dev/null | sort \
+  >"$LIVE_EVIDENCE/journals-before.txt"
+
 "$HARNESS_DIR/bin/install-daemon-service.sh" \
-  --recover /absolute/path/from-the-interrupted-transaction/journal.jsonl
+  --harness-dir "$HARNESS_DIR" \
+  --environment "$CANDIDATE_ENV" \
+  --project-root "$PROJECT_ROOT" \
+  --user "$SERVICE_USER" \
+  >"$LIVE_EVIDENCE/coordinator.txt" 2>&1 &
+COORDINATOR_PID=$!
+printf 'pid=%s\n' "$COORDINATOR_PID" >"$LIVE_EVIDENCE/process.txt"
+
+while kill -0 "$COORDINATOR_PID" 2>/dev/null; do
+  find "$PROJECT_ROOT/.codereeve-cutover" -mindepth 2 -maxdepth 2 \
+    -name journal.jsonl -print 2>/dev/null | sort \
+    >"$LIVE_EVIDENCE/journals-now.txt"
+  mapfile -t NEW_JOURNALS < <(
+    comm -13 "$LIVE_EVIDENCE/journals-before.txt" \
+      "$LIVE_EVIDENCE/journals-now.txt"
+  )
+  if (( ${#NEW_JOURNALS[@]} == 1 )); then
+    JOURNAL_PATH="${NEW_JOURNALS[0]}"
+    kill -STOP "$COORDINATOR_PID"
+    break
+  fi
+  if (( ${#NEW_JOURNALS[@]} > 1 )); then
+    printf 'more than one new journal; restore the snapshot\n' >&2
+    exit 1
+  fi
+done
+
+kill -0 "$COORDINATOR_PID"
+EXPECTED_PYTHON="$(readlink -f "$CANDIDATE_ENV/bin/python")"
+test "$(readlink -f "/proc/$COORDINATOR_PID/exe")" = "$EXPECTED_PYTHON"
+mapfile -d '' -t COORDINATOR_ARGV <"/proc/$COORDINATOR_PID/cmdline"
+test "${COORDINATOR_ARGV[1]}" = "-I"
+test "${COORDINATOR_ARGV[2]}" = "-m"
+test "${COORDINATOR_ARGV[3]}" = "codereeve.service_cutover.cli"
+require_argv_pair() {
+  expected_option="$1"
+  expected_value="$2"
+  for ((index = 4; index + 1 < ${#COORDINATOR_ARGV[@]}; index++)); do
+    if [[ "${COORDINATOR_ARGV[index]}" == "$expected_option" &&
+          "${COORDINATOR_ARGV[index + 1]}" == "$expected_value" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+require_argv_pair --harness-dir "$HARNESS_DIR"
+require_argv_pair --environment "$CANDIDATE_ENV"
+require_argv_pair --project-root "$PROJECT_ROOT"
+require_argv_pair --user "$SERVICE_USER"
+printf '%s\n' "${COORDINATOR_ARGV[@]}" >"$LIVE_EVIDENCE/argv.txt"
+while ! grep -q '^State:[[:space:]]*T' "/proc/$COORDINATOR_PID/status"; do
+  kill -0 "$COORDINATOR_PID"
+done
+ps -o pid=,ppid=,user=,stat=,lstart=,args= -p "$COORDINATOR_PID" \
+  >>"$LIVE_EVIDENCE/process.txt"
+printf 'signal=SIGSTOP\n' >>"$LIVE_EVIDENCE/process.txt"
+tail -n 1 "$JOURNAL_PATH" >"$LIVE_EVIDENCE/last-durable-record.json"
+
+kill -KILL "$COORDINATOR_PID"
+if wait "$COORDINATOR_PID"; then
+  COORDINATOR_STATUS=0
+else
+  COORDINATOR_STATUS=$?
+fi
+printf 'signal=SIGKILL\nwait_status=%s\njournal=%s\n' \
+  "$COORDINATOR_STATUS" "$JOURNAL_PATH" >>"$LIVE_EVIDENCE/process.txt"
+test "$COORDINATOR_STATUS" -eq 137
+
+"$HARNESS_DIR/bin/install-daemon-service.sh" \
+  --environment "$CANDIDATE_ENV" \
+  --recover "$JOURNAL_PATH" \
+  >"$LIVE_EVIDENCE/recovery.txt" 2>&1
 ```
+
+Record the `event`, `sequence`, and checksum from the observed last durable
+record as the interruption identity, then classify recovery from the command's
+`status` and `recovery` output. This proves recovery from that operator-timed
+durable prefix only. Timing a signal after journal discovery cannot select a
+production primitive deterministically or cover every forward and reverse
+boundary. Deterministic live interruption coverage therefore remains unmet;
+the portable modeled matrices remain separate test evidence. Do not add a
+production fault-injection flag or describe their boundary identifiers as live
+host observations (`src/codereeve/service_cutover/journal.py:L523-L554`; #396).
 
 Exit status alone is insufficient: only `status: installed` or
 `status: committed` is successful (`src/codereeve/service_cutover/cli.py:L233-L240`).
