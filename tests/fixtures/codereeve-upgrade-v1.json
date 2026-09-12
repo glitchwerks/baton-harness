@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "legacy_source_revision": "fb503ba3a5bc89e447a37983e3e0eff1af2419a4",
+  "legacy_source_revision": "e25749fc48aff6500744b2b202534f1d56c9b834",
   "files": [
     {
       "path": "project/.bh/config.env",

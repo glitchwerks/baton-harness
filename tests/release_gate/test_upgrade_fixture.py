@@ -45,7 +45,7 @@ def test_load_fixture_exposes_versioned_release_contract() -> None:
     fixture = load_fixture(FIXTURE_PATH)
     assert fixture["schema_version"] == 1
     assert fixture["legacy_source_revision"] == (
-        "fb503ba3a5bc89e447a37983e3e0eff1af2419a4"
+        "e25749fc48aff6500744b2b202534f1d56c9b834"
     )
     assert fixture["files"]
     assert fixture["canonical_assertions"]
