@@ -249,6 +249,13 @@ provisioned disposable repository, credential source, and the provider's
 documented snapshot identifier before starting. Keep provider commands and
 credential values out of this repository.
 
+Before running this section, have the infrastructure manager provision and hand
+back the guest described in
+[`docs/verification/codereeve-live-vm-provisioning.md`](verification/codereeve-live-vm-provisioning.md).
+That handoff records the AMD-HALO guest, identities, storage, tools, disposable
+repository, credential mechanism, and tested snapshot/restore points without
+putting provider-specific secrets in release evidence (#396).
+
 ### Prepare the candidate and host
 
 Set these paths to the selected host's real values. `HARNESS_DIR` must be the
