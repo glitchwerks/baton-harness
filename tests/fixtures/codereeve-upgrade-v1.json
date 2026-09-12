@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "legacy_source_revision": "fb503ba3a5bc89e447a37983e3e0eff1af2419a4",
+  "files": [
+    {
+      "path": "project/.bh/config.env",
+      "content": "# managed legacy configuration\nBH_REPO_OWNER=fixture-owner\nBH_REPO_NAME=fixture-repository\nBH_RUNLOG_PATH=.baton-harness/runlog.jsonl\nBH_HEARTBEAT_FILE=.baton-harness/heartbeat\nBH_DAEMON_SECRETS_PATH=/etc/bh-daemon/secrets.env\nGH_HOST=github.example.invalid\nCUSTOM_PLUGIN_PATH=/srv/operator/plugin\n",
+      "permissions": 384
+    },
+    {
+      "path": "project/.bh/ruleset-baseline.json",
+      "content": "{\"required_status_checks\":[\"synthetic-check\"]}\n",
+      "permissions": 420
+    },
+    {
+      "path": "project/.baton-harness/runlog.jsonl",
+      "content": "{\"event\":\"synthetic-run\"}\n",
+      "permissions": 384
+    },
+    {
+      "path": "project/.baton-harness/heartbeat",
+      "content": "synthetic-heartbeat\n",
+      "permissions": 384
+    },
+    {
+      "path": "home/.config/baton-harness/host.env",
+      "content": "BH_VENV=/srv/operator/custom-venv\nBH_WORKTREE_GC=1\nTHIRD_PARTY_CACHE=/srv/operator/cache\n",
+      "permissions": 384
+    },
+    {
+      "path": "etc/bh-daemon/secrets.env",
+      "content": "BWS_ACCESS_TOKEN=synthetic-fixture-credential\nBH_SLACK_WEBHOOK_URL=https://hooks.example.invalid/synthetic\n",
+      "permissions": 384
+    },
+    {
+      "path": "project/.symphony/sentinel.json",
+      "content": "{\"owner\":\"symphony\",\"state\":\"untouched\"}\n",
+      "permissions": 420
+    }
+  ],
+  "canonical_assertions": {
+    "project/.codereeve/config.env": {
+      "CODEREEVE_REPO_OWNER": "fixture-owner",
+      "CODEREEVE_REPO_NAME": "fixture-repository",
+      "CODEREEVE_RUNLOG_PATH": ".codereeve/runlog.jsonl",
+      "CODEREEVE_HEARTBEAT_FILE": ".codereeve/heartbeat",
+      "CODEREEVE_DAEMON_SECRETS_PATH": "/etc/codereeve/secrets.env",
+      "GH_HOST": "github.example.invalid",
+      "CUSTOM_PLUGIN_PATH": "/srv/operator/plugin"
+    },
+    "home/.config/codereeve/host.env": {
+      "CODEREEVE_VENV": "/srv/operator/custom-venv",
+      "CODEREEVE_WORKTREE_GC": "1",
+      "THIRD_PARTY_CACHE": "/srv/operator/cache"
+    },
+    "etc/codereeve/secrets.env": {
+      "BWS_ACCESS_TOKEN": "synthetic-fixture-credential",
+      "CODEREEVE_SLACK_WEBHOOK_URL": "https://hooks.example.invalid/synthetic"
+    }
+  }
+}
