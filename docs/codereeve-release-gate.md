@@ -407,8 +407,19 @@ set -euo pipefail
 
 LIVE_EVIDENCE="$(mktemp -d)"
 chmod 700 "$LIVE_EVIDENCE"
-find "$PROJECT_ROOT/.codereeve-cutover" -mindepth 2 -maxdepth 2 \
-  -name journal.jsonl -print 2>/dev/null | sort \
+journal_paths() {
+  local journal_root="$PROJECT_ROOT/.codereeve-cutover"
+  if [[ ! -e "$journal_root" ]]; then
+    return 0
+  fi
+  if [[ ! -d "$journal_root" ]]; then
+    printf 'journal root is not a directory: %s\n' "$journal_root" >&2
+    return 1
+  fi
+  find "$journal_root" -mindepth 2 -maxdepth 2 \
+    -name journal.jsonl -print | sort
+}
+journal_paths \
   >"$LIVE_EVIDENCE/journals-before.txt"
 
 "$HARNESS_DIR/bin/install-daemon-service.sh" \
@@ -439,8 +450,7 @@ print(json.dumps(
 }
 
 while kill -0 "$COORDINATOR_PID" 2>/dev/null; do
-  find "$PROJECT_ROOT/.codereeve-cutover" -mindepth 2 -maxdepth 2 \
-    -name journal.jsonl -print 2>/dev/null | sort \
+  journal_paths \
     >"$LIVE_EVIDENCE/journals-now.txt"
   mapfile -t NEW_JOURNALS < <(
     comm -13 "$LIVE_EVIDENCE/journals-before.txt" \
@@ -582,12 +592,8 @@ the nested pytest base-temporary paths (`tests/service_cutover/test_recovery.py`
 mkdir -p .tmp
 
 .venv/bin/python -m pytest \
-  'tests/service_cutover/test_recovery.py::test_recovery_of_each_durable_forward_prefix[True-forward-upgrade]' \
-  'tests/service_cutover/test_recovery.py::test_recovery_of_each_durable_forward_prefix[True-forward-installed]' \
-  'tests/service_cutover/test_recovery.py::test_recovery_of_each_durable_forward_prefix[True-reverse-fresh]' \
-  'tests/service_cutover/test_recovery.py::test_recovery_of_each_durable_forward_prefix[True-reverse-upgrade]' \
-  'tests/service_cutover/test_recovery.py::test_recovery_of_each_durable_forward_prefix[True-reverse-installed]' \
-  -x -q --basetemp=.tmp/task3-linux-caught-remainder
+  tests/service_cutover/test_recovery.py::test_recovery_of_each_durable_forward_prefix \
+  -x -q --basetemp=.tmp/task3-linux-forward-prefixes
 
 .venv/bin/python -m pytest \
   tests/service_cutover/test_recovery.py \
