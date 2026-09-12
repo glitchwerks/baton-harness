@@ -1,5 +1,73 @@
 # CodeReeve release-gate upgrade fixture
 
+## Failure and interruption coverage
+
+The #396 failure matrix derives occurrence indices from complete production
+observation runs. It records separate fresh, upgraded, and install-only then
+upgraded service traces, and a health-failure trace that traverses reverse
+recovery for each mode. Repeated events retain distinct indices; each injected
+row must fire and match its observed trace prefix. Fixed numeric ceilings are
+not coverage evidence (`tests/service_cutover/test_recovery.py`,
+`tests/test_migration_transaction.py`; #396).
+
+| Production boundary or refusal | Test/evidence | Classification |
+| --- | --- | --- |
+| Journal creation and every service record, before and after append | `test_recovery_of_each_durable_forward_prefix` observes `CutoverJournal.record`, including reverse restoration records | Portable caught `CutoverError` and caught `BaseException` interruption; no process death |
+| Old stop, manager reload, candidate start, health, enablement, old activation, before and after each call | Same matrix observes production coordinator calls through its injected service backend | Portable service model; original files, executable bytes, and activation links are checked before old activation |
+| Migration copy, rewrite, verification, file flush, directory flush, backup, publication, journal creation/append, and final verification | `test_every_observed_boundary_reverses_caught_failure` enumerates every `FileOperations.boundary` occurrence | Real disposable files; directory flush is modeled |
+| Reverse migration effects and durable reverse records | `test_every_observed_reverse_boundary_resumes_caught_failure` independently observes production `restore_migration` | Portable caught failure, then fresh restoration and retained backups |
+| Every observed forward and reverse process boundary | `test_actual_process_death_reloads_each_observed_service_boundary`; migration process tests with `exhaustive=True` | Linux-only exhaustive `os._exit(73)` matrix; skipped on Windows |
+| Empty service authority, candidate started before commit, durable commit, reverse filesystem restoration | `test_portable_process_death_recovery_smoke` | Four representative real subprocess deaths and separate recovery interpreters; portable model |
+| Migration journal creation, publication, final event, reverse journal/final event | Migration process tests with `exhaustive=False` select explicit classes from observed traces and include exhaustion | Bounded portable real-process regression coverage; separate recovery interpreter |
+| Truncated, altered-checksum, and unknown service authority | `test_corrupt_cutover_authority_refuses_before_service_actions` | Coordinator refusal with no backend events |
+| Stale heartbeat, changed invocation, missing heartbeat, timeout | `test_health_requires_fresh_heartbeat_and_stable_invocation`, `test_heartbeat_is_bound_to_process_and_time`, `test_timed_out_verification_job_requires_proven_cleanup` | Existing portable health/manager-model negatives |
+| Critical or forged strict doctor evidence; secret-bearing diagnostics | `test_doctor_refuses_incomplete_or_forged_evidence`, `test_invalid_json_is_value_free`, `test_command_failure_does_not_echo_output` | Existing strict-gate and redaction negatives |
+| Unknown writers, environment aliases, filesystem coexistence | `test_outside_worker_refuses_preflight`, `test_external_uid_project_writer_is_rejected`, `test_readonly_blockers_precede_even_lock_creation` | Existing portable refusal tests |
+| Receipt identity, interrupted publication, and durability retry | `test_invalid_receipt_never_opens`, `test_interrupted_publication_reestablishes_durability`, `test_interrupted_creation_and_publication_retry` | Existing portable readiness tests |
+
+Before a valid initial service journal exists, recovery must refuse
+incomplete authority without service actions. Once journal authority exists,
+pre-commit cases require complete rollback. After the durable `committed`
+record, recovery must finish forward and cannot restart the old service.
+The expected side is captured at interruption, not inferred from a successful
+recovery result. Original backups are verified after recovery; every recorded
+service-state transition must have at most one active daemon
+(`tests/service_cutover/process_support.py`; #396).
+
+The migration journal's optional `before_create` callback durably binds its
+manifest path to the service transaction before creating child artifacts.
+Recovery treats only a safely absent child directory with unchanged original
+inputs as an unstarted effect. Existing partial, corrupt, foreign, or linked
+artifacts still block completion
+(`src/codereeve/migration/journal.py`,
+`src/codereeve/service_cutover/coordinator.py`,
+`src/codereeve/service_cutover/recovery.py`; #396).
+
+Each reverse-copy attempt uses a fresh private sibling. A failed private
+copy is retained rather than reused; the immutable backup and complete new
+stage must verify before atomic restoration to the absent original path.
+Repeated interruptions therefore retain additional evidence and consume
+additional disk until operator cleanup
+(`src/codereeve/migration/transaction.py`; #396).
+
+The process helper stores only disposable fake-manager state and modeled POSIX
+metadata in `external-state.json`; a new interpreter reloads those values.
+It does not serialize an in-memory coordinator or substitute its own
+transaction algorithm. Transaction authority is reopened through production
+`recover`/`restore_migration` APIs. This proves interpreter-loss recovery on a
+live filesystem, not loss of power, directory-fsync durability, real systemd
+enablement, or actual cgroup quiescence
+(`tests/service_cutover/process_support.py`; #396).
+
+Exhaustive Linux process matrices are an authored gate, not completed Windows
+evidence. Their runner/runtime must be measured on Linux before making CI
+duration claims. A separately authorized Linux/systemd host must still prove
+real service identity, cgroups, fresh heartbeat, activation selection, and
+durability. Neither portable test success nor a Linux test using the fake
+backend satisfies that host acceptance requirement (#396).
+
+## Upgrade fixture contract
+
 `tests/fixtures/codereeve-upgrade-v1.json` is the durable synthetic input
 for the CodeReeve 0.2.0 upgrade gate. It represents the legacy managed
 configuration, runtime state, host configuration, system secrets, ruleset

@@ -202,6 +202,18 @@ def cutover_context(
     tmp_path: Path, spec: ServiceSpec, monkeypatch: pytest.MonkeyPatch
 ) -> CutoverContext:
     """Run real policy/storage with only POSIX service authority injected."""
+    return make_cutover_context(tmp_path, spec, monkeypatch)
+
+
+def make_cutover_context(
+    tmp_path: Path,
+    spec: ServiceSpec,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    initialize: bool = True,
+    metadata_by_inode: dict[int, tuple[int, int, int]] | None = None,
+) -> CutoverContext:
+    """Create or reopen a disposable host without rewriting recovery inputs."""
     from dataclasses import replace
     from datetime import datetime, timezone
 
@@ -220,7 +232,8 @@ def cutover_context(
     )
 
     root = tmp_path / "host"
-    root.mkdir()
+    if initialize:
+        root.mkdir(parents=True)
     for directory in (
         "srv/project/.codereeve",
         "etc/systemd/system",
@@ -228,13 +241,17 @@ def cutover_context(
         "opt/new/bin",
         "run",
     ):
-        (root / directory).mkdir(parents=True, exist_ok=True)
-    (root / "srv/project/.codereeve/config.env").write_bytes(
-        b"CODEREEVE_REPO_OWNER=owner\n"
-    )
+        if initialize:
+            (root / directory).mkdir(parents=True, exist_ok=True)
+    if initialize:
+        (root / "srv/project/.codereeve/config.env").write_bytes(
+            b"CODEREEVE_REPO_OWNER=owner\n"
+        )
     store = portable_storage(root)
     store.owner = lambda: (0, 0)
-    metadata_by_inode = {}
+    if metadata_by_inode is None:
+        metadata_by_inode = {}
+    store.fixture_metadata = metadata_by_inode
     store.metadata = lambda p: metadata_by_inode.get(
         p.stat().st_ino, (0o755 if p.is_dir() else 0o600, 0, 0)
     )

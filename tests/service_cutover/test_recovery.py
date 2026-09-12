@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -15,6 +18,199 @@ from codereeve.service_cutover.model import (
     ServiceSpec,
     UnitState,
 )
+
+
+@pytest.mark.parametrize("mode", ["fresh", "upgrade", "installed"])
+@pytest.mark.parametrize("direction", ["forward", "reverse"])
+@pytest.mark.parametrize("caught", [False, True])
+def test_recovery_of_each_durable_forward_prefix(
+    tmp_path: Path,
+    mode: str,
+    direction: str,
+    caught: bool,
+) -> None:
+    """Every observed occurrence fires; durable commit selects recovery."""
+    from conftest import Interrupted
+    from process_support import (
+        Observation,
+        assert_recovered,
+        build,
+        is_committed,
+        journal_path,
+    )
+
+    with pytest.MonkeyPatch.context() as patch:
+        baseline = build(tmp_path / "observe", mode, patch)
+        if direction == "reverse":
+            baseline[1].fail_at = "health"
+        observation = Observation(baseline, patch)
+        result = cutover(baseline[0], backend=baseline[1], storage=baseline[2])
+        assert result.status == (
+            "committed" if direction == "forward" else "failed"
+        )
+        trace = observation.trace
+    assert trace
+    (tmp_path / "observed-trace.json").write_text(
+        json.dumps(trace), encoding="utf-8"
+    )
+    assert any("rolled_back" in name for name, _ in trace) == (
+        direction == "reverse"
+    )
+    for index, boundary in enumerate(trace):
+        with pytest.MonkeyPatch.context() as patch:
+            context = build(tmp_path / str(index), mode, patch)
+            selected, backend, storage = context
+            if direction == "reverse":
+                backend.fail_at = "health"
+            injection_patch = pytest.MonkeyPatch()
+            injection = Observation(
+                context, injection_patch, target=index, caught=caught
+            )
+            try:
+                cutover(selected, backend=backend, storage=storage)
+            except (Interrupted, OSError, ValueError):
+                pass
+            except Exception as error:
+                from codereeve.service_cutover.model import CutoverError
+
+                assert isinstance(error, CutoverError), error
+            assert injection.fired, (index, boundary)
+            assert injection.trace[: index + 1] == trace[: index + 1]
+            path = journal_path(backend, storage)
+            committed = injection.commit_at_failure
+            assert is_committed(path, storage) == committed
+            injection_patch.undo()
+            backend.fail_at = None
+            assert_recovered(context, committed, mode, len(backend.events))
+
+
+@pytest.mark.parametrize("mode", ["fresh", "upgrade", "installed"])
+@pytest.mark.parametrize("direction", ["forward", "reverse"])
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="exhaustive process-death matrix requires Linux",
+)
+def test_actual_process_death_reloads_each_observed_service_boundary(
+    tmp_path: Path,
+    mode: str,
+    direction: str,
+) -> None:
+    """Killed child and fresh recovery share only persisted files."""
+    command = [
+        sys.executable,
+        "-c",
+        "import sys; sys.path.insert(0, 'tests/service_cutover'); "
+        "from process_support import main; main()",
+    ]
+
+    def run(
+        action: str, root: Path, target: int
+    ) -> subprocess.CompletedProcess:
+        """Execute the production driver in a bounded disposable process."""
+        return subprocess.run(
+            command + [action, str(root), mode, direction, str(target)],
+            capture_output=True,
+            timeout=60,
+        )
+
+    baseline = tmp_path / "observe"
+    observed = run("run", baseline, -1)
+    assert observed.returncode == 0, observed.stderr.decode()
+    trace = json.loads((baseline / "external-state.json").read_text())["trace"]
+    assert trace
+    (tmp_path / "observed-trace.json").write_text(
+        json.dumps(trace), encoding="utf-8"
+    )
+    for index in range(len(trace)):
+        root = tmp_path / str(index)
+        child = run("run", root, index)
+        assert child.returncode == 73, (index, child.stderr.decode())
+        payload = json.loads((root / "external-state.json").read_text())
+        assert payload["fired"]
+        assert payload["trace"] == trace[: index + 1]
+        restored = run("recover", root, -1)
+        assert restored.returncode == 0, (
+            index,
+            trace[index],
+            restored.stderr.decode(),
+        )
+    exhaustion = tmp_path / "exhaustion"
+    final = run("run", exhaustion, len(trace))
+    assert final.returncode == 0, final.stderr.decode()
+    payload = json.loads((exhaustion / "external-state.json").read_text())
+    assert not payload["fired"]
+    assert payload["trace"] == trace
+
+
+@pytest.mark.parametrize(
+    "boundary", ["authority", "precommit", "postcommit", "reverse"]
+)
+def test_portable_process_death_recovery_smoke(
+    tmp_path: Path, boundary: str
+) -> None:
+    """Representative real deaths exercise fresh-process recovery portably."""
+    direction = "reverse" if boundary == "reverse" else "forward"
+    command = [
+        sys.executable,
+        "-c",
+        "import sys; sys.path.insert(0, 'tests/service_cutover'); "
+        "from process_support import main; main()",
+    ]
+
+    def run(
+        action: str, root: Path, target: int
+    ) -> subprocess.CompletedProcess:
+        """Run only the test model, never the machine's service manager."""
+        return subprocess.run(
+            command + [action, str(root), "upgrade", direction, str(target)],
+            capture_output=True,
+            timeout=60,
+        )
+
+    baseline = tmp_path / "observe"
+    child = run("run", baseline, -1)
+    assert child.returncode == 0, child.stderr.decode()
+    trace = json.loads((baseline / "external-state.json").read_text())["trace"]
+    selected = {
+        "authority": ["record:created:", "before"],
+        "precommit": ["service:start", "after"],
+        "postcommit": ["record:committed:", "after"],
+        "reverse": ["record:filesystem_restored:", "after"],
+    }[boundary]
+    index = trace.index(selected)
+    root = tmp_path / "crash"
+    child = run("run", root, index)
+    assert child.returncode == 73, child.stderr.decode()
+    payload = json.loads((root / "external-state.json").read_text())
+    assert payload["fired"]
+    assert payload["trace"] == trace[: index + 1]
+    recovered = run("recover", root, -1)
+    assert recovered.returncode == 0, recovered.stderr.decode()
+
+
+@pytest.mark.parametrize("damage", ["truncate", "checksum", "unknown"])
+def test_corrupt_cutover_authority_refuses_before_service_actions(
+    cutover_context: CutoverContext,
+    damage: str,
+) -> None:
+    """Unverifiable authority cannot authorize even one backend action."""
+    from codereeve.service_cutover.coordinator import recover
+
+    selected, backend, storage = cutover_context
+    result = cutover(selected, backend=backend, storage=storage)
+    path = result.journal_path
+    data = path.read_bytes()
+    if damage == "truncate":
+        data = data[:-1]
+    elif damage == "checksum":
+        data = data.replace(b"finalized", b"finalizeX")
+    else:
+        data += b'{"event":"unknown"}\n'
+    path.write_bytes(data)
+    backend.events.clear()
+    refused = recover(path, backend=backend, storage=storage)
+    assert refused.status == refused.recovery == "incomplete"
+    assert backend.events == []
 
 
 def test_failed_health_preserves_output_and_restores_original(
@@ -42,6 +238,97 @@ def test_failed_health_preserves_output_and_restores_original(
     assert journal.phase == "rolled_back"
     assert max(backend.active_counts) <= 1
     assert all(s.active_state == "inactive" for s in backend.states.values())
+
+
+@pytest.mark.parametrize("when", ["before", "after"])
+def test_interrupted_migration_handoff_has_recoverable_authority(
+    upgrade_context: CutoverContext,
+    monkeypatch: pytest.MonkeyPatch,
+    when: str,
+) -> None:
+    """Migration journal creation must not precede recoverable ownership."""
+    from conftest import Interrupted
+
+    from codereeve.service_cutover.coordinator import recover
+
+    selected, backend, storage = upgrade_context
+    original = CutoverJournal.record
+
+    def interrupted(self: CutoverJournal, event: str, metadata: dict) -> None:
+        selected = (
+            event == "effect_intent" and metadata.get("operation") == "migrate"
+        )
+        if selected and when == "before":
+            raise Interrupted()
+        original(self, event, metadata)
+        if selected and when == "after":
+            raise Interrupted()
+
+    monkeypatch.setattr(CutoverJournal, "record", interrupted)
+    with pytest.raises(Interrupted):
+        cutover(selected, backend=backend, storage=storage)
+    monkeypatch.setattr(CutoverJournal, "record", original)
+    path = next(
+        (backend.filesystem_root / "srv/project/.codereeve-cutover").glob(
+            "*/journal.jsonl"
+        )
+    )
+    result = recover(path, backend=backend, storage=storage)
+    assert result.recovery == "complete"
+    assert backend.states["bh-daemon.service"].active_state == "active"
+
+
+@pytest.mark.parametrize(
+    "damage",
+    ["empty_directory", "corrupt_journal", "dangling_symlink", "input_drift"],
+)
+def test_interrupted_migration_creation_never_adopts_partial_authority(
+    upgrade_context: CutoverContext,
+    monkeypatch: pytest.MonkeyPatch,
+    damage: str,
+) -> None:
+    """A recorded child path cannot bless partial or foreign artifacts."""
+    from conftest import Interrupted
+
+    from codereeve.service_cutover.coordinator import recover
+
+    selected, backend, storage = upgrade_context
+    original = CutoverJournal.record
+
+    def interrupted(self: CutoverJournal, event: str, metadata: dict) -> None:
+        original(self, event, metadata)
+        if event == "effect_intent" and metadata.get("operation") == "migrate":
+            child = Path(metadata["path"]).parent
+            if damage == "input_drift":
+                (
+                    backend.filesystem_root / "srv/project/.bh/config.env"
+                ).write_bytes(b"operator change")
+            elif damage == "dangling_symlink":
+                child.parent.mkdir(parents=True, exist_ok=True)
+                child.symlink_to(
+                    backend.filesystem_root / "missing",
+                    target_is_directory=True,
+                )
+            else:
+                child.mkdir(parents=True, exist_ok=True)
+            if damage == "corrupt_journal":
+                (child / "journal.jsonl").write_bytes(b"unknown authority")
+            raise Interrupted()
+
+    monkeypatch.setattr(CutoverJournal, "record", interrupted)
+    with pytest.raises(Interrupted):
+        cutover(selected, backend=backend, storage=storage)
+    monkeypatch.setattr(CutoverJournal, "record", original)
+    path = next(
+        (backend.filesystem_root / "srv/project/.codereeve-cutover").glob(
+            "*/journal.jsonl"
+        )
+    )
+    assert (
+        recover(path, backend=backend, storage=storage).recovery
+        == "incomplete"
+    )
+    assert "old_started" not in backend.events
 
 
 def test_failed_upgrade_restores_data_before_old_activation(
@@ -195,66 +482,6 @@ def test_repeated_cutover_revalidates_completed_invocation(
     assert second.status == "committed"
     assert second.journal_path == first.journal_path
     assert backend.events.count("start_new") == 1
-
-
-@pytest.mark.parametrize("mode", ["fresh", "upgrade", "installed"])
-@pytest.mark.parametrize("prefix", range(1, 56))
-def test_recovery_of_each_durable_forward_prefix(
-    cutover_context: CutoverContext,
-    monkeypatch: pytest.MonkeyPatch,
-    prefix: int,
-    mode: str,
-    request: pytest.FixtureRequest,
-) -> None:
-    """A new coordinator resumes every durable cutover record prefix safely."""
-    from conftest import Interrupted
-
-    from codereeve.service_cutover.coordinator import recover
-
-    spec, backend, storage = (
-        cutover_context
-        if mode == "fresh"
-        else request.getfixturevalue("upgrade_context")
-    )
-    if mode == "installed":
-        from codereeve.service_cutover.coordinator import install_only
-
-        assert (
-            install_only(spec, backend=backend, storage=storage).status
-            == "installed"
-        )
-    original = CutoverJournal.record
-    count = 0
-
-    def interrupted(
-        self: CutoverJournal, event: str, metadata: dict[str, object]
-    ) -> None:
-        nonlocal count
-        original(self, event, metadata)
-        count += 1
-        if count == prefix:
-            raise Interrupted()
-
-    monkeypatch.setattr(CutoverJournal, "record", interrupted)
-    try:
-        result = cutover(spec, backend=backend, storage=storage)
-    except Interrupted:
-        monkeypatch.setattr(CutoverJournal, "record", original)
-        path = next(
-            p
-            for p in (
-                backend.filesystem_root / "srv/project/.codereeve-cutover"
-            ).glob("*/journal.jsonl")
-            if CutoverJournal.open(p, storage=storage).mode == "cutover"
-        )
-        fresh = type(backend)()
-        fresh.states = backend.states
-        fresh.events = backend.events
-        fresh.active_counts = backend.active_counts
-        result = recover(path, backend=fresh, storage=storage)
-    assert result.status in {"failed", "committed"}, prefix
-    assert result.recovery in {None, "complete"}
-    assert max(backend.active_counts, default=0) <= 1
 
 
 @pytest.mark.parametrize(

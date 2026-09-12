@@ -6,6 +6,8 @@ import hashlib
 import os
 import shutil
 import stat
+import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
@@ -130,6 +132,8 @@ class FileOperations:
         self,
         root: Path,
         report: MigrationReport,
+        *,
+        before_create: Callable[[Path], None] | None = None,
     ) -> MigrationJournal:
         """Persist manifest and initial event using this durability seam."""
         self.boundary("journal_create", "before", root)
@@ -139,6 +143,7 @@ class FileOperations:
             datetime.now(timezone.utc),
             directory_sync=self.sync_directory,
             file_sync=self.sync_file,
+            before_create=before_create,
         )
         self.boundary("journal_create", "after", journal.manifest_path)
         return journal
@@ -806,20 +811,24 @@ def _reverse(event: JournalEvent, operations: FileOperations) -> None:
         return
     if not at_destination:
         raise MigrationError("missing original and backup")
-    # Restore via private sibling, retaining the renamed backup as evidence.
-    stage = destination.with_name(destination.name + ".restore")
+    # Each attempt gets a fresh private sibling. Failed copies remain
+    # evidence rather than becoming unverifiable input to the next retry.
+    # Repeated interruption consumes extra disk until operator cleanup.
+    stage = destination.with_name(
+        destination.name + ".restore-" + uuid.uuid4().hex
+    )
     staged_entries = _relocate(event.entries, source, stage)
-    if _safe(stage) is None:
-        for entry in sorted(
-            event.entries,
-            key=lambda item: (len(item.path.parts), str(item.path)),
-        ):
-            relative = entry.path.relative_to(source)
-            _write_output(
-                _Output(entry, destination / relative),
-                stage / relative,
-                operations,
-            )
+    _absent(stage)
+    for entry in sorted(
+        event.entries,
+        key=lambda item: (len(item.path.parts), str(item.path)),
+    ):
+        relative = entry.path.relative_to(source)
+        _write_output(
+            _Output(entry, destination / relative),
+            stage / relative,
+            operations,
+        )
     _verify(stage, staged_entries)
     operations.move(stage, source, "restore", staged_entries)
     _verify(source, event.entries)
