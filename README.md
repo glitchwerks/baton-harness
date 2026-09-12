@@ -627,6 +627,8 @@ installed-wheel upgrade test on Python 3.10 and 3.13. The test requires old and
 candidate wheel paths plus their locked runtime requirement exports; the full
 commands and evidence contract are in
 [docs/codereeve-release-gate.md](docs/codereeve-release-gate.md).
+The [0.2.0 release notes](docs/releases/0.2.0.md) remain explicitly unreleased
+until the live-systemd, integration, publication, and rename gates in #396 pass.
 
 ```bash
 CODEREEVE_RELEASE_PYTHON=3.13 \

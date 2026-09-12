@@ -164,7 +164,7 @@ scripts are hashed before and after this sequence, and the old interpreter must
 still import its package from its own prefix
 (`tests/release_gate/test_installed_upgrade.py`; #396). This is portable
 migration rollback evidence. Actual service selection and activation remain the
-clean-host gate in Task 4.
+[disposable live-systemd acceptance gate](#disposable-live-systemd-acceptance).
 
 The overlap-negative environment deliberately co-installs the `baton-harness`
 and `codereeve` distributions and requires `codereeve verify --installed` to
@@ -180,6 +180,8 @@ Reproduce it in a disposable extraction of `git archive` at that revision:
 uv export --locked --no-emit-project --format requirements.txt --output-file runtime.txt
 uv export --locked --extra dev --no-emit-project --format requirements.txt --output-file build.txt
 unset CODEREEVE_BUILD_DEVELOPMENT BH_BUILD_DEVELOPMENT
+unset CODEREEVE_BUILD_VERSION CODEREEVE_BUILD_SOURCE_REVISION
+unset BH_BUILD_VERSION BH_BUILD_SOURCE_REVISION
 export BH_BUILD_VERSION=0.1.0+upgradefixture
 export BH_BUILD_SOURCE_REVISION=e25749fc48aff6500744b2b202534f1d56c9b834
 uv build --build-constraints build.txt --require-hashes --wheel --out-dir dist
@@ -193,6 +195,8 @@ and entry points (`hatch_build.py:L114-L220`;
 
 ```bash
 unset CODEREEVE_BUILD_DEVELOPMENT BH_BUILD_DEVELOPMENT
+unset CODEREEVE_BUILD_VERSION CODEREEVE_BUILD_SOURCE_REVISION
+unset BH_BUILD_VERSION BH_BUILD_SOURCE_REVISION
 export CODEREEVE_BUILD_VERSION=0.2.0
 export CODEREEVE_BUILD_SOURCE_REVISION="$(git rev-parse HEAD)"
 uv export --locked --no-emit-project --format requirements.txt --output-file candidate-runtime.txt
@@ -232,3 +236,207 @@ Run the separate frozen-foundation proof from the same commit with
 `0.0.0+foundation` identity supports the release evidence but does not replace
 the explicit 0.2.0 artifact proof
 (`src/codereeve/verify_foundation.py:L876-L1067`; #396).
+
+## Disposable live-systemd acceptance
+
+This section is an execution runbook for #396. It is not evidence that the gate
+passed. Execution requires a user-selected disposable Linux VM whose PID 1 is
+systemd, whose `/proc` view is complete, and whose `/sys/fs/cgroup` mount is a
+cgroup v2 root. The coordinator must run as root, while the service uses a
+dedicated non-root account (`src/codereeve/service_cutover/systemd.py:L211-L230`;
+`docs/codereeve-service-cutover.md:L67-L76`; #396). Record the selected host,
+provisioned disposable repository, credential source, and the provider's
+documented snapshot identifier before starting. Keep provider commands and
+credential values out of this repository.
+
+### Prepare the candidate and host
+
+Set these paths to the selected host's real values. `HARNESS_DIR` must be the
+candidate source tree containing `config/WORKFLOW.md`; the private installer
+uses that file and otherwise defaults the harness directory to its current
+directory (`src/codereeve/service_cutover/cli.py:L169-L188`). The candidate
+environment must be separate from the legacy environment
+(`src/codereeve/service_cutover/systemd.py:L787-L802`; #396).
+
+```bash
+export HARNESS_DIR=/absolute/path/to/candidate-source
+export PROJECT_ROOT=/absolute/path/to/disposable-managed-repository
+export CANDIDATE_ENV=/opt/codereeve
+export SERVICE_USER=codereeve
+
+test "$(ps -p 1 -o comm=)" = systemd
+test "$(id -u)" -eq 0
+findmnt --noheadings --output FSTYPE --target /proc
+findmnt --noheadings --output FSTYPE --target /sys/fs/cgroup
+getent passwd "$SERVICE_USER"
+systemctl --version
+```
+
+The two `findmnt` results must be `proc` and `cgroup2`. Record only versions,
+the candidate provenance document, the non-secret service-account identity,
+and the snapshot identifier. Verify separately that the disposable repository
+and required credentials are provisioned; do not copy credentials or complete
+configuration into public evidence. Finish all login-shell probes before the
+coordinator runs because any process with the managed UID outside its controlled
+cgroups blocks quiescence (`docs/codereeve-service-cutover.md:L69-L83`; #396).
+
+Create the candidate environment and install the exact candidate wheel. Retain
+the wheel, source revision, lock identity, and hashes selected by the installed
+release proof above. Installation into a separate environment is required by
+the service runbook (`docs/codereeve-service-cutover.md:L3-L17`; #396).
+
+```bash
+uv venv "$CANDIDATE_ENV" --python 3.13
+uv pip install --python "$CANDIDATE_ENV/bin/python" /absolute/path/to/codereeve-0.2.0-py3-none-any.whl
+"$CANDIDATE_ENV/bin/codereeve" provenance
+```
+
+### Run fresh and legacy-upgrade scenarios
+
+Restore the clean snapshot between the fresh-install and legacy-upgrade
+scenarios. The fresh scenario begins with neither managed unit or managed state
+present. The upgrade scenario seeds the supported direct `bh-daemon` console
+script, its matching separate environment, the legacy unit and fixture state.
+Custom paths and unrelated Symphony data must remain unchanged
+(`docs/codereeve-service-cutover.md:L78-L88`; #396).
+
+For each scenario, render first and verify that neither unit's enabled or active
+state changed. Then install without activation and require `status: installed`
+plus the reported journal path. The command grammar permits only the modes and
+selection flags shown here (`src/codereeve/service_cutover/cli.py:L28-L41`;
+`src/codereeve/service_cutover/cli.py:L243-L283`).
+
+```bash
+"$HARNESS_DIR/bin/install-daemon-service.sh" \
+  --harness-dir "$HARNESS_DIR" \
+  --environment "$CANDIDATE_ENV" \
+  --project-root "$PROJECT_ROOT" \
+  --user "$SERVICE_USER" \
+  --print-unit
+
+systemctl --system --no-pager is-enabled bh-daemon.service codereeve.service || true
+systemctl --system --no-pager is-active bh-daemon.service codereeve.service || true
+
+"$HARNESS_DIR/bin/install-daemon-service.sh" \
+  --harness-dir "$HARNESS_DIR" \
+  --environment "$CANDIDATE_ENV" \
+  --project-root "$PROJECT_ROOT" \
+  --user "$SERVICE_USER" \
+  --no-start
+```
+
+Restore the scenario snapshot after inspecting install-only evidence. Run the
+full cutover with the same four explicit selections and no mode flag:
+
+```bash
+"$HARNESS_DIR/bin/install-daemon-service.sh" \
+  --harness-dir "$HARNESS_DIR" \
+  --environment "$CANDIDATE_ENV" \
+  --project-root "$PROJECT_ROOT" \
+  --user "$SERVICE_USER"
+```
+
+Do not run separate operator-shell doctor commands as acceptance evidence. The
+coordinator runs installed/provenance checks and strict installation and
+configuration phases in bounded transient systemd units under the configured
+service user, HOME, project root, candidate PATH, and optional secrets file
+(`src/codereeve/service_cutover/systemd.py:L668-L731`;
+`src/codereeve/service_cutover/systemd.py:L817-L847`). It then verifies the
+loaded unit selection, starts the exact candidate executable, runs the strict
+live phase under the same identity, and requires a heartbeat newer than that
+stable invocation's start (`src/codereeve/service_cutover/systemd.py:L1001-L1052`;
+`src/codereeve/service_cutover/systemd.py:L1054-L1115`). A passing scenario
+therefore requires `status: committed`, a retained journal path, only
+`codereeve.service` active, the expected executable and service UID, every
+service process in its unit cgroup, and the fresh heartbeat bound to the same
+PID and invocation. Retain the private journal, unit environment and complete
+diagnostics on the disposable host; public evidence records only sanitized
+identities, digests, states, and assertions.
+
+### Exercise interruption and recovery
+
+Use the test-only process interruption harness and exact observed boundary
+identities implemented for #396. Do not add fault-injection flags to the
+production installer. Restore a disposable snapshot before each case, terminate
+the coordinator only at the selected test-harness boundary, and recover from
+the journal path reported for that transaction. Recovery accepts the durable
+journal directly (`src/codereeve/service_cutover/cli.py:L257-L270`; #396):
+
+```bash
+"$HARNESS_DIR/bin/install-daemon-service.sh" \
+  --recover /absolute/path/from-the-interrupted-transaction/journal.jsonl
+```
+
+Exit status alone is insufficient: only `status: installed` or
+`status: committed` is successful (`src/codereeve/service_cutover/cli.py:L233-L240`).
+Before accepting rollback, prove both services are quiescent during restore,
+the legacy unit's original files and activation state are restored, its direct
+executable still resolves to the retained legacy environment, and that
+executable remains usable. Never activate the old service until those checks
+pass (#396; `src/codereeve/service_cutover/recovery.py:L224-L230`).
+
+If interruption leaves an original public file with empty, partial, or unknown
+bytes, recovery must preserve it, retain the verified private backup, report an
+incomplete result, and leave the old service stopped. The operator must compare
+the public file with trusted external evidence and repair or remove it before
+retrying; automatic rollback is intentionally refused while the public bytes or
+metadata are untrusted (`src/codereeve/service_cutover/recovery.py:L134-L219`;
+`src/codereeve/service_cutover/storage.py:L369-L387`; #396).
+
+### Evidence and acceptance record
+
+Create a sanitized record under `docs/verification/` only after the run. It must
+name the candidate commit and artifact hashes, host/kernel/systemd versions,
+snapshot identifiers, scenario, non-secret service UID and HOME, executable,
+unit enabled/active states, invocation identity, cgroup membership assertion,
+heartbeat freshness assertion, journal status, recovery classification, and
+each gate as passed, failed, skipped, or unexecuted. Do not include credentials,
+secret values, complete environment assignments, raw journals, private backups,
+or unsanitized command output (`docs/codereeve-service-cutover.md:L101-L103`;
+#396). Any failure, skip, incomplete recovery, source revision change, or missing
+field leaves the live-systemd gate open.
+
+The authored exhaustive Linux process-death matrices and Windows representative
+process checks are separate evidence categories. Neither proves this live-host
+gate, which additionally requires real systemd identity, cgroups, activation,
+quiescence, and heartbeat evidence (#396;
+`tests/service_cutover/test_storage_recovery.py`;
+`tests/service_cutover/process_support.py`).
+
+### Exhaustive Linux process matrix
+
+The Linux matrix remains a separate prerequisite and is currently unmet. Run
+the three groups serially from the repository root with the exact candidate
+revision's `.venv/bin/python`. A fresh checkout must create `.tmp` before using
+the nested pytest base-temporary paths (`tests/service_cutover/test_recovery.py`;
+`tests/service_cutover/test_storage_recovery.py`;
+`tests/test_migration_transaction.py`; #396).
+
+```bash
+mkdir -p .tmp
+
+.venv/bin/python -m pytest \
+  'tests/service_cutover/test_recovery.py::test_recovery_of_each_durable_forward_prefix[True-forward-upgrade]' \
+  'tests/service_cutover/test_recovery.py::test_recovery_of_each_durable_forward_prefix[True-forward-installed]' \
+  'tests/service_cutover/test_recovery.py::test_recovery_of_each_durable_forward_prefix[True-reverse-fresh]' \
+  'tests/service_cutover/test_recovery.py::test_recovery_of_each_durable_forward_prefix[True-reverse-upgrade]' \
+  'tests/service_cutover/test_recovery.py::test_recovery_of_each_durable_forward_prefix[True-reverse-installed]' \
+  -x -q --basetemp=.tmp/task3-linux-caught-remainder
+
+.venv/bin/python -m pytest \
+  tests/service_cutover/test_recovery.py \
+  tests/test_migration_transaction.py \
+  tests/test_migration_journal.py \
+  -k 'not test_recovery_of_each_durable_forward_prefix' \
+  -x -q --basetemp=.tmp/task3-linux-remainder
+
+.venv/bin/python -m pytest \
+  tests/service_cutover/test_storage_recovery.py \
+  -x -q --basetemp=.tmp/task3-linux-storage
+```
+
+Record the exact source revision, interpreter and tool versions, each command,
+exit status, pytest summary, and retained base-temporary evidence paths. Any
+failed, interrupted, or omitted group leaves this prerequisite unmet. Container
+process results remain distinct from the disposable live-systemd acceptance
+record (#396).
