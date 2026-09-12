@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 from typing import cast
 
 import pytest
+from metadata_support import track_inode_lifetimes
 
 from codereeve.service_cutover.model import (
     ServiceSnapshot,
@@ -251,6 +252,7 @@ def make_cutover_context(
     store.owner = lambda: (0, 0)
     if metadata_by_inode is None:
         metadata_by_inode = {}
+    track_inode_lifetimes(metadata_by_inode, monkeypatch)
     store.fixture_metadata = metadata_by_inode
     store.metadata = lambda p: metadata_by_inode.get(
         p.stat().st_ino, (0o755 if p.is_dir() else 0o600, 0, 0)
