@@ -121,12 +121,9 @@ def _run(
         }
     )
     if result.returncode != expected:
-        detail = (result.stderr or result.stdout).strip()
-        message = (
-            f"{name} returned {result.returncode}, expected {expected}: "
-            f"{detail}"
+        raise RuntimeError(
+            f"{name} returned {result.returncode}, expected {expected}"
         )
-        raise RuntimeError(message)
     return result
 
 
@@ -167,6 +164,76 @@ def _wheel_identity(path: Path) -> dict[str, object]:
     }
 
 
+def _validate_bindings(
+    args: argparse.Namespace,
+) -> tuple[dict[str, object], dict[str, object], dict[str, str]]:
+    """Bind supplied artifacts and exports to trusted expected identities.
+
+    Args:
+        args: Parsed artifact paths and independently supplied expectations.
+
+    Returns:
+        Old identity, candidate identity, and sanitized binding evidence.
+
+    Raises:
+        RuntimeError: If an artifact or runtime export is stale or unrelated.
+    """
+    old = _wheel_identity(args.old_wheel)
+    candidate = _wheel_identity(args.candidate_wheel)
+    checks = (
+        ("old artifact version", old["version"], "0.1.0+upgradefixture"),
+        ("candidate artifact version", candidate["version"], "0.2.0"),
+        (
+            "old artifact source revision",
+            old["source_revision"],
+            args.expected_old_revision,
+        ),
+        (
+            "candidate artifact source revision",
+            candidate["source_revision"],
+            args.expected_candidate_revision,
+        ),
+        (
+            "old artifact lock identity",
+            old["lock_identity"],
+            args.expected_old_lock_identity,
+        ),
+        (
+            "candidate artifact lock identity",
+            candidate["lock_identity"],
+            args.expected_candidate_lock_identity,
+        ),
+        (
+            "old runtime export digest",
+            hashlib.sha256(args.old_requirements.read_bytes()).hexdigest(),
+            args.expected_old_runtime_sha256,
+        ),
+        (
+            "candidate runtime export digest",
+            hashlib.sha256(
+                args.candidate_requirements.read_bytes()
+            ).hexdigest(),
+            args.expected_candidate_runtime_sha256,
+        ),
+    )
+    for label, actual, wanted in checks:
+        if actual != wanted:
+            raise RuntimeError(f"{label} does not match expected identity")
+    if old["development"] is not False:
+        raise RuntimeError("old artifact is not a standard build")
+    if candidate["development"] is not False:
+        raise RuntimeError("candidate artifact is not a standard build")
+    bindings = {
+        "old_source_revision": args.expected_old_revision,
+        "candidate_source_revision": args.expected_candidate_revision,
+        "old_lock_identity": args.expected_old_lock_identity,
+        "candidate_lock_identity": args.expected_candidate_lock_identity,
+        "old_runtime_sha256": args.expected_old_runtime_sha256,
+        "candidate_runtime_sha256": args.expected_candidate_runtime_sha256,
+    }
+    return old, candidate, bindings
+
+
 def _snapshot(environment: Path, distribution: str) -> dict[str, str]:
     """Hash installed distribution files and generated console scripts.
 
@@ -201,9 +268,7 @@ def _snapshot(environment: Path, distribution: str) -> dict[str, str]:
         timeout=60,
     )
     if result.returncode:
-        raise RuntimeError(
-            "installed snapshot failed: " + result.stderr.strip()
-        )
+        raise RuntimeError("installed snapshot failed")
     return dict(json.loads(result.stdout))
 
 
@@ -332,6 +397,7 @@ print(json.dumps({
 
 def verify(args: argparse.Namespace) -> dict[str, object]:
     """Execute the installed upgrade proof and return sanitized evidence."""
+    old_identity, candidate_identity, bindings = _validate_bindings(args)
     workspace = args.workspace.resolve()
     workspace.mkdir(parents=True, exist_ok=False)
     outside = workspace / "outside-checkout"
@@ -481,8 +547,9 @@ def verify(args: argparse.Namespace) -> dict[str, object]:
             "schema_version": fixture["schema_version"],
             "sha256": hashlib.sha256(args.fixture.read_bytes()).hexdigest(),
         },
-        "legacy_artifact": _wheel_identity(args.old_wheel),
-        "candidate_artifact": _wheel_identity(args.candidate_wheel),
+        "legacy_artifact": old_identity,
+        "candidate_artifact": candidate_identity,
+        "bindings": bindings,
         "legacy_environment": {
             "unchanged_after_rollback": before == after,
             "import_owned_by_environment": import_result.stdout.strip()
@@ -512,6 +579,15 @@ def _parser() -> argparse.ArgumentParser:
         "evidence",
     ):
         parser.add_argument(f"--{option}", type=Path, required=True)
+    for option in (
+        "expected-old-revision",
+        "expected-candidate-revision",
+        "expected-old-lock-identity",
+        "expected-candidate-lock-identity",
+        "expected-old-runtime-sha256",
+        "expected-candidate-runtime-sha256",
+    ):
+        parser.add_argument(f"--{option}", required=True)
     parser.add_argument("--python", required=True)
     return parser
 
@@ -531,8 +607,8 @@ def main() -> int:
         KeyError,
         RuntimeError,
         subprocess.SubprocessError,
-    ) as exc:
-        print(f"installed release gate failed: {exc}", file=sys.stderr)
+    ):
+        print("installed release gate failed", file=sys.stderr)
         return 1
     return 0
 

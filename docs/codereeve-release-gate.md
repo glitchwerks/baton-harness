@@ -78,8 +78,8 @@ Reproduce it in a disposable extraction of `git archive` at that revision:
 uv export --locked --no-emit-project --format requirements.txt --output-file runtime.txt
 uv export --locked --extra dev --no-emit-project --format requirements.txt --output-file build.txt
 unset CODEREEVE_BUILD_DEVELOPMENT BH_BUILD_DEVELOPMENT
-export CODEREEVE_BUILD_VERSION=0.1.0+upgradefixture
-export CODEREEVE_BUILD_SOURCE_REVISION=e25749fc48aff6500744b2b202534f1d56c9b834
+export BH_BUILD_VERSION=0.1.0+upgradefixture
+export BH_BUILD_SOURCE_REVISION=e25749fc48aff6500744b2b202534f1d56c9b834
 uv build --build-constraints build.txt --require-hashes --wheel --out-dir dist
 ```
 
@@ -107,11 +107,23 @@ export CODEREEVE_RELEASE_OLD_WHEEL=/absolute/path/to/old.whl
 export CODEREEVE_RELEASE_CANDIDATE_WHEEL=/absolute/path/to/codereeve-0.2.0-py3-none-any.whl
 export CODEREEVE_RELEASE_OLD_REQUIREMENTS=/absolute/path/to/old-runtime.txt
 export CODEREEVE_RELEASE_CANDIDATE_REQUIREMENTS=/absolute/path/to/candidate-runtime.txt
+export CODEREEVE_RELEASE_EXPECTED_OLD_REVISION=e25749fc48aff6500744b2b202534f1d56c9b834
+export CODEREEVE_RELEASE_EXPECTED_CANDIDATE_REVISION="$(git rev-parse HEAD)"
+export CODEREEVE_RELEASE_EXPECTED_OLD_LOCK_IDENTITY="sha256:$(sha256sum /absolute/path/to/old-source/uv.lock | cut -d' ' -f1)"
+export CODEREEVE_RELEASE_EXPECTED_CANDIDATE_LOCK_IDENTITY="sha256:$(sha256sum uv.lock | cut -d' ' -f1)"
+export CODEREEVE_RELEASE_EXPECTED_OLD_RUNTIME_SHA256="$(sha256sum "$CODEREEVE_RELEASE_OLD_REQUIREMENTS" | cut -d' ' -f1)"
+export CODEREEVE_RELEASE_EXPECTED_CANDIDATE_RUNTIME_SHA256="$(sha256sum "$CODEREEVE_RELEASE_CANDIDATE_REQUIREMENTS" | cut -d' ' -f1)"
 for version in 3.10 3.13; do
   export CODEREEVE_RELEASE_PYTHON="$version"
   .venv/Scripts/python.exe -m pytest tests/release_gate/test_installed_upgrade.py
 done
 ```
+
+These expected values come from the immutable fixture revision, each source
+tree's `uv.lock`, and the independently generated locked runtime exports. The
+driver checks all six bindings before it creates an environment or executes an
+installed command. Values copied from wheel provenance are not independent
+expectations (`scripts/verify_installed_upgrade.py`; #396).
 
 Run the separate frozen-foundation proof from the same commit with
 `codereeve verify --python 3.10 --python 3.13 --keep-temp`. Its synthetic
