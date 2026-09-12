@@ -388,13 +388,15 @@ manager. They do not drive a real systemd host
 restore the scenario snapshot and run the installed launcher in the background.
 The launcher uses `exec`, so its PID becomes the selected candidate Python
 coordinator (`bin/install-daemon-service.sh:L56-L74`). Capture the existing
-journal paths first, then stop the coordinator as soon as one new journal
-appears. If the process exits before `SIGSTOP` succeeds, discard that run,
-restore the snapshot, and retry; it is not interruption evidence.
+journal paths first, then stop the coordinator only after the installed journal
+parser accepts a nonempty, complete record prefix in one new journal. If the
+process exits before `SIGSTOP` succeeds, discard that run, restore the snapshot,
+and retry; it is not interruption evidence.
 
 The following procedure records the exact process executable and module, the
-new private journal, the last durable record observed before termination, both
-signals, and the shell's killed-process status. The journal layout is
+new private journal, the last complete validated record observed before
+termination, both signals, and the shell's killed-process status. The journal
+layout is
 `$PROJECT_ROOT/.codereeve-cutover/<32-hex>/journal.jsonl`
 (`src/codereeve/service_cutover/journal.py:L419-L455`;
 `src/codereeve/service_cutover/journal.py:L498-L505`). Keep `LIVE_EVIDENCE`, the
@@ -418,6 +420,24 @@ find "$PROJECT_ROOT/.codereeve-cutover" -mindepth 2 -maxdepth 2 \
 COORDINATOR_PID=$!
 printf 'pid=%s\n' "$COORDINATOR_PID" >"$LIVE_EVIDENCE/process.txt"
 
+validate_journal_prefix() {
+  "$CANDIDATE_ENV/bin/python" -I -c '
+import json
+import sys
+from pathlib import Path
+from codereeve.service_cutover.journal import CutoverJournal
+
+journal = CutoverJournal.open(Path(sys.argv[1]))
+if not journal.events:
+    raise SystemExit(1)
+record = journal.events[-1]
+print(json.dumps(
+    {name: record[name] for name in ("event", "sequence", "checksum")},
+    sort_keys=True,
+))
+' "$1"
+}
+
 while kill -0 "$COORDINATOR_PID" 2>/dev/null; do
   find "$PROJECT_ROOT/.codereeve-cutover" -mindepth 2 -maxdepth 2 \
     -name journal.jsonl -print 2>/dev/null | sort \
@@ -427,9 +447,13 @@ while kill -0 "$COORDINATOR_PID" 2>/dev/null; do
       "$LIVE_EVIDENCE/journals-now.txt"
   )
   if (( ${#NEW_JOURNALS[@]} == 1 )); then
-    JOURNAL_PATH="${NEW_JOURNALS[0]}"
-    kill -STOP "$COORDINATOR_PID"
-    break
+    candidate_journal="${NEW_JOURNALS[0]}"
+    if validate_journal_prefix "$candidate_journal" \
+      >"$LIVE_EVIDENCE/prefix-before-stop.json" 2>/dev/null; then
+      JOURNAL_PATH="$candidate_journal"
+      kill -STOP "$COORDINATOR_PID"
+      break
+    fi
   fi
   if (( ${#NEW_JOURNALS[@]} > 1 )); then
     printf 'more than one new journal; restore the snapshot\n' >&2
@@ -466,7 +490,14 @@ done
 ps -o pid=,ppid=,user=,stat=,lstart=,args= -p "$COORDINATOR_PID" \
   >>"$LIVE_EVIDENCE/process.txt"
 printf 'signal=SIGSTOP\n' >>"$LIVE_EVIDENCE/process.txt"
-tail -n 1 "$JOURNAL_PATH" >"$LIVE_EVIDENCE/last-durable-record.json"
+
+if ! validate_journal_prefix "$JOURNAL_PATH" \
+  >"$LIVE_EVIDENCE/prefix-after-stop.json" 2>/dev/null; then
+  printf 'journal prefix invalid after stop; run is unexecuted\n' >&2
+  kill -CONT "$COORDINATOR_PID"
+  if wait "$COORDINATOR_PID"; then :; else :; fi
+  exit 1
+fi
 
 kill -KILL "$COORDINATOR_PID"
 if wait "$COORDINATOR_PID"; then
@@ -484,15 +515,23 @@ test "$COORDINATOR_STATUS" -eq 137
   >"$LIVE_EVIDENCE/recovery.txt" 2>&1
 ```
 
-Record the `event`, `sequence`, and checksum from the observed last durable
-record as the interruption identity, then classify recovery from the command's
-`status` and `recovery` output. This proves recovery from that operator-timed
-durable prefix only. Timing a signal after journal discovery cannot select a
-production primitive deterministically or cover every forward and reverse
-boundary. Deterministic live interruption coverage therefore remains unmet;
-the portable modeled matrices remain separate test evidence. Do not add a
-production fault-injection flag or describe their boundary identifiers as live
-host observations (`src/codereeve/service_cutover/journal.py:L523-L554`; #396).
+If the post-stop validation fails because the journal is empty, partial, or
+invalid, the procedure resumes and waits for the coordinator, marks the run
+unexecuted, and exits. Restore the scenario snapshot before retrying; do not
+kill the process or describe that journal as interruption evidence. A complete,
+validated record visible before `SIGKILL` is still not proof that the operating
+system made its bytes durable. Record the `event`, `sequence`, and checksum from
+`prefix-after-stop.json` as the observed prefix identity, then use successful
+fresh-process recovery and its retained journal validation as the evidence that
+the prefix survived termination (`src/codereeve/service_cutover/journal.py:L461-L520`;
+`src/codereeve/service_cutover/journal.py:L523-L554`; #396).
+
+This proves recovery from that operator-timed observed prefix only. Timing a
+signal after journal validation cannot select a production primitive
+deterministically or cover every forward and reverse boundary. Deterministic
+live interruption coverage therefore remains unmet; the portable modeled
+matrices remain separate test evidence. Do not add a production fault-injection
+flag or describe their boundary identifiers as live host observations (#396).
 
 Exit status alone is insufficient: only `status: installed` or
 `status: committed` is successful (`src/codereeve/service_cutover/cli.py:L233-L240`).
