@@ -36,8 +36,10 @@ class PortableFixtureOperations(FileOperations):
         Returns:
             Clear synthetic writer and service evidence.
         """
-        assert lease.path == project / ".codereeve-migration.lock"
-        assert probe_writer_lease(lease.path) is EvidenceState.BLOCKED
+        if lease.path != project / ".codereeve-migration.lock":
+            raise RuntimeError("portable fixture lease path mismatch")
+        if probe_writer_lease(lease.path) is not EvidenceState.BLOCKED:
+            raise RuntimeError("portable fixture lease is not held")
         return MigrationEvidence(
             writers=EvidenceState.CLEAR,
             service=EvidenceState.CLEAR,
@@ -156,7 +158,7 @@ def _validate_fixture(fixture: object) -> None:
 
 def _validate_relative_path(path: object) -> None:
     """Require one normalized relative POSIX path without placeholders."""
-    if not isinstance(path, str) or not path or "\\" in path:
+    if not isinstance(path, str) or not path or "\\" in path or "\x00" in path:
         raise ValueError("fixture path must be relative POSIX syntax")
     relative = PurePosixPath(path)
     if (

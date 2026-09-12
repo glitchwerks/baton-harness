@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import stat
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -13,6 +15,7 @@ from codereeve.config_env import (
     resolve_environment,
 )
 from codereeve.migration.inventory import inventory_migration
+from codereeve.migration.lease import WriterLease
 from codereeve.migration.model import MigrationContext, MigrationStatus
 from codereeve.migration.transaction import (
     RestorationStatus,
@@ -109,6 +112,21 @@ def test_materialize_fixture_rejects_duplicate_paths_before_writes(
     assert not root.exists()
 
 
+def test_materialize_fixture_rejects_late_nul_path_before_any_write(
+    tmp_path: Path,
+) -> None:
+    """A later NUL path must not leave an earlier valid file behind."""
+    fixture = load_fixture(FIXTURE_PATH)
+    files = [
+        {"path": "valid/file", "content": "valid", "permissions": 0o600},
+        {"path": "invalid/nu\x00l", "content": "bad", "permissions": 0o600},
+    ]
+    root = tmp_path / "host"
+    with pytest.raises(ValueError):
+        materialize_fixture(root, dict(fixture, files=files))
+    assert not root.exists()
+
+
 def test_fixture_refuses_existing_root(tmp_path: Path) -> None:
     """Operator-owned destination content must remain byte-for-byte intact."""
     root = tmp_path / "host"
@@ -152,6 +170,37 @@ def _assignment_values(path: Path) -> dict[str, str]:
     return {item.key: item.value for item in parse_env_file(path)}
 
 
+def test_portable_operations_rejects_unexpected_lease_path(
+    tmp_path: Path,
+) -> None:
+    """Reject a wrong lease path with a stable exception."""
+    lease = cast(
+        WriterLease, type("Lease", (), {"path": tmp_path / "wrong"})()
+    )
+    with pytest.raises(
+        RuntimeError, match="portable fixture lease path mismatch"
+    ):
+        PortableFixtureOperations().verify_quiescence(tmp_path, lease)
+
+
+def test_portable_operations_rejects_unheld_expected_lease(
+    tmp_path: Path,
+) -> None:
+    """Portable evidence must fail when the expected lease is not held."""
+    lease = cast(
+        WriterLease,
+        type(
+            "Lease",
+            (),
+            {"path": tmp_path / ".codereeve-migration.lock"},
+        )(),
+    )
+    with pytest.raises(
+        RuntimeError, match="portable fixture lease is not held"
+    ):
+        PortableFixtureOperations().verify_quiescence(tmp_path, lease)
+
+
 def test_fixture_migrates_canonically_and_restores_exact_originals(
     tmp_path: Path,
 ) -> None:
@@ -163,6 +212,10 @@ def test_fixture_migrates_canonically_and_restores_exact_originals(
     context = MigrationContext(layout)
     originals = {
         entry["path"]: (root / entry["path"]).read_bytes()
+        for entry in fixture["files"]
+    }
+    original_modes = {
+        entry["path"]: stat.S_IMODE((root / entry["path"]).stat().st_mode)
         for entry in fixture["files"]
     }
     sentinel = originals["project/.symphony/sentinel.json"]
@@ -226,6 +279,10 @@ def test_fixture_migrates_canonically_and_restores_exact_originals(
     assert restored.status is RestorationStatus.COMPLETE
     for relative_path, content in originals.items():
         assert (root / relative_path).read_bytes() == content
+        assert (
+            stat.S_IMODE((root / relative_path).stat().st_mode)
+            == (original_modes[relative_path])
+        )
     assert not layout.canonical_state.exists()
     assert not layout.canonical_host.exists()
     assert not layout.canonical_secrets.exists()
