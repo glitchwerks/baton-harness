@@ -560,29 +560,30 @@ os.write(1, json.dumps([(n, p) for n, p, _ in operations.trace]).encode())
             is RestorationStatus.NOT_NEEDED
         )
 
-    @pytest.mark.parametrize("field", ["writers", "service"])
-    def test_fresh_unknown_shutdown_evidence_blocks(
-        context: MigrationContext,
-        field: str,
-    ) -> None:
-        """Both writers and service must be freshly verified, independently."""
 
-        class Unknown(PortableOperations):
-            """Return one unknown component from the live coordinator."""
+@pytest.mark.parametrize("field", ["writers", "service"])
+def test_fresh_unknown_shutdown_evidence_blocks(
+    context: MigrationContext,
+    field: str,
+) -> None:
+    """Both writers and service must be freshly verified, independently."""
 
-            def verify_quiescence(
-                self, project: Path, lease: WriterLease
-            ) -> MigrationEvidence:
-                """Keep actual lease validation but withhold shutdown proof."""
-                return replace(
-                    super().verify_quiescence(project, lease),
-                    **{field: EvidenceState.UNKNOWN},
-                )
+    class Unknown(PortableOperations):
+        """Return one unknown component from the live coordinator."""
 
-        with pytest.raises(MigrationError):
-            apply_migration(context, operations=Unknown())
-        assert case.layout.legacy_config.exists()
-        assert not case.layout.canonical_state.exists()
+        def verify_quiescence(
+            self, project: Path, lease: WriterLease
+        ) -> MigrationEvidence:
+            """Keep actual lease validation but withhold shutdown proof."""
+            return replace(
+                super().verify_quiescence(project, lease),
+                **{field: EvidenceState.UNKNOWN},
+            )
+
+    with pytest.raises(MigrationError):
+        apply_migration(context, operations=Unknown())
+    assert context.layout.legacy_config.exists()
+    assert not context.layout.canonical_state.exists()
 
 
 def test_real_windows_durability_blocks_before_data_or_lock_mutation(

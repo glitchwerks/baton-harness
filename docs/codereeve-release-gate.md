@@ -16,6 +16,9 @@ not coverage evidence (`tests/service_cutover/test_recovery.py`,
 | Old stop, manager reload, candidate start, health, enablement, old activation, before and after each call | Same matrix observes production coordinator calls through its injected service backend | Portable service model; original files, executable bytes, and activation links are checked before old activation |
 | Migration copy, rewrite, verification, file flush, directory flush, backup, publication, journal creation/append, and final verification | `test_every_observed_boundary_reverses_caught_failure` enumerates every `FileOperations.boundary` occurrence | Real disposable files; directory flush is modeled |
 | Reverse migration effects and durable reverse records | `test_every_observed_reverse_boundary_resumes_caught_failure` independently observes production `restore_migration` | Portable caught failure, then fresh restoration and retained backups |
+| Internal service directory/exclusive-file creation, buffered write/flush, raw file fsync, modeled metadata/file/directory sync, replacement, rename, unlink and receipt link publication | `test_every_observed_service_storage_effect_recovers`; focused `test_focused_new_storage_windows_recover` | Portable caught failure at actual primitive call sites, including reverse effects and parent-intent/child-creation persistence windows |
+| Same internal storage coverage after actual interpreter loss | `test_linux_process_death_at_each_covered_storage_occurrence`; `test_portable_storage_process_death_smoke` | Linux complete storage coverage plan; separate bounded portable death regressions with fresh recovery interpreters |
+| Empty, partial, or foreign public bytes left during original-file restoration | `test_interrupted_public_restoration_preserves_untrusted_bytes` | Incomplete recovery, unchanged public bytes/metadata, retained verified backups, and no old activation on repeated recovery |
 | Every observed forward and reverse process boundary | `test_actual_process_death_reloads_each_observed_service_boundary`; migration process tests with `exhaustive=True` | Linux-only exhaustive `os._exit(73)` matrix; skipped on Windows |
 | Empty service authority, candidate started before commit, durable commit, reverse filesystem restoration | `test_portable_process_death_recovery_smoke` | Four representative real subprocess deaths and separate recovery interpreters; portable model |
 | Migration journal creation, publication, final event, reverse journal/final event | Migration process tests with `exhaustive=False` select explicit classes from observed traces and include exhaustion | Bounded portable real-process regression coverage; separate recovery interpreter |
@@ -26,13 +29,44 @@ not coverage evidence (`tests/service_cutover/test_recovery.py`,
 | Receipt identity, interrupted publication, and durability retry | `test_invalid_receipt_never_opens`, `test_interrupted_publication_reestablishes_durability`, `test_interrupted_creation_and_publication_retry` | Existing portable readiness tests |
 
 Before a valid initial service journal exists, recovery must refuse
-incomplete authority without service actions. Once journal authority exists,
-pre-commit cases require complete rollback. After the durable `committed`
+incomplete authority without service actions. Once journal authority and
+restoration inputs are trusted, pre-commit cases require complete rollback.
+An interrupted public restore write can leave bytes that do not match the
+original. Such untrusted partial or foreign contents require incomplete
+recovery and manual resolution; they must remain untouched and cannot
+authorize old-service activation. Missing nodes and matching original bytes
+with original or known temporary metadata still require complete recovery.
+After the durable `committed`
 record, recovery must finish forward and cannot restart the old service.
 The expected side is captured at interruption, not inferred from a successful
 recovery result. Original backups are verified after recovery; every recorded
 service-state transition must have at most one active daemon
 (`tests/service_cutover/process_support.py`; #396).
+
+The storage supplement exhausts every observed upgrade forward/reverse
+occurrence. It also observes fresh, install-only-then-upgrade, and explicit
+fresh-secret workflows and injects every occurrence at a site not covered
+by the preceding scenarios. Site comparison retains the physical primitive,
+originating production function, journal/effect context, target path role,
+and before/after side. Only synthetic identities and numeric backup/blob
+indices are abstracted. This covers distinct predecessor staging, canonical
+unit restoration, migration-not-needed, and fresh-secret storage paths
+without repeating the same shared implementation for every fixture entry.
+The Linux process supplement uses the same complete coverage plan. The
+record/backend matrices separately retain all occurrences in all three
+installation modes (`tests/service_cutover/test_storage_recovery.py`; #396).
+
+Storage observation excludes read-only calls and helper-state persistence.
+Requested initial POSIX creation modes are modeled at the raw creation
+boundary, before the fixture's later metadata callback; new inodes cannot
+inherit deleted-node metadata. This is test-model state, not a claim about
+native Windows ownership or permissions.
+Fault provenance is test-oracle input only; recovery authority still comes
+from production journals. The partial-public-write refusal classification
+requires the exact injected restore-write site, pending restore-input
+authority, independently compared original/public bytes and metadata, and
+verified backups. It does not call the production partial-copy classifier
+as its oracle (`tests/service_cutover/storage_support.py`; #396).
 
 The migration journal's optional `before_create` callback durably binds its
 manifest path to the service transaction before creating child artifacts.
