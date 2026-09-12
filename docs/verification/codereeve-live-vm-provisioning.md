@@ -102,13 +102,19 @@ Baseline restores successfully and give the release operator the provider-specif
 snapshot and restore procedure. This restore proof is the snapshot prerequisite
 for infrastructure handback.
 
-During live-gate execution, the release operator creates two scenario snapshots:
+During live-gate execution, the release operator creates two scenario snapshots.
+For both, first restore Baseline, create the candidate environment, and install
+the exact candidate wheel. Use the same candidate source, wheel, lock identity,
+revision, managed repository, service HOME/XDG selection, and test credential
+mechanism in both scenarios (`docs/codereeve-release-gate.md:L290-L299`; #396).
+Then complete the scenario-specific preparation:
 
-1. **Fresh:** restore Baseline, prepare a scenario with no legacy or candidate
-   unit or state, then create the Fresh snapshot before any installer mode runs.
-2. **Upgrade:** restore Baseline, seed only the supported direct legacy launcher,
-   separate legacy environment, legacy unit, and fixture state, then create the
-   Upgrade snapshot before any candidate installer mode runs.
+1. **Fresh:** confirm no legacy or candidate unit or managed state exists, then
+   create the Fresh snapshot before any installer mode runs.
+2. **Upgrade:** seed only the supported direct legacy launcher, its environment
+   (separate from the prepared candidate environment), legacy unit, and fixture
+   state, then create the Upgrade snapshot before any candidate installer mode
+   runs.
 
 For **each** scenario, the operator restores that scenario's snapshot, runs
 `--print-unit` and `--no-start`, and retains their evidence. The operator then
