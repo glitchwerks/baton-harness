@@ -1,4 +1,4 @@
-"""JSONL run-record substrate for the baton-harness daemon.
+"""JSONL run-record substrate for the CodeReeve daemon.
 
 Provides a best-effort structured log of daemon lifecycle events.  All
 filesystem I/O is funnelled through the module-level ``_write_line`` seam

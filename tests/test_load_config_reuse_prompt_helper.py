@@ -10,7 +10,7 @@ independent of any one caller script, by sourcing ``bin/lib/
 load-config.sh`` in an isolated bash and driving a new function that
 does not exist yet::
 
-    _bh_resolve_config_with_reuse_prompt <config_file_path> \
+    _codereeve_resolve_config_with_reuse_prompt <config_file_path> \
         <prompt_and_write_fn_name>
 
 Where ``<prompt_and_write_fn_name>`` is the *name* of a caller-supplied
@@ -23,7 +23,7 @@ Contract under test:
 
   1. File absent -> the helper calls the callback exactly once and
      returns 0 (the fresh-init path, unaffected by session mode).
-  2. File present, non-interactive session (``BH_SETUP_NO_PROMPT=1`` OR
+  2. File present, non-interactive session (``CODEREEVE_SETUP_NO_PROMPT=1`` OR
      plain non-tty pipes with no flag) -> the helper must NOT call the
      callback, must NOT modify the existing file, and must return
      non-zero (fail closed -- there is no way to ask, so it refuses to
@@ -46,14 +46,14 @@ wording are kept to a loose case-insensitive substring match (something
 mentioning "overwrite" or "existing"), per issue #352's own preference
 for leaving exact prompt wording to the implementer.
 
-Confirmed red today: ``_bh_resolve_config_with_reuse_prompt`` does not
+Confirmed red today: ``_codereeve_resolve_config_with_reuse_prompt`` does not
 exist anywhere in ``bin/lib/load-config.sh``, so sourcing the real file
 and then calling the function fails with a bash "command not found"
 (exit 127) every time, regardless of scenario -- see the return summary
 for this agent's task for the exact captured output.
 
 Interactive cases (3 and 4) are driven via a real pty (see
-``tests/_bh_pty.py``) and, per that helper's own POSIX-only
+``tests/_codereeve_pty.py``) and, per that helper's own POSIX-only
 constraint, are skipped (not failed) on this Windows host; they run for
 real on the project's CI runner (``ubuntu-latest`` per
 ``.github/workflows/ci.yml``).
@@ -91,13 +91,13 @@ source "$1"
 CONFIG_FILE="$2"
 MARKER_FILE="$3"
 
-stub_prompt_and_write() {
+stub_write() {
     printf 'called\\n' >> "$MARKER_FILE"
-    printf '%s\\n' "BH_STUB_WRITTEN=1" > "$CONFIG_FILE"
+    printf '%s\\n' "CODEREEVE_STUB_WRITTEN=1" > "$CONFIG_FILE"
 }
 
 rc=0
-_bh_resolve_config_with_reuse_prompt "$CONFIG_FILE" stub_prompt_and_write \\
+_codereeve_resolve_config_with_reuse_prompt "$CONFIG_FILE" stub_write \\
     || rc=$?
 echo "HELPER_EXIT=$rc"
 """
@@ -109,13 +109,13 @@ source "$1"
 CONFIG_FILE="$2"
 MARKER_FILE="$3"
 
-stub_prompt_and_write() {
+stub_write() {
     printf 'called\\n' >> "$MARKER_FILE"
     return 3
 }
 
 rc=0
-_bh_resolve_config_with_reuse_prompt "$CONFIG_FILE" stub_prompt_and_write \\
+_codereeve_resolve_config_with_reuse_prompt "$CONFIG_FILE" stub_write \\
     || rc=$?
 echo "HELPER_EXIT=$rc"
 """
@@ -172,7 +172,11 @@ def _base_env(tmp_path: Path) -> dict[str, str]:
         k: v
         for k, v in os.environ.items()
         if k
-        not in ("BH_SETUP_NO_PROMPT", "BH_PROJECT_ROOT", "BH_DEBUG_CONFIG")
+        not in (
+            "CODEREEVE_SETUP_NO_PROMPT",
+            "CODEREEVE_PROJECT_ROOT",
+            "CODEREEVE_DEBUG_CONFIG",
+        )
     }
     env["PATH"] = os.pathsep.join(
         part for part in [_BASH_BIN_DIR, env.get("PATH", "")] if part
@@ -220,7 +224,7 @@ def test_absent_config_file_calls_callback_once_and_succeeds(
     marker_file = tmp_path / "marker.txt"
 
     env = _base_env(tmp_path)
-    env["BH_SETUP_NO_PROMPT"] = "1"
+    env["CODEREEVE_SETUP_NO_PROMPT"] = "1"
 
     proc = subprocess.run(
         [
@@ -264,7 +268,7 @@ def test_absent_config_file_propagates_callback_failure(
     marker_file = tmp_path / "marker.txt"
 
     env = _base_env(tmp_path)
-    env["BH_SETUP_NO_PROMPT"] = "1"
+    env["CODEREEVE_SETUP_NO_PROMPT"] = "1"
 
     proc = subprocess.run(
         [
@@ -301,7 +305,7 @@ def test_absent_config_file_propagates_callback_failure(
 @pytest.mark.parametrize(
     "set_no_prompt_flag",
     [True, False],
-    ids=["BH_SETUP_NO_PROMPT=1", "non-tty-pipes-only"],
+    ids=["CODEREEVE_SETUP_NO_PROMPT=1", "non-tty-pipes-only"],
 )
 def test_existing_config_file_non_interactive_fails_closed(
     tmp_path: Path, set_no_prompt_flag: bool
@@ -309,19 +313,19 @@ def test_existing_config_file_non_interactive_fails_closed(
     """A pre-existing file + no way to ask must fail closed, untouched.
 
     Covers both routes to "non-interactive" the briefing calls out:
-    the explicit ``BH_SETUP_NO_PROMPT=1`` opt-out, and plain non-tty
+    the explicit ``CODEREEVE_SETUP_NO_PROMPT=1`` opt-out, and plain non-tty
     stdin/stdout with no flag set at all (the ordinary case for any
     script run under a subprocess pipe).
     """
     wrapper = _write_wrapper(tmp_path)
     config_file = tmp_path / "host.env"
-    original_bytes = b"BH_EXISTING=preexisting\n"
+    original_bytes = b"CODEREEVE_EXISTING=preexisting\n"
     config_file.write_bytes(original_bytes)
     marker_file = tmp_path / "marker.txt"
 
     env = _base_env(tmp_path)
     if set_no_prompt_flag:
-        env["BH_SETUP_NO_PROMPT"] = "1"
+        env["CODEREEVE_SETUP_NO_PROMPT"] = "1"
 
     proc = subprocess.run(
         [
@@ -379,16 +383,16 @@ def test_existing_config_file_interactive_reuse_choice_leaves_file_untouched(
     module docstring for the answer-format assumption this suite
     pins).
     """
-    from tests._bh_pty import run_interactive
+    from tests._codereeve_pty import run_interactive
 
     wrapper = _write_wrapper(tmp_path)
     config_file = tmp_path / "host.env"
-    original_bytes = b"BH_EXISTING=preexisting\n"
+    original_bytes = b"CODEREEVE_EXISTING=preexisting\n"
     config_file.write_bytes(original_bytes)
     marker_file = tmp_path / "marker.txt"
 
     env = _base_env(tmp_path)
-    env.pop("BH_SETUP_NO_PROMPT", None)
+    env.pop("CODEREEVE_SETUP_NO_PROMPT", None)
 
     returncode, pty_output, stderr = run_interactive(
         [
@@ -441,16 +445,16 @@ def test_existing_config_file_interactive_read_eof_fails_closed(
     tmp_path: Path,
 ) -> None:
     """EOF while reading the interactive choice must fail closed."""
-    from tests._bh_pty import run_interactive
+    from tests._codereeve_pty import run_interactive
 
     wrapper = _write_wrapper(tmp_path)
     config_file = tmp_path / "host.env"
-    original_bytes = b"BH_EXISTING=preexisting\n"
+    original_bytes = b"CODEREEVE_EXISTING=preexisting\n"
     config_file.write_bytes(original_bytes)
     marker_file = tmp_path / "marker.txt"
 
     env = _base_env(tmp_path)
-    env.pop("BH_SETUP_NO_PROMPT", None)
+    env.pop("CODEREEVE_SETUP_NO_PROMPT", None)
 
     returncode, pty_output, stderr = run_interactive(
         [
@@ -509,16 +513,16 @@ def test_existing_config_file_interactive_overwrite_choice_calls_callback(
     module docstring for the answer-format assumption this suite
     pins).
     """
-    from tests._bh_pty import run_interactive
+    from tests._codereeve_pty import run_interactive
 
     wrapper = _write_wrapper(tmp_path)
     config_file = tmp_path / "host.env"
-    original_bytes = b"BH_EXISTING=preexisting\n"
+    original_bytes = b"CODEREEVE_EXISTING=preexisting\n"
     config_file.write_bytes(original_bytes)
     marker_file = tmp_path / "marker.txt"
 
     env = _base_env(tmp_path)
-    env.pop("BH_SETUP_NO_PROMPT", None)
+    env.pop("CODEREEVE_SETUP_NO_PROMPT", None)
 
     returncode, pty_output, stderr = run_interactive(
         [
@@ -572,15 +576,17 @@ def test_interactive_overwrite_propagates_callback_failure(
     tmp_path: Path,
 ) -> None:
     """A failing overwrite callback must make the helper fail."""
-    from tests._bh_pty import run_interactive
+    from tests._codereeve_pty import run_interactive
 
     wrapper = _write_failing_wrapper(tmp_path)
     config_file = tmp_path / "host.env"
-    config_file.write_text("BH_EXISTING=preexisting\n", encoding="utf-8")
+    config_file.write_text(
+        "CODEREEVE_EXISTING=preexisting\n", encoding="utf-8"
+    )
     marker_file = tmp_path / "marker.txt"
 
     env = _base_env(tmp_path)
-    env.pop("BH_SETUP_NO_PROMPT", None)
+    env.pop("CODEREEVE_SETUP_NO_PROMPT", None)
 
     returncode, pty_output, stderr = run_interactive(
         [

@@ -1,7 +1,7 @@
 """State-label constants and single-state invariant checker for the chain.
 
 Defines the four mutually-exclusive GitHub state labels that drive the
-baton-harness issue-state machine, and provides a pure checker that
+CodeReeve issue-state machine, and provides a pure checker that
 asserts exactly one of them is present on a given issue at any time.
 
 Direction rule: chain modules may import from this module; hooks (e.g.
@@ -99,7 +99,7 @@ def target_state_from_observed(blocked: bool, pr_open: bool) -> str:
 
     This is a **pure function** — no I/O, no side-effects, never raises.
     It encodes the label-state-machine precedence rules from
-    harness-design.md §5 so that any caller can re-derive the intended
+    ``docs/harness-design.md §5`` so any caller can re-derive the intended
     label state independent of which hook last ran (idempotent AC2
     reconciler).
 

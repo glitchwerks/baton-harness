@@ -13,7 +13,7 @@ Proposed seam (code-writer adopts this name/signature in Phase 2)::
 Contract for ``_probe_worker_push_denied``:
 
 1. Attempts a git push to a UNIQUE throwaway ref under ``feature/`` (e.g.
-   ``feature/__bh-probe-<random>``), authenticated with the **WORKER**
+   ``feature/__codereeve-probe-<random>``), authenticated with the **WORKER**
    identity (``env_for(Identity.WORKER)``) — never ``_authed_git_push``,
    never an App installation token / credential helper. Uses the existing
    ``daemon._run(cmd, env=None)`` subprocess seam (the same one
@@ -180,7 +180,7 @@ from codereeve.chain.obs_config import ObsConfig
 # ---------------------------------------------------------------------------
 
 _OWNER = "glitchwerks"
-_REPO = "baton-harness"
+_REPO = "codereeve"
 _ISSUE = 42
 _APP_ID = "111"
 _TOKEN = "ghs_TESTTOKEN"
@@ -189,20 +189,20 @@ _WEBHOOK = "https://hooks.slack.com/services/T00/B00/secret"
 # A denial signal a real GitHub push-protection rejection carries.
 _DENIAL_STDERR = (
     "remote: error: GH006: Protected branch update failed for "
-    "refs/heads/feature/__bh-probe-abc123\n"
+    "refs/heads/feature/__codereeve-probe-abc123\n"
     "remote: Cannot push to this protected branch\n"
-    "To github.com:glitchwerks/baton-harness.git\n"
-    " ! [remote rejected] feature/__bh-probe-abc123 -> "
-    "feature/__bh-probe-abc123 (protected branch hook declined)\n"
+    "To github.com:glitchwerks/codereeve.git\n"
+    " ! [remote rejected] feature/__codereeve-probe-abc123 -> "
+    "feature/__codereeve-probe-abc123 (protected branch hook declined)\n"
     "error: failed to push some refs to "
-    "'github.com:glitchwerks/baton-harness.git'"
+    "'github.com:glitchwerks/codereeve.git'"
 )
 
 # A non-zero exit that carries NO recognizable denial vocabulary — must
 # be treated as indeterminate, not as proof of denial.
 _UNRECOGNIZED_STDERR = (
     "fatal: unable to access "
-    "'https://github.com/glitchwerks/baton-harness.git/': "
+    "'https://github.com/glitchwerks/codereeve.git/': "
     "Could not resolve host: github.com"
 )
 
@@ -327,7 +327,7 @@ def test_probe_pushes_using_worker_identity_via_run_seam(
 
     probe_fn = _get_probe_fn(daemon_mod)
 
-    sentinel_env = {"__BH_TEST_SENTINEL_WORKER_ENV__": "1"}
+    sentinel_env = {"__CODEREEVE_TEST_SENTINEL_WORKER_ENV__": "1"}
     captured_identity: list[Any] = []
 
     def _spy_env_for(identity: Any, **kwargs: Any) -> dict[str, str]:  # noqa: ANN401
@@ -737,7 +737,8 @@ def test_launch_proceeds_when_probe_denies_despite_comparator_drift(
 # ---------------------------------------------------------------------------
 
 _ACCEPTED_PUSH_DETAIL = (
-    "probe push to feature/__bh-probe-abc123 was ACCEPTED (returncode=0) "
+    "probe push to feature/__codereeve-probe-abc123 was ACCEPTED "
+    "(returncode=0) "
     "— push-protection boundary breached"
 )
 
@@ -1216,7 +1217,7 @@ def test_probe_reports_cleanup_failed_when_delete_returns_nonzero(
             stdout="",
             stderr=(
                 "error: unable to delete "
-                "'refs/heads/feature/__bh-probe-abc123': remote ref "
+                "'refs/heads/feature/__codereeve-probe-abc123': remote ref "
                 "does not exist"
             ),
         ),

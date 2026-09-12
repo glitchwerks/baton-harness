@@ -198,7 +198,7 @@ def _should_launch_worker(
         )
         checks_detail = result.detail or _GENERIC_CHECKS_DETAIL
         message = (
-            "baton-harness refusing to launch worker — "
+            "CodeReeve refusing to launch worker — "
             "repo_root is not a git worktree; the decisive push-denial "
             "probe cannot run. Will NOT run in dangerous mode. "
             f"Comparator status: {result.status.name}. "
@@ -257,7 +257,7 @@ def _should_launch_worker(
             else "UNKNOWN"
         )
         message = (
-            "baton-harness refusing to launch worker — "
+            "CodeReeve refusing to launch worker — "
             "push-denial probe did not confirm denial "
             f"(reason={reason_text}; comparator={result.status.name}). "
             "Will NOT run in dangerous mode. "
@@ -287,7 +287,7 @@ def _should_launch_worker(
     checks_detail = result.detail or _GENERIC_CHECKS_DETAIL
 
     message = (
-        "baton-harness refusing to launch worker — "
+        "CodeReeve refusing to launch worker — "
         "main branch protection missing/misconfigured. "
         "Will NOT run in dangerous mode. "
         f"Failed checks: {checks_detail}."

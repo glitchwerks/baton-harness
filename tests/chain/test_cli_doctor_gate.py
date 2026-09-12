@@ -33,13 +33,13 @@ def test_explicit_config_root_reaches_registry_after_gate(
     from codereeve.chain import cli
 
     selected_root = tmp_path / "selected"
-    config_dir = selected_root / ".bh"
+    config_dir = selected_root / ".codereeve"
     config_dir.mkdir(parents=True)
     path = config_dir / "config.env"
     path.write_text(
-        "BH_REPO_OWNER=my-org\nBH_REPO_NAME=my-sandbox\n"
-        "BH_GITHUB_APP_ID=12345\nBH_GITHUB_APP_INSTALLATION_ID=67890\n"
-        "BH_GITHUB_APP_KEY_PROVIDER=bws\n"
+        "CODEREEVE_REPO_OWNER=my-org\nCODEREEVE_REPO_NAME=my-sandbox\n"
+        "CODEREEVE_GITHUB_APP_ID=12345\nCODEREEVE_GITHUB_APP_INSTALLATION_ID=67890\n"
+        "CODEREEVE_GITHUB_APP_KEY_PROVIDER=bws\n"
         "BWS_PEM_SECRET_ID=11111111-2222-3333-4444-555555555555\n",
         encoding="utf-8",
     )
@@ -48,7 +48,11 @@ def test_explicit_config_root_reaches_registry_after_gate(
     initial_env = (
         {}
         if ambient_root is None
-        else {"BH_PROJECT_ROOT": str(explicit_root) if ambient_root else ""}
+        else {
+            "CODEREEVE_PROJECT_ROOT": str(explicit_root)
+            if ambient_root
+            else ""
+        }
     )
     expected_root = explicit_root if ambient_root else selected_root
 
@@ -84,7 +88,7 @@ def test_explicit_config_root_reaches_registry_after_gate(
             assert registry[0].project_root == expected_root
             assert registry[0].owner == "my-org"
             assert registry[0].repo == "my-sandbox"
-            assert Path(os.environ["BH_PROJECT_ROOT"]) == expected_root
+            assert Path(os.environ["CODEREEVE_PROJECT_ROOT"]) == expected_root
         else:
             assert dict(os.environ) == initial_env
             daemon.assert_not_called()
@@ -152,7 +156,7 @@ def test_daemon_config_and_gate_order(
 
     path = tmp_path / "selected.env"
     path.write_text(
-        "BH_REPO_OWNER=my-org\nBH_REPO_NAME=my-sandbox\nBH_GITHUB_APP_ID=12345\nBH_GITHUB_APP_INSTALLATION_ID=67890\nBH_GITHUB_APP_KEY_PROVIDER=bws\nBWS_PEM_SECRET_ID=11111111-2222-3333-4444-555555555555\n",
+        "CODEREEVE_REPO_OWNER=my-org\nCODEREEVE_REPO_NAME=my-sandbox\nCODEREEVE_GITHUB_APP_ID=12345\nCODEREEVE_GITHUB_APP_INSTALLATION_ID=67890\nCODEREEVE_GITHUB_APP_KEY_PROVIDER=bws\nBWS_PEM_SECRET_ID=11111111-2222-3333-4444-555555555555\n",
         encoding="utf-8",
     )
     events = []
@@ -210,7 +214,7 @@ def test_daemon_config_and_gate_order(
         patch.dict(
             os.environ,
             {
-                "BH_PROJECT_ROOT": str(tmp_path),
+                "CODEREEVE_PROJECT_ROOT": str(tmp_path),
                 "BWS_ACCESS_TOKEN": "retained-secret",
             },
             clear=True,
@@ -312,7 +316,7 @@ def test_live_vault_retains_prebootstrap_authority(
 
     path = tmp_path / "operator.env"
     path.write_text(
-        "BH_REPO_OWNER=my-org\nBH_REPO_NAME=my-sandbox\nBH_GITHUB_APP_ID=12345\nBH_GITHUB_APP_INSTALLATION_ID=67890\nBH_GITHUB_APP_KEY_PROVIDER=bws\nBWS_PEM_SECRET_ID=11111111-2222-3333-4444-555555555555\n",
+        "CODEREEVE_REPO_OWNER=my-org\nCODEREEVE_REPO_NAME=my-sandbox\nCODEREEVE_GITHUB_APP_ID=12345\nCODEREEVE_GITHUB_APP_INSTALLATION_ID=67890\nCODEREEVE_GITHUB_APP_KEY_PROVIDER=bws\nBWS_PEM_SECRET_ID=11111111-2222-3333-4444-555555555555\n",
         encoding="utf-8",
     )
     events = []
@@ -341,7 +345,7 @@ def test_live_vault_retains_prebootstrap_authority(
         patch.dict(
             os.environ,
             {
-                "BH_PROJECT_ROOT": str(tmp_path),
+                "CODEREEVE_PROJECT_ROOT": str(tmp_path),
                 "BWS_ACCESS_TOKEN": "retained-vault-secret",
             },
             clear=True,
@@ -374,19 +378,19 @@ def _run_file_provider_gate(
     tmp_path: Path, *, optional_bws: bool
 ) -> tuple[int, int]:
     """Run the real prerequisite gate through CLI startup in isolation."""
-    bh_dir = tmp_path / ".bh"
-    bh_dir.mkdir()
+    codereeve_dir = tmp_path / ".codereeve"
+    codereeve_dir.mkdir()
     content = (
-        "BH_REPO_OWNER=my-org\nBH_REPO_NAME=my-sandbox\n"
-        "BH_GITHUB_APP_ID=12345\nBH_GITHUB_APP_INSTALLATION_ID=67890\n"
-        "BH_GITHUB_APP_KEY_PROVIDER=file\n"
-        f"BH_GITHUB_APP_PRIVATE_KEY_FILE={tmp_path / 'app.pem'}\n"
+        "CODEREEVE_REPO_OWNER=my-org\nCODEREEVE_REPO_NAME=my-sandbox\n"
+        "CODEREEVE_GITHUB_APP_ID=12345\nCODEREEVE_GITHUB_APP_INSTALLATION_ID=67890\n"
+        "CODEREEVE_GITHUB_APP_KEY_PROVIDER=file\n"
+        f"CODEREEVE_GITHUB_APP_PRIVATE_KEY_FILE={tmp_path / 'app.pem'}\n"
     )
     if optional_bws:
         content += (
             "BWS_GH_TOKEN_SECRET_ID=11111111-2222-3333-4444-555555555555\n"
         )
-    (bh_dir / "config.env").write_text(content, encoding="utf-8")
+    (codereeve_dir / "config.env").write_text(content, encoding="utf-8")
     checks = [
         check
         for check in doctor.CATALOG
@@ -395,7 +399,7 @@ def _run_file_provider_gate(
     ]
     with (
         patch.dict(
-            "os.environ", {"BH_PROJECT_ROOT": str(tmp_path)}, clear=True
+            "os.environ", {"CODEREEVE_PROJECT_ROOT": str(tmp_path)}, clear=True
         ),
         patch.object(doctor, "CATALOG", checks),
         patch.object(doctor, "run_gate", new=_REAL_RUN_GATE),
@@ -580,8 +584,11 @@ def test_doctor_flag_prints_report_and_exits_0_even_with_critical_fail(
             Severity.CRITICAL,
             CheckStatus.FAIL,
             title="Sandbox config file present",
-            detail="Sentinel-detail: .bh/config.env is missing.",
-            fix="Sentinel-fix: create .bh/config.env in BH_PROJECT_ROOT.",
+            detail="Sentinel-detail: .codereeve/config.env is missing.",
+            fix=(
+                "Sentinel-fix: create .codereeve/config.env "
+                "in CODEREEVE_PROJECT_ROOT."
+            ),
         ),
         _result(
             "CLI_UV",
@@ -620,8 +627,11 @@ def test_doctor_flag_prints_report_and_exits_0_even_with_critical_fail(
 
     assert "[fail]" in output
     assert "Sandbox config file present" in output
-    assert "Sentinel-detail: .bh/config.env is missing." in output
-    assert "Sentinel-fix: create .bh/config.env in BH_PROJECT_ROOT." in output
+    assert "Sentinel-detail: .codereeve/config.env is missing." in output
+    assert (
+        "Sentinel-fix: create .codereeve/config.env in CODEREEVE_PROJECT_ROOT."
+        in output
+    )
 
     assert "[warn]" in output
     assert "uv package manager available" in output

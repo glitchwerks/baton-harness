@@ -9,7 +9,7 @@ Coverage:
   pre-chdir resolution convention already pinned for ``--workflow`` by
   ``test_cli.py::test_main_workflow_path_resolved_absolute_before_chdir``.
 - ``--report`` omitted entirely defaults to
-  ``${BH_PROJECT_ROOT}/.codereeve/session-report.json``, still
+  ``${CODEREEVE_PROJECT_ROOT}/.codereeve/session-report.json``, still
   forwarded as an absolute ``report_path=``.
 - The new default ``report_path=`` kwarg coexists with the other
   kwargs ``run_daemon`` already receives (``once``, ``poll_interval_s``)
@@ -208,25 +208,25 @@ def test_report_relative_path_resolved_before_chdir(
 
 
 # ---------------------------------------------------------------------------
-# --report omitted: default path under BH_PROJECT_ROOT
+# --report omitted: default path under CODEREEVE_PROJECT_ROOT
 # ---------------------------------------------------------------------------
 
 
-def test_report_omitted_defaults_to_bh_project_root_session_report(
+def test_report_omitted_defaults_to_codereeve_project_root_session_report(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Omitting ``--report`` uses the ``BH_PROJECT_ROOT`` default path.
+    """Omitting ``--report`` uses the ``CODEREEVE_PROJECT_ROOT`` default path.
 
-    Defaults to ``${BH_PROJECT_ROOT}/.codereeve/session-report.json``.
-    ``BH_PROJECT_ROOT`` is set to the same directory used as the
+    Defaults to ``${CODEREEVE_PROJECT_ROOT}/.codereeve/session-report.json``.
+    ``CODEREEVE_PROJECT_ROOT`` is set to the same directory used as the
     registry's ``project_root`` so the assertion holds regardless of
     whether the implementer sources the default from the env var
     directly or from the loaded registry entry -- both must agree.
     """
     project_root = tmp_path / "project_root"
     project_root.mkdir()
-    monkeypatch.setenv("BH_PROJECT_ROOT", str(project_root))
+    monkeypatch.setenv("CODEREEVE_PROJECT_ROOT", str(project_root))
 
     fake_repo_cfg = MagicMock()
     fake_repo_cfg.project_root = project_root

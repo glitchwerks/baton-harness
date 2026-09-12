@@ -7,7 +7,7 @@ level helper).  No live network or ``gh`` binary is required.
 
 Coverage:
 - GitHub comment attempted first and return value is the durable record.
-- Slack skipped when ``BH_SLACK_WEBHOOK_URL`` is not set.
+- Slack skipped when ``CODEREEVE_SLACK_WEBHOOK_URL`` is not set.
 - Slack best-effort failure does NOT change the return value (GitHub
   comment is the record).
 - GitHub-comment failure logs a WARNING and returns ``False``.
@@ -39,7 +39,7 @@ from codereeve.chain.runlog import RunLog
 # ---------------------------------------------------------------------------
 
 _OWNER = "glitchwerks"
-_REPO = "baton-harness"
+_REPO = "codereeve"
 _ISSUE = 42
 
 
@@ -71,6 +71,7 @@ def test_escalate_github_comment_success_returns_true() -> None:
         # Ensure Slack env is absent.
         import os
 
+        os.environ.pop("CODEREEVE_SLACK_WEBHOOK_URL", None)
         os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
         result = escalate(
             _OWNER, _REPO, _ISSUE, "stalled on issue #42", kind="block"
@@ -95,6 +96,7 @@ def test_escalate_gh_comment_uses_repo_flag() -> None:
     ):
         import os
 
+        os.environ.pop("CODEREEVE_SLACK_WEBHOOK_URL", None)
         os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
         escalate(_OWNER, _REPO, _ISSUE, "summary")
 
@@ -118,6 +120,7 @@ def test_escalate_github_failure_returns_false_and_logs_warning(
     ):
         import os
 
+        os.environ.pop("CODEREEVE_SLACK_WEBHOOK_URL", None)
         os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
         result = escalate(_OWNER, _REPO, _ISSUE, "summary")
 
@@ -134,7 +137,7 @@ def test_escalate_github_failure_returns_false_and_logs_warning(
 
 
 def test_escalate_slack_skipped_when_env_unset() -> None:
-    """No Slack POST when BH_SLACK_WEBHOOK_URL is not set."""
+    """No Slack POST when CODEREEVE_SLACK_WEBHOOK_URL is not set."""
     with (
         patch.object(esc_mod, "_run", return_value=_ok()),
         patch("urllib.request.urlopen") as mock_urlopen,
@@ -142,6 +145,7 @@ def test_escalate_slack_skipped_when_env_unset() -> None:
     ):
         import os
 
+        os.environ.pop("CODEREEVE_SLACK_WEBHOOK_URL", None)
         os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
         escalate(_OWNER, _REPO, _ISSUE, "summary")
 
@@ -149,15 +153,15 @@ def test_escalate_slack_skipped_when_env_unset() -> None:
 
 
 def test_escalate_slack_posted_when_env_set() -> None:
-    """Slack POST is attempted when BH_SLACK_WEBHOOK_URL is set."""
+    """Slack POST is attempted when CODEREEVE_SLACK_WEBHOOK_URL is set."""
     webhook = "https://hooks.slack.com/test"
     with (
         patch.object(esc_mod, "_run", return_value=_ok()),
         patch("urllib.request.urlopen") as mock_urlopen,
         patch.dict(
             "os.environ",
-            {"BH_SLACK_WEBHOOK_URL": webhook},
-            clear=False,
+            {"CODEREEVE_SLACK_WEBHOOK_URL": webhook},
+            clear=True,
         ),
     ):
         result = escalate(_OWNER, _REPO, _ISSUE, "stalled!")
@@ -178,8 +182,8 @@ def test_escalate_slack_failure_does_not_change_return() -> None:
         ),
         patch.dict(
             "os.environ",
-            {"BH_SLACK_WEBHOOK_URL": webhook},
-            clear=False,
+            {"CODEREEVE_SLACK_WEBHOOK_URL": webhook},
+            clear=True,
         ),
     ):
         result = escalate(_OWNER, _REPO, _ISSUE, "stalled!")
@@ -201,8 +205,8 @@ def test_escalate_slack_failure_logs_warning(
         ),
         patch.dict(
             "os.environ",
-            {"BH_SLACK_WEBHOOK_URL": webhook},
-            clear=False,
+            {"CODEREEVE_SLACK_WEBHOOK_URL": webhook},
+            clear=True,
         ),
         caplog.at_level(
             logging.WARNING,
@@ -222,6 +226,7 @@ def test_escalate_kind_parameter_accepted() -> None:
     ):
         import os
 
+        os.environ.pop("CODEREEVE_SLACK_WEBHOOK_URL", None)
         os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
         result = escalate(_OWNER, _REPO, _ISSUE, "debug summary", kind="debug")
 
@@ -254,6 +259,7 @@ def test_escalate_none_issue_skips_gh_comment(
             logger="codereeve.chain.escalation",
         ),
     ):
+        os.environ.pop("CODEREEVE_SLACK_WEBHOOK_URL", None)
         os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
         result = escalate(_OWNER, _REPO, None, "daemon tick error")
 
@@ -287,6 +293,7 @@ def test_escalate_zero_issue_skips_gh_comment(
             logger="codereeve.chain.escalation",
         ),
     ):
+        os.environ.pop("CODEREEVE_SLACK_WEBHOOK_URL", None)
         os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
         result = escalate(_OWNER, _REPO, 0, "daemon tick error")
 
@@ -298,7 +305,7 @@ def test_escalate_zero_issue_skips_gh_comment(
 def test_escalate_none_issue_still_posts_slack_when_env_set(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """When issue=None but BH_SLACK_WEBHOOK_URL is set, Slack is still tried.
+    """When issue=None but slack webhook url is set, Slack is still tried.
 
     Slack is the best-effort fallback when the durable GitHub record cannot
     land.  Skipping the gh comment must not suppress the Slack notification.
@@ -309,8 +316,8 @@ def test_escalate_none_issue_still_posts_slack_when_env_set(
         patch("urllib.request.urlopen") as mock_urlopen,
         patch.dict(
             "os.environ",
-            {"BH_SLACK_WEBHOOK_URL": webhook},
-            clear=False,
+            {"CODEREEVE_SLACK_WEBHOOK_URL": webhook},
+            clear=True,
         ),
         caplog.at_level(
             logging.WARNING,
@@ -377,6 +384,7 @@ def test_alert_info_does_not_call_escalate_and_returns_true(
     ):
         import os
 
+        os.environ.pop("CODEREEVE_SLACK_WEBHOOK_URL", None)
         os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
         # alert() does not exist yet; this import will fail (red phase).
         from codereeve.chain.escalation import alert
@@ -420,6 +428,7 @@ def test_alert_warn_calls_escalate_with_unchanged_body(
     ):
         import os
 
+        os.environ.pop("CODEREEVE_SLACK_WEBHOOK_URL", None)
         os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
         from codereeve.chain.escalation import alert
 
@@ -481,6 +490,7 @@ def test_alert_critical_prefixes_body_with_loud_marker(
     ):
         import os
 
+        os.environ.pop("CODEREEVE_SLACK_WEBHOOK_URL", None)
         os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
         from codereeve.chain.escalation import alert
 
@@ -523,6 +533,7 @@ def test_alert_warn_without_runlog_still_calls_escalate() -> None:
     ):
         import os
 
+        os.environ.pop("CODEREEVE_SLACK_WEBHOOK_URL", None)
         os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
         from codereeve.chain.escalation import alert
 
@@ -547,6 +558,7 @@ def test_alert_critical_without_runlog_still_calls_escalate() -> None:
     ):
         import os
 
+        os.environ.pop("CODEREEVE_SLACK_WEBHOOK_URL", None)
         os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
         from codereeve.chain.escalation import alert
 
@@ -571,6 +583,7 @@ def test_alert_info_without_runlog_returns_true_and_does_not_raise() -> None:
     ):
         import os
 
+        os.environ.pop("CODEREEVE_SLACK_WEBHOOK_URL", None)
         os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
         from codereeve.chain.escalation import alert
 
@@ -614,6 +627,7 @@ def test_alert_runlog_failure_does_not_propagate_and_escalate_still_fires(
     ):
         import os
 
+        os.environ.pop("CODEREEVE_SLACK_WEBHOOK_URL", None)
         os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
         from codereeve.chain.escalation import alert
 
@@ -650,6 +664,7 @@ def test_escalate_direct_call_still_posts_gh_comment_first() -> None:
     ):
         import os
 
+        os.environ.pop("CODEREEVE_SLACK_WEBHOOK_URL", None)
         os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
         result = escalate(_OWNER, _REPO, _ISSUE, "direct escalate call")
 
@@ -702,6 +717,7 @@ class TestAlertThreadsInstallationToken:
             patch.object(esc_mod, "_run", return_value=_ok()),
             patch.dict("os.environ", {}, clear=False),
         ):
+            os.environ.pop("CODEREEVE_SLACK_WEBHOOK_URL", None)
             os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
             from codereeve.chain.escalation import alert
 
@@ -746,6 +762,7 @@ class TestAlertThreadsInstallationToken:
             patch.object(esc_mod, "escalate", side_effect=_fake_escalate),
             patch.dict("os.environ", {}, clear=False),
         ):
+            os.environ.pop("CODEREEVE_SLACK_WEBHOOK_URL", None)
             os.environ.pop("BH_SLACK_WEBHOOK_URL", None)
             from codereeve.chain.escalation import alert
 
@@ -791,7 +808,7 @@ class TestAlertThreadsInstallationToken:
             run_env_kwargs.append(env)
             return _ok()
 
-        monkeypatch.delenv("BH_SLACK_WEBHOOK_URL", raising=False)
+        monkeypatch.delenv("CODEREEVE_SLACK_WEBHOOK_URL", raising=False)
 
         with patch.object(esc_mod, "_run", side_effect=_spy_run):
             from codereeve.chain.escalation import alert

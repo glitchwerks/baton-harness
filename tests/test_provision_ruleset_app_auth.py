@@ -208,8 +208,8 @@ def _invoke(
     env["CODEREEVE_GITHUB_APP_INSTALLATION_ID"] = "999999"
     env["CODEREEVE_GITHUB_APP_KEY_PROVIDER"] = "bws"
     env["CODEREEVE_ADMIN_ROLE_ID"] = admin_role_id
-    env["BH_FAKE_GH_LOG"] = str(log_path)
-    env["BH_FAKE_GH_CANNED_DIR"] = str(canned_state_dir)
+    env["CODEREEVE_FAKE_GH_LOG"] = str(log_path)
+    env["CODEREEVE_FAKE_GH_CANNED_DIR"] = str(canned_state_dir)
     # CODEREEVE_PROJECT_ROOT deliberately left unset so the optional baseline
     # capture step (unrelated to this suite) is skipped, keeping the
     # expected call set small and deterministic.
@@ -513,7 +513,7 @@ def test_jwt_and_token_values_never_appear_in_script_output(
 
     Also asserts the credential mechanism was actually exercised (the
     fake-gh log shows the JWT/token were used as bearer credentials) —
-    without this, a script that never wires up BH_APP_AUTH_*_CMD at all
+    without this, a script that never wires up CODEREEVE_APP_AUTH_*_CMD at all
     would trivially "pass" the non-leakage checks below for the wrong
     reason (nothing to leak because the feature doesn't run), rather
     than because the script correctly withholds a credential it did
@@ -573,7 +573,7 @@ def test_jwt_and_token_values_never_appear_in_script_output(
 def test_unset_overrides_fall_back_to_real_app_auth_module(
     tmp_path: Path,
 ) -> None:
-    """Absent BH_APP_AUTH_*_CMD -> script attempts the real app_auth module.
+    """Absent app auth * cmd -> script attempts the real app_auth module.
 
     BWS_PEM_SECRET_ID / BWS_ACCESS_TOKEN are deliberately excluded from
     the subprocess environment (never inherited from whatever the host
@@ -628,7 +628,9 @@ from cryptography.hazmat.primitives import serialization
 
 def record(endpoint):
     """Record ordering only, never credentials or derived values."""
-    with open(os.environ["BH_FAKE_GH_LOG"], "a", encoding="utf-8") as log:
+    with open(
+        os.environ["CODEREEVE_FAKE_GH_LOG"], "a", encoding="utf-8"
+    ) as log:
         log.write(json.dumps({"endpoint": endpoint}) + "\\n")
 
 

@@ -3,7 +3,7 @@
 > **How to use this template:** copy this file to `CLAUDE.md` in the target
 > project repo, then replace every `<!-- FILL: ... -->` marker with the
 > project-specific value. Delete these instruction lines before committing.
-> Source template lives at `templates/CLAUDE.md.template` in the harness repo.
+> Source template lives at `templates/CLAUDE.md.template` in the CodeReeve repo.
 
 ---
 
@@ -82,7 +82,7 @@ the assignee to summarize the current acceptance criteria in a fresh comment
 
 ## Git and PR conventions
 
-- Work on the branch Baton created for this issue. Do not push to `main`.
+- Work on the branch CodeReeve created for this issue. Do not push to `main`.
 - Commit message: `<short description> — closes #<issue-number>`.
 - PR: draft, body contains `Closes #<issue-number>`.
 - One logical commit per issue is preferred; squash fixup commits before

@@ -58,7 +58,7 @@ if [[ "${1-}" == "--help" || "${1-}" == "-h" ]]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HARNESS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+CODEREEVE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # ---------------------------------------------------------------------------
 # Source shared env-config loader (host.env -> CODEREEVE_PROJECT_ROOT;
@@ -91,8 +91,8 @@ unset _codereeve_load_config
 # ---------------------------------------------------------------------------
 # Python resolver — mirrors after_create.py:L99-L106.
 # ---------------------------------------------------------------------------
-_PYTHON="${HARNESS_DIR}/.venv/Scripts/python.exe"
-[[ ! -x "${_PYTHON}" ]] && _PYTHON="${HARNESS_DIR}/.venv/bin/python"
+_PYTHON="${CODEREEVE_DIR}/.venv/Scripts/python.exe"
+[[ ! -x "${_PYTHON}" ]] && _PYTHON="${CODEREEVE_DIR}/.venv/bin/python"
 [[ ! -x "${_PYTHON}" ]] && _PYTHON="python3"
 
 # ---------------------------------------------------------------------------
@@ -107,14 +107,14 @@ done
 if [[ ${#_missing[@]} -gt 0 ]]; then
     echo "provision-ruleset: missing env vars: ${_missing[*]}" >&2
     if [[ -n "${CODEREEVE_PROJECT_ROOT:-}" ]]; then
-        _bh_config_env="${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env"
+        _codereeve_config_env="${CODEREEVE_PROJECT_ROOT}/.codereeve/config.env"
         echo "  detail: CODEREEVE_PROJECT_ROOT=${CODEREEVE_PROJECT_ROOT}" >&2
-        if [[ -f "${_bh_config_env}" ]]; then
-            echo "  detail: .codereeve/config.env=${_bh_config_env} (exists)" >&2
+        if [[ -f "${_codereeve_config_env}" ]]; then
+            echo "  detail: .codereeve/config.env=${_codereeve_config_env} (exists)" >&2
         else
-            echo "  detail: .codereeve/config.env=${_bh_config_env} (does not exist)" >&2
+            echo "  detail: .codereeve/config.env=${_codereeve_config_env} (does not exist)" >&2
         fi
-        unset _bh_config_env
+        unset _codereeve_config_env
     else
         echo "  detail: CODEREEVE_PROJECT_ROOT=(unset)" >&2
         echo "  detail: .codereeve/config.env=(not checked: CODEREEVE_PROJECT_ROOT unset)" >&2
@@ -344,7 +344,7 @@ print(json.dumps(_strip(json.loads(sys.stdin.read()))))
 # ---------------------------------------------------------------------------
 # Render each config (substitute placeholders into valid JSON integers,
 # then strip "_comment" keys). The placeholder values appear as JSON
-# strings: "\"__BH_GITHUB_APP_ID__\"" and must become bare JSON integers
+# strings: "\"__CODEREEVE_GITHUB_APP_ID__\"" and must become bare JSON integers
 # after substitution so json.loads parses them as int, matching the
 # GitHub API response format.
 #
@@ -358,8 +358,8 @@ print(json.dumps(_strip(json.loads(sys.stdin.read()))))
 _render_config() {
     local src="$1"
     sed \
-        -e "s|\"__BH_GITHUB_APP_ID__\"|${CODEREEVE_GITHUB_APP_ID}|g" \
-        -e "s|\"__BH_ADMIN_ROLE_ID__\"|${ADMIN_ROLE_ID}|g" \
+        -e "s|\"__CODEREEVE_GITHUB_APP_ID__\"|${CODEREEVE_GITHUB_APP_ID}|g" \
+        -e "s|\"__CODEREEVE_ADMIN_ROLE_ID__\"|${ADMIN_ROLE_ID}|g" \
         "${src}" | _strip_comments
 }
 
@@ -412,7 +412,7 @@ for entry in entries:
 #   - id, source, source_type, _links, node_id, *_at, current_user_can_bypass
 #     (server-managed fields present in GET responses but absent in PUT/POST)
 # ---------------------------------------------------------------------------
-_COMPARE_KEYS="$(cat "${HARNESS_DIR}/config/ruleset.compare-keys.json")"
+_COMPARE_KEYS="$(cat "${CODEREEVE_DIR}/config/ruleset.compare-keys.json")"
 
 # ---------------------------------------------------------------------------
 # Apply one ruleset: list+filter, GET-by-id, compare, PUT/POST.
@@ -460,8 +460,8 @@ sys.exit(0 if all(desired.get(k) == current.get(k) for k in keys) else 1)
         --input -
 }
 
-_apply_ruleset "harness-main-no-merge" "${HARNESS_DIR}/config/ruleset.main.json"
-_apply_ruleset "harness-feature-daemon-only" "${HARNESS_DIR}/config/ruleset.feature.json"
+_apply_ruleset "harness-main-no-merge" "${CODEREEVE_DIR}/config/ruleset.main.json"
+_apply_ruleset "harness-feature-daemon-only" "${CODEREEVE_DIR}/config/ruleset.feature.json"
 
 # ---------------------------------------------------------------------------
 # Baseline capture (#206): pin ruleset_id + updated_at per ruleset so the

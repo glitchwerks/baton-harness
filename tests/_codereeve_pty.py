@@ -1,7 +1,7 @@
 """Shared pty-based interactive-session driver for bh setup-script tests.
 
 bash's own interactivity checks used across the harness's setup scripts
-(the ``_bh_interactive``-style ``[[ -t 0 && -t 1 && ... ]]`` guard) test
+(the ``_codereeve_interactive``-style ``[[ -t 0 && -t 1 && ... ]]`` guard) test
 whether fd 0 (stdin) *and* fd 1 (stdout) are real terminals. A plain
 ``subprocess.run`` with pipes never satisfies that -- pipes are never
 ttys -- so any test that needs to exercise an *interactive* branch of

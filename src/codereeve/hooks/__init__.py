@@ -1,6 +1,6 @@
-"""Claude Code hooks installed per-worktree by ``bh-after-create``.
+"""Claude Code hooks installed by ``codereeve hook after-create``.
 
-DISTINCT from the Python-baton-hooks in ``codereeve.after_create`` /
+Distinct from the Symphony lifecycle hooks in ``codereeve.after_create`` /
 ``codereeve.before_run`` / ``codereeve.after_run`` — those fire
 in the daemon's worker turn loop. The hooks in THIS sub-package are
 ``PreToolUse`` hooks registered in ``.claude/settings.json`` and fired by

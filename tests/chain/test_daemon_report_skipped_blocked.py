@@ -66,7 +66,7 @@ from codereeve.scenario.verify import verify_report
 from codereeve.vendor.symphony.config import WorkflowConfig
 
 _OWNER = "glitchwerks"
-_REPO_NAME = "baton-harness"
+_REPO_NAME = "codereeve"
 _FEED_SHA = "feedface" * 5
 
 
@@ -114,14 +114,19 @@ def _isolate_work_unit_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Guard against ambient ``os.environ`` leaks from the work-unit path.
 
     Mirrors ``tests/chain/test_daemon_report_wiring.py::
-    _isolate_work_unit_env`` — ``_run_work_unit`` writes ``BH_VENV``,
-    ``CHAIN_BASE_BRANCH``, and ``BH_FEATURE_BRANCH`` directly to the real
+    _isolate_work_unit_env`` — ``_run_work_unit`` writes ``CODEREEVE_VENV``,
+    ``CHAIN_BASE_BRANCH``, and ``CODEREEVE_FEATURE_BRANCH`` directly to
+    the real
     ``os.environ`` as a side effect of dispatching a work unit.
 
     Args:
         monkeypatch: The test's ``monkeypatch`` fixture.
     """
-    for key in ("BH_VENV", "CHAIN_BASE_BRANCH", "BH_FEATURE_BRANCH"):
+    for key in (
+        "CODEREEVE_VENV",
+        "CHAIN_BASE_BRANCH",
+        "CODEREEVE_FEATURE_BRANCH",
+    ):
         monkeypatch.delenv(key, raising=False)
 
 
@@ -363,7 +368,7 @@ def test_skipped_blocked_issue_coexists_with_normally_merged_issue(
             "_run",
             side_effect=_make_run_side_effect(
                 ready_issues=ready_issues,
-                issue_branch_by_number={10: "baton/issue-10-10"},
+                issue_branch_by_number={10: "codereeve/issue-10-10"},
             ),
         ),
         _common_success_patches()(),

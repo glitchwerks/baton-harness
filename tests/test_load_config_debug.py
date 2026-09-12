@@ -6,21 +6,21 @@ a tiny bash wrapper that sources the real file under ``set -euo
 pipefail`` (mirroring how ``bin/provision-ruleset.sh`` sources it in
 production) and inspects the resulting stderr.
 
-New env var ``BH_DEBUG_CONFIG`` gates ALL new output:
+New env var ``CODEREEVE_DEBUG_CONFIG`` gates ALL new output:
 
 - Unset, or any value other than exactly ``"1"`` (including the
   explicit ``"0"`` case) -> zero new stderr lines. This is the default,
   backward-compatible path every existing caller of ``load-config.sh``
   exercises today, so it must never regress.
 - Exactly ``"1"`` -> four possible ``config-debug:`` lines, one pair
-  per config-chain step (host.env, then .bh/config.env), selecting the
+  per config-chain step (host.env, then .codereeve/config.env), selecting the
   found/not-found variant per step based on whether the resolved file
-  actually exists (and, for step 2, whether ``BH_PROJECT_ROOT`` is even
+  actually exists (and, for step 2, whether ``CODEREEVE_PROJECT_ROOT`` is even
   known yet).
 
 Each test isolates ``HOME``/``XDG_CONFIG_HOME`` to a fresh tmp_path
 subtree so a real operator host.env on this machine can never leak into
-a test's "not found" expectation, and isolates ``BH_PROJECT_ROOT`` the
+a test's "not found" expectation, and isolates ``CODEREEVE_PROJECT_ROOT`` the
 same way (explicit set/unset per case) for the same reason.
 """
 
@@ -69,13 +69,13 @@ def _run(
 
     Args:
         tmp_path: Pytest-provided temp directory for this test.
-        debug: Value for BH_DEBUG_CONFIG, or None to leave it unset.
+        debug: Value for CODEREEVE_DEBUG_CONFIG, or None to leave it unset.
         home: Directory to use as HOME for the subprocess.
         xdg_config_home: Directory to use as XDG_CONFIG_HOME for the
             subprocess (always set explicitly, even when the intended
             host.env under it is absent, so step 1's resolved path is
             deterministic across test runs/machines).
-        project_root: Value for BH_PROJECT_ROOT, or None to leave it
+        project_root: Value for CODEREEVE_PROJECT_ROOT, or None to leave it
             unset.
 
     Returns:
@@ -89,17 +89,17 @@ def _run(
     )
 
     env = dict(os.environ)
-    env.pop("BH_DEBUG_CONFIG", None)
-    env.pop("BH_PROJECT_ROOT", None)
+    env.pop("CODEREEVE_DEBUG_CONFIG", None)
+    env.pop("CODEREEVE_PROJECT_ROOT", None)
     env["PATH"] = os.pathsep.join(
         part for part in [_BASH_BIN_DIR, env.get("PATH", "")] if part
     )
     env["HOME"] = home.as_posix()
     env["XDG_CONFIG_HOME"] = xdg_config_home.as_posix()
     if project_root is not None:
-        env["BH_PROJECT_ROOT"] = project_root.as_posix()
+        env["CODEREEVE_PROJECT_ROOT"] = project_root.as_posix()
     if debug is not None:
-        env["BH_DEBUG_CONFIG"] = debug
+        env["CODEREEVE_DEBUG_CONFIG"] = debug
 
     proc = subprocess.run(
         [_BASH, str(wrapper), str(LOAD_CONFIG)],
@@ -120,23 +120,23 @@ def _host_env_path(xdg_config_home: Path) -> str:
     Returns:
         The posix-style resolved host.env path string.
     """
-    return f"{xdg_config_home.as_posix()}/baton-harness/host.env"
+    return f"{xdg_config_home.as_posix()}/codereeve/host.env"
 
 
 def _config_env_path(project_root: Path) -> str:
-    """Build the expected resolved .bh/config.env path as the script would.
+    """Build the expected canonical config path.
 
     Args:
-        project_root: The BH_PROJECT_ROOT value used for the run.
+        project_root: The CODEREEVE_PROJECT_ROOT value used for the run.
 
     Returns:
-        The posix-style resolved .bh/config.env path string.
+        The posix-style resolved .codereeve/config.env path string.
     """
-    return f"{project_root.as_posix()}/.bh/config.env"
+    return f"{project_root.as_posix()}/.codereeve/config.env"
 
 
 # ---------------------------------------------------------------------------
-# Case 1 / 5: BH_DEBUG_CONFIG unset or explicitly "0" -> zero new output
+# Case 1 / 5: CODEREEVE_DEBUG_CONFIG unset or explicitly "0" -> zero new output
 # ---------------------------------------------------------------------------
 
 
@@ -145,9 +145,9 @@ def _config_env_path(project_root: Path) -> str:
 def test_debug_unset_emits_no_stderr(
     tmp_path: Path, host_env_present: bool, project_root_set: bool
 ) -> None:
-    """BH_DEBUG_CONFIG unset -> zero stderr, across all four state combos.
+    """Debug config unset -> zero stderr, across all four state combos.
 
-    Covers both host.env presence variants and both BH_PROJECT_ROOT
+    Covers both host.env presence variants and both CODEREEVE_PROJECT_ROOT
     presence variants (the full state space step 1 and step 2 branch
     on) to prove the gate is unconditional, not just "happens to be
     quiet in the common case".
@@ -156,7 +156,7 @@ def test_debug_unset_emits_no_stderr(
     home.mkdir()
     xdg_config_home = tmp_path / "xdg_config"
     if host_env_present:
-        host_env_dir = xdg_config_home / "baton-harness"
+        host_env_dir = xdg_config_home / "codereeve"
         host_env_dir.mkdir(parents=True)
         (host_env_dir / "host.env").write_text(
             "# fixture host.env\n", encoding="utf-8", newline="\n"
@@ -180,13 +180,13 @@ def test_debug_unset_emits_no_stderr(
         f"stderr:\n{stderr}"
     )
     assert stderr == "", (
-        "BH_DEBUG_CONFIG unset must produce zero new stderr lines "
+        "CODEREEVE_DEBUG_CONFIG unset must produce zero new stderr lines "
         f"(backward compatibility); stderr was:\n{stderr!r}"
     )
 
 
 def test_debug_explicit_zero_emits_no_stderr(tmp_path: Path) -> None:
-    """Case 5: BH_DEBUG_CONFIG=0 is treated identically to unset."""
+    """Case 5: CODEREEVE_DEBUG_CONFIG=0 is treated identically to unset."""
     home = tmp_path / "home"
     home.mkdir()
     xdg_config_home = tmp_path / "xdg_config"
@@ -204,13 +204,15 @@ def test_debug_explicit_zero_emits_no_stderr(tmp_path: Path) -> None:
         f"stderr:\n{stderr}"
     )
     assert stderr == "", (
-        "BH_DEBUG_CONFIG=0 must be treated the same as unset — only the "
+        "CODEREEVE_DEBUG_CONFIG=0 must be treated the "
+        "same as unset — only the "
         f"exact value '1' may enable debug output; stderr was:\n{stderr!r}"
     )
 
 
 # ---------------------------------------------------------------------------
-# Case 2: BH_DEBUG_CONFIG=1, host.env absent, BH_PROJECT_ROOT unset
+# Case 2: CODEREEVE_DEBUG_CONFIG=1, host.env absent, CODEREEVE_PROJECT_ROOT
+# unset
 # ---------------------------------------------------------------------------
 
 
@@ -239,7 +241,8 @@ def test_debug_enabled_host_env_absent_and_project_root_unset(
 
 
 # ---------------------------------------------------------------------------
-# Case 3: BH_DEBUG_CONFIG=1, both host.env and .bh/config.env found
+# Case 3: CODEREEVE_DEBUG_CONFIG=1, both host.env and .codereeve/config.env
+# found
 # ---------------------------------------------------------------------------
 
 
@@ -250,16 +253,16 @@ def test_debug_enabled_both_found_with_correct_resolved_paths(
     home = tmp_path / "home"
     home.mkdir()
     xdg_config_home = tmp_path / "xdg_config"
-    host_env_dir = xdg_config_home / "baton-harness"
+    host_env_dir = xdg_config_home / "codereeve"
     host_env_dir.mkdir(parents=True)
     (host_env_dir / "host.env").write_text(
         "# fixture host.env\n", encoding="utf-8", newline="\n"
     )
 
     project_root = tmp_path / "project"
-    bh_dir = project_root / ".bh"
-    bh_dir.mkdir(parents=True)
-    (bh_dir / "config.env").write_text(
+    codereeve_dir = project_root / ".codereeve"
+    codereeve_dir.mkdir(parents=True)
+    (codereeve_dir / "config.env").write_text(
         "# fixture config.env\n", encoding="utf-8", newline="\n"
     )
 
@@ -280,21 +283,22 @@ def test_debug_enabled_both_found_with_correct_resolved_paths(
 
 
 # ---------------------------------------------------------------------------
-# Case 4: BH_DEBUG_CONFIG=1, BH_PROJECT_ROOT set but .bh/config.env absent
+# Case 4: CODEREEVE_DEBUG_CONFIG=1, CODEREEVE_PROJECT_ROOT set but
+# .codereeve/config.env absent
 # ---------------------------------------------------------------------------
 
 
 def test_debug_enabled_project_root_set_but_config_env_absent(
     tmp_path: Path,
 ) -> None:
-    """The not-found debug line fires for .bh/config.env specifically."""
+    """Report the missing canonical config path."""
     home = tmp_path / "home"
     home.mkdir()
     xdg_config_home = tmp_path / "xdg_config"
 
     project_root = tmp_path / "project"
     project_root.mkdir()
-    # Deliberately no .bh/config.env under project_root.
+    # Deliberately no .codereeve/config.env under project_root.
 
     rc, stdout, stderr = _run(
         tmp_path,

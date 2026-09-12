@@ -764,7 +764,7 @@ class TestReconcileUsesDaemonValidator:
         from codereeve.chain.obs_config import ObsConfig  # noqa: PLC0415
         from codereeve.chain.registry import RepoConfig  # noqa: PLC0415
 
-        harness_dir = tmp_path / ".baton-harness"
+        harness_dir = tmp_path / ".codereeve"
         harness_dir.mkdir(parents=True, exist_ok=True)
         obs = ObsConfig(
             runlog_path=harness_dir / "runlog.jsonl",
@@ -778,7 +778,7 @@ class TestReconcileUsesDaemonValidator:
         repo_cfgs = [
             RepoConfig(
                 owner="glitchwerks",
-                repo="baton-harness",
+                repo="codereeve",
                 project_root=tmp_path,
             )
         ]
@@ -847,7 +847,7 @@ class TestReconcileUsesDaemonValidator:
         from codereeve.chain.obs_config import ObsConfig  # noqa: PLC0415
         from codereeve.chain.registry import RepoConfig  # noqa: PLC0415
 
-        harness_dir = tmp_path / ".baton-harness"
+        harness_dir = tmp_path / ".codereeve"
         harness_dir.mkdir(parents=True, exist_ok=True)
         obs = ObsConfig(
             runlog_path=harness_dir / "runlog.jsonl",
@@ -861,7 +861,7 @@ class TestReconcileUsesDaemonValidator:
         repo_cfgs = [
             RepoConfig(
                 owner="glitchwerks",
-                repo="baton-harness",
+                repo="codereeve",
                 project_root=tmp_path,
             )
         ]

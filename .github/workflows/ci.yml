@@ -55,7 +55,7 @@ jobs:
         run: .venv/bin/python -m pytest
 
       - name: Verify frozen wheel foundation
-        run: .venv/bin/bh-verify-foundation
+        run: .venv/bin/codereeve verify
 
   shellcheck:
     name: Lint (shellcheck)

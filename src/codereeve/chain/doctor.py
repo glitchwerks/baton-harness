@@ -1,4 +1,4 @@
-"""Preflight readiness checks for the Baton harness daemon."""
+"""Preflight readiness checks for the CodeReeve daemon."""
 
 from __future__ import annotations
 
@@ -412,7 +412,7 @@ def _check_package_provenance(ctx: DoctorContext) -> CheckResult:
         Severity.CRITICAL,
         CheckStatus.PASS,
         "Installed metadata matches the packaged provenance record.",
-        "Reinstall a verified baton-harness artifact.",
+        "Reinstall a verified CodeReeve artifact.",
     )
 
 
@@ -439,7 +439,7 @@ def _check_package_imports(ctx: DoctorContext) -> CheckResult:
         Severity.CRITICAL,
         CheckStatus.PASS,
         "Required runtime modules import successfully.",
-        "Reinstall the baton-harness package and its runtime dependencies.",
+        "Reinstall CodeReeve and its runtime dependencies.",
     )
 
 
@@ -479,7 +479,7 @@ def _check_package_entry_points(ctx: DoctorContext) -> CheckResult:
             Severity.CRITICAL,
             CheckStatus.FAIL,
             "Missing installed console scripts: " + ", ".join(missing),
-            "Reinstall a complete baton-harness artifact.",
+            "Reinstall a complete CodeReeve artifact.",
         )
     return _result(
         "PKG_ENTRY_POINTS",
@@ -487,7 +487,7 @@ def _check_package_entry_points(ctx: DoctorContext) -> CheckResult:
         Severity.CRITICAL,
         CheckStatus.PASS,
         "All required console scripts are installed.",
-        "Reinstall a complete baton-harness artifact.",
+        "Reinstall a complete CodeReeve artifact.",
     )
 
 
@@ -509,7 +509,7 @@ def _check_package_resources(ctx: DoctorContext) -> CheckResult:
         Severity.CRITICAL,
         CheckStatus.PASS,
         "Every required packaged resource is readable.",
-        "Reinstall a complete baton-harness artifact.",
+        "Reinstall a complete CodeReeve artifact.",
     )
 
 
@@ -533,7 +533,7 @@ def _check_package_workflow(ctx: DoctorContext) -> CheckResult:
         Severity.CRITICAL,
         CheckStatus.PASS,
         "The packaged default workflow parses successfully.",
-        "Reinstall a verified baton-harness artifact.",
+        "Reinstall a verified CodeReeve artifact.",
     )
 
 
@@ -692,14 +692,14 @@ def _check_project_root(ctx: DoctorContext) -> CheckResult:
         Project-root validity result.
     """
     title = "Project root is valid"
-    fix = "Set BH_PROJECT_ROOT to an existing directory."
+    fix = "Set CODEREEVE_PROJECT_ROOT to an existing directory."
     if ctx.project_root and Path(ctx.project_root).is_dir():
         return _result(
             "ENV_PROJECT_ROOT",
             title,
             Severity.CRITICAL,
             CheckStatus.PASS,
-            "BH_PROJECT_ROOT identifies an existing directory.",
+            "CODEREEVE_PROJECT_ROOT identifies an existing directory.",
             fix,
         )
     return _result(
@@ -707,7 +707,7 @@ def _check_project_root(ctx: DoctorContext) -> CheckResult:
         title,
         Severity.CRITICAL,
         CheckStatus.FAIL,
-        "BH_PROJECT_ROOT is empty or is not an existing directory.",
+        "CODEREEVE_PROJECT_ROOT is empty or is not an existing directory.",
         fix,
     )
 
@@ -756,7 +756,7 @@ def _check_host_env(ctx: DoctorContext) -> CheckResult:
 
 
 def _check_config_env(ctx: DoctorContext) -> CheckResult:
-    """Check whether ``.bh/config.env`` exists.
+    """Check whether the selected configuration file exists.
 
     Args:
         ctx: Injected doctor context.
@@ -793,7 +793,7 @@ def _check_required_keys(ctx: DoctorContext) -> CheckResult:
         Required-key validation result.
     """
     title = "Required sandbox config keys valid"
-    fix = "Set all required .bh/config.env keys to valid values."
+    fix = "Set all required .codereeve/config.env keys to valid values."
     try:
         _resolved_config(ctx)
     except sandbox_config.SandboxConfigError as exc:
@@ -833,7 +833,8 @@ def _check_optional_secret_ids(ctx: DoctorContext) -> CheckResult:
             title,
             Severity.WARNING,
             CheckStatus.SKIP,
-            ".bh/config.env is missing; optional IDs are not applicable.",
+            ".codereeve/config.env is missing; optional "
+            "IDs are not applicable.",
             fix,
         )
     try:
@@ -1314,7 +1315,7 @@ def _check_vault_dryrun(ctx: DoctorContext) -> CheckResult:
             str(exc),
             fix,
         )
-    app_id = values["BH_GITHUB_APP_ID"]
+    app_id = values["CODEREEVE_GITHUB_APP_ID"]
     try:
         private_key = load_app_private_key(
             config,
@@ -1358,7 +1359,7 @@ CATALOG: list[Check] = [
         Severity.CRITICAL,
         Phase.INSTALLATION,
         False,
-        "Reinstall a verified baton-harness artifact.",
+        "Reinstall a verified CodeReeve artifact.",
         _check_package_provenance,
     ),
     Check(
@@ -1367,7 +1368,7 @@ CATALOG: list[Check] = [
         Severity.CRITICAL,
         Phase.INSTALLATION,
         False,
-        "Reinstall the baton-harness package and its runtime dependencies.",
+        "Reinstall CodeReeve and its runtime dependencies.",
         _check_package_imports,
     ),
     Check(
@@ -1376,7 +1377,7 @@ CATALOG: list[Check] = [
         Severity.CRITICAL,
         Phase.INSTALLATION,
         False,
-        "Reinstall a complete baton-harness artifact.",
+        "Reinstall a complete CodeReeve artifact.",
         _check_package_entry_points,
     ),
     Check(
@@ -1385,7 +1386,7 @@ CATALOG: list[Check] = [
         Severity.CRITICAL,
         Phase.INSTALLATION,
         False,
-        "Reinstall a complete baton-harness artifact.",
+        "Reinstall a complete CodeReeve artifact.",
         _check_package_resources,
     ),
     Check(
@@ -1394,7 +1395,7 @@ CATALOG: list[Check] = [
         Severity.CRITICAL,
         Phase.INSTALLATION,
         False,
-        "Reinstall a verified baton-harness artifact.",
+        "Reinstall a verified CodeReeve artifact.",
         _check_package_workflow,
     ),
     Check(
@@ -1448,7 +1449,7 @@ CATALOG: list[Check] = [
         Severity.CRITICAL,
         Phase.CONFIGURATION,
         False,
-        "Set BH_PROJECT_ROOT to an existing directory.",
+        "Set CODEREEVE_PROJECT_ROOT to an existing directory.",
         _check_project_root,
     ),
     Check(
@@ -1457,7 +1458,7 @@ CATALOG: list[Check] = [
         Severity.WARNING,
         Phase.CONFIGURATION,
         False,
-        "Create ~/.config/baton-harness/host.env if it is needed.",
+        "Create ~/.config/codereeve/host.env if it is needed.",
         _check_host_env,
     ),
     Check(
@@ -1466,7 +1467,7 @@ CATALOG: list[Check] = [
         Severity.CRITICAL,
         Phase.CONFIGURATION,
         False,
-        "Create .bh/config.env in BH_PROJECT_ROOT.",
+        "Create .codereeve/config.env in CODEREEVE_PROJECT_ROOT.",
         _check_config_env,
     ),
     Check(
@@ -1475,7 +1476,7 @@ CATALOG: list[Check] = [
         Severity.CRITICAL,
         Phase.CONFIGURATION,
         False,
-        "Set all required .bh/config.env keys to valid values.",
+        "Set all required .codereeve/config.env keys to valid values.",
         _check_required_keys,
     ),
     Check(

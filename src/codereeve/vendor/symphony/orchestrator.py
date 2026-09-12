@@ -538,7 +538,7 @@ class Orchestrator:
     async def run(self) -> None:
         """Main loop."""
         log.info(
-            f"Baton starting — polling every"
+            f"CodeReeve Symphony starting — polling every"
             f" {self.config.poll_interval_ms}ms, "
             f"max {self.config.max_concurrent} concurrent"
         )
@@ -566,7 +566,7 @@ class Orchestrator:
                 *self._running_tasks.values(), return_exceptions=True
             )
 
-        log.info("Baton stopped")
+        log.info("CodeReeve Symphony stopped")
 
     def stop(self) -> None:
         """Signal `run` to exit after the current tick completes."""

@@ -74,7 +74,7 @@ Merge safety:
 Provenance (§11.5 / B-I2):
     On a green merge the module:
     1. Issues ``git merge --no-ff -m "<provenance-trailer> …"`` with a
-       structured trailer: ``Baton-Harness-Merge: issue-<N> ci=green``.
+       structured trailer: ``CodeReeve-Merge: issue-<N> ci=green``.
     2. Adds the ``agent-merged`` label to the issue.
     3. Posts a marker comment on the issue recording the CI-green-at-merge
        fact.
@@ -762,7 +762,7 @@ def merge_issue_branch(
         issue: The issue number being merged.
         pr_head_sha: The PR head commit SHA used to query check-runs.
         issue_branch: The per-issue branch to merge (e.g.
-            ``"baton/v2-daemon-44"``).
+            ``"codereeve/v2-daemon-44"``).
         feature_branch: The feature branch to merge INTO (e.g.
             ``"feature/v2-daemon"``).  Must start with ``feature/`` — this
             guard ensures the merge never accidentally targets ``main``.
@@ -822,7 +822,7 @@ def merge_issue_branch(
         )
 
     # Build the provenance trailer (§11.5 / B-I2).
-    trailer = f"Baton-Harness-Merge: issue-{issue} ci=green"
+    trailer = f"CodeReeve-Merge: issue-{issue} ci=green"
     merge_message = (
         f"Merge branch '{issue_branch}' into {feature_branch}\n\n{trailer}"
     )
@@ -939,7 +939,7 @@ def _persist_ci_green(
 
     # Post marker comment with the CI-green SHA.
     marker = (
-        f"baton-harness: CI-green-at-merge sha={sha}"
+        f"CodeReeve: CI-green-at-merge sha={sha}"
         f" issue={issue} label=agent-merged"
     )
     comment_proc = _run(

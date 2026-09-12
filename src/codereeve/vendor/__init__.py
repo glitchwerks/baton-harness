@@ -1,1 +1,1 @@
-"""Vendored third-party packages used by the baton-harness daemon."""
+"""Vendored third-party packages used by the CodeReeve daemon."""

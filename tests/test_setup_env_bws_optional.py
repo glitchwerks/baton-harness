@@ -171,7 +171,7 @@ def _run_setup(
     env = _base_env(tmp_path, fake_bin)
     log_path = Path(env["SETUP_TEST_LOG"])
     if interactive_input is not None:
-        from tests._bh_pty import run_interactive
+        from tests._codereeve_pty import run_interactive
 
         returncode, stdout, stderr = run_interactive(
             [_BASH, str(setup)],

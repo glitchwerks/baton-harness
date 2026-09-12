@@ -207,11 +207,11 @@ def _temporary_workspace(keep: bool) -> Iterator[Path]:
         Temporary workspace path.
     """
     if keep:
-        retained = Path(tempfile.mkdtemp(prefix="bh-foundation-"))
+        retained = Path(tempfile.mkdtemp(prefix="codereeve-foundation-"))
         print(f"codereeve verify: retaining temporary files at {retained}")
         yield retained
         return
-    with tempfile.TemporaryDirectory(prefix="bh-foundation-") as raw:
+    with tempfile.TemporaryDirectory(prefix="codereeve-foundation-") as raw:
         yield Path(raw)
 
 
@@ -473,7 +473,9 @@ def _smoke_entry_points(
     Raises:
         FoundationError: If a wrapper returns an unexpected status.
     """
-    with tempfile.TemporaryDirectory(prefix="bh-entrypoint-smoke-") as raw:
+    with tempfile.TemporaryDirectory(
+        prefix="codereeve-entrypoint-smoke-"
+    ) as raw:
         cwd = Path(raw)
         child_env = _smoke_environment(cwd / "isolated")
         groups = ((CANONICAL_SMOKES, False), (LEGACY_SMOKES, True))

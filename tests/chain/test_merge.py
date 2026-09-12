@@ -183,7 +183,7 @@ except ImportError:
 
 _REPO = Path("/fake/repo")
 _OWNER = "glitchwerks"
-_REPO_NAME = "baton-harness"
+_REPO_NAME = "codereeve"
 _SHA = "abc123def456abc123def456abc123def456abc1"
 _FEATURE = "feature/v2-daemon"
 
@@ -363,7 +363,10 @@ class TestCiAuthErrorType:
 class TestQueryActionJobsCallShape:
     """Tests that ``_query_action_jobs`` issues the correct two-step calls."""
 
-    def test_first_call_queries_actions_runs_with_head_sha(self) -> None:
+    @pytest.mark.parametrize("repo", ["codereeve", "baton-harness"])
+    def test_first_call_queries_actions_runs_with_head_sha(
+        self, repo: str
+    ) -> None:
         """First call must query ``actions/runs?head_sha={sha}``."""
         calls: list[list[str]] = []
         responses = _action_jobs_responses([_actions_all_success_run()])
@@ -373,10 +376,11 @@ class TestQueryActionJobsCallShape:
             return responses.pop(0)
 
         with patch.object(merge_mod, "_run", side_effect=fake_run):
-            _query_action_jobs(_OWNER, _REPO_NAME, _SHA)
+            _query_action_jobs(_OWNER, repo, _SHA)
 
         assert calls, "Expected at least one _run call"
         first_call_str = " ".join(calls[0])
+        assert f"repos/glitchwerks/{repo}/actions/runs" in first_call_str
         assert "actions/runs" in first_call_str, (
             "First call must query the actions/runs endpoint"
         )
@@ -2074,7 +2078,7 @@ class TestMergeIssueBranch:
                     _REPO_NAME,
                     issue=44,
                     pr_head_sha=_SHA,
-                    issue_branch="baton/v2-daemon-44",
+                    issue_branch="codereeve/v2-daemon-44",
                     feature_branch=_FEATURE,
                     poll_interval=0,
                     timeout=1,
@@ -2107,7 +2111,7 @@ class TestMergeIssueBranch:
                     _REPO_NAME,
                     issue=44,
                     pr_head_sha=_SHA,
-                    issue_branch="baton/v2-daemon-44",
+                    issue_branch="codereeve/v2-daemon-44",
                     feature_branch=_FEATURE,
                     poll_interval=0,
                     timeout=1,
@@ -2121,7 +2125,7 @@ class TestMergeIssueBranch:
         merge_cmds = [c for c in calls if "merge" in c and "git" in c]
         assert merge_cmds, "Expected a git merge command"
         for cmd in merge_cmds:
-            assert "baton/v2-daemon-44" in cmd, (
+            assert "codereeve/v2-daemon-44" in cmd, (
                 "Merge must include the issue branch"
             )
             assert "main" not in cmd, "Must NEVER explicitly merge to main"
@@ -2146,7 +2150,7 @@ class TestMergeIssueBranch:
                     _REPO_NAME,
                     issue=44,
                     pr_head_sha=_SHA,
-                    issue_branch="baton/v2-daemon-44",
+                    issue_branch="codereeve/v2-daemon-44",
                     feature_branch=_FEATURE,
                     poll_interval=0,
                     timeout=1,
@@ -2170,7 +2174,7 @@ class TestMergeIssueBranch:
                 _REPO_NAME,
                 issue=44,
                 pr_head_sha=_SHA,
-                issue_branch="baton/v2-daemon-44",
+                issue_branch="codereeve/v2-daemon-44",
                 feature_branch="main",  # must be rejected
                 poll_interval=0,
                 timeout=1,
@@ -2199,7 +2203,7 @@ class TestMergeIssueBranch:
                     _REPO_NAME,
                     issue=44,
                     pr_head_sha=_SHA,
-                    issue_branch="baton/v2-daemon-44",
+                    issue_branch="codereeve/v2-daemon-44",
                     feature_branch=_FEATURE,
                     poll_interval=0,
                     timeout=1,
@@ -2207,9 +2211,7 @@ class TestMergeIssueBranch:
 
         assert captured_messages, "Expected a -m message on the merge command"
         full_msg = " ".join(captured_messages)
-        assert "Baton-Harness-Merge" in full_msg, (
-            "Merge message must carry Baton-Harness-Merge trailer"
-        )
+        assert "CodeReeve-Merge: issue-44 ci=green" in full_msg
         assert "issue-44" in full_msg or "44" in full_msg, (
             "Merge message must reference the issue number"
         )
@@ -2231,7 +2233,7 @@ class TestMergeIssueBranch:
                     _REPO_NAME,
                     issue=44,
                     pr_head_sha=_SHA,
-                    issue_branch="baton/v2-daemon-44",
+                    issue_branch="codereeve/v2-daemon-44",
                     feature_branch=_FEATURE,
                     poll_interval=0,
                     timeout=1,
@@ -2265,7 +2267,7 @@ class TestMergeIssueBranch:
                 _REPO_NAME,
                 issue=44,
                 pr_head_sha=_SHA,
-                issue_branch="baton/v2-daemon-44",
+                issue_branch="codereeve/v2-daemon-44",
                 feature_branch=_FEATURE,
                 poll_interval=0,
                 timeout=1,
@@ -2295,7 +2297,7 @@ class TestMergeIssueBranch:
                 _REPO_NAME,
                 issue=44,
                 pr_head_sha=_SHA,
-                issue_branch="baton/v2-daemon-44",
+                issue_branch="codereeve/v2-daemon-44",
                 feature_branch=_FEATURE,
                 poll_interval=0,
                 timeout=0,  # immediate timeout
@@ -2335,7 +2337,7 @@ class TestMergeIssueBranch:
                     _REPO_NAME,
                     issue=44,
                     pr_head_sha=_SHA,
-                    issue_branch="baton/v2-daemon-44",
+                    issue_branch="codereeve/v2-daemon-44",
                     feature_branch=_FEATURE,
                     poll_interval=0,
                     timeout=1,
@@ -2371,7 +2373,7 @@ class TestMergeIssueBranchDiagnosticThreading:
                 _REPO_NAME,
                 issue=44,
                 pr_head_sha=_SHA,
-                issue_branch="baton/v2-daemon-44",
+                issue_branch="codereeve/v2-daemon-44",
                 feature_branch=_FEATURE,
                 poll_interval=0,
                 timeout=0,
@@ -2393,7 +2395,7 @@ class TestMergeIssueBranchDiagnosticThreading:
                 _REPO_NAME,
                 issue=44,
                 pr_head_sha=_SHA,
-                issue_branch="baton/v2-daemon-44",
+                issue_branch="codereeve/v2-daemon-44",
                 feature_branch=_FEATURE,
                 poll_interval=0,
                 timeout=0,
@@ -2425,7 +2427,7 @@ class TestProvenancePersistence:
                     _REPO_NAME,
                     issue=44,
                     pr_head_sha=_SHA,
-                    issue_branch="baton/v2-daemon-44",
+                    issue_branch="codereeve/v2-daemon-44",
                     feature_branch=_FEATURE,
                     poll_interval=0,
                     timeout=1,
@@ -2463,7 +2465,7 @@ class TestProvenancePersistence:
                     _REPO_NAME,
                     issue=44,
                     pr_head_sha=_SHA,
-                    issue_branch="baton/v2-daemon-44",
+                    issue_branch="codereeve/v2-daemon-44",
                     feature_branch=_FEATURE,
                     poll_interval=0,
                     timeout=1,
@@ -2508,7 +2510,7 @@ class TestProvenancePersistence:
                     _REPO_NAME,
                     issue=44,
                     pr_head_sha=_SHA,
-                    issue_branch="baton/v2-daemon-44",
+                    issue_branch="codereeve/v2-daemon-44",
                     feature_branch=_FEATURE,
                     poll_interval=0,
                     timeout=1,
@@ -2534,7 +2536,7 @@ class TestDependencyOrderMerge:
         def fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
             if "merge" in cmd and "git" in cmd:
                 for tok in cmd:
-                    if tok.startswith("baton/"):
+                    if tok.startswith("codereeve/"):
                         last_part = tok.rsplit("-", 1)[-1]
                         try:
                             merge_order.append(int(last_part))
@@ -2542,7 +2544,7 @@ class TestDependencyOrderMerge:
                             pass
             return _ok()
 
-        branches = [f"baton/v2-daemon-{n}" for n in issues]
+        branches = [f"codereeve/v2-daemon-{n}" for n in issues]
         shas = [f"sha{n}" for n in issues]
 
         from codereeve.chain.merge import merge_issue_branches
@@ -2609,9 +2611,9 @@ class TestDependencyOrderMerge:
                     issues=[42, 43, 44],
                     pr_head_shas=["sha42", "sha43", "sha44"],
                     issue_branches=[
-                        "baton/v2-daemon-42",
-                        "baton/v2-daemon-43",
-                        "baton/v2-daemon-44",
+                        "codereeve/v2-daemon-42",
+                        "codereeve/v2-daemon-43",
+                        "codereeve/v2-daemon-44",
                     ],
                     feature_branch=_FEATURE,
                     poll_interval=0,
@@ -2766,7 +2768,7 @@ class TestUnrecognizedConclusionNotGreen:
                     _REPO_NAME,
                     issue=44,
                     pr_head_sha=_SHA,
-                    issue_branch="baton/v2-daemon-44",
+                    issue_branch="codereeve/v2-daemon-44",
                     feature_branch=_FEATURE,
                     poll_interval=0,
                     timeout=0,
@@ -2822,7 +2824,7 @@ class TestMergeConflictAbortsCleanly:
                     _REPO_NAME,
                     issue=44,
                     pr_head_sha=_SHA,
-                    issue_branch="baton/v2-daemon-44",
+                    issue_branch="codereeve/v2-daemon-44",
                     feature_branch=_FEATURE,
                     poll_interval=0,
                     timeout=1,
@@ -2867,7 +2869,7 @@ class TestMergeConflictAbortsCleanly:
                     _REPO_NAME,
                     issue=44,
                     pr_head_sha=_SHA,
-                    issue_branch="baton/v2-daemon-44",
+                    issue_branch="codereeve/v2-daemon-44",
                     feature_branch=_FEATURE,
                     poll_interval=0,
                     timeout=1,
@@ -2923,7 +2925,7 @@ class TestProvenancePersistenceFailureSurfaced:
                     _REPO_NAME,
                     issue=44,
                     pr_head_sha=_SHA,
-                    issue_branch="baton/v2-daemon-44",
+                    issue_branch="codereeve/v2-daemon-44",
                     feature_branch=_FEATURE,
                     poll_interval=0,
                     timeout=1,
@@ -2967,7 +2969,7 @@ class TestProvenancePersistenceFailureSurfaced:
                         _REPO_NAME,
                         issue=44,
                         pr_head_sha=_SHA,
-                        issue_branch="baton/v2-daemon-44",
+                        issue_branch="codereeve/v2-daemon-44",
                         feature_branch=_FEATURE,
                         poll_interval=0,
                         timeout=1,
@@ -3069,7 +3071,7 @@ class TestMergeIssueBranchThreadsInstallationToken:
                 _REPO_NAME,
                 issue=44,
                 pr_head_sha=_SHA,
-                issue_branch="baton/v2-daemon-44",
+                issue_branch="codereeve/v2-daemon-44",
                 feature_branch=_FEATURE,
                 poll_interval=0,
                 timeout=1,
@@ -3109,7 +3111,7 @@ class TestMergeIssueBranchThreadsInstallationToken:
                 _REPO_NAME,
                 issue=44,
                 pr_head_sha=_SHA,
-                issue_branch="baton/v2-daemon-44",
+                issue_branch="codereeve/v2-daemon-44",
                 feature_branch=_FEATURE,
                 poll_interval=0,
                 timeout=1,
@@ -3205,7 +3207,7 @@ class TestMergeIssueBranchThreadsInstallationToken:
                 _REPO_NAME,
                 issue=44,
                 pr_head_sha=_SHA,
-                issue_branch="baton/v2-daemon-44",
+                issue_branch="codereeve/v2-daemon-44",
                 feature_branch=_FEATURE,
                 poll_interval=0,
                 timeout=1,

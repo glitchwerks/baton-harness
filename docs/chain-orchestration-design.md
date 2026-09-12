@@ -1,6 +1,6 @@
 # Chain Orchestration Design
 
-**Purpose:** Reference for the always-on dependency-chain daemon (`src/baton_harness/chain/`) — how it works and why. This document complements [`harness-design.md`](./harness-design.md) (the parent harness design); consult §10 there for the implementation history and the resolved open questions. Implemented in issue #27 (phases P0–P3, PRs #46–#49).
+**Purpose:** Reference for the always-on dependency-chain daemon (`src/codereeve/chain/`) — how it works and why. This document complements [`harness-design.md`](./harness-design.md) (the parent harness design); consult §10 there for the implementation history and the resolved open questions. Implemented in issue #27 (phases P0–P3, PRs #46–#49).
 
 ---
 
@@ -16,7 +16,7 @@ The chain layer solves this by owning the feature branch, the topological dispat
 
 There is **one** execution path, parameterized by the DAG:
 
-- **A milestone** — all open issues in the milestone form one DAG, executed on one `feature/<slug>` branch, finalized as one ready-for-review `feature → main` PR.
+- **A milestone** — all open issues in the milestone form one DAG, executed on one `feature/<slug>` branch, finalized as one ready-for-review `feature/<slug> → main` PR.
 - **An un-milestoned issue** — its own N=1 DAG on a `feature/issue-<N>` branch, its own PR.
 
 N=1 is the degenerate DAG. There is no separate flat-run entry point. The daemon processes these identically.
@@ -70,9 +70,9 @@ Key behaviors:
 - Milestone work unit: `feature/<milestone-slug>` (slug derived from milestone title).
 - Un-milestoned N=1 unit: `feature/issue-<N>` (issue number is collision-free by construction).
 
-The feature branch is created off `origin/main` and pushed to origin before any worker dispatches — the agent's `gh pr create --base "$BH_FEATURE_BRANCH"` requires the base to exist remotely.
+The feature branch is created off `origin/main` and pushed before dispatch. The agent's `gh pr create --base "$CODEREEVE_FEATURE_BRANCH"` uses the canonical runtime variable and requires the base remotely. `BH_FEATURE_BRANCH` remains its compatibility alias through 0.3.x and is removed in 0.4.
 
-**Per-issue branches** follow symphony's own naming convention: `baton/<slug>-<N>`. The `branches.py` module manages feature-branch creation (`create_feature_branch`), checkout (`checkout_feature_branch`), and cut-point capture (`record_cut_point`).
+**Per-issue branches** use `codereeve/<slug>-<N>`. Legacy `baton/<slug>-<N>` branches remain recognized for recovery through 0.3.x and are removed in 0.4.
 
 **Cut-point.** Before each `_run_worker` dispatch, the daemon records the current tip SHA of the feature branch (`git rev-parse feature/<slug>`). This SHA is passed to the worker as `CHAIN_BASE_BRANCH` via the VP-1 `env=` thread. `before_run` rebases onto this SHA, not onto `origin/main` — ensuring per-issue branches build on the correct merged state. See `harness-design.md §1` for the VP-1 vendor patch.
 
@@ -110,7 +110,7 @@ Step 2: while scheduler.is_active():
                 record cut_point
                 label: agent-ready → agent-in-progress  (C1)
                 set CHAIN_BASE_BRANCH = cut_point
-                set BH_FEATURE_BRANCH = branch_name
+                set CODEREEVE_FEATURE_BRANCH = branch_name
                 worker_result = await orch._run_worker(issue)
                 re-read labels (after_run may have set blocked)
                 apply §7 outcome protocol
@@ -126,7 +126,7 @@ The daemon auto-reconstructs scheduler state on every start. `recovery.reconstru
 
 **Classification precedence (first match wins):**
 
-1. **done** — feature branch git log contains a `--no-ff` merge commit with the exact trailer `Baton-Harness-Merge: issue-<N> ci=green` **AND** the issue carries `agent-merged`. Both signals required (B-I2 provenance invariant: a human `git merge` produces no trailer and is not read as done).
+1. **done** — feature branch git log contains a `--no-ff` merge commit with the exact trailer `CodeReeve-Merge: issue-<N> ci=green` **AND** the issue carries `agent-merged`. Both signals required (B-I2 provenance invariant: a human `git merge` produces no trailer and is not read as done).
 2. **ci_gate_reentry (3a)** — provenance merge commit present but `agent-merged` label absent. Daemon died after merging but before writing the label. Re-enter the CI gate without re-running `_run_worker`.
 3. **parked_seed** — issue carries `blocked` label.
 4. **ci_gate_reentry (3a)** — `agent-done` + open PR + no daemon-provenance merge commit. Agent finished; CI gate/merge was interrupted.
@@ -182,13 +182,13 @@ On RED/TIMEOUT, the gate reports which required checks never appeared versus rem
 
 **Merge commit.** Uses `git merge --no-ff` (not squash). Squashing diverges git history and forces `--onto` rebasing of every dependent branch. Merge-commit order follows the topological ready queue — lowest (earliest) blockers first; out-of-order merges create ghost diffs.
 
-**Provenance trailer.** On a green merge, `merge.py` writes the trailer `Baton-Harness-Merge: issue-<N> ci=green` to the merge commit message, adds the `agent-merged` label to the issue, and posts a marker comment. These three signals are what `recovery.py` uses to reconstruct the `done` set reliably without re-querying GC'd check-runs (B-I2).
+**Provenance trailer.** On a green merge, `merge.py` writes the trailer `CodeReeve-Merge: issue-<N> ci=green` to the merge commit message, adds the `agent-merged` label to the issue, and posts a marker comment. These three signals are what `recovery.py` uses to reconstruct the `done` set reliably without re-querying GC'd check-runs (B-I2).
 
 ---
 
 ## 9. Escalation — `escalation.py`
 
-Dual-channel: GitHub issue comment (always attempted, the durable record) + optional Slack via `BH_SLACK_WEBHOOK_URL` (best-effort, never blocks the durable record). A Slack failure is logged at WARNING and does not affect the return value.
+Dual-channel: GitHub issue comment (always attempted, the durable record) + optional Slack via `CODEREEVE_SLACK_WEBHOOK_URL` (best-effort, never blocks the durable record). A Slack failure is logged at WARNING and does not affect the return value.
 
 Escalation fires on: park paths (block, CI failure, CI timeout, merge conflict), label invariant violations, cycle detection, redispatch loop detection, and daemon tick exceptions.
 
@@ -199,7 +199,7 @@ The daemon **never exits on a block.** A parked sub-tree is escalated and the lo
 ## 10. C1/C2/C3 contracts (inherited from `harness-design.md §6`)
 
 - **C1 — single-writer claim authority.** The daemon is the sole writer of `agent-in-progress` and the sole promoter of issues from `agent-ready` to in-flight. `after_run` (inside `_run_worker`) writes terminal labels; the daemon and `after_run` never target the same issue at the same instant because dispatch is serial. With a unified single daemon and one execution path, there is no concurrent label-writer conflict and no lock is required (B3 dissolved — `harness-design.md §10`).
-- **C2 — provenance allowlist.** The daemon acts only on issues carrying the trusted milestone label and only merges branches authored by the daemon itself (identified by the `Baton-Harness-Merge` provenance trailer). It never merges a human-authored or external branch into the feature branch.
+- **C2 — provenance allowlist.** The daemon acts only on issues carrying the trusted milestone label and only merges branches authored by the daemon itself (identified by the `CodeReeve-Merge` provenance trailer). It never merges a human-authored or external branch into the feature branch.
 - **C3 — bounded rework + escalation.** No auto-rework in v1. A failed or blocked issue parks its sub-tree and triggers escalation. The re-dispatch loop detector (`redispatch.py`) is the rework bound: an issue that is orphaned and re-dispatched more than `redispatch_max` times within `redispatch_window_ticks` ticks is parked rather than retried indefinitely.
 
 ---
@@ -234,7 +234,7 @@ If the feature branch has zero commits over `origin/main`, the PR is skipped (pr
 | `chain/runlog.py` | Structured JSONL event log (best-effort; never raises into loop) | No (file) |
 | `chain/registry.py` | `RepoConfig` dataclass; one-entry repo registry in v1 | Yes |
 | `chain/obs_config.py` | Observability config loader (`ObsConfig`) | No (file) |
-| `chain/cli.py` | `bh-daemon` console entry point (argparse) | No |
+| `chain/cli.py` | `codereeve daemon` command handler (argparse) | No |
 
 All modules use a single module-local `_run` subprocess seam — patchable in tests without mocking the entire `subprocess` module (spike finding F8).
 

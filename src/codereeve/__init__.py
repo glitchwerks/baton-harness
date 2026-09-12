@@ -1,6 +1,6 @@
-"""Baton harness — policy and tooling layer for autonomous agent runs.
+"""CodeReeve — policy and tooling layer for autonomous agent runs.
 
-This package provides the lifecycle hook entry points invoked by Baton
+This package provides the lifecycle hook entry points invoked by symphony
 during each agent run cycle:
 
 - ``after_create`` — per-worktree dependency setup after worktree creation.

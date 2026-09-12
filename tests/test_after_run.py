@@ -499,7 +499,7 @@ class TestReconcilePrOpenedLoopResilience:
         """When add-agent-done fails, agent-ready must already be removed.
 
         Verifies Finding B: even on failure, the issue must not remain
-        eligible (agent-ready absent) so baton cannot re-dispatch.
+        eligible (agent-ready absent) so the orchestrator cannot re-dispatch.
         """
         remove_called = False
 
@@ -1201,7 +1201,7 @@ class TestReconcileLabelsWorkerTriedMerge:
     The escalation ``alert()`` call must use the verified signature:
     ``alert(owner, repo, issue, summary, *, severity, ...)`` where
     ``owner`` and ``repo`` are POSITIONAL, read from the daemon-exported
-    env vars ``BH_REPO_OWNER`` and ``BH_REPO_NAME``.
+    env vars ``CODEREEVE_REPO_OWNER`` and ``CODEREEVE_REPO_NAME``.
 
     The test patches via ``monkeypatch.setattr(after_run, "alert", ...)``
     which requires the bare-name import contract enforced by
@@ -1220,8 +1220,8 @@ class TestReconcileLabelsWorkerTriedMerge:
         - No ``source`` kwarg (not in the real signature).
         - ``agent-ready`` is removed and ``blocked`` is added.
         """
-        monkeypatch.setenv("BH_REPO_OWNER", "test-owner")
-        monkeypatch.setenv("BH_REPO_NAME", "test-repo")
+        monkeypatch.setenv("CODEREEVE_REPO_OWNER", "test-owner")
+        monkeypatch.setenv("CODEREEVE_REPO_NAME", "test-repo")
 
         monkeypatch.setattr(
             after_run, "_current_labels", lambda issue: ["agent-ready"]
@@ -1289,11 +1289,13 @@ class TestReconcileLabelsWorkerTriedMerge:
     ) -> None:
         """Missing repo identity logs loudly instead of alerting with blanks.
 
-        Issue #159 Charge 5: missing ``BH_REPO_OWNER`` / ``BH_REPO_NAME``
+        Missing ``CODEREEVE_REPO_OWNER`` / ``CODEREEVE_REPO_NAME``
         must not silently degrade into ``alert("", "", ...)``. The hook
         should skip the alert call, log an explicit failure, and continue
         the blocked-label path without raising.
         """
+        monkeypatch.delenv("CODEREEVE_REPO_OWNER", raising=False)
+        monkeypatch.delenv("CODEREEVE_REPO_NAME", raising=False)
         monkeypatch.delenv("BH_REPO_OWNER", raising=False)
         monkeypatch.delenv("BH_REPO_NAME", raising=False)
 
@@ -1327,7 +1329,7 @@ class TestReconcileLabelsWorkerTriedMerge:
         assert err_calls[-1][0] == "after-run"
         assert err_calls[-1][1] == 42
         assert "escalation alert failed" in err_calls[-1][2]
-        assert "BH_REPO_OWNER" in err_calls[-1][2]
+        assert "CODEREEVE_REPO_OWNER" in err_calls[-1][2]
 
     def test_reconcile_worker_tried_merge_current_labels_none_alert_fires(
         self,
@@ -1340,8 +1342,8 @@ class TestReconcileLabelsWorkerTriedMerge:
         land, but the escalation alert must still fire so the operator is
         paged.  No exception must escape from ``_reconcile_labels``.
         """
-        monkeypatch.setenv("BH_REPO_OWNER", "test-owner")
-        monkeypatch.setenv("BH_REPO_NAME", "test-repo")
+        monkeypatch.setenv("CODEREEVE_REPO_OWNER", "test-owner")
+        monkeypatch.setenv("CODEREEVE_REPO_NAME", "test-repo")
 
         # Simulate _current_labels returning None (transient error).
         monkeypatch.setattr(after_run, "_current_labels", lambda issue: None)

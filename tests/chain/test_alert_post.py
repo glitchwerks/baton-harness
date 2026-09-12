@@ -51,7 +51,7 @@ import pytest
 
 _WEBHOOK = "https://hooks.slack.com/services/T00/B00/secret"
 _MESSAGE = (
-    "baton-harness refusing to launch worker — main branch protection missing."
+    "CodeReeve refusing to launch worker — main branch protection missing."
 )
 
 

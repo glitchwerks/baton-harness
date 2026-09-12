@@ -309,10 +309,7 @@ def test_readme_presents_codereeve_as_canonical_cli() -> None:
 
     _assert_no_legacy_cli_invocations(text)
 
-    assert (
-        "Derived from the temporary compatibility `bh-daemon` binary "
-        "location" in text
-    )
+    assert "| `CODEREEVE_VENV` | Selected CodeReeve environment |" in text
     development = text.split("## Python development", 1)[1].split(
         "## Prerequisites (runtime)", 1
     )[0]

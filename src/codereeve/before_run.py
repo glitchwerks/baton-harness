@@ -1,6 +1,6 @@
 """Hook: before_run — sync the worktree branch onto the chain base.
 
-Invoked by Baton once, before the first turn of each run.  First validates
+Invoked by symphony once, before the first turn of each run.  First validates
 the GitHub PAT via ``_auth.validate_github_token`` (defense-in-depth gate),
 then fetches the latest ref and rebases the current worktree branch onto it
 so the agent always operates on a fresh baseline.
@@ -13,22 +13,22 @@ to a concrete SHA at entry (``git rev-parse <ref>``) to avoid moving-target
 problems on ``--no-ff`` feature branches (B-I1, §3.7 of the chain spec).
 
 On rebase conflict the hook calls ``git rebase --abort`` to restore the
-worktree to a clean state before returning non-zero.  Baton sees the
+worktree to a clean state before returning non-zero.  symphony sees the
 non-zero exit and can surface the failure rather than leaving the
 worktree in a mid-rebase limbo.
 
-Entry point: ``bh-before-run`` (defined in ``pyproject.toml``).
+Canonical command: ``codereeve hook before-run``.
 
 WORKFLOW.md hook line (issue #5)::
 
-    before_run: bh-before-run
+    before_run: codereeve hook before-run
 
 Context:
     The hook runs with ``$PWD`` set to the worktree directory.  The issue
     number is inferred from ``basename($PWD)`` via
     ``codereeve._cli.resolve_issue_number`` (spike finding F2).
-    Baton names worktrees ``<repo>/.symphony/worktrees/<issue>`` (a bare
-    integer); the harness's own convention is ``<repo>/.worktrees/<branch>``
+    symphony names worktrees ``<repo>/.symphony/worktrees/<issue>`` (a bare
+    integer); CodeReeve's convention is ``<repo>/.worktrees/<branch>``
     (``<prefix>-<issue>[-<slug>]``).  Both forms are accepted.
 
     All subprocess calls use ``encoding="utf-8"`` explicitly to avoid
@@ -58,7 +58,8 @@ _HOOK = "before-run"
 def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
     """Run a subprocess command and return its CompletedProcess.
 
-    Streams stdout/stderr to the terminal so Baton's log captures git
+    Streams stdout/stderr to the terminal so the orchestrator's log
+    captures git
     output in real time.  Always uses ``encoding="utf-8"`` to avoid
     Windows cp1252 mangling of non-ASCII branch or commit names.
 
@@ -102,7 +103,7 @@ def _run_capture(cmd: list[str]) -> subprocess.CompletedProcess[str]:
 
 
 def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
-    """Entry point for the ``bh-before-run`` console script.
+    """Run the ``codereeve hook before-run`` command.
 
     Performs a branch sync in up to four steps:
 
@@ -124,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
     If rebase succeeds (exit 0 — including the already-up-to-date case),
     the hook returns 0.  If rebase fails (conflict or other error),
     ``git rebase --abort`` is called to restore clean state, then the hook
-    returns non-zero so Baton sees the failure.
+    returns non-zero so symphony sees the failure.
 
     Args:
         argv: Unused; accepted for interface symmetry with other hooks.
@@ -153,8 +154,8 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
     if issue is None:
         print(
             f"[{_HOOK}] error: could not derive issue number from cwd — "
-            "expected a bare integer (Baton: .symphony/worktrees/<issue>) "
-            "or <prefix>-<issue>[-<slug>] (harness: .worktrees/<branch>)",
+            "expected a bare integer (symphony: .symphony/worktrees/<issue>) "
+            "or <prefix>-<issue>[-<slug>] (CodeReeve: .worktrees/<branch>)",
             file=sys.stderr,
             flush=True,
         )

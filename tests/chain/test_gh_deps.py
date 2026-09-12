@@ -125,12 +125,20 @@ def _fail(stderr: str = "error") -> subprocess.CompletedProcess[str]:
 class TestFetchBlockedBy:
     """Tests for ``fetch_blocked_by``."""
 
-    def test_returns_blocker_numbers_from_single_page(self) -> None:
+    @pytest.mark.parametrize("repo", ["codereeve", "baton-harness"])
+    def test_returns_blocker_numbers_from_single_page(self, repo: str) -> None:
         """Parses blocker issue numbers from a single-page array response."""
         payload = [_ISSUE_42]
 
-        with patch.object(gh_deps_mod, "_run", return_value=_ok(payload)):
-            result = fetch_blocked_by("glitchwerks", "baton-harness", 43)
+        with patch.object(
+            gh_deps_mod, "_run", return_value=_ok(payload)
+        ) as run:
+            result = fetch_blocked_by("glitchwerks", repo, 43)
+
+        assert (
+            f"repos/glitchwerks/{repo}/issues/43/dependencies/blocked_by"
+            in run.call_args.args[0][2]
+        )
 
         assert result == [42]
 
@@ -139,14 +147,14 @@ class TestFetchBlockedBy:
         payload = [_ISSUE_42, _ISSUE_44]
 
         with patch.object(gh_deps_mod, "_run", return_value=_ok(payload)):
-            result = fetch_blocked_by("glitchwerks", "baton-harness", 43)
+            result = fetch_blocked_by("glitchwerks", "codereeve", 43)
 
         assert result == [42, 44]
 
     def test_empty_array_returns_empty_list(self) -> None:
         """An empty response array returns an empty list."""
         with patch.object(gh_deps_mod, "_run", return_value=_ok([])):
-            result = fetch_blocked_by("glitchwerks", "baton-harness", 43)
+            result = fetch_blocked_by("glitchwerks", "codereeve", 43)
 
         assert result == []
 
@@ -178,7 +186,7 @@ class TestFetchBlockedBy:
             return result
 
         with patch.object(gh_deps_mod, "_run", side_effect=fake_run):
-            result = fetch_blocked_by("glitchwerks", "baton-harness", 200)
+            result = fetch_blocked_by("glitchwerks", "codereeve", 200)
 
         assert 44 in result
         assert call_count == 2
@@ -199,7 +207,7 @@ class TestFetchBlockedBy:
             return _ok(payload)
 
         with patch.object(gh_deps_mod, "_run", side_effect=fake_run):
-            fetch_blocked_by("glitchwerks", "baton-harness", 43)
+            fetch_blocked_by("glitchwerks", "codereeve", 43)
 
         assert call_count == 1
 
@@ -207,7 +215,7 @@ class TestFetchBlockedBy:
         """Raises RuntimeError when gh api returns a non-zero exit code."""
         with patch.object(gh_deps_mod, "_run", return_value=_fail()):
             with pytest.raises(RuntimeError, match="gh api"):
-                fetch_blocked_by("glitchwerks", "baton-harness", 43)
+                fetch_blocked_by("glitchwerks", "codereeve", 43)
 
     def test_uses_correct_endpoint(self) -> None:
         """Calls the blocked_by REST endpoint with correct path components."""
@@ -222,7 +230,7 @@ class TestFetchBlockedBy:
             return _ok([])
 
         with patch.object(gh_deps_mod, "_run", side_effect=fake_run):
-            fetch_blocked_by("glitchwerks", "baton-harness", 99)
+            fetch_blocked_by("glitchwerks", "codereeve", 99)
 
         # Native API result is empty here, so the #126 issue-body fallback
         # also runs a follow-on call — only assert on the first (native
@@ -245,14 +253,14 @@ class TestFetchBlocking:
         payload = [_ISSUE_43, _ISSUE_44]
 
         with patch.object(gh_deps_mod, "_run", return_value=_ok(payload)):
-            result = fetch_blocking("glitchwerks", "baton-harness", 42)
+            result = fetch_blocking("glitchwerks", "codereeve", 42)
 
         assert result == [43, 44]
 
     def test_empty_array_returns_empty_list(self) -> None:
         """An empty blocking response returns an empty list."""
         with patch.object(gh_deps_mod, "_run", return_value=_ok([])):
-            result = fetch_blocking("glitchwerks", "baton-harness", 99)
+            result = fetch_blocking("glitchwerks", "codereeve", 99)
 
         assert result == []
 
@@ -284,7 +292,7 @@ class TestFetchBlocking:
             return result
 
         with patch.object(gh_deps_mod, "_run", side_effect=fake_run):
-            result = fetch_blocking("glitchwerks", "baton-harness", 1)
+            result = fetch_blocking("glitchwerks", "codereeve", 1)
 
         assert 44 in result
         assert call_count == 2
@@ -293,7 +301,7 @@ class TestFetchBlocking:
         """Raises RuntimeError when gh api returns a non-zero exit code."""
         with patch.object(gh_deps_mod, "_run", return_value=_fail()):
             with pytest.raises(RuntimeError, match="gh api"):
-                fetch_blocking("glitchwerks", "baton-harness", 42)
+                fetch_blocking("glitchwerks", "codereeve", 42)
 
     def test_uses_correct_endpoint(self) -> None:
         """Calls the blocking REST endpoint with correct path components."""
@@ -308,7 +316,7 @@ class TestFetchBlocking:
             return _ok([])
 
         with patch.object(gh_deps_mod, "_run", side_effect=fake_run):
-            fetch_blocking("glitchwerks", "baton-harness", 42)
+            fetch_blocking("glitchwerks", "codereeve", 42)
 
         assert len(captured) == 1
         joined = " ".join(captured[0])
@@ -333,16 +341,14 @@ class TestFetchMilestoneMembers:
         ]
 
         with patch.object(gh_deps_mod, "_run", return_value=_ok(payload)):
-            result = fetch_milestone_members("glitchwerks", "baton-harness", 3)
+            result = fetch_milestone_members("glitchwerks", "codereeve", 3)
 
         assert result == frozenset({42, 43, 44})
 
     def test_empty_milestone_returns_empty_frozenset(self) -> None:
         """An empty milestone returns an empty frozenset."""
         with patch.object(gh_deps_mod, "_run", return_value=_ok([])):
-            result = fetch_milestone_members(
-                "glitchwerks", "baton-harness", 99
-            )
+            result = fetch_milestone_members("glitchwerks", "codereeve", 99)
 
         assert result == frozenset()
 
@@ -365,7 +371,7 @@ class TestFetchMilestoneMembers:
             return result
 
         with patch.object(gh_deps_mod, "_run", side_effect=fake_run):
-            result = fetch_milestone_members("glitchwerks", "baton-harness", 3)
+            result = fetch_milestone_members("glitchwerks", "codereeve", 3)
 
         assert 101 in result
         assert call_count == 2
@@ -374,7 +380,7 @@ class TestFetchMilestoneMembers:
         """Raises RuntimeError when gh api returns a non-zero exit code."""
         with patch.object(gh_deps_mod, "_run", return_value=_fail()):
             with pytest.raises(RuntimeError, match="gh api"):
-                fetch_milestone_members("glitchwerks", "baton-harness", 3)
+                fetch_milestone_members("glitchwerks", "codereeve", 3)
 
     def test_uses_milestone_number_in_query(self) -> None:
         """Passes the milestone number to the gh api issues endpoint."""
@@ -389,7 +395,7 @@ class TestFetchMilestoneMembers:
             return _ok([])
 
         with patch.object(gh_deps_mod, "_run", side_effect=fake_run):
-            fetch_milestone_members("glitchwerks", "baton-harness", 7)
+            fetch_milestone_members("glitchwerks", "codereeve", 7)
 
         assert len(captured) == 1
         joined = " ".join(captured[0])
@@ -404,7 +410,7 @@ class TestFetchMilestoneMembers:
         ]
 
         with patch.object(gh_deps_mod, "_run", return_value=_ok(payload)):
-            result = fetch_milestone_members("glitchwerks", "baton-harness", 3)
+            result = fetch_milestone_members("glitchwerks", "codereeve", 3)
 
         assert result == frozenset({10, 12})
         assert 11 not in result
@@ -436,7 +442,7 @@ class TestGetMethodRegression:
             return _ok([])
 
         with patch.object(gh_deps_mod, "_run", side_effect=fake_run):
-            fetch_blocked_by("glitchwerks", "baton-harness", 5)
+            fetch_blocked_by("glitchwerks", "codereeve", 5)
 
         for cmd in captured:
             assert "-F" not in cmd, f"Found -F in command: {cmd}"
@@ -465,7 +471,7 @@ class TestGetMethodRegression:
             return _ok([])
 
         with patch.object(gh_deps_mod, "_run", side_effect=fake_run):
-            fetch_blocking("glitchwerks", "baton-harness", 5)
+            fetch_blocking("glitchwerks", "codereeve", 5)
 
         for cmd in captured:
             assert "-F" not in cmd, f"Found -F in command: {cmd}"
@@ -486,7 +492,7 @@ class TestGetMethodRegression:
             return _ok([])
 
         with patch.object(gh_deps_mod, "_run", side_effect=fake_run):
-            fetch_milestone_members("glitchwerks", "baton-harness", 7)
+            fetch_milestone_members("glitchwerks", "codereeve", 7)
 
         for cmd in captured:
             assert "-F" not in cmd, f"Found -F in command: {cmd}"
@@ -554,7 +560,7 @@ class TestThreePagePagination:
             return result
 
         with patch.object(gh_deps_mod, "_run", side_effect=fake_run):
-            result = fetch_blocked_by("glitchwerks", "baton-harness", 999)
+            result = fetch_blocked_by("glitchwerks", "codereeve", 999)
 
         assert call_count == 3
         assert len(result) == 207
@@ -615,7 +621,7 @@ class TestFetchBlockedByBodyFallback:
             return result
 
         with patch.object(gh_deps_mod, "_run", side_effect=fake_run):
-            result = fetch_blocked_by("glitchwerks", "baton-harness", 43)
+            result = fetch_blocked_by("glitchwerks", "codereeve", 43)
 
         assert result == [12]
 
@@ -643,7 +649,7 @@ class TestFetchBlockedByBodyFallback:
             return result
 
         with patch.object(gh_deps_mod, "_run", side_effect=fake_run):
-            result = fetch_blocked_by("glitchwerks", "baton-harness", 43)
+            result = fetch_blocked_by("glitchwerks", "codereeve", 43)
 
         assert result == [34]
 
@@ -671,7 +677,7 @@ class TestFetchBlockedByBodyFallback:
             return result
 
         with patch.object(gh_deps_mod, "_run", side_effect=fake_run):
-            result = fetch_blocked_by("glitchwerks", "baton-harness", 43)
+            result = fetch_blocked_by("glitchwerks", "codereeve", 43)
 
         assert result == [12, 34]
 
@@ -694,7 +700,7 @@ class TestFetchBlockedByBodyFallback:
             return result
 
         with patch.object(gh_deps_mod, "_run", side_effect=fake_run):
-            result = fetch_blocked_by("glitchwerks", "baton-harness", 43)
+            result = fetch_blocked_by("glitchwerks", "codereeve", 43)
 
         assert result == []
 
@@ -730,7 +736,7 @@ class TestFetchBlockedByBodyFallback:
             return result
 
         with patch.object(gh_deps_mod, "_run", side_effect=fake_run):
-            result = fetch_blocked_by("glitchwerks", "baton-harness", 43)
+            result = fetch_blocked_by("glitchwerks", "codereeve", 43)
 
         assert result == [7]
         assert call_count == 1
@@ -765,7 +771,7 @@ class TestFetchBlockedByBodyFallbackWordBoundary:
             return result
 
         with patch.object(gh_deps_mod, "_run", side_effect=fake_run):
-            result = fetch_blocked_by("glitchwerks", "baton-harness", 43)
+            result = fetch_blocked_by("glitchwerks", "codereeve", 43)
 
         assert result == []
 
@@ -788,6 +794,6 @@ class TestFetchBlockedByBodyFallbackWordBoundary:
             return result
 
         with patch.object(gh_deps_mod, "_run", side_effect=fake_run):
-            result = fetch_blocked_by("glitchwerks", "baton-harness", 43)
+            result = fetch_blocked_by("glitchwerks", "codereeve", 43)
 
         assert result == [12]

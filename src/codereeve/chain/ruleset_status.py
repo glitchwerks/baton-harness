@@ -37,7 +37,7 @@ Charge 8 — HTTP status from stdout, not stderr:
        so the App token sees its OWN bypass verdict.  The expected
        verdict is derived from the checked-in config's ``bypass_actors``
        via ``_expected_bypass_verdict`` (never from ruleset name).
-    2. ``updated_at`` — pinned in ``.bh/ruleset-baseline.json`` by
+    2. ``updated_at`` — pinned in ``.codereeve/ruleset-baseline.json`` by
        ``bin/provision-ruleset.sh``'s baseline-capture step.  Any
        mutation invisible to the other two signals (e.g. a third
        bypass actor added by someone else) still bumps this timestamp.
@@ -139,7 +139,7 @@ class RulesetConfigError(Exception):
     """Raised when the compare-keys config is missing, malformed, or empty.
 
     Fail-fast posture: an absent or invalid compare-keys config means the
-    harness cannot safely determine ruleset drift, so the preflight gate
+    CodeReeve cannot safely determine ruleset drift, so the preflight gate
     refuses to proceed rather than silently over-approving.
     """
 
@@ -159,7 +159,8 @@ class RulesetStatus(Enum):
         ABSENT: One or both rulesets are missing.
         ERROR: A gh call failed with a non-404 error (network, auth, 5xx).
         NOT_PROVISIONED: #206 addition.  ``check_ruleset_signals`` has no
-            pinned ``.bh/ruleset-baseline.json`` entry for the repo, so it
+            pinned ``.codereeve/ruleset-baseline.json`` entry for
+            the repo, so it
             cannot safely assert "no drift" (fail-closed).  Distinct from
             DRIFT — this means "never provisioned/pinned", not "drifted
             from a known-good state".  Never returned by
@@ -341,7 +342,7 @@ def _render_main_config(admin_role_id: int) -> dict[str, object]:
         admin_role_id: Numeric RepositoryRole id for the admin bypass actor.
 
     Returns:
-        Parsed dict with ``__BH_ADMIN_ROLE_ID__`` placeholder replaced.
+        Parsed dict with ``__CODEREEVE_ADMIN_ROLE_ID__`` placeholder replaced.
     """
     body: dict[str, object] = json.loads(_MAIN_CFG.read_text(encoding="utf-8"))
     body["bypass_actors"][0]["actor_id"] = admin_role_id  # type: ignore[index]
@@ -352,7 +353,7 @@ def _render_feature_config(app_id: str) -> dict[str, object]:
     """Load the feature ruleset config and substitute the app-id placeholder.
 
     The config stores the placeholder as the JSON string
-    ``"__BH_GITHUB_APP_ID__"``; this function replaces it with the
+    ``"__CODEREEVE_GITHUB_APP_ID__"``; this function replaces it with the
     numeric integer value so comparisons against the live API response
     work correctly.
 
@@ -360,7 +361,8 @@ def _render_feature_config(app_id: str) -> dict[str, object]:
         app_id: Numeric GitHub App ID as a string (e.g. ``"111"``).
 
     Returns:
-        Parsed dict with ``__BH_GITHUB_APP_ID__`` replaced by ``int(app_id)``.
+        Parsed dict with ``__CODEREEVE_GITHUB_APP_ID__`` replaced by
+        ``int(app_id)``.
     """
     body: dict[str, object] = json.loads(
         _FEATURE_CFG.read_text(encoding="utf-8")

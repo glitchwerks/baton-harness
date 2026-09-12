@@ -255,8 +255,8 @@ def _invoke(
         "CODEREEVE_GITHUB_APP_ID": app_id,
         "CODEREEVE_GITHUB_APP_INSTALLATION_ID": "999999",
         "CODEREEVE_ADMIN_ROLE_ID": admin_role_id,
-        "BH_FAKE_GH_LOG": str(log_path),
-        "BH_FAKE_GH_CANNED_DIR": str(canned_state_dir),
+        "CODEREEVE_FAKE_GH_LOG": str(log_path),
+        "CODEREEVE_FAKE_GH_CANNED_DIR": str(canned_state_dir),
         # #200: the script now unconditionally obtains App-auth credentials
         # before any gh call. These two overrides stand in for the real
         # `python -m codereeve.chain.app_auth {jwt|token}` invocation so
@@ -304,7 +304,7 @@ def _calls(log_path: Path) -> list[dict]:  # type: ignore[type-arg]
 
     Args:
         log_path: Path to the JSONL file written by both the fake gh
-            and fake curl shims (see ``_invoke``'s BH_FAKE_GH_LOG).
+            and fake curl shims (see ``_invoke``'s CODEREEVE_FAKE_GH_LOG).
 
     Returns:
         List of call-record dicts, one per gh or curl invocation.

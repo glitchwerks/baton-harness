@@ -237,9 +237,11 @@ class GitHubTracker:
             branch_suffix = f"-{issue_number}"
             for pr in prs:
                 head = pr.get("headRefName", "")
-                # Match by branch name pattern (baton/*-{number}) or
-                # issue reference
-                if head.startswith("baton/") and head.endswith(branch_suffix):
+                # Match canonical or legacy worker branches, or an issue
+                # reference in the PR text.
+                if head.startswith(("codereeve/", "baton/")) and head.endswith(
+                    branch_suffix
+                ):
                     return True
                 if issue_ref in pr.get("title", "") or issue_ref in (
                     pr.get("body") or ""

@@ -88,8 +88,9 @@ def _find_issue_pr(
 ) -> tuple[str | None, str | None]:
     """Find an open PR's head branch and SHA for a given issue number.
 
-    Looks for a PR whose head branch matches ``baton/*-<N>`` pattern
-    (mirrors ``tracker.check_pr_exists`` heuristic).
+    Looks for a PR whose head branch matches the canonical
+    ``codereeve/*-<N>`` or legacy ``baton/*-<N>`` pattern (mirrors
+    ``tracker.check_pr_exists`` heuristic).
 
     Args:
         owner: The GitHub repository owner.
@@ -136,7 +137,7 @@ def _find_issue_pr(
     suffix = f"-{issue}"
     for pr in prs:
         head = str(pr.get("headRefName", ""))
-        if head.startswith("baton/") and head.endswith(suffix):
+        if head.startswith(("codereeve/", "baton/")) and head.endswith(suffix):
             sha = str(pr.get("headRefOid", ""))
             return head, sha
 
@@ -344,7 +345,7 @@ def _run_ci_gate(
         repo: GitHub repository name.
         n: Issue number being processed.
         issue_branch: The PR head branch name (e.g.
-            ``"baton/issue-10-10"``).
+            ``"codereeve/issue-10-10"``).
         pr_head_sha: The PR head commit SHA.
         repo_root: Absolute ``Path`` to the repository root.
         branch_name: The feature branch name for the work unit; used for
